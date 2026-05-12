@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { PaperStock } from '../../types';
 import { Plus, Trash2, Save, ScrollText } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
@@ -10,7 +10,7 @@ export const PaperManager: React.FC = () => {
   const [newPaper, setNewPaper] = useState<Partial<PaperStock>>({
       name: '', weight: '', type: '국전', unitPrice: 0, stockLevel: 'medium'
   });
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
 
   const loadPapers = () => {
       setPapers(db.getPapers());
@@ -25,24 +25,30 @@ export const PaperManager: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const handleAdd = () => {
+  const handleAdd = async () => {
     if (!newPaper.name || !newPaper.weight) return;
-    const item: PaperStock = {
-        id: Date.now().toString(),
+    const item: Partial<PaperStock> = {
         name: newPaper.name,
         weight: newPaper.weight,
         type: newPaper.type || '국전',
         unitPrice: Number(newPaper.unitPrice),
         stockLevel: newPaper.stockLevel as any || 'medium'
     };
-    const updated = [...papers, item];
-    db.savePapers(updated); // This triggers subscription update
-    setNewPaper({ name: '', weight: '', type: '국전', unitPrice: 0, stockLevel: 'medium' });
+    try {
+        await db.addPaper(item);
+        setNewPaper({ name: '', weight: '', type: '국전', unitPrice: 0, stockLevel: 'medium' });
+    } catch (error) {
+        showAlert(getErrorMessage(error));
+    }
   };
 
   const handleDelete = async (id: string) => {
     if(await showConfirm('이 용지를 삭제하시겠습니까?')) {
-        db.deletePaper(id);
+        try {
+            await db.deletePaper(id);
+        } catch (error) {
+            showAlert(getErrorMessage(error));
+        }
     }
   };
 

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { PricingConfig } from '../../types';
 import { Calculator, Save } from 'lucide-react';
 

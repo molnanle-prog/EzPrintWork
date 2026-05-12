@@ -2,24 +2,39 @@
 import React, { useState, useEffect } from 'react';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { CompanyInfo } from '../../types';
-import { Building, Save, Check } from 'lucide-react';
+import { Building, Save, Check, Copy, History } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
+import { useAuth } from '../../contexts/AuthContext';
 
 export const CompanyInfoManager: React.FC = () => {
   const [info, setInfo] = useState<CompanyInfo>({ name: '' });
   const { showAlert } = useDialog();
+  const { currentUser } = useAuth();
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     setInfo(db.getCompanyInfo());
   }, []);
+
+  const handleCopyCode = () => {
+    if (currentUser?.tenantId) {
+        navigator.clipboard.writeText(currentUser.tenantId);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+    }
+  };
 
   const handleSave = async () => {
     if (!info.name.trim()) {
         await showAlert('상호명은 필수 입력 항목입니다.');
         return;
     }
-    db.saveCompanyInfo(info);
-    await showAlert('회사 정보가 저장되었습니다.\n화면 상단의 상호명이 업데이트됩니다.');
+    try {
+        await db.saveCompanyInfo(info);
+        await showAlert('회사 정보가 저장되었습니다.\n화면 상단의 상호명이 업데이트됩니다.');
+    } catch (error) {
+        await showAlert('저장 중 오류가 발생했습니다.');
+    }
   };
 
   const handleChange = (field: keyof CompanyInfo, value: string) => {
@@ -40,6 +55,29 @@ export const CompanyInfoManager: React.FC = () => {
       </h3>
 
       <div className="space-y-6">
+          <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-100 dark:border-emerald-800 p-6 rounded-xl mb-6">
+              <div className="flex justify-between items-start mb-2">
+                <h4 className="font-bold text-emerald-900 dark:text-emerald-100 flex items-center gap-2">
+                    <Check size={18} /> 회사 입장 코드가 생성되었습니다
+                </h4>
+              </div>
+              <p className="text-sm text-emerald-700 dark:text-emerald-300 mb-4">
+                  직원들이 회원가입 후 '회사 참여하기' 단계에서 아래 코드를 입력하면 이 회사(테넌트)로 소속됩니다.
+              </p>
+              <div className="flex items-center gap-2">
+                  <div className="bg-white dark:bg-slate-900 px-4 py-3 rounded-lg border-2 border-emerald-200 dark:border-emerald-800 font-mono text-lg font-bold flex-1 select-all text-emerald-600 dark:text-emerald-400">
+                      {currentUser?.tenantId}
+                  </div>
+                  <button 
+                    onClick={handleCopyCode}
+                    className={`p-3 rounded-lg flex items-center gap-2 font-bold transition-all ${copied ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-600'}`}
+                  >
+                      {copied ? <Check size={20} /> : <Copy size={20} />}
+                      {copied ? '복사됨' : '코드 복사'}
+                  </button>
+              </div>
+          </div>
+
           <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-100 dark:border-blue-800 p-4 rounded-lg text-sm text-blue-800 dark:text-blue-300 mb-6">
               이곳에 입력된 정보는 프로그램 상단의 로고 텍스트, 견적서, 거래명세서 등의 공급자 정보로 사용됩니다.
           </div>

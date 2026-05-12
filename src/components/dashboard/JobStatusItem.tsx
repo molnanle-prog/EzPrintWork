@@ -40,7 +40,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
   // Determine Container Styles
-  let containerStyles = "bg-white dark:bg-slate-700 border rounded-xl p-3 transition-all hover:shadow-lg shadow-sm group";
+  let containerStyles = "bg-white dark:bg-slate-700 border rounded-xl p-2 md:p-2.5 transition-all hover:shadow-lg shadow-sm group";
   let priorityBadgeStyles = "bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300";
   let dateTextStyles = "";
 
@@ -75,7 +75,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
 
   return (
     <div className={containerStyles}>
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-1.5">
         {/* Row 1: Horizontal Info (Title, Client, Staff, Phone) */}
         <div className="flex flex-wrap items-center justify-between gap-y-1 gap-x-2">
            
@@ -84,7 +84,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
               {/* Badges */}
               <div className="flex items-center gap-1 shrink-0">
                 {(job.priority !== Priority.NORMAL || daysRemaining <= 3) && (
-                  <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded flex items-center gap-1 ${priorityBadgeStyles}`}>
+                  <span className={`text-[10px] font-bold px-1 py-0.5 rounded flex items-center gap-1 ${priorityBadgeStyles}`}>
                     {job.priority === Priority.VERY_URGENT && <AlertTriangle size={10} />}
                     {job.priority}
                   </span>
@@ -92,27 +92,27 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
                 {/* Type Badge / Multi Badge */}
                 {isMultiJob ? (
                     <span className="text-[10px] text-white font-bold bg-slate-600 dark:bg-slate-500 px-1.5 py-0.5 rounded border border-slate-700 dark:border-slate-500 whitespace-nowrap flex items-center gap-1 shadow-sm">
-                        <Layers size={10} /> +{subJobCount}건
+                        <Layers size={10} /> +{subJobCount}
                     </span>
                 ) : (
-                    <span className="text-[10px] text-slate-500 dark:text-slate-300 font-medium bg-slate-100 dark:bg-slate-600 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-500 whitespace-nowrap">
+                    <span className="text-[10px] text-slate-500 dark:text-slate-300 font-medium bg-slate-100 dark:bg-slate-600 px-1 py-0.5 rounded border border-slate-200 dark:border-slate-500 whitespace-nowrap">
                         {job.type}
                     </span>
                 )}
               </div>
 
               {/* Title & Client */}
-              <div className="flex items-baseline gap-2 min-w-0">
-                  <h3 className="text-sm sm:text-base font-bold text-slate-800 dark:text-slate-100 truncate leading-tight" title={job.title}>
+              <div className="flex items-baseline gap-1.5 min-w-0">
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate leading-tight" title={job.title}>
                     {job.title}
                   </h3>
-                  <span className="text-xs text-slate-500 dark:text-slate-400 truncate hidden sm:inline">- {job.clientName}</span>
-                  <span className="text-xs text-slate-500 dark:text-slate-400 truncate sm:hidden block">{job.clientName}</span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate hidden sm:inline">- {job.clientName}</span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate sm:hidden block">{job.clientName}</span>
               </div>
            </div>
 
            {/* Right Group: Staff, Contact, Date */}
-           <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400 shrink-0 ml-auto sm:ml-0 bg-slate-50/50 dark:bg-slate-800/50 rounded-lg py-0.5 px-2">
+           <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 shrink-0 ml-auto sm:ml-0 bg-slate-50/50 dark:bg-slate-800/50 rounded-lg py-0.5 px-1.5">
               {/* Staff - Modified to show ALL staff */}
               <div className="flex items-center gap-1.5" title="담당자">
                 {assignedStaff.length > 0 ? (
@@ -168,7 +168,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
         </div>
 
         {/* Row 2: Compact Stepper (Bottom Line) */}
-        <div className="relative pt-1 px-1">
+        <div className="relative pt-0.5 px-1">
           {/* Background Line */}
           <div className="absolute top-1/2 left-0 w-full h-0.5 bg-slate-100 dark:bg-slate-600 -translate-y-1/2 rounded-full z-0"></div>
           

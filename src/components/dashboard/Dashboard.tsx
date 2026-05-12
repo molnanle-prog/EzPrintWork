@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { Job, AdminInstruction, Priority, Staff, JobStatusDefinition } from '../../types';
 import { AlertCircle, Clock, Plus, Loader2 } from 'lucide-react';
 import { JobStatusItem } from './JobStatusItem';
@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { ClientContactModal } from '../common/ClientContactModal';
+import { AdBanner } from '../common/AdBanner';
 
 interface DashboardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -20,7 +21,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const [instructions, setInstructions] = useState<AdminInstruction[]>([]);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const { currentUser } = useAuth();
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [contactingJob, setContactingJob] = useState<Job | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
@@ -42,34 +43,45 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
     return () => unsubscribe();
   }, []);
 
-  const handleAddInstruction = (content: string, important: boolean) => {
-    const newInst: AdminInstruction = {
-      id: Date.now().toString(),
+  const handleAddInstruction = async (content: string, important: boolean) => {
+    const newInst: Partial<AdminInstruction> = {
       content,
       date: new Date().toISOString(),
       important: important
     };
-    // Safe update via DB service
-    db.saveInstructions([newInst, ...instructions]);
+    try {
+        await db.addInstruction(newInst);
+    } catch (error) {
+        showAlert(getErrorMessage(error));
+    }
   };
 
   const deleteInstruction = async (id: string) => {
     if (await showConfirm('이 지시사항을 삭제하시겠습니까?')) {
-        db.deleteInstruction(id);
+        try {
+            await db.deleteInstruction(id);
+        } catch (error) {
+            showAlert(getErrorMessage(error));
+        }
     }
   };
 
-  const handleUpdateJob = (updated: Job) => {
-    // Use the smart update method in DB
-    db.updateJob(updated);
-    // UI will auto-update via subscription, but we can close modal immediately
-    setSelectedJob(null);
+  const handleUpdateJob = async (updated: Job) => {
+    try {
+        await db.updateJob(updated);
+        setSelectedJob(null);
+    } catch (error) {
+        showAlert(getErrorMessage(error));
+    }
   };
 
-  const handleCreateJob = (newJob: Job) => {
-    db.addJob(newJob);
-    // UI will auto-update
-    setIsCreatingJob(false);
+  const handleCreateJob = async (newJob: Job) => {
+    try {
+        await db.addJob(newJob);
+        setIsCreatingJob(false);
+    } catch (error) {
+        showAlert(getErrorMessage(error));
+    }
   }
 
   // Helper: Sort jobs strictly by Priority then Due Date
@@ -111,27 +123,28 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   };
 
   return (
-    <div className="flex flex-col lg:flex-row h-full gap-4 lg:gap-6 overflow-hidden relative">
-      {/* Main Area: Job Status Board */}
+    <div className="flex flex-col h-full overflow-hidden relative">
+      <div className="flex flex-col lg:flex-row flex-1 gap-2 lg:gap-3 overflow-hidden">
+        {/* Main Area: Job Status Board */}
       <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
         {/* Header */}
-        <div className="p-3 lg:p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850 flex justify-between items-center flex-none">
+        <div className="p-2 lg:p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850 flex justify-between items-center flex-none">
           <div className="flex items-center gap-4">
             <div>
-              <h2 className="text-lg lg:text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                <span className="w-2 lg:w-3 h-6 lg:h-8 bg-gradient-to-b from-red-500 to-blue-600 rounded-sm"></span>
+              <h2 className="text-base lg:text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <span className="w-2 lg:w-2.5 h-5 lg:h-7 bg-gradient-to-b from-red-500 to-blue-600 rounded-sm"></span>
                 실시간 작업 상황판
               </h2>
             </div>
           </div>
-          <div className="flex gap-2 items-center">
-             <div className="hidden sm:flex gap-2 text-xs lg:text-sm font-medium mr-2">
-               <div className="flex items-center gap-1.5 px-2 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800">
-                  <AlertCircle size={14} />
+          <div className="flex gap-1.5 items-center">
+             <div className="hidden sm:flex gap-1.5 text-[11px] lg:text-xs font-bold mr-1">
+               <div className="flex items-center gap-1 px-2 py-0.5 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800 transition-colors">
+                  <AlertCircle size={12} />
                   <span>긴급: {jobs.filter(j => j.priority !== Priority.NORMAL).length}</span>
                </div>
-               <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800">
-                  <Clock size={14} />
+               <div className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800 transition-colors">
+                  <Clock size={12} />
                   <span>진행: {jobs.filter(j => j.status !== 'DELIVERY').length}</span>
                </div>
              </div>
@@ -139,9 +152,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
              <button 
                onClick={() => setIsCreatingJob(true)}
                title="새로운 작업을 등록합니다"
-               className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 shadow-sm transition-all hover:scale-105"
+               className="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm transition-all hover:scale-105 active:scale-95"
              >
-               <Plus size={18} />
+               <Plus size={16} />
                <span className="hidden sm:inline">작업 등록</span>
                <span className="sm:hidden">등록</span>
              </button>
@@ -149,7 +162,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
         </div>
 
         {/* List Content */}
-        <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50/50 dark:bg-slate-900/50 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-slate-50/50 dark:bg-slate-900/50 custom-scrollbar">
           {sortedJobs.length === 0 && (
              <div className="flex flex-col items-center justify-center h-full text-slate-400">
                 <p>현재 진행 중인 작업이 없습니다.</p>
@@ -181,13 +194,14 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
       </div>
 
       {/* Side Panel: Admin Instructions - Hidden on Mobile */}
-      <div className="hidden lg:flex w-full lg:w-72 xl:w-80 2xl:w-96 flex-col gap-6 flex-none pb-24 lg:pb-24 transition-all duration-300">
+      <div className="hidden lg:flex w-full lg:w-80 xl:w-96 flex-col gap-6 flex-none pb-24 lg:pb-24 transition-all duration-300">
         <InstructionPanel 
           instructions={instructions} 
           onAdd={handleAddInstruction} 
           onDelete={deleteInstruction} 
         />
       </div>
+    </div>
 
       {selectedJob && (
         <JobDetailModal 

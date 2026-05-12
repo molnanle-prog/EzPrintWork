@@ -21,9 +21,9 @@ export const BackupManager: React.FC = () => {
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
         const json = event.target?.result as string;
-        if (db.importData(json)) {
+        if (await db.importData(json)) {
             alert('데이터 복원이 완료되었습니다. 페이지를 새로고침합니다.');
             window.location.reload();
         } else {

@@ -15,7 +15,7 @@ import { useAuth } from '../../contexts/AuthContext';
 
 export const SettingsView: React.FC = () => {
   const { currentUser } = useAuth();
-  const isAdmin = currentUser?.id === 'admin';
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.email === 'molnanle@gmail.com';
   
   // Default to 'nas' for regular users, 'staff' for admin
   const [activeSubTab, setActiveSubTab] = useState(isAdmin ? 'staff' : 'nas');

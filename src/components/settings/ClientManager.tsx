@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { db, formatPhoneNumber } from '../../services/dataService';
+import { db, formatPhoneNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact } from '../../types';
 import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
@@ -76,8 +76,7 @@ export const ClientManager: React.FC = () => {
         ? formData.contacts[0] 
         : { name: '', phone: '', email: '' };
 
-    const clientToSave: Client = {
-        id: editingId || Date.now().toString(),
+    const clientToSave: Partial<Client> = {
         name: formData.name,
         businessRegistrationNumber: formData.businessRegistrationNumber,
         contactPerson: primaryContact.name, // Sync Primary
@@ -88,17 +87,25 @@ export const ClientManager: React.FC = () => {
         contacts: formData.contacts || []
     };
 
-    const newClients = editingId 
-        ? clients.map(c => c.id === editingId ? clientToSave : c)
-        : [...clients, clientToSave];
-
-    db.saveClients(newClients);
-    setIsModalOpen(false);
+    try {
+        if (editingId) {
+            await db.updateClient({ ...clientToSave, id: editingId } as Client);
+        } else {
+            await db.addClient(clientToSave);
+        }
+        setIsModalOpen(false);
+    } catch (error) {
+        showAlert(getErrorMessage(error));
+    }
   };
 
   const handleDelete = async (id: string, name: string) => {
     if(await showConfirm(`'${name}' 거래처를 삭제하시겠습니까?`)) {
-        db.deleteClient(id);
+        try {
+            await db.deleteClient(id);
+        } catch (error) {
+            showAlert(getErrorMessage(error));
+        }
     }
   };
 

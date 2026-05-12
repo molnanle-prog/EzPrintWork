@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { Quote } from '../../types';
 import { FileText, Plus, Check, X, Printer, Search, User, Calendar, DollarSign } from 'lucide-react';
 import { QuoteDetailModal } from './QuoteDetailModal';
@@ -8,7 +8,7 @@ import { useDialog } from '../../contexts/DialogContext';
 export const QuoteManager: React.FC = () => {
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [selectedQuote, setSelectedQuote] = useState<Quote | null>(null);
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
 
   const loadQuotes = () => {
       setQuotes(db.getQuotes());
@@ -40,21 +40,28 @@ export const QuoteManager: React.FC = () => {
     setSelectedQuote(newQuote);
   };
 
-  const handleUpdateQuote = (updated: Quote) => {
-    const exists = quotes.find(q => q.id === updated.id);
-    let newQuotes;
-    if (exists) {
-      newQuotes = quotes.map(q => q.id === updated.id ? updated : q);
-    } else {
-      newQuotes = [updated, ...quotes];
+  const handleUpdateQuote = async (updated: Quote) => {
+    try {
+        if (updated.id && quotes.some(q => q.id === updated.id)) {
+            await db.updateQuote(updated);
+        } else {
+            await db.addQuote(updated);
+        }
+        setSelectedQuote(null);
+    } catch (error) {
+        showAlert(getErrorMessage(error));
     }
-    db.saveQuotes(newQuotes);
-    setSelectedQuote(null);
   };
 
-  const handleDeleteQuote = (id: string) => {
-    db.deleteQuote(id);
-    setSelectedQuote(null);
+  const handleDeleteQuote = async (id: string) => {
+    if (await showConfirm('이 견적서를 정말 삭제하시겠습니까?')) {
+        try {
+            await db.deleteQuote(id);
+            setSelectedQuote(null);
+        } catch (error) {
+            showAlert(getErrorMessage(error));
+        }
+    }
   };
 
   return (
@@ -168,7 +175,6 @@ export const QuoteManager: React.FC = () => {
           quote={selectedQuote} 
           onClose={() => setSelectedQuote(null)}
           onUpdate={handleUpdateQuote}
-          onDelete={handleDeleteQuote}
         />
       )}
     </div>

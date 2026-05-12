@@ -1,16 +1,22 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { Staff } from '../../types';
 import { User, Phone, Check, X, Shield, Trash2, Edit2, Smartphone, Briefcase, Building2, Hash } from 'lucide-react';
 import { StaffModal } from './StaffModal';
 import { useDialog } from '../../contexts/DialogContext';
+import { useAuth } from '../../contexts/AuthContext';
+import { UpgradeModal } from '../common/UpgradeModal';
 
 export const StaffManager: React.FC = () => {
+  const { tenantPlan } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
-  const { showConfirm } = useDialog();
+  const { showConfirm, showAlert } = useDialog();
+
+  const isAtLimit = tenantPlan === 'free' && staffList.length >= 3;
 
   const loadStaff = () => {
      // Exclude deleted staff AND system admin
@@ -24,21 +30,31 @@ export const StaffManager: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  const toggleActive = (id: string) => {
-    const allStaff = db.getStaff();
-    const newAllStaff = allStaff.map(s => s.id === id ? { ...s, active: !s.active } : s);
-    db.saveStaff(newAllStaff);
-    // loadStaff(); -> Removed: Subscription handles update
+  const toggleActive = async (id: string) => {
+    const staff = staffList.find(s => s.id === id);
+    if (!staff) return;
+    try {
+        await db.updateStaff({ ...staff, active: !staff.active });
+    } catch (error) {
+        showAlert(getErrorMessage(error));
+    }
   };
 
   const handleDelete = async (id: string, name: string) => {
     if (await showConfirm(`'${name}' 직원을 정말 삭제하시겠습니까?\n\n삭제하더라도 과거 작업 내역의 담당자 기록은 유지됩니다.`)) {
-      db.deleteStaff(id);
-      // loadStaff(); -> Removed: Subscription handles update preventing race condition
+      try {
+          await db.deleteStaff(id);
+      } catch (error) {
+          showAlert(getErrorMessage(error));
+      }
     }
   };
 
   const handleOpenAdd = () => {
+      if (isAtLimit) {
+          setIsUpgradeModalOpen(true);
+          return;
+      }
       setEditingStaff(null);
       setIsModalOpen(true);
   };
@@ -48,14 +64,17 @@ export const StaffManager: React.FC = () => {
       setIsModalOpen(true);
   };
 
-  const handleSaveStaff = (staff: Staff) => {
-      if (editingStaff) {
-          db.updateStaff(staff);
-      } else {
-          db.addStaff(staff);
+  const handleSaveStaff = async (staff: Staff) => {
+      try {
+          if (editingStaff) {
+              await db.updateStaff(staff);
+          } else {
+              await db.addStaff(staff);
+          }
+          setIsModalOpen(false);
+      } catch (error) {
+          showAlert(getErrorMessage(error));
       }
-      setIsModalOpen(false);
-      // loadStaff(); -> Removed: Subscription handles update
   };
 
   return (
@@ -151,13 +170,22 @@ export const StaffManager: React.FC = () => {
         {/* Add Staff Button */}
         <button 
             onClick={handleOpenAdd}
-            title="새로운 직원을 등록합니다"
-            className="rounded-xl border-2 border-dashed border-slate-300 dark:border-slate-600 flex flex-col items-center justify-center p-6 text-slate-400 dark:text-slate-500 hover:border-blue-500 dark:hover:border-blue-400 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800 transition-all min-h-[300px]"
+            title={isAtLimit ? "무료 버전 인원 제한 초과" : "새로운 직원을 등록합니다"}
+            className={`rounded-xl border-2 border-dashed flex flex-col items-center justify-center p-6 transition-all min-h-[300px] 
+            ${isAtLimit 
+                ? 'border-orange-200 bg-orange-50/30 text-orange-400 opacity-80 cursor-not-allowed group' 
+                : 'border-slate-300 dark:border-slate-600 text-slate-400 dark:text-slate-500 hover:border-blue-500 dark:hover:border-blue-400 hover:text-blue-500 dark:hover:text-blue-400 hover:bg-blue-50 dark:hover:bg-slate-800'}`}
         >
-            <div className="w-12 h-12 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center mb-4 group-hover:bg-blue-100 dark:group-hover:bg-blue-900/30">
+            <div className={`w-12 h-12 rounded-full flex items-center justify-center mb-4 transition-colors 
+            ${isAtLimit ? 'bg-orange-100' : 'bg-slate-100 dark:bg-slate-700'}`}>
             <User size={24} />
             </div>
-            <span className="font-medium">신규 직원 등록</span>
+            <span className="font-bold">{isAtLimit ? '인원 제한 도달' : '신규 직원 등록'}</span>
+            {isAtLimit && (
+                <div className="mt-4 px-3 py-1 bg-orange-100 text-orange-700 rounded-lg text-xs font-black animate-pulse">
+                    PRO 버전으로 해제하기
+                </div>
+            )}
         </button>
         </div>
 
@@ -168,6 +196,11 @@ export const StaffManager: React.FC = () => {
                 onSave={handleSaveStaff}
             />
         )}
+
+        <UpgradeModal 
+            isOpen={isUpgradeModalOpen}
+            onClose={() => setIsUpgradeModalOpen(false)}
+        />
     </>
   );
 };

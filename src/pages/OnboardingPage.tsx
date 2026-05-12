@@ -15,7 +15,11 @@ export const OnboardingPage: React.FC = () => {
 
   const handleCreateCompany = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!companyName.trim() || !firebaseUser) return;
+    console.log('handleCreateCompany called', { companyName, hasUser: !!firebaseUser });
+    if (!companyName.trim() || !firebaseUser) {
+      console.log('Validation failed', { companyName: companyName.trim(), hasUser: !!firebaseUser });
+      return;
+    }
 
     setIsCreating(true);
     try {

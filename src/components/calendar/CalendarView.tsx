@@ -6,6 +6,8 @@ import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, 
 import { JobDetailModal } from '../common/JobDetailModal';
 import { LeaveModal } from './LeaveModal';
 import { useDialog } from '../../contexts/DialogContext';
+import { AdBanner } from '../common/AdBanner';
+import { useAuth } from '../../contexts/AuthContext';
 
 interface CalendarViewProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -51,6 +53,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const { showConfirm } = useDialog();
+  const { tenantPlan } = useAuth();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
 
@@ -80,6 +83,96 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
     return () => unsubscribe();
   }, [currentDate]);
 
+  // --- Layout Calculation Logic (Tetris/Slot Algorithm) ---
+  const calendarLayout = useMemo(() => {
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth();
+      const firstDayOfMonth = new Date(year, month, 1).getDay();
+      const lastDateOfMonth = new Date(year, month + 1, 0).getDate();
+      
+      // Generate date keys for the grid (including padding for start of week)
+      const gridStartDate = new Date(year, month, 1);
+      gridStartDate.setDate(1 - firstDayOfMonth);
+      
+      const totalDaysNeeded = firstDayOfMonth + lastDateOfMonth;
+      const weeksNeeded = Math.ceil(totalDaysNeeded / 7);
+      const totalGridCells = weeksNeeded * 7;
+
+      const gridDates: string[] = [];
+      for (let i = 0; i < totalGridCells; i++) {
+          const d = new Date(gridStartDate);
+          d.setDate(gridStartDate.getDate() + i);
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, '0');
+          const day = String(d.getDate()).padStart(2, '0');
+          gridDates.push(`${y}-${m}-${day}`);
+      }
+
+      const viewStartTs = new Date(gridDates[0]).getTime();
+      const viewEndTs = new Date(gridDates[gridDates.length - 1]).getTime() + (24 * 60 * 60 * 1000) - 1;
+
+      const visibleJobs = jobs.filter(job => {
+          const start = new Date(job.createdAt).getTime();
+          const end = new Date(job.dueDate).getTime();
+          return end >= viewStartTs && start <= viewEndTs;
+      });
+
+      visibleJobs.sort((a, b) => {
+          const startA = new Date(a.createdAt).getTime();
+          const startB = new Date(b.createdAt).getTime();
+          if (startA !== startB) return startA - startB;
+          const durA = new Date(a.dueDate).getTime() - startA;
+          const durB = new Date(b.dueDate).getTime() - startB;
+          return durB - durA;
+      });
+
+      const slots: { [date: string]: (Job | null)[] } = {};
+      gridDates.forEach(date => slots[date] = []);
+
+      visibleJobs.forEach(job => {
+          const jobStart = new Date(job.createdAt); jobStart.setHours(0,0,0,0);
+          const jobEnd = new Date(job.dueDate); jobEnd.setHours(0,0,0,0);
+          const activeDates = gridDates.filter(dateKey => {
+              const d = new Date(dateKey);
+              d.setHours(0,0,0,0);
+              return d.getTime() >= jobStart.getTime() && d.getTime() <= jobEnd.getTime();
+          });
+          if (activeDates.length === 0) return;
+          let rowIndex = 0;
+          while (true) {
+              const isRowFree = activeDates.every(dateKey => !slots[dateKey][rowIndex]);
+              if (isRowFree) break;
+              rowIndex++;
+          }
+          activeDates.forEach(dateKey => {
+              while (slots[dateKey].length <= rowIndex) slots[dateKey].push(null);
+              slots[dateKey][rowIndex] = job;
+          });
+      });
+      return { gridDates, slots };
+  }, [jobs, currentDate]);
+
+  // Find the best padding cells for the Ad
+  const adCellIndices = useMemo(() => {
+    const { gridDates } = calendarLayout;
+    if (tenantPlan === 'pro') return [];
+    
+    // Find non-current month cells
+    const paddingIndices = gridDates.reduce((acc: number[], dateKey, idx) => {
+        const [y, m] = dateKey.split('-').map(Number);
+        if ((m - 1) !== currentDate.getMonth()) acc.push(idx);
+        return acc;
+    }, []);
+
+    if (paddingIndices.length === 0) return [];
+    
+    // Pick two separate cells: First and Last padding cells
+    if (paddingIndices.length >= 2) {
+        return [paddingIndices[0], paddingIndices[paddingIndices.length - 1]];
+    }
+    return [paddingIndices[0]];
+  }, [calendarLayout, currentDate, tenantPlan]);
+
   const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
   const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
   const goToday = () => setCurrentDate(new Date());
@@ -103,103 +196,12 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   };
 
   const getStaffName = (id: string) => staff.find(s => s.id === id)?.name || '직원';
-
-  // --- Layout Calculation Logic (Tetris/Slot Algorithm) ---
-  const calendarLayout = useMemo(() => {
-      const year = currentDate.getFullYear();
-      const month = currentDate.getMonth();
-      const firstDayOfMonth = new Date(year, month, 1).getDay();
-      const lastDateOfMonth = new Date(year, month + 1, 0).getDate();
-      
-      // Generate date keys for the grid (including padding for start of week)
-      // Visual Grid starts at:
-      const gridStartDate = new Date(year, month, 1);
-      gridStartDate.setDate(1 - firstDayOfMonth);
-      
-      // [Update] Dynamic Grid Sizing
-      // Calculate exactly how many weeks (rows) are needed for this specific month
-      // This prevents empty rows for next month from taking up space
-      const totalDaysNeeded = firstDayOfMonth + lastDateOfMonth;
-      const weeksNeeded = Math.ceil(totalDaysNeeded / 7);
-      const totalGridCells = weeksNeeded * 7;
-
-      const gridDates: string[] = [];
-      
-      for (let i = 0; i < totalGridCells; i++) {
-          const d = new Date(gridStartDate);
-          d.setDate(gridStartDate.getDate() + i);
-          const y = d.getFullYear();
-          const m = String(d.getMonth() + 1).padStart(2, '0');
-          const day = String(d.getDate()).padStart(2, '0');
-          gridDates.push(`${y}-${m}-${day}`);
-      }
-
-      // Filter jobs relevant to this grid view
-      const viewStartTs = new Date(gridDates[0]).getTime();
-      const viewEndTs = new Date(gridDates[gridDates.length - 1]).getTime() + (24 * 60 * 60 * 1000) - 1;
-
-      const visibleJobs = jobs.filter(job => {
-          const start = new Date(job.createdAt).getTime();
-          const end = new Date(job.dueDate).getTime();
-          return end >= viewStartTs && start <= viewEndTs;
-      });
-
-      // Sort jobs: Priority > StartDate > Duration
-      visibleJobs.sort((a, b) => {
-          const startA = new Date(a.createdAt).getTime();
-          const startB = new Date(b.createdAt).getTime();
-          if (startA !== startB) return startA - startB;
-          
-          const durA = new Date(a.dueDate).getTime() - startA;
-          const durB = new Date(b.dueDate).getTime() - startB;
-          return durB - durA; // Longer jobs first (better packing)
-      });
-
-      // Assign slots (rows) to jobs
-      // slots[dateKey] = [Job | null, Job | null, ...]
-      const slots: { [date: string]: (Job | null)[] } = {};
-      gridDates.forEach(date => slots[date] = []);
-
-      visibleJobs.forEach(job => {
-          // Normalize job range to dates
-          const jobStart = new Date(job.createdAt); jobStart.setHours(0,0,0,0);
-          const jobEnd = new Date(job.dueDate); jobEnd.setHours(0,0,0,0);
-          
-          // Find dates within grid that this job covers
-          const activeDates = gridDates.filter(dateKey => {
-              const d = new Date(dateKey);
-              d.setHours(0,0,0,0);
-              return d.getTime() >= jobStart.getTime() && d.getTime() <= jobEnd.getTime();
-          });
-
-          if (activeDates.length === 0) return;
-
-          // Find the lowest available row index for *all* activeDates
-          let rowIndex = 0;
-          while (true) {
-              const isRowFree = activeDates.every(dateKey => !slots[dateKey][rowIndex]);
-              if (isRowFree) break;
-              rowIndex++;
-          }
-
-          // Assign job to that row for all its dates
-          activeDates.forEach(dateKey => {
-              // Expand array if needed
-              while (slots[dateKey].length <= rowIndex) {
-                  slots[dateKey].push(null);
-              }
-              slots[dateKey][rowIndex] = job;
-          });
-      });
-
-      return { gridDates, slots };
-  }, [jobs, currentDate]);
-
   // --- Render ---
   const renderCells = () => {
     const { gridDates, slots } = calendarLayout;
     
-    return gridDates.map((dateKey) => {
+    return gridDates.map((dateKey, index) => {
+        const isAdCell = adCellIndices.includes(index);
         // Construct Date object manually to ensure local time interpretation from string YYYY-MM-DD
         const [y, m, d] = dateKey.split('-').map(Number);
         const dateObj = new Date(y, m - 1, d);
@@ -234,45 +236,53 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                 className={`
                     min-h-[100px] border-b border-r border-slate-100 dark:border-slate-700 flex flex-col transition-all duration-200 relative group/cell
                     ${isToday ? 'bg-blue-50 dark:bg-blue-900/20' : bgColorClass}
-                    hover:bg-slate-50 dark:hover:bg-slate-700/50
+                    ${isAdCell ? 'p-0 overflow-hidden' : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'}
                 `}
             >
-                {/* Header: Date & Add Button */}
-                <div className="flex justify-between items-start px-1 pt-1 mb-1 relative z-10 flex-none">
-                    <div className="flex flex-wrap items-center gap-1.5 w-full">
-                        <span className={`text-sm font-bold w-6 h-6 flex items-center justify-center rounded-full transition-all ${isToday ? 'bg-blue-600 text-white shadow-md' : dateColorClass}`}>
-                            {dateObj.getDate()}
-                        </span>
-                        {holidayName && (
-                            <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-600 dark:text-red-200 px-1.5 py-0.5 rounded font-bold whitespace-nowrap overflow-hidden text-ellipsis shadow-sm flex-1 md:flex-none">
-                                {holidayName}
-                            </span>
-                        )}
+                {isAdCell ? (
+                    <div className="w-full h-full flex items-center justify-center p-1 bg-slate-50 dark:bg-slate-900/40">
+                         <AdBanner slot={`calendar_day_${index}`} size="234x60" type="dashed" />
                     </div>
-                    <button 
-                        onClick={() => {
-                            const newJobDate = new Date(dateObj);
-                            newJobDate.setHours(9, 0, 0, 0);
-                            const defaultJob: Job = { 
-                                id: '',
-                                title: '',
-                                clientName: '',
-                                description: '',
-                                specs: { paperType: '', paperWeight: '', size: '', quantity: '', processing: [], printColor: '단면 4도(컬러)', memo: '' },
-                                status: 'RECEIVED', priority: Priority.NORMAL, paymentStatus: '결제대기',
-                                progress: 0, type: db.getJobTypes()[0] || '기타', price: 0, order: 0,
-                                createdAt: newJobDate.toISOString(), 
-                                dueDate: newJobDate.toISOString() 
-                            };
-                            setSelectedJob(defaultJob);
-                            setIsCreatingJob(true);
-                        }}
-                        className="opacity-0 group-hover/cell:opacity-100 p-0.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 transition-opacity"
-                        title="이 날짜에 작업 등록"
-                    >
-                        <Plus size={14} />
-                    </button>
-                </div>
+                ) : (
+                    <>
+                        {/* Header: Date & Add Button */}
+                        <div className="flex justify-between items-start px-1 pt-1 mb-1 relative z-10 flex-none">
+                            <div className="flex flex-wrap items-center gap-1.5 w-full">
+                                <span className={`text-sm font-bold w-6 h-6 flex items-center justify-center rounded-full transition-all ${isToday ? 'bg-blue-600 text-white shadow-md' : dateColorClass}`}>
+                                    {dateObj.getDate()}
+                                </span>
+                                {holidayName && (
+                                    <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-600 dark:text-red-200 px-1.5 py-0.5 rounded font-bold whitespace-nowrap overflow-hidden text-ellipsis shadow-sm flex-1 md:flex-none">
+                                        {holidayName}
+                                    </span>
+                                )}
+                            </div>
+                            <button 
+                                onClick={() => {
+                                    const newJobDate = new Date(dateObj);
+                                    newJobDate.setHours(9, 0, 0, 0);
+                                    const defaultJob: Job = { 
+                                        id: '',
+                                        title: '',
+                                        clientName: '',
+                                        description: '',
+                                        specs: { paperType: '', paperWeight: '', size: '', quantity: '', processing: [], printColor: '단면 4도(컬러)', memo: '' },
+                                        status: 'RECEIVED', priority: Priority.NORMAL, paymentStatus: '결제대기',
+                                        progress: 0, type: db.getJobTypes()[0] || '기타', price: 0, order: 0,
+                                        createdAt: newJobDate.toISOString(), 
+                                        dueDate: newJobDate.toISOString() 
+                                    };
+                                    setSelectedJob(defaultJob);
+                                    setIsCreatingJob(true);
+                                }}
+                                className="opacity-0 group-hover/cell:opacity-100 p-0.5 bg-blue-100 text-blue-600 rounded hover:bg-blue-200 transition-opacity"
+                                title="이 날짜에 작업 등록"
+                            >
+                                <Plus size={14} />
+                            </button>
+                        </div>
+                    </>
+                )}
 
                 {/* Content Area */}
                 <div className="flex-1 flex flex-col gap-0.5 w-full pb-1">

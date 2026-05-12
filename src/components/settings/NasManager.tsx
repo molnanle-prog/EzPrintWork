@@ -143,7 +143,7 @@ export const NasManager: React.FC = () => {
                             onChange={(e) => !isElectron && setConfig({ ...config, path: e.target.value, status: 'disconnected' })}
                             className={`w-full pl-10 pr-48 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-mono transition-colors focus:ring-2 focus:ring-blue-500 outline-none
                                 ${isElectron ? 'cursor-pointer hover:border-blue-500 dark:hover:border-blue-400' : ''}`}
-                            placeholder={isElectron ? "파일을 선택하거나 생성하세요" : "직접 입력 (예: Z:\\Data\\db.json)"}
+                            placeholder={isElectron ? "파일을 선택하거나 생성하세요" : "공유 폴더 경로 (예: \\\\Server\\Data 또는 /Volumes/Data)"}
                         />
                         <div className="absolute right-1 top-1 flex gap-1 h-9">
                             <button 

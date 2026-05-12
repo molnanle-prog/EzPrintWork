@@ -46,6 +46,7 @@ export const CompletedJobSearchModal: React.FC<CompletedJobSearchModalProps> = (
                 <div className="relative">
                     <Search className="absolute left-3 top-3 text-slate-400" size={20} />
                     <input 
+                        autoFocus
                         className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-slate-900 placeholder-slate-400"
                         placeholder="고객명, 작업명, 전화번호로 검색..."
                         value={query}

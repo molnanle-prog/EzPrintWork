@@ -3,6 +3,8 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import { AuthProvider } from './contexts/AuthContext';
+import { DialogProvider } from './contexts/DialogContext';
+import { ThemeProvider } from './contexts/ThemeContext';
 import './index.css';
 
 const rootElement = document.getElementById('root');
@@ -11,10 +13,15 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+console.log('EzPrintWork index.tsx loaded');
 root.render(
   <React.StrictMode>
-    <AuthProvider>
-      <App />
-    </AuthProvider>
+    <ThemeProvider>
+      <DialogProvider>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </DialogProvider>
+    </ThemeProvider>
   </React.StrictMode>
 );

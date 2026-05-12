@@ -3,13 +3,7 @@
 module.exports = {
   content: [
     "./index.html",
-    "./App.tsx",
-    "./index.tsx",
-    "./components/**/*.{js,ts,jsx,tsx}",
-    "./contexts/**/*.{js,ts,jsx,tsx}",
-    "./hooks/**/*.{js,ts,jsx,tsx}",
-    "./services/**/*.{js,ts,jsx,tsx}",
-    "./electron/**/*.{js,ts}" // 일렉트론 관련 UI 파일이 있다면 포함
+    "./src/**/*.{js,ts,jsx,tsx}",
   ],
   darkMode: 'class',
   theme: {

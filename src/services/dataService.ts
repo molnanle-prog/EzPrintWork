@@ -2,11 +2,12 @@ import {
     collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, 
     query, onSnapshot, addDoc
 } from 'firebase/firestore';
-import { db as firestore, auth } from './firebase';
+import { db as firestore, auth, storage } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
     JobStatusDefinition, AppUser, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
-    Priority, PaymentStatus
+    Priority, PaymentStatus, NasConfig
 } from '../types';
 
 // --- Utility Functions (From Original) ---
@@ -24,6 +25,12 @@ export const formatPhoneNumber = (value: string) => {
         if (clean.length <= 10) return `${clean.slice(0, 3)}-${clean.slice(3, 6)}-${clean.slice(6)}`;
         return `${clean.slice(0, 3)}-${clean.slice(3, 7)}-${clean.slice(7)}`;
     }
+};
+
+export const getErrorMessage = (error: any): string => {
+    if (error instanceof Error) return error.message;
+    if (typeof error === 'string') return error;
+    return '알 수 없는 오류가 발생했습니다.';
 };
 
 export const calculateEstimate = (specs: any, config: PricingConfig) => {
@@ -85,9 +92,26 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
 
 export class DataService {
     private tenantId: string | null = null;
-    private data: Record<string, any[]> = {};
+    private data: Record<string, any[]> = {
+        'jobs': [],
+        'staff': [
+            { id: 'dev-admin', name: '관리자(Dev)', role: 'admin', active: true, email: 'admin@ezprint.work', avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=admin', extensionNumber: '101' },
+            { id: 'dev-designer', name: '디자이너(Dev)', role: 'designer', active: true, email: 'design@ezprint.work', avatarUrl: 'https://api.dicebear.com/7.x/avataaars/svg?seed=design', extensionNumber: '102' }
+        ],
+        'clients': [],
+        'quotes': [],
+        'instructions': [
+            { id: '1', content: 'EzPrintWork Cloud 개발 모드에 오신 것을 환영합니다.', date: new Date().toISOString(), important: true }
+        ],
+        'messages': [],
+        'leaves': [],
+        'papers': []
+    };
     private listeners: (() => void)[] = [];
     private unsubscribers: (() => void)[] = [];
+    private syncStatus: 'synced' | 'disconnected' | 'error' = 'disconnected';
+
+    getSyncStatus() { return this.syncStatus; }
 
     async init() {
         // Compatibility with old call
@@ -109,20 +133,29 @@ export class DataService {
 
     private startSyncing() {
         if (!this.tenantId) return;
+        this.syncStatus = 'synced';
         const collectionNames = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers'];
         collectionNames.forEach(colName => {
             const path = `tenants/${this.tenantId}/${colName}`;
             const unsub = onSnapshot(query(collection(firestore, path)), (snapshot) => {
                 this.data[colName] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
                 this.notify();
+            }, (error) => {
+                console.error(`Sync error for ${colName}:`, error);
+                this.syncStatus = 'error';
+                this.notify();
             });
             this.unsubscribers.push(unsub);
         });
         
         const settingsPath = `tenants/${this.tenantId}/settings`;
-        ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles'].forEach(setting => {
+        ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles', 'nasConfig'].forEach(setting => {
             const unsub = onSnapshot(doc(firestore, settingsPath, setting), (snap) => {
                 if (snap.exists()) this.data[setting] = [snap.data()];
+                this.notify();
+            }, (error) => {
+                console.error(`Sync error for ${setting}:`, error);
+                this.syncStatus = 'error';
                 this.notify();
             });
             this.unsubscribers.push(unsub);
@@ -172,7 +205,12 @@ export class DataService {
     async addJob(job: Job) { await this.addEntity('jobs', job); }
     async updateJob(job: Job) { const { id, ...data } = job; await this.updateEntity('jobs', id!, data); }
     async deleteJob(id: string) { await this.deleteEntity('jobs', id); }
-    async saveJobs(jobs: Job[]) { /* Bulk save not recommended in cloud, use single updates */ }
+    async saveJobs(jobs: Job[]) {
+        if (!this.tenantId) return;
+        // In cloud version, we update all jobs to persist the 'order' and 'status' changes.
+        // For better performance, one could diff the jobs, but for now, we'll update all.
+        await Promise.all(jobs.map(job => this.updateJob(job)));
+    }
 
     async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
     async updateStaff(staff: Staff) { const { id, ...data } = staff; await this.updateEntity('staff', id, data); }
@@ -185,8 +223,52 @@ export class DataService {
     async addQuote(quote: Quote) { await this.addEntity('quotes', quote); }
     async updateQuote(quote: Quote) { const { id, ...data } = quote; await this.updateEntity('quotes', id, data); }
     async deleteQuote(id: string) { await this.deleteEntity('quotes', id); }
+    
+    async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro') {
+        try {
+            await updateDoc(doc(firestore, 'tenants', tenantId), { plan });
+        } catch (error) {
+            console.error("Error upgrading plan:", error);
+            throw error;
+        }
+    }
+
+    async addInstruction(inst: Partial<AdminInstruction>) { await this.addEntity('instructions', inst); }
+    async deleteInstruction(id: string) { await this.deleteEntity('instructions', id); }
+
+    // --- Hybrid Storage Methods ---
+    async uploadThumbnail(jobId: string, file: Blob | File): Promise<string> {
+        if (!this.tenantId) throw new Error("Tenant ID not set");
+        const storageRef = ref(storage, `tenants/${this.tenantId}/jobs/${jobId}/thumbnail.jpg`);
+        const snapshot = await uploadBytes(storageRef, file);
+        return getDownloadURL(snapshot.ref);
+    }
+
+    async saveOriginalToNas(fileName: string, content: string | ArrayBuffer): Promise<string | null> {
+        if (!window.electron) return null;
+        const config = this.getNasConfig();
+        if (!config.isEnabled || !config.path) return null;
+        
+        const isWin = navigator.platform.toLowerCase().includes('win');
+        const sep = isWin ? '\\' : '/';
+        const fullPath = config.path.endsWith(sep) ? `${config.path}${fileName}` : `${config.path}${sep}${fileName}`;
+        
+        console.log(`Saving original file ${fileName} to NAS path: ${fullPath}`);
+        return fullPath;
+    }
+
+    async saveNasConfig(config: NasConfig) {
+        await this.updateSetting('nasConfig', config);
+    }
+
+    exportData(): string {
+        return JSON.stringify(this.data);
+    }
 
     // --- Getters (Real-time data access) ---
+    getNasConfig(): NasConfig {
+        return (this.data['nasConfig']?.[0] || { isEnabled: false, path: '', status: 'disconnected' }) as NasConfig;
+    }
     getAllJobs(): Job[] { return (this.data['jobs'] || []) as Job[]; }
     getActiveJobs(): Job[] { return this.getAllJobs().filter(j => j.status !== 'DELIVERY'); }
     getStaff(): Staff[] { return (this.data['staff'] || []) as Staff[]; }
@@ -210,6 +292,21 @@ export class DataService {
         const t = q.toLowerCase();
         return this.getClients().filter(c => c.name.toLowerCase().includes(t) || c.contactPerson.toLowerCase().includes(t));
     }
+
+    getJobsByMonth(year: number, month: number): Job[] {
+        const targetDate = new Date(year, month, 1);
+        const targetYear = targetDate.getFullYear();
+        const targetMonth = targetDate.getMonth();
+        
+        return this.getAllJobs().filter(job => {
+            const date = new Date(job.dueDate);
+            return date.getFullYear() === targetYear && date.getMonth() === targetMonth;
+        });
+    }
+
+    async addLeave(leave: StaffLeave) { await this.addEntity('leaves', leave); }
+    async updateLeave(leave: StaffLeave) { const { id, ...data } = leave; await this.updateEntity('leaves', id, data); }
+    async deleteLeave(id: string) { await this.deleteEntity('leaves', id); }
 }
 
 export const db = new DataService();

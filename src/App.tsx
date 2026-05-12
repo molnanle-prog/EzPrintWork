@@ -20,8 +20,16 @@ const LoadingScreen = () => (
     </div>
 );
 
+import { db } from './services/dataService';
+
 function App() {
     const { isAuthenticated, loading, currentUser } = useAuth();
+
+    useEffect(() => {
+        if (currentUser?.tenantId) {
+            db.setTenant(currentUser.tenantId);
+        }
+    }, [currentUser]);
 
     if (loading) {
         return <LoadingScreen />;
@@ -29,7 +37,7 @@ function App() {
 
     return (
         <BrowserRouter>
-            <div className="h-screen w-screen bg-slate-950 text-slate-200 overflow-hidden">
+            <div className="h-screen w-screen overflow-hidden">
                 <Routes>
                     <Route 
                         path="/login" 
