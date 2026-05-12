@@ -1,0 +1,105 @@
+
+import React from 'react';
+import { db } from '../../services/dataService';
+import { Database, Download, Upload } from 'lucide-react';
+
+export const BackupManager: React.FC = () => {
+    const handleDownload = () => {
+        const data = db.exportData();
+        const blob = new Blob([data], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `printmaster_backup_${new Date().toISOString().split('T')[0]}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+    };
+
+    const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const json = event.target?.result as string;
+            if (db.importData(json)) {
+                alert('데이터 복원이 완료되었습니다. 페이지를 새로고침합니다.');
+                window.location.reload();
+            } else {
+                alert('잘못된 백업 파일입니다.');
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    return (
+        <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 max-w-2xl transition-colors">
+            <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2">
+                <Database className="text-blue-600 dark:text-blue-400" />
+                데이터 백업 및 복원
+            </h3>
+
+            <div className="space-y-6">
+                <div className="p-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-100 dark:border-blue-800 rounded-lg transition-colors">
+                    <h4 className="font-bold text-blue-800 dark:text-blue-300 mb-2 flex items-center gap-2">
+                        <Download size={18} /> 데이터 내보내기 (백업)
+                    </h4>
+                    <p className="text-sm text-blue-600 dark:text-blue-400 mb-4">
+                        현재 시스템의 모든 데이터(작업, 직원, 견적, 설정 등)를 JSON 파일로 다운로드합니다.
+                        정기적으로 백업을 수행하여 데이터를 안전하게 보관하세요.
+                    </p>
+                    <button onClick={handleDownload} className="bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 shadow-sm text-sm transition-colors">
+                        백업 파일 다운로드
+                    </button>
+                </div>
+
+                <div className="p-4 bg-orange-50 dark:bg-orange-900/30 border border-orange-100 dark:border-orange-800 rounded-lg transition-colors">
+                    <h4 className="font-bold text-orange-800 dark:text-orange-300 mb-2 flex items-center gap-2">
+                        <Upload size={18} /> 데이터 불러오기 (복원)
+                    </h4>
+                    <p className="text-sm text-orange-700 dark:text-orange-400 mb-4">
+                        이전에 다운로드한 백업 파일을 업로드하여 데이터를 복원합니다.
+                        <strong className="block mt-1">주의: 현재 데이터가 백업 파일의 내용으로 덮어씌워집니다.</strong>
+                    </p>
+                    <label className="bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 px-4 py-2 rounded font-bold hover:bg-slate-50 dark:hover:bg-slate-600 shadow-sm text-sm cursor-pointer inline-block transition-colors">
+                        백업 파일 선택...
+                        <input type="file" accept=".json" onChange={handleUpload} className="hidden" />
+                    </label>
+                </div>
+
+                {/* NEW: Legacy Migration Section */}
+                <div className="p-4 bg-purple-50 dark:bg-purple-900/30 border border-purple-100 dark:border-purple-800 rounded-lg transition-colors">
+                    <h4 className="font-bold text-purple-800 dark:text-purple-300 mb-2 flex items-center gap-2">
+                        <Database size={18} /> 기존 JSON 데이터 통합 (Admin)
+                    </h4>
+                    <p className="text-sm text-purple-700 dark:text-purple-400 mb-4">
+                        v1.0 버전에서 사용하던 <code className="bg-purple-100 dark:bg-purple-800 px-1 rounded">pm_db_v2.json</code> 파일을 선택하여 현재 SQLite 데이터베이스로 통합합니다.
+                        중복된 데이터는 덮어씌워집니다.
+                    </p>
+                    <button
+                        onClick={async () => {
+                            const jsonPath = await (window as any).electron.selectDirectory();
+                            if (jsonPath && jsonPath.endsWith('.json')) {
+                                if (confirm('선택한 JSON 데이터를 현재 데이터베이스로 통합하시겠습니까?')) {
+                                    const result = await db.importLegacyJson(jsonPath);
+                                    if (result.success) {
+                                        alert(result.message);
+                                        window.location.reload();
+                                    } else {
+                                        alert(result.message);
+                                    }
+                                }
+                            } else if (jsonPath) {
+                                alert('올바른 .json 파일을 선택해주세요.');
+                            }
+                        }}
+                        className="bg-purple-600 text-white px-4 py-2 rounded font-bold hover:bg-purple-700 shadow-sm text-sm transition-colors"
+                    >
+                        기존 JSON 파일 선택 및 통합 시작
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+};

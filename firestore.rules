@@ -1,0 +1,171 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 1. Global Helpers
+    function isSignedIn() { return request.auth != null; }
+    function isVerified() { return isSignedIn() && request.auth.token.email_verified == true; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+
+    // Master Gate Helpers
+    // Users are mapped to a tenant in their profile
+    function getProfile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+    
+    function isMember(tenantId) {
+      return isVerified() && getProfile().tenantId == tenantId;
+    }
+    
+    function isSuperAdmin() {
+      return isSignedIn() && 
+             request.auth.token.email == 'molnanle@gmail.com' && 
+             request.auth.token.email_verified == true;
+    }
+    
+    function isAdmin(tenantId) {
+      return isSuperAdmin() || (isMember(tenantId) && getProfile().role == 'admin');
+    }
+
+    // 2. User Profiles
+    match /users/{userId} {
+      allow list: if isSuperAdmin();
+      allow get: if isSuperAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
+      allow update: if (isSuperAdmin() || (isSignedIn() && request.auth.uid == userId)) && 
+                      isValidUser(incoming());
+      
+      function isValidUser(data) {
+        return data.email is string && data.email.size() <= 256 &&
+               (!('tenantId' in data) || data.tenantId == null || isValidId(data.tenantId)) &&
+               (!('role' in data) || data.role in ['admin', 'staff', 'superadmin']) &&
+               data.keys().hasAll(['email']) && data.keys().size() <= 12;
+      }
+    }
+
+    // 3. Tenants
+    match /tenants/{tenantId} {
+      allow list: if isSuperAdmin();
+      allow get: if isSuperAdmin() || isMember(tenantId);
+      allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
+      allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
+      
+      function isValidTenant(data) {
+        return data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+               (!('plan' in data) || data.plan in ['free', 'pro']) &&
+               data.keys().hasAll(['name', 'ownerId']);
+      }
+
+      // 4. Sub-Resources
+      
+      // JOBS
+      match /jobs/{jobId} {
+        allow list: if isMember(tenantId);
+        allow get: if isMember(tenantId);
+        allow create: if isMember(tenantId) && isValidId(jobId) && isValidJob(incoming());
+        allow update: if isMember(tenantId) && isValidId(jobId) && isValidJob(incoming());
+        allow delete: if isAdmin(tenantId);
+      }
+      
+      function isValidJob(data) {
+        return data.title is string && data.title.size() <= 200 &&
+               data.status is string && data.status.size() <= 50 &&
+               (!('assignedStaffIds' in data) || data.assignedStaffIds is list) &&
+               data.keys().hasAll(['title', 'status']);
+      }
+
+      // STAFF
+      match /staff/{staffId} {
+        allow read: if isMember(tenantId);
+        allow write: if isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming());
+      }
+      
+      function isValidStaff(data) {
+        return data.name is string && data.name.size() <= 50 &&
+               (!('phone' in data) || data.phone is string) &&
+               data.keys().hasAll(['name']);
+      }
+
+      // CLIENTS
+      match /clients/{clientId} {
+        allow read: if isMember(tenantId);
+        allow write: if isMember(tenantId) && isValidId(clientId) && isValidClient(incoming());
+      }
+      
+      function isValidClient(data) {
+        return data.name is string && data.name.size() <= 100 &&
+               data.keys().hasAll(['name']);
+      }
+
+      // QUOTES
+      match /quotes/{quoteId} {
+        allow read: if isMember(tenantId);
+        allow write: if isMember(tenantId) && isValidId(quoteId) && isValidQuote(incoming());
+      }
+      
+      function isValidQuote(data) {
+        return data.clientName is string && data.clientName.size() <= 100 &&
+               data.totalAmount is number &&
+               data.keys().hasAll(['clientName', 'totalAmount']);
+      }
+
+      // INSTRUCTIONS
+      match /instructions/{instId} {
+        allow read: if isMember(tenantId);
+        allow create: if isAdmin(tenantId) && isValidId(instId) && isValidInstruction(incoming());
+        allow delete: if isAdmin(tenantId);
+      }
+      
+      function isValidInstruction(data) {
+        return data.content is string && data.content.size() <= 1000 &&
+               data.keys().hasAll(['content']);
+      }
+
+      // MESSAGES
+      match /messages/{msgId} {
+        allow list: if isMember(tenantId);
+        allow create: if isMember(tenantId) && isValidId(msgId) && isValidMessage(incoming());
+      }
+      
+      function isValidMessage(data) {
+        return data.content is string && data.content.size() <= 5000 &&
+               data.senderId == request.auth.uid &&
+               data.keys().hasAll(['content', 'senderId']);
+      }
+
+      // LEAVES
+      match /leaves/{leaveId} {
+        allow read: if isMember(tenantId);
+        allow write: if isMember(tenantId) && isValidId(leaveId) && isValidLeave(incoming());
+      }
+      
+      function isValidLeave(data) {
+        return data.staffName is string && data.startDate is string &&
+               data.keys().hasAll(['staffName', 'startDate']);
+      }
+
+      // PAPERS
+      match /papers/{paperId} {
+        allow read: if isMember(tenantId);
+        allow write: if isAdmin(tenantId) && isValidId(paperId) && isValidPaper(incoming());
+      }
+      
+      function isValidPaper(data) {
+        return data.name is string && data.name.size() <= 100 &&
+               data.keys().hasAll(['name']);
+      }
+
+      // SETTINGS
+      match /settings/{settingId} {
+        allow read: if isMember(tenantId);
+        allow write: if isAdmin(tenantId) && isValidId(settingId);
+      }
+    }
+  }
+}

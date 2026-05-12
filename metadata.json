@@ -1,0 +1,5 @@
+{
+  "name": "EzPrintWork (기능 추가중)",
+  "description": "인쇄소 통합 관리 시스템: 작업 상황판(칸반), 달력, 견적, 직원 관리를 위한 올인원 데스크탑 앱 스타일 웹 어플리케이션",
+  "requestFramePermissions": []
+}
