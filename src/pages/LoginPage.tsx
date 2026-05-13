@@ -66,9 +66,21 @@ export const LoginPage: React.FC = () => {
                     </div>
                 </div>
 
-                <footer className="text-center">
+                <footer className="text-center relative">
                     <p className="text-slate-600 text-sm font-medium">
                         © 2026 EzPrintWork Cloud. All rights reserved.
+                        <span 
+                            onClick={() => {
+                                const link = document.createElement('a');
+                                link.href = '/downloads/EzPrintWork-Setup.exe';
+                                link.download = 'EzPrintWork-Setup.exe';
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                            }} 
+                            className="inline-block ml-1 text-slate-800/10 hover:text-slate-500/30 cursor-default select-none text-[8px] transition-colors"
+                            title=""
+                        >ⓓ</span>
                     </p>
                 </footer>
             </div>

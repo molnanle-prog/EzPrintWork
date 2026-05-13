@@ -80,7 +80,20 @@ export interface Staff {
   extensionNumber?: string; 
   avatarUrl: string;
   active: boolean;
+  email: string;
+  uid?: string; // Firebase User ID link
+  joinDate: string;
   isDeleted?: boolean; 
+}
+
+export interface JoinRequest {
+  id: string;
+  userId: string;
+  userEmail: string;
+  userName: string;
+  requestedAt: string;
+  status: 'pending' | 'approved' | 'rejected';
+  message?: string;
 }
 
 export interface StaffLeave {
@@ -222,6 +235,7 @@ export interface IElectronAPI {
   checkPath: (path: string) => Promise<boolean>;
   checkFileExists: (path: string) => Promise<boolean>; 
   selectDirectory: () => Promise<string | null>; 
+  selectFileOrFolder: () => Promise<string | null>; 
   createDatabaseFile: (content: string) => Promise<string | null>; 
   startWatch: (path: string) => void; 
   onFileChange: (callback: (path: string) => void) => void;

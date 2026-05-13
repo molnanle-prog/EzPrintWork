@@ -2,233 +2,215 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
 import { NasConfig } from '../../types';
-import { Server, CheckCircle2, XCircle, RefreshCw, FolderOpen, Save, Search, Info, AlertTriangle, FileJson, FilePlus } from 'lucide-react';
+import { Globe, CheckCircle, FolderOpen, RefreshCw, Info, Settings2, Laptop } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const NasManager: React.FC = () => {
   const [config, setConfig] = useState<NasConfig>({ isEnabled: false, path: '', status: 'disconnected' });
-  const [status, setStatus] = useState<'idle' | 'saving' | 'success' | 'error'>('idle');
-  const [errorMessage, setErrorMessage] = useState('');
-  const [isPickerOpening, setIsPickerOpening] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const { currentUser } = useAuth();
-  const isAdmin = currentUser?.id === 'admin';
+  const isAdmin = currentUser?.role === 'admin' || currentUser?.id === 'admin';
 
   // 환경 감지
-  const isElectron = typeof window !== 'undefined' && !!window.electron;
+  const isElectron = typeof window !== 'undefined' && 
+                    !!window.electron && 
+                    typeof window.electron.selectDirectory === 'function';
 
   useEffect(() => {
-    const currentConfig = db.getNasConfig();
-    setConfig(currentConfig);
-    if (currentConfig.isEnabled && currentConfig.status === 'connected') {
-        setStatus('success');
-    }
+    const loadConfig = () => {
+        const currentConfig = db.getNasConfig();
+        setConfig(currentConfig);
+    };
+    loadConfig();
+    
+    // 데이터 변경 시 자동 업데이트
+    const unsubscribe = db.subscribe(() => {
+        loadConfig();
+    });
+    return () => unsubscribe();
   }, []);
 
-  const handleOpenFolderPicker = async () => {
-      if (isElectron && window.electron?.selectDirectory) {
-          setIsPickerOpening(true);
-          try {
-              const path = await window.electron.selectDirectory();
-              if (path) {
-                  setConfig({ ...config, path, status: 'disconnected' });
-                  setStatus('idle');
-              }
-          } catch (e) {
-              console.error("[NasManager] 파일 선택 중 오류 발생:", e);
-              alert('파일 선택 창을 여는 중 오류가 발생했습니다.');
-          } finally {
-              setIsPickerOpening(false);
-          }
-      } 
-      else {
-          const mockPath = "C:\\EzPrintWork_TestData\\ezpw_db_v2.json";
-          if (confirm(`[웹 테스트 모드]\n실제 파일 선택은 데스크탑 앱에서만 가능합니다.\n\n테스트를 위해 가상 파일 경로 '${mockPath}'를 입력하시겠습니까?`)) {
-              setConfig({ ...config, path: mockPath, status: 'disconnected' });
-              setStatus('idle');
-          }
-      }
-  };
+  const handleSetupSharedFolder = async () => {
+      if (!isElectron && !config.path) return;
 
-  const handleCreateFile = async () => {
-      if (!isElectron || !window.electron?.createDatabaseFile) {
-          alert('이 기능은 데스크탑 앱 환경에서만 지원됩니다.');
-          return;
-      }
-
-      setIsPickerOpening(true);
+      setIsProcessing(true);
       try {
-          const currentData = db.exportData(); // 현재 메모리의 데이터를 초기값으로 사용
-          const newPath = await window.electron.createDatabaseFile(currentData);
+          let finalPath = config.path;
           
-          if (newPath) {
-              setConfig({ ...config, path: newPath, status: 'disconnected' });
-              setStatus('idle');
-              alert(`새 데이터 파일이 생성되었습니다.\n${newPath}\n\n[연결 및 저장] 버튼을 눌러 동기화를 시작하세요.`);
+          if (isElectron && !finalPath) {
+              const selectedPath = await window.electron.selectDirectory();
+              if (selectedPath) finalPath = selectedPath;
+          }
+
+          if (finalPath) {
+              await db.saveNasConfig({
+                  isEnabled: true,
+                  path: finalPath,
+                  status: 'connected'
+              });
+              const newConfig = db.getNasConfig();
+              setConfig(newConfig);
           }
       } catch (e) {
-          console.error("파일 생성 실패:", e);
-          alert('파일 생성 중 오류가 발생했습니다.');
+          console.error("공유 설정 오류:", e);
+          alert('저장 폴더 설정 중 문제가 발생했습니다.');
       } finally {
-          setIsPickerOpening(false);
+          setIsProcessing(false);
       }
   };
 
-  const handleSaveAndConnect = async () => {
-    if (!config.path) {
-        alert('NAS 경로를 선택하거나 입력해주세요.');
-        return;
-    }
-    
-    // Validate path looks somewhat like a path
-    if (config.path.length < 3) {
-        alert('유효한 경로를 입력해주세요.');
-        return;
-    }
-
-    setStatus('saving');
-    setErrorMessage('');
-
-    try {
-        // This smart function handles connecting to existing data or initializing new data.
-        await db.saveNasConfig(config);
-        
-        // After the operation, check the result from the source of truth (dataService).
-        const syncStatus = db.getSyncStatus();
-        const finalConfig = db.getNasConfig();
-
-        if (syncStatus === 'synced' && finalConfig.status === 'connected') {
-            setStatus('success');
-            setConfig(finalConfig); // Re-fetch config to get updated status
-            alert('연결 성공! 선택하신 데이터 파일을 불러왔습니다.');
-        } else {
-            setStatus('error');
-            setErrorMessage('저장/동기화에 실패했습니다. 폴더 권한, 네트워크 상태 또는 경로를 다시 확인해주세요.');
-        }
-    } catch (e: any) {
-        setStatus('error');
-        setErrorMessage(`오류 발생: ${e.message}`);
-        console.error(e);
-    }
+  const handleDisableSharing = async () => {
+      if (confirm('클라우드 동기화 설정을 초기화하시겠습니까? (작업 데이터는 클라우드에 안전하게 보관됩니다)')) {
+          await db.saveNasConfig({
+              isEnabled: false,
+              path: '',
+              status: 'disconnected'
+          });
+      }
   };
 
-
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 max-w-3xl transition-colors">
-      <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2">
-         <Server className="text-blue-600 dark:text-blue-400" />
-         NAS 서버 / 네트워크 연결 설정
-      </h3>
+    <div className="max-w-5xl p-8 space-y-8 animate-in fade-in duration-500">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 flex items-center gap-3">
+                <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
+                    <Globe size={22} />
+                </div>
+                클라우드 서비스 동기화 (Cloud Hub)
+            </h3>
+            <p className="text-slate-500 dark:text-slate-400 mt-2 text-sm font-medium">
+                모든 작업 데이터가 실시간으로 클라우드 허브에 안전하게 보관 및 동기화됩니다.
+            </p>
+          </div>
+          <div className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2
+            ${isElectron ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}
+          >
+            {isElectron ? <Laptop size={14}/> : <Globe size={14}/>}
+            {isElectron ? '데스크탑 전용 도우미' : '웹 브라우저 모드'}
+          </div>
+      </div>
 
-      <div className="space-y-8">
-          <div className="p-6 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl transition-colors">
-              <div className="flex items-start gap-4 mb-4">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center text-blue-600 dark:text-blue-300 font-bold text-lg shrink-0">1</div>
-                  <div className="flex-1">
-                      <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg">데이터 파일 선택 또는 생성</h4>
-                      <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                          NAS/공유 폴더 내의 <strong>JSON 데이터 파일</strong>을 선택하거나, 새로 생성하세요.<br/>
-                      </p>
-                  </div>
-              </div>
+      {/* Main Connection Card */}
+      <div className="bg-white dark:bg-slate-800 rounded-[2rem] shadow-xl shadow-slate-200/50 dark:shadow-none border border-slate-200 dark:border-slate-700 overflow-hidden">
+        <div className="p-10">
+            {!config.isEnabled ? (
+                /* 1. 연결 전 상태 */
+                <div className="text-center space-y-8">
+                    <div className="w-24 h-24 bg-slate-50 dark:bg-slate-900 rounded-3xl mx-auto flex items-center justify-center text-slate-300 dark:text-slate-700 border-4 border-dashed border-slate-100 dark:border-slate-800">
+                        <RefreshCw size={48} className="animate-spin-slow" />
+                    </div>
+                    <div className="space-y-3">
+                        <h4 className="text-2xl font-bold text-slate-800 dark:text-slate-100">클라우드 허브 연결 대기 중</h4>
+                        <p className="text-slate-500 dark:text-slate-400 max-lg mx-auto leading-relaxed">
+                            작업 파일을 관리할 로컬 저장소(NAS 또는 공용 폴더)를 설정해 주세요. <br/>
+                            데이터는 클라우드에, 실제 파일은 지정한 폴더에 보관됩니다.
+                        </p>
+                    </div>
 
-              <div className="pl-14">
-                  <div className="flex gap-2">
-                      <div className="relative flex-1 group">
-                        <FileJson className="absolute left-3 top-3 text-slate-400 z-10" size={20} />
-                        <input 
-                            type="text"
-                            value={config.path}
-                            readOnly={isElectron}
-                            onClick={isElectron ? handleOpenFolderPicker : undefined}
-                            onChange={(e) => !isElectron && setConfig({ ...config, path: e.target.value, status: 'disconnected' })}
-                            className={`w-full pl-10 pr-48 py-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 font-mono transition-colors focus:ring-2 focus:ring-blue-500 outline-none
-                                ${isElectron ? 'cursor-pointer hover:border-blue-500 dark:hover:border-blue-400' : ''}`}
-                            placeholder={isElectron ? "파일을 선택하거나 생성하세요" : "공유 폴더 경로 (예: \\\\Server\\Data 또는 /Volumes/Data)"}
-                        />
-                        <div className="absolute right-1 top-1 flex gap-1 h-9">
+                    {isElectron ? (
+                        <div className="space-y-6">
                             <button 
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); handleOpenFolderPicker(); }}
-                                disabled={isPickerOpening}
-                                className="px-3 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-blue-600 dark:text-blue-400 border border-slate-200 dark:border-slate-600 rounded-md transition-colors shadow-sm flex items-center gap-1 disabled:opacity-70 disabled:cursor-wait"
-                                title="기존 파일 찾기"
+                                onClick={handleSetupSharedFolder}
+                                disabled={isProcessing}
+                                className="inline-flex items-center gap-3 px-10 py-5 bg-blue-600 hover:bg-blue-500 text-white rounded-2xl font-black text-xl transition-all shadow-xl shadow-blue-600/30 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50"
                             >
-                                {isPickerOpening ? <RefreshCw size={14} className="animate-spin"/> : <Search size={14} />}
-                                <span className="text-xs font-bold px-1">찾기</span>
-                            </button>
-                            <button 
-                                type="button"
-                                onClick={(e) => { e.stopPropagation(); handleCreateFile(); }}
-                                disabled={isPickerOpening}
-                                className="px-3 bg-blue-100 dark:bg-blue-900/50 hover:bg-blue-200 dark:hover:bg-blue-800 text-blue-700 dark:text-blue-200 border border-blue-200 dark:border-blue-700 rounded-md transition-colors shadow-sm flex items-center gap-1 disabled:opacity-70 disabled:cursor-wait"
-                                title="새 데이터 파일 생성"
-                            >
-                                <FilePlus size={14} />
-                                <span className="text-xs font-bold px-1">생성</span>
+                                {isProcessing ? <RefreshCw className="animate-spin" /> : <FolderOpen size={24} />}
+                                작업 폴더 지정하고 시작하기
                             </button>
                         </div>
-                      </div>
-                  </div>
-              </div>
-          </div>
-          
-          <div className="p-6 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl transition-colors">
-              <div className="flex items-start gap-4 mb-4">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 dark:bg-blue-900 flex items-center justify-center text-blue-600 dark:text-blue-300 font-bold text-lg shrink-0">2</div>
-                  <div className="flex-1">
-                      <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg">연결 및 동기화</h4>
-                      <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-                          선택한 파일을 불러와 시스템에 적용하고 실시간 동기화를 시작합니다.
-                      </p>
-                  </div>
-              </div>
-
-              <div className="pl-14">
-                  <button 
-                    type="button"
-                    onClick={handleSaveAndConnect}
-                    disabled={status === 'saving' || !config.path}
-                    className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-3 text-base disabled:opacity-50 disabled:cursor-wait"
-                  >
-                     {status === 'saving' ? <RefreshCw className="animate-spin" size={20}/> : <Save size={20}/>}
-                     {status === 'saving' ? '파일 읽기 및 확인 중...' : '연결 및 저장'}
-                  </button>
-                  
-                  <div className="mt-4 min-h-[40px]">
-                      {status === 'saving' && (
-                          <div className="text-blue-600 dark:text-blue-400 text-sm font-medium flex items-center gap-2 p-2 bg-blue-50 dark:bg-blue-900/30 rounded-lg border border-blue-100 dark:border-blue-800">
-                              <RefreshCw size={14} className="animate-spin"/> 경로를 확인하고 서버 데이터를 동기화합니다...
-                          </div>
-                      )}
-                      {status === 'success' && (
-                          <div className="text-emerald-600 dark:text-emerald-400 text-sm font-bold flex items-center gap-2 p-2 bg-emerald-50 dark:bg-emerald-900/30 rounded-lg border border-emerald-100 dark:border-emerald-800 animate-in slide-in-from-left-2">
-                              <CheckCircle2 size={16} /> 연결 성공! 데이터가 실시간으로 동기화됩니다.
-                          </div>
-                      )}
-                      {status === 'error' && (
-                          <div className="text-red-500 dark:text-red-400 text-sm font-bold flex flex-col gap-2 p-2 bg-red-50 dark:bg-red-900/30 rounded-lg border border-red-100 dark:border-red-800 animate-in slide-in-from-left-2">
-                            <div className="flex items-center gap-2">
-                              <XCircle size={16} /> 연결 실패
+                    ) : (
+                        <div className="space-y-6">
+                            <div className="inline-block p-8 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-[2rem] text-blue-800 dark:text-blue-300 text-left max-w-xl shadow-sm">
+                                <div className="flex items-start gap-4">
+                                    <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-blue-600 shadow-sm shrink-0">
+                                        <Globe size={24} />
+                                    </div>
+                                    <div className="space-y-3">
+                                        <h5 className="text-lg font-bold">클라우드 동기화 안내</h5>
+                                        <p className="text-sm leading-relaxed opacity-90">
+                                            별도의 설정 없이 웹에서 즉시 클라우드 데이터를 사용할 수 있습니다. <br/>
+                                            로컬 폴더와 연동하여 실제 파일을 열려면 <strong>데스크탑 앱(심부름꾼)</strong>을 실행해 주세요.
+                                        </p>
+                                    </div>
+                                </div>
                             </div>
-                            <p className="font-normal text-xs pl-6">{errorMessage}</p>
-                          </div>
-                      )}
-                  </div>
-              </div>
-          </div>
-
-          {!isAdmin && (
-            <div className="p-4 bg-orange-50 dark:bg-orange-900/20 border border-orange-200 dark:border-orange-800 rounded-lg flex items-start gap-3 text-orange-800 dark:text-orange-200">
-                <AlertTriangle size={20} className="shrink-0 mt-0.5" />
-                <div className="text-sm">
-                    <p className="font-bold mb-1">주의사항</p>
-                    <p>
-                        NAS 폴더에 접근하려면 윈도우 탐색기에서 해당 폴더에 미리 접근하여 로그인(자격증명 저장)이 되어 있어야 합니다.
-                        연결이 안 될 경우 윈도우 탐색기로 해당 파일을 열 수 있는지 먼저 확인해주세요.
-                    </p>
+                        </div>
+                    )}
                 </div>
+            ) : (
+                /* 2. 연결 완료 상태 또는 수동 입력 모드 */
+                <div className="flex flex-col md:flex-row items-center gap-10">
+                    <div className={`w-32 h-32 rounded-[2.5rem] flex items-center justify-center shrink-0 shadow-inner
+                        ${config.status === 'connected' ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-blue-100 dark:bg-blue-900/30 text-blue-600'}`}
+                    >
+                        {config.status === 'connected' ? <Globe size={64} className="animate-pulse" /> : <Settings2 size={64} />}
+                    </div>
+                    <div className="flex-1 text-center md:text-left space-y-5">
+                        <div className="flex flex-col md:flex-row items-center md:items-end gap-3">
+                            <div className="space-y-1">
+                                <div className={`inline-flex items-center gap-2 px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-widest
+                                    ${config.status === 'connected' ? 'bg-emerald-50 dark:bg-emerald-900/50 text-emerald-600' : 'bg-blue-50 dark:bg-blue-900/50 text-blue-600'}`}
+                                >
+                                    <CheckCircle size={10} /> 
+                                    {config.status === 'connected' ? 'Cloud Hub Connected' : 'Manual Setup Mode'}
+                                </div>
+                                <h4 className="text-3xl font-black text-slate-800 dark:text-slate-100">
+                                    {config.status === 'connected' ? '클라우드 허브 동기화 중' : '저장 폴더 설정'}
+                                </h4>
+                            </div>
+                            {isElectron && config.status === 'connected' && (
+                                <div className="mb-1.5 px-3 py-1 bg-emerald-600 text-white text-[10px] font-bold rounded-md">
+                                    실시간 보안 연결 활성
+                                </div>
+                            )}
+                        </div>
+                       
+                        <div className="space-y-3">
+                            <div className="bg-slate-50 dark:bg-slate-900 p-1.5 rounded-2xl border border-slate-100 dark:border-slate-800 flex items-center gap-2 pr-4">
+                                <div className="bg-white dark:bg-slate-800 px-3 py-2 rounded-xl text-[10px] font-black text-slate-400 uppercase tracking-tighter shrink-0 border border-slate-100 dark:border-slate-700">Storage Path</div>
+                                <input 
+                                    type="text"
+                                    value={config.path || ''}
+                                    onChange={(e) => setConfig({ ...config, path: e.target.value })}
+                                    className="flex-1 bg-transparent border-none focus:ring-0 text-sm font-mono text-slate-700 dark:text-slate-300 placeholder:text-slate-300"
+                                    placeholder="인쇄 파일이 보관된 NAS 또는 로컬 폴더 경로"
+                                />
+                            </div>
+                        </div>
+
+                        {isAdmin && (
+                            <div className="flex flex-wrap justify-center md:justify-start gap-4 pt-1">
+                                {isElectron && (
+                                    <button 
+                                        onClick={handleSetupSharedFolder}
+                                        className="flex items-center gap-2 text-sm font-bold text-slate-500 hover:text-blue-600 transition-colors"
+                                    >
+                                        <FolderOpen size={16} /> 폴더 변경하기
+                                    </button>
+                                )}
+                                <button 
+                                    onClick={handleDisableSharing}
+                                    className="flex items-center gap-2 text-sm font-bold text-slate-400 hover:text-red-500 transition-colors"
+                                >
+                                    설정 초기화
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
+        </div>
+        
+        {/* Bottom Tips */}
+        <div className="bg-slate-50 dark:bg-slate-900/50 px-10 py-6 border-t border-slate-100 dark:border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-3 text-slate-500 dark:text-slate-400 text-sm">
+                <Info size={16} className="text-blue-500" />
+                <span>데이터는 클라우드Hub에 안전하게 저장되며, 위 경로는 실제 파일을 열기 위한 용도로만 사용됩니다.</span>
             </div>
-          )}
+            <a href="#" className="text-blue-600 font-bold text-sm hover:underline">클라우드 보안 가이드 보기</a>
+        </div>
       </div>
     </div>
   );

@@ -1,13 +1,13 @@
 import { 
     collection, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, 
-    query, onSnapshot, addDoc
+    query, onSnapshot, addDoc, writeBatch
 } from 'firebase/firestore';
 import { db as firestore, auth, storage } from './firebase';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
     JobStatusDefinition, AppUser, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
-    Priority, PaymentStatus, NasConfig
+    Priority, PaymentStatus, NasConfig, JoinRequest
 } from '../types';
 
 // --- Utility Functions (From Original) ---
@@ -28,9 +28,16 @@ export const formatPhoneNumber = (value: string) => {
 };
 
 export const getErrorMessage = (error: any): string => {
-    if (error instanceof Error) return error.message;
-    if (typeof error === 'string') return error;
-    return '알 수 없는 오류가 발생했습니다.';
+    let message = '알 수 없는 오류가 발생했습니다.';
+    if (error instanceof Error) message = error.message;
+    else if (typeof error === 'string') message = error;
+    
+    // Filter out technical Firestore path-like messages
+    if (message.includes('update: projects/') || message.includes('PERMISSION_DENIED')) {
+        return '데이터를 저장할 수 없습니다. 권한이 없거나 네트워크가 불안정합니다.';
+    }
+    
+    return message;
 };
 
 export const calculateEstimate = (specs: any, config: PricingConfig) => {
@@ -87,6 +94,36 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         sizes: ['90x50mm(기본)', '86x52mm(신용카드)', '85x55mm', '90x55mm', '규격외'],
         paperTypes: ['스노우지(일반)', '반누보(수입지)', '휘라레', '스타드림', '크라프트지', '엑스트라매트', '마시멜로우', '띤또레또', '팝셋', '키칼라', '빌리지'],
         paperWeights: ['216g', '250g', '300g', '350g', '400g']
+    },
+    {
+        name: '전단지',
+        sizes: ['A4 (210x297)', 'A5 (148x210)', 'A3 (297x420)', 'B4 (257x364)', 'B5 (182x257)', '규격외'],
+        paperTypes: ['아트지', '스노우지', '모조지'],
+        paperWeights: ['80g', '100g', '120g', '150g', '180g', '250g']
+    },
+    {
+        name: '스티커',
+        sizes: ['90x55mm', '원형 50mm', '원형 40mm', '사각 50x50mm', '규격외'],
+        paperTypes: ['강접 아트지', '모조지', '유포지', '투명데드롱', '은광데드롱', '크라프트지'],
+        paperWeights: ['일반', '강접']
+    },
+    {
+        name: '봉투',
+        sizes: ['대봉투 (245x330)', '중봉투 (175x235)', '소봉투 (220x105)', '체크봉투'],
+        paperTypes: ['모조지(백색)', '체크레자크', '줄레자크', '탄트지', '밍크지'],
+        paperWeights: ['100g', '120g', '150g']
+    },
+    {
+        name: '현수막',
+        sizes: ['500x90cm', '400x70cm', '60x180cm (배너)', '규격외'],
+        paperTypes: ['현수막천', '부직포', '망사천', 'PET (배너)', '합성지(유포)'],
+        paperWeights: ['일반']
+    },
+    {
+        name: '카탈로그/책자',
+        sizes: ['A4 (210x297)', 'A5 (148x210)', 'B5 (182x257)', '규격외'],
+        paperTypes: ['아트지', '스노우지', '모조지', '랑데뷰', '아르떼'],
+        paperWeights: ['100g', '120g', '150g', '180g', '200g', '250g']
     }
 ];
 
@@ -134,15 +171,18 @@ export class DataService {
     private startSyncing() {
         if (!this.tenantId) return;
         this.syncStatus = 'synced';
-        const collectionNames = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers'];
+        const collectionNames = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'requests'];
         collectionNames.forEach(colName => {
             const path = `tenants/${this.tenantId}/${colName}`;
             const unsub = onSnapshot(query(collection(firestore, path)), (snapshot) => {
-                this.data[colName] = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                this.data[colName] = snapshot.docs.map(doc => ({ ...doc.data() as any, id: doc.id }));
                 this.notify();
             }, (error) => {
-                console.error(`Sync error for ${colName}:`, error);
-                this.syncStatus = 'error';
+                console.warn(`[DataService] Sync restricted for ${colName}:`, error.message);
+                // Don't set global error if it's just a permission issue on one collection
+                if (error.code !== 'permission-denied') {
+                    this.syncStatus = 'error';
+                }
                 this.notify();
             });
             this.unsubscribers.push(unsub);
@@ -183,10 +223,24 @@ export class DataService {
         return tenantId;
     }
 
+    async searchTenants(nameQuery: string): Promise<Tenant[]> {
+        const q = query(collection(firestore, 'tenants'));
+        const snap = await getDocs(q);
+        const term = nameQuery.toLowerCase();
+        return snap.docs
+            .map(doc => ({ id: doc.id, ...doc.data() } as Tenant))
+            .filter(t => t.name.toLowerCase().includes(term));
+    }
+
     // --- CRUD Methods (Cloud Based) ---
     private async addEntity(col: string, entity: any) {
         if (!this.tenantId) return;
-        await addDoc(collection(firestore, `tenants/${this.tenantId}/${col}`), { ...entity, createdAt: entity.createdAt || new Date().toISOString() });
+        const id = entity.id || doc(collection(firestore, `tenants/${this.tenantId}/${col}`)).id;
+        await setDoc(doc(firestore, `tenants/${this.tenantId}/${col}/${id}`), { 
+            ...entity, 
+            id,
+            createdAt: entity.createdAt || new Date().toISOString() 
+        });
     }
     private async updateEntity(col: string, id: string, entity: any) {
         if (!this.tenantId) return;
@@ -202,19 +256,80 @@ export class DataService {
     }
 
     // --- Public Business Methods (Mapped to Cloud) ---
-    async addJob(job: Job) { await this.addEntity('jobs', job); }
-    async updateJob(job: Job) { const { id, ...data } = job; await this.updateEntity('jobs', id!, data); }
-    async deleteJob(id: string) { await this.deleteEntity('jobs', id); }
+    async addJob(job: Job) { 
+        console.log(`[DataService] Adding new job:`, job);
+        await this.addEntity('jobs', job); 
+    }
+    async updateJob(job: Job) { 
+        const { id, ...data } = job; 
+        console.log(`[DataService] Updating job: ${id}`, data);
+        await this.updateEntity('jobs', id!, data); 
+    }
+    async deleteJob(id: string) { 
+        console.log(`[DataService] Deleting job: ${id}`);
+        await this.deleteEntity('jobs', id); 
+    }
     async saveJobs(jobs: Job[]) {
         if (!this.tenantId) return;
-        // In cloud version, we update all jobs to persist the 'order' and 'status' changes.
-        // For better performance, one could diff the jobs, but for now, we'll update all.
-        await Promise.all(jobs.map(job => this.updateJob(job)));
+        
+        try {
+            const batch = writeBatch(firestore);
+            jobs.forEach(job => {
+                if (!job.id) return;
+                const { id, ...data } = job;
+                const jobRef = doc(firestore, `tenants/${this.tenantId}/jobs/${id}`);
+                // Use set with merge: true instead of update to avoid "No document to update" errors
+                batch.set(jobRef, data, { merge: true });
+            });
+            await batch.commit();
+        } catch (error) {
+            console.error("Batch update failed:", error);
+            throw error;
+        }
     }
 
     async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
     async updateStaff(staff: Staff) { const { id, ...data } = staff; await this.updateEntity('staff', id, data); }
     async deleteStaff(id: string) { await this.updateEntity('staff', id, { isDeleted: true, active: false }); }
+    
+    // Join Requests
+    getJoinRequests(): JoinRequest[] {
+        return (this.data['requests'] || []) as JoinRequest[];
+    }
+
+    async submitJoinRequest(tenantId: string, request: Partial<JoinRequest>) {
+        await addDoc(collection(firestore, `tenants/${tenantId}/requests`), {
+            ...request,
+            status: 'pending',
+            requestedAt: new Date().toISOString()
+        });
+    }
+
+    async approveJoinRequest(request: JoinRequest) {
+        if (!this.tenantId) return;
+        
+        // 1. Create Staff record
+        const newStaff: Staff = {
+            id: request.userId, // Use userId as staff id for linking
+            uid: request.userId,
+            name: request.userName,
+            email: request.userEmail,
+            role: '디자이너', // Default role
+            active: true,
+            joinDate: new Date().toISOString(),
+            avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${request.userName}`,
+            phone: ''
+        };
+        await this.addStaff(newStaff);
+
+        // 2. Mark request as approved (or delete it)
+        await deleteDoc(doc(firestore, `tenants/${this.tenantId}/requests/${request.id}`));
+    }
+
+    async rejectJoinRequest(requestId: string) {
+        if (!this.tenantId) return;
+        await deleteDoc(doc(firestore, `tenants/${this.tenantId}/requests/${requestId}`));
+    }
 
     async addClient(client: Client) { await this.addEntity('clients', client); }
     async updateClient(client: Client) { const { id, ...data } = client; await this.updateEntity('clients', id, data); }
@@ -258,7 +373,97 @@ export class DataService {
     }
 
     async saveNasConfig(config: NasConfig) {
-        await this.updateSetting('nasConfig', config);
+        // Automatically handle folder paths by appending a default filename if needed
+        let finalPath = (config.path || '').trim();
+        if (finalPath && !finalPath.toLowerCase().endsWith('.json')) {
+            const isWin = finalPath.includes('\\') || navigator.platform.toLowerCase().includes('win');
+            const sep = isWin ? '\\' : '/';
+            finalPath = finalPath.endsWith(sep) ? `${finalPath}ezpw_shared_database.json` : `${finalPath}${sep}ezpw_shared_database.json`;
+        }
+        
+        const updatedConfig = { ...config, path: finalPath };
+        await this.updateSetting('nasConfig', updatedConfig);
+    }
+
+    async saveCompanyInfo(info: CompanyInfo) {
+        await this.updateSetting('companyInfo', info);
+    }
+
+    async savePricingConfig(config: PricingConfig) {
+        await this.updateSetting('pricing', config);
+    }
+
+    async saveProductDefinitions(definitions: JobTypeDefinition[]) {
+        await this.updateSetting('productDefinitions', { definitions });
+    }
+
+    async saveStatusDefinitions(definitions: JobStatusDefinition[]) {
+        await this.updateSetting('statusDefinitions', { definitions });
+    }
+
+    async saveSmsConfig(config: any) {
+        await this.updateSetting('smsConfig', config);
+    }
+
+    async saveRoles(roles: string[]) {
+        await this.updateSetting('roles', { roles });
+    }
+
+    async addRole(role: string) {
+        const roles = this.getRoles();
+        if (!roles.includes(role)) {
+            await this.saveRoles([...roles, role]);
+        }
+    }
+
+    async deleteRole(role: string) {
+        const roles = this.getRoles().filter(r => r !== role);
+        await this.saveRoles(roles);
+    }
+
+    async deleteJobType(name: string) {
+        const definitions = this.getProductDefinitions().filter(d => d.name !== name);
+        await this.saveProductDefinitions(definitions);
+    }
+
+    async addJobType(jobType: JobTypeDefinition) {
+        const definitions = [...this.getProductDefinitions(), jobType];
+        await this.saveProductDefinitions(definitions);
+    }
+
+    async registerProductOption(typeName: string, optionType: string, value: string) {
+        const definitions = this.getProductDefinitions();
+        const defIdx = definitions.findIndex(d => d.name === typeName);
+        if (defIdx === -1) return;
+
+        const def = { ...definitions[defIdx] };
+        const options = (def as any)[optionType] as string[];
+        if (options && !options.includes(value)) {
+            (def as any)[optionType] = [...options, value];
+            const newDefinitions = [...definitions];
+            newDefinitions[defIdx] = def;
+            await this.saveProductDefinitions(newDefinitions);
+        }
+    }
+
+    async addPaper(paper: Partial<PaperStock>) {
+        await this.addEntity('papers', paper);
+    }
+
+    async deletePaper(id: string) {
+        await this.deleteEntity('papers', id);
+    }
+
+    async importData(json: string): Promise<boolean> {
+        try {
+            const data = JSON.parse(json);
+            // This is a simplified import for SaaS. In a real scenario, this would need careful merging or overwriting.
+            // For now, we'll just log and return false as a placeholder for safety.
+            console.warn("Import data not fully implemented for SaaS version yet.");
+            return false;
+        } catch (e) {
+            return false;
+        }
     }
 
     exportData(): string {
@@ -281,6 +486,10 @@ export class DataService {
 
     getStatusDefinitions(): JobStatusDefinition[] { return (this.data['statusDefinitions']?.[0]?.definitions || INITIAL_STATUS_DEFINITIONS) as JobStatusDefinition[]; }
     getProductDefinitions(): JobTypeDefinition[] { return (this.data['productDefinitions']?.[0]?.definitions || INITIAL_PRODUCT_DEFINITIONS) as JobTypeDefinition[]; }
+    async restoreProductDefaults() {
+        if (!this.tenantId) return;
+        await this.saveProductDefinitions(INITIAL_PRODUCT_DEFINITIONS);
+    }
     getJobTypes(): string[] { return this.getProductDefinitions().map(d => d.name); }
     getPricingConfig(): PricingConfig { return (this.data['pricing']?.[0] || { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 }) as PricingConfig; }
     getCompanyInfo(): CompanyInfo { return (this.data['companyInfo']?.[0] || { name: 'EzPrintWork' }) as CompanyInfo; }
@@ -290,7 +499,13 @@ export class DataService {
     // Search Helpers
     searchClients(q: string): Client[] {
         const t = q.toLowerCase();
-        return this.getClients().filter(c => c.name.toLowerCase().includes(t) || c.contactPerson.toLowerCase().includes(t));
+        return this.getClients().filter(c => c.name.toLowerCase().includes(t) || (c.contactPerson && c.contactPerson.toLowerCase().includes(t)));
+    }
+
+    getJobsByClient(clientName: string): Job[] {
+        return this.getAllJobs()
+            .filter(j => j.clientName === clientName)
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     }
 
     getJobsByMonth(year: number, month: number): Job[] {

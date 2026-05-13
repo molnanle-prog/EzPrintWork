@@ -141,27 +141,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             action: '칸반 이동',
             details: `${fromStatus} → ${toStatus}`
         });
-
-        // Logic: 칸반 이동 시, 이동시킨 사람(currentUser)을 '대표 담당자(첫번째)'로 설정하고 기존 담당자는 유지
-        const currentStaffIds = draggedJob.assignedStaffIds || (draggedJob.assignedStaffId ? [draggedJob.assignedStaffId] : []);
-        
-        // 이미 대표 담당자인지 확인 (첫번째 인덱스가 본인인지)
-        const isAlreadyPrimary = currentStaffIds.length > 0 && currentStaffIds[0] === currentUser.id;
-
-        if (!isAlreadyPrimary) {
-            // 기존 목록에서 본인이 있다면 제거하고(중복방지), 맨 앞에 추가하여 대표로 설정
-            const otherStaffIds = currentStaffIds.filter(id => id !== currentUser.id);
-            const newStaffIds = [currentUser.id, ...otherStaffIds];
-
-            updatedJob.assignedStaffIds = newStaffIds;
-            updatedJob.assignedStaffId = currentUser.id; // Legacy sync (대표 담당자 필드 동기화)
-
-            newHistory.push({
-                timestamp: new Date().toISOString(),
-                staffId: currentUser.id,
-                action: '담당자 변경 (이동)',
-                details: `${currentUser.name}님이 단계 이동 및 주 담당자로 설정됨`
-            });
         }
     }
     
@@ -224,16 +203,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     if (!job) return '미배정';
     
     const staffIds = job.assignedStaffIds || (job.assignedStaffId ? [job.assignedStaffId] : []);
-    
     if (staffIds.length === 0) return '미배정';
     
-    // Map all IDs to names
-    const names = staffIds.map(id => {
-        const found = staff.find(s => s.id === id);
-        return found ? found.name : '알수없음';
-    });
+    // 유효한 직원만 찾고 중복 제거
+    const uniqueValidStaff = Array.from(new Set(staffIds))
+        .map(id => staff.find(s => s.id === id))
+        .filter((s): s is Staff => !!s && !s.isDeleted);
 
-    return names.join(', ');
+    if (uniqueValidStaff.length === 0) return '미배정';
+
+    // 이름(직책) 형식으로 변환
+    return uniqueValidStaff.map(s => `${s.name}(${s.role})`).join(', ');
   };
 
   const getJobsForStatus = (statusKey: string) => {
@@ -433,6 +413,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
       {selectedJob && (
         <JobDetailModal 
+          key={selectedJob.id}
           job={selectedJob} 
           staff={staff} 
           onClose={() => setSelectedJob(null)} 
@@ -450,6 +431,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
       {isCreatingJob && (
         <JobDetailModal 
+          key="new-job-modal"
           job={newJobTemplate}
           staff={staff}
           onClose={() => setIsCreatingJob(false)}

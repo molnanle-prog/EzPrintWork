@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
 import { JobTypeDefinition } from '../../types';
-import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check } from 'lucide-react';
+import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 
 export const ProductManager: React.FC = () => {
@@ -64,6 +64,17 @@ export const ProductManager: React.FC = () => {
       }
   };
 
+  const handleRestoreDefaults = async () => {
+      if (await showConfirm('기본 작업 종류(명함, 전단, 스티커 등)를 모두 복원하시겠습니까?\n현재 설정된 내용이 덮어씌워질 수 있습니다.')) {
+          try {
+              await db.restoreProductDefaults();
+              showAlert('기본 항목들이 복원되었습니다.');
+          } catch (error) {
+              showAlert('복원 중 오류가 발생했습니다.');
+          }
+      }
+  };
+
   // --- Option Management ---
 
   const handleAddOption = (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string, setter: (v: string) => void) => {
@@ -121,8 +132,18 @@ export const ProductManager: React.FC = () => {
             <Package className="text-blue-600 dark:text-blue-400" />
             <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">상품 및 품목 관리</h3>
          </div>
-         <div className="text-xs text-slate-500 dark:text-slate-400">
-             * 이곳에서 추가한 항목은 작업 등록 시 즉시 반영됩니다.
+         <div className="flex items-center gap-3">
+             <button 
+                onClick={handleRestoreDefaults}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-bold transition-all border border-slate-200 dark:border-slate-600"
+                title="시스템 기본 품목 목록을 불러옵니다"
+             >
+                <RefreshCcw size={14} />
+                기본값 복원
+             </button>
+             <div className="text-xs text-slate-500 dark:text-slate-400">
+                 * 이곳에서 추가한 항목은 작업 등록 시 즉시 반영됩니다.
+             </div>
          </div>
       </div>
 

@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect } from 'react';
 import { db, getErrorMessage } from '../../services/dataService';
-import { Staff } from '../../types';
-import { User, Phone, Check, X, Shield, Trash2, Edit2, Smartphone, Briefcase, Building2, Hash } from 'lucide-react';
+import { Staff, JoinRequest } from '../../types';
+import { User, Phone, Check, X, Shield, Trash2, Edit2, Smartphone, Briefcase, Building2, Hash, Mail, Calendar, UserPlus, Clock } from 'lucide-react';
 import { StaffModal } from './StaffModal';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -11,6 +11,7 @@ import { UpgradeModal } from '../common/UpgradeModal';
 export const StaffManager: React.FC = () => {
   const { tenantPlan } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
@@ -21,6 +22,7 @@ export const StaffManager: React.FC = () => {
   const loadStaff = () => {
      // Exclude deleted staff AND system admin
      setStaffList(db.getStaff().filter(s => !s.isDeleted && s.id !== 'admin'));
+     setJoinRequests(db.getJoinRequests());
   };
 
   useEffect(() => {
@@ -77,8 +79,83 @@ export const StaffManager: React.FC = () => {
       }
   };
 
+  const handleApproveRequest = async (request: JoinRequest) => {
+      if (isAtLimit) {
+          setIsUpgradeModalOpen(true);
+          return;
+      }
+      try {
+          await db.approveJoinRequest(request);
+          showAlert(`${request.userName} 직원의 등록을 승인했습니다.`);
+      } catch (error) {
+          showAlert(getErrorMessage(error));
+      }
+  };
+
+  const handleRejectRequest = async (requestId: string) => {
+      if (await showConfirm('이 가입 요청을 거절하시겠습니까?')) {
+          try {
+              await db.rejectJoinRequest(requestId);
+          } catch (error) {
+              showAlert(getErrorMessage(error));
+          }
+      }
+  };
+
   return (
     <>
+        {/* Join Requests Section */}
+        {joinRequests.length > 0 && (
+            <div className="mb-8 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-2xl p-6">
+                <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-500/20">
+                        <UserPlus size={20} />
+                    </div>
+                    <div>
+                        <h2 className="text-lg font-bold text-slate-800 dark:text-slate-100">가입 승인 대기</h2>
+                        <p className="text-sm text-slate-500 dark:text-slate-400">새로운 직원이 그룹 가입을 요청했습니다.</p>
+                    </div>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {joinRequests.map(request => (
+                        <div key={request.id} className="bg-white dark:bg-slate-800 border border-blue-200 dark:border-blue-800 rounded-xl p-4 shadow-sm flex items-center justify-between group">
+                            <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 bg-slate-100 dark:bg-slate-700 rounded-full flex items-center justify-center text-slate-500 dark:text-slate-400 font-bold">
+                                    {request.userName.charAt(0)}
+                                </div>
+                                <div>
+                                    <div className="font-bold text-slate-800 dark:text-slate-100">{request.userName}</div>
+                                    <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                                        <Mail size={12} /> {request.userEmail}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1">
+                                        <Clock size={10} /> {new Date(request.requestedAt).toLocaleString()}
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button 
+                                    onClick={() => handleApproveRequest(request)}
+                                    className="p-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors shadow-md shadow-blue-600/10"
+                                    title="승인"
+                                >
+                                    <Check size={18} />
+                                </button>
+                                <button 
+                                    onClick={() => handleRejectRequest(request.id)}
+                                    className="p-2 bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400 rounded-lg transition-colors"
+                                    title="거절"
+                                >
+                                    <X size={18} />
+                                </button>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-6">
         {staffList.map((staff) => (
             <div key={staff.id} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden group hover:shadow-md transition-all">
@@ -130,8 +207,20 @@ export const StaffManager: React.FC = () => {
                             {staff.phoneOffice}
                         </div>
                     )}
-                    {!staff.phone && !staff.phoneCompany && !staff.phoneOffice && !staff.extensionNumber && (
-                        <span className="text-slate-400 dark:text-slate-500 italic text-xs pl-1">등록된 연락처 없음</span>
+                    {staff.email && (
+                        <div className="flex items-center" title="이메일">
+                            <Mail size={14} className="mr-2 text-slate-400 dark:text-slate-500 shrink-0" />
+                            {staff.email}
+                        </div>
+                    )}
+                    {staff.joinDate && (
+                        <div className="flex items-center" title="입사일">
+                            <Calendar size={14} className="mr-2 text-slate-400 dark:text-slate-500 shrink-0" />
+                            입사일: {staff.joinDate}
+                        </div>
+                    )}
+                    {!staff.phone && !staff.phoneCompany && !staff.phoneOffice && !staff.extensionNumber && !staff.email && (
+                        <span className="text-slate-400 dark:text-slate-500 italic text-xs pl-1">등록된 정보 없음</span>
                     )}
                 </div>
 

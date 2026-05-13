@@ -25,6 +25,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
     phoneOffice: '',
     phoneCompany: '',
     extensionNumber: '',
+    email: '',
+    joinDate: new Date().toISOString().split('T')[0],
     active: true,
     avatarUrl: ''
   });
@@ -44,6 +46,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         phoneOffice: '',
         phoneCompany: '',
         extensionNumber: '',
+        email: '',
+        joinDate: new Date().toISOString().split('T')[0],
         active: true,
         avatarUrl: `https://i.pravatar.cc/150?u=${Date.now()}`
       });
@@ -65,6 +69,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         phoneOffice: formData.phoneOffice || '',
         phoneCompany: formData.phoneCompany || '',
         extensionNumber: formData.extensionNumber || '',
+        email: formData.email || '',
+        joinDate: formData.joinDate || new Date().toISOString().split('T')[0],
         avatarUrl: formData.avatarUrl || `https://i.pravatar.cc/150?u=${Date.now()}`,
         active: formData.active !== undefined ? formData.active : true,
         isDeleted: false
@@ -318,6 +324,27 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
                   onChange={(e) => setFormData({...formData, phone: formatPhoneNumber(e.target.value)})}
                   className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
                   placeholder="010-0000-0000"
+                />
+            </div>
+
+            <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-500 w-20 text-right">이메일</span>
+                <input 
+                  type="email" 
+                  value={formData.email || ''}
+                  onChange={(e) => setFormData({...formData, email: e.target.value})}
+                  className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
+                  placeholder="example@email.com"
+                />
+            </div>
+
+            <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-500 w-20 text-right">입사일</span>
+                <input 
+                  type="date" 
+                  value={formData.joinDate || ''}
+                  onChange={(e) => setFormData({...formData, joinDate: e.target.value})}
+                  className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
                 />
             </div>
           </div>

@@ -185,7 +185,6 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const [showContactModal, setShowContactModal] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
-  const [showPathPicker, setShowPathPicker] = useState(false);
   const [isStaffDropdownOpen, setIsStaffDropdownOpen] = useState(false);
   
   const [productDefs, setProductDefs] = useState<JobTypeDefinition[]>([]);
@@ -322,7 +321,6 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     } else {
         const originalJob = job;
         const updatedJob = editedJob;
-        const staffNameMap = new Map(staff.map(s => [s.id, s.name]));
         const statusNameMap = new Map(statusDefinitions.map(s => [s.key, s.label]));
 
         const pushChange = (action: string, details: string) => {
@@ -331,11 +329,20 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
         
         if (originalJob.status !== updatedJob.status) pushChange('상태 변경', `${statusNameMap.get(originalJob.status) || originalJob.status} → ${statusNameMap.get(updatedJob.status) || updatedJob.status}`);
         
-        const oldStaffIds = (originalJob.assignedStaffIds || (originalJob.assignedStaffId ? [originalJob.assignedStaffId] : [])).sort();
-        const newStaffIds = (updatedJob.assignedStaffIds || []).sort();
+        const oldStaffIds = Array.from(new Set(originalJob.assignedStaffIds || (originalJob.assignedStaffId ? [originalJob.assignedStaffId] : []))).sort();
+        const newStaffIds = Array.from(new Set(updatedJob.assignedStaffIds || [])).sort();
+        
         if (JSON.stringify(oldStaffIds) !== JSON.stringify(newStaffIds)) {
-             const from = oldStaffIds.map(id => staffNameMap.get(id) || '알수없음').join(', ') || '미배정';
-             const to = newStaffIds.map(id => staffNameMap.get(id) || '알수없음').join(', ') || '미배정';
+             const formatIds = (ids: string[]) => ids
+                .map(id => {
+                    const s = staff.find(st => st.id === id);
+                    return s ? `${s.name}(${s.role})` : null;
+                })
+                .filter(Boolean)
+                .join(', ') || '미배정';
+
+             const from = formatIds(oldStaffIds);
+             const to = formatIds(newStaffIds);
              pushChange('담당자 변경', `${from} → ${to}`);
         }
 
@@ -347,6 +354,29 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
         if (originalJob.contactPerson !== updatedJob.contactPerson) pushContentChange(`담당자명: '${originalJob.contactPerson || '없음'}' → '${updatedJob.contactPerson || '없음'}'`);
         if (originalJob.clientPhone !== updatedJob.clientPhone) pushContentChange(`연락처: '${originalJob.clientPhone || '없음'}' → '${updatedJob.clientPhone || '없음'}'`);
         if (originalJob.price !== updatedJob.price) pushContentChange(`총액: ${originalJob.price.toLocaleString()}원 → ${updatedJob.price.toLocaleString()}원`);
+        
+        const formatDate = (iso?: string) => iso ? iso.split('T')[0] : '없음';
+        if (formatDate(originalJob.dueDate) !== formatDate(updatedJob.dueDate)) {
+            pushContentChange(`납기일: ${formatDate(originalJob.dueDate)} → ${formatDate(updatedJob.dueDate)}`);
+        }
+
+        const priorityMap: any = { 'NORMAL': '보통', 'HIGH': '긴급', 'URGENT': '매우긴급' };
+        if (originalJob.priority !== updatedJob.priority) {
+            pushChange('우선순위 변경', `${priorityMap[originalJob.priority] || originalJob.priority} → ${priorityMap[updatedJob.priority] || updatedJob.priority}`);
+        }
+
+        // Spec changes
+        const oldSpecs = originalJob.specs;
+        const newSpecs = updatedJob.specs;
+        if (oldSpecs && newSpecs) {
+            if (oldSpecs.size !== newSpecs.size) pushContentChange(`규격: ${oldSpecs.size || '없음'} → ${newSpecs.size || '없음'}`);
+            if (oldSpecs.paperType !== newSpecs.paperType) pushContentChange(`용지: ${oldSpecs.paperType || '없음'} → ${newSpecs.paperType || '없음'}`);
+            if (oldSpecs.quantity !== newSpecs.quantity) pushContentChange(`수량: ${oldSpecs.quantity || '0'} → ${newSpecs.quantity || '0'}`);
+            
+            const oldProc = (oldSpecs.processing || []).sort().join(',');
+            const newProc = (newSpecs.processing || []).sort().join(',');
+            if (oldProc !== newProc) pushContentChange(`후가공: ${oldProc || '없음'} → ${newProc || '없음'}`);
+        }
     }
 
     const subJobs = editedJob.subJobs!;
@@ -390,7 +420,45 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       setPathCopied(true);
       setTimeout(() => setPathCopied(false), 2000);
     } else {
-      await showAlert("파일 경로가 입력되지 않았습니다.");
+      await showAlert("대상 파일 경로가 입력되지 않았습니다.");
+    }
+  };
+
+  const handleOpenPath = () => {
+    if (!editedJob.filePath) {
+      showAlert("열 수 있는 경로가 없습니다.");
+      return;
+    }
+
+    const isElectron = typeof window !== 'undefined' && !!window.electron;
+    if (isElectron && typeof window.electron.openPath === 'function') {
+        // 데스크탑 앱: 즉시 탐색기 실행
+        window.electron.openPath(editedJob.filePath);
+    } else {
+        // 웹 브라우저: 심부름꾼(커넥터) 호출
+        window.location.href = `ezpw://open?path=${encodeURIComponent(editedJob.filePath)}`;
+        
+        // 안내 메시지 (처음 사용자용)
+        setTimeout(() => {
+            if (confirm("탐색기가 열리지 않나요? '심부름꾼(커넥터)'이 설치되어 있어야 합니다. 다운로드 페이지로 이동할까요?")) {
+                window.open('https://example.com/connector-download', '_blank');
+            }
+        }, 2000);
+    }
+  };
+
+  const handleSelectPath = async () => {
+    const isElectron = typeof window !== 'undefined' && !!window.electron;
+    if (isElectron && typeof window.electron.selectFileOrFolder === 'function') {
+        const path = await window.electron.selectFileOrFolder();
+        if (path) {
+            setEditedJob({...editedJob, filePath: path});
+        }
+    } else {
+        // 웹 브라우저에서는 탐색기를 직접 열 수 없으므로 입력창에 포커스를 줍니다.
+        const input = document.getElementById('target-file-path-input');
+        if (input) input.focus();
+        showAlert("웹 브라우저에서는 보안상 탐색기를 직접 열 수 없습니다. 경로를 직접 입력하거나 복사해서 붙여넣어 주세요.");
     }
   };
 
@@ -565,9 +633,12 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                             <h3 className="text-xs font-bold text-slate-400 mb-3 flex items-center gap-1"><FolderOpen size={14}/> 파일 및 금액</h3>
                             <div className="space-y-2 text-sm">
-                                <div className="flex justify-between items-center"><span className="text-slate-500">파일경로:</span> 
+                                <div className="flex justify-between items-center"><span className="text-slate-500">대상 파일 경로:</span> 
                                     {editedJob.filePath ? (
-                                        <button onClick={handleCopyPath} className="text-blue-600 hover:underline truncate max-w-[150px] text-right" title={editedJob.filePath}>{editedJob.filePath}</button>
+                                        <div className="flex items-center gap-2 max-w-[200px]">
+                                            <button onClick={handleOpenPath} className="text-blue-600 font-bold hover:underline truncate" title={editedJob.filePath}>{editedJob.filePath}</button>
+                                            <button onClick={handleOpenPath} className="p-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 shrink-0" title="탐색기에서 열기"><FolderOpen size={14}/></button>
+                                        </div>
                                     ) : <span className="text-slate-400">없음</span>}
                                 </div>
                                 <div className="flex justify-between"><span className="text-slate-500">총 금액:</span> <span className="font-bold text-slate-800">{editedJob.price.toLocaleString()}원</span></div>
@@ -723,7 +794,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
           <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
             {/* Left Column: Sidebar - Adjusted for 1920x1080 (Whole Scroll) */}
-            <div className="w-full lg:w-1/3 bg-slate-50 p-2 border-r border-slate-200 flex flex-col gap-2 overflow-y-auto custom-scrollbar">
+            <div className="w-full lg:w-1/3 bg-slate-50 p-2 border-r border-slate-200 flex flex-col gap-2 overflow-hidden">
               
               {/* Past Jobs History */}
               {isNew && pastJobs.length > 0 && (
@@ -770,8 +841,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             {selectedStaffIds.map(id => {
                                 const s = staff.find(st => st.id === id);
                                 return s ? (
-                                    <span key={id} className="bg-white border border-slate-300 text-slate-700 text-xs px-1.5 py-0.5 rounded-md flex items-center gap-1 font-bold shadow-sm">
-                                        {s.name}
+                                    <span key={id} className="bg-white border border-slate-300 text-slate-700 text-[11px] px-1.5 py-0.5 rounded-md flex items-center gap-1 font-bold shadow-sm">
+                                        {s.name}<span className="text-[9px] text-slate-400 font-normal">({s.role})</span>
                                         <button onClick={(e) => { e.stopPropagation(); toggleStaff(id); }} className="hover:text-red-500"><X size={10}/></button>
                                     </span>
                                 ) : null;
@@ -819,10 +890,19 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
               {/* NAS Path */}
               <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex-none">
-                <label className="text-[11px] font-bold text-slate-500 mb-0.5 block flex items-center gap-2"><FolderOpen size={12} /> 파일 경로 (NAS)</label>
+                <label className="text-[11px] font-bold text-slate-500 mb-0.5 block flex items-center gap-2"><FolderOpen size={12} /> 대상 파일 경로</label>
                 <div className="flex gap-1">
-                  <input type="text" value={editedJob.filePath || ''} onChange={(e) => setEditedJob({...editedJob, filePath: e.target.value})} className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 focus:ring-1 focus:ring-blue-500 truncate" placeholder="\\NAS\Data\..." title={editedJob.filePath} />
-                  <button onClick={() => setShowPathPicker(true)} className="p-1.5 rounded border bg-slate-100 border-slate-200 text-slate-600 hover:bg-blue-50 hover:text-blue-600"><Search size={14} /></button>
+                  <input 
+                    id="target-file-path-input"
+                    type="text" 
+                    value={editedJob.filePath || ''} 
+                    onChange={(e) => setEditedJob({...editedJob, filePath: e.target.value})} 
+                    className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 focus:ring-1 focus:ring-blue-500 truncate" 
+                    placeholder="\\NAS\Data\..." 
+                    title={editedJob.filePath} 
+                  />
+                  <button onClick={handleSelectPath} className="p-1.5 rounded border bg-slate-100 border-slate-200 text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="찾기 (탐색기 열기)"><Search size={14} /></button>
+                  <button onClick={handleOpenPath} className="p-1.5 rounded border bg-blue-600 border-blue-600 text-white hover:bg-blue-700 transition-colors" title="열기 (폴더로 이동)"><FolderOpen size={14} /></button>
                   <button onClick={handleCopyPath} className={`p-1.5 rounded border transition-colors shrink-0 ${pathCopied ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-300'}`}>{pathCopied ? <Check size={14} /> : <Copy size={14} />}</button>
                 </div>
               </div>
@@ -839,16 +919,18 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                 {!isNew && onNavigateToQuote && (<button onClick={() => onNavigateToQuote(editedJob.linkedQuoteId)} className="mt-2 w-full py-1.5 bg-blue-50 border border-blue-100 text-blue-600 text-xs font-bold rounded hover:bg-blue-100 transition-colors flex items-center justify-center gap-1"><FileText size={12} />견적서 바로가기</button>)}
               </div>
 
-              {/* History - Allow to grow but scroll individually is removed, relies on parent scroll */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex-col min-h-[150px] flex-none">
-                  <label className="text-[11px] font-bold text-slate-500 mb-1.5 block flex items-center gap-1 flex-none"><History size={12} /> 작업 이력</label>
-                  {editedJob.history && editedJob.history.length > 0 ? (
-                      <HistoryTimeline history={editedJob.history} staff={staff} />
-                  ) : (
-                      <div className="flex-1 flex items-center justify-center text-center text-slate-400 text-xs p-4">
-                          <p>기록된 이력이 없습니다.<br/>작업 상태를 변경하거나<br/>내용을 저장하면 기록이 시작됩니다.</p>
-                      </div>
-                  )}
+              {/* History - Takes remaining space and scrolls */}
+              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex flex-col flex-1 min-h-0 overflow-hidden">
+                  <label className="text-[11px] font-bold text-slate-500 mb-1.5 block flex items-center gap-1 shrink-0"><History size={12} /> 작업 이력</label>
+                  <div className="flex-1 overflow-y-auto custom-scrollbar pr-1">
+                      {editedJob.history && editedJob.history.length > 0 ? (
+                          <HistoryTimeline history={editedJob.history} staff={staff} />
+                      ) : (
+                          <div className="h-full flex items-center justify-center text-center text-slate-400 text-xs p-4">
+                              <p>기록된 이력이 없습니다.<br/>작업 상태를 변경하거나<br/>내용을 저장하면 기록이 시작됩니다.</p>
+                          </div>
+                      )}
+                  </div>
               </div>
             </div>
 
@@ -1013,7 +1095,6 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       </div>
       {showContactModal && (<ClientContactModal job={editedJob} onClose={() => setShowContactModal(false)} />)}
       {showPrintModal && (<JobOrderPreviewModal job={editedJob} onClose={() => setShowPrintModal(false)} />)}
-      {showPathPicker && (<NetworkPathPicker onClose={() => setShowPathPicker(false)} onSelect={(path) => setEditedJob({...editedJob, filePath: path})}/>)}
     </>
   );
 };

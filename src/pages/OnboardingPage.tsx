@@ -8,8 +8,11 @@ import { toast } from 'sonner';
 export const OnboardingPage: React.FC = () => {
   const { firebaseUser, logout, refreshUser } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
-  const [isJoining, setIsJoining] = useState(false);
   const [companyName, setCompanyName] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [hasRequested, setHasRequested] = useState(false);
   const [step, setStep] = useState<'choice' | 'create' | 'join'>('choice');
   const navigate = useNavigate();
 
@@ -35,9 +38,34 @@ export const OnboardingPage: React.FC = () => {
     }
   };
 
-  const handleJoinRequest = () => {
-    setStep('join');
-    toast.info('관리자에게 초대를 요청해 주세요. 초대가 완료되면 자동으로 로그인됩니다.');
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    setIsSearching(true);
+    try {
+      const results = await db.searchTenants(searchQuery.trim());
+      setSearchResults(results);
+      if (results.length === 0) toast.error('검색 결과가 없습니다.');
+    } catch (error) {
+      toast.error('회사 검색 중 오류가 발생했습니다.');
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleRequestJoin = async (tenantId: string, tenantName: string) => {
+    if (!firebaseUser) return;
+    try {
+      await db.submitJoinRequest(tenantId, {
+        userId: firebaseUser.uid,
+        userEmail: firebaseUser.email || '',
+        userName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '사용자',
+      });
+      toast.success(`${tenantName}에 가입 요청을 보냈습니다. 관리자 승인을 기다려 주세요.`);
+      setHasRequested(true);
+    } catch (error) {
+      toast.error('가입 요청 중 오류가 발생했습니다.');
+    }
   };
 
   return (
@@ -142,36 +170,93 @@ export const OnboardingPage: React.FC = () => {
         )}
 
         {step === 'join' && (
-          <div className="w-full max-w-md text-center animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8 bg-slate-900 p-10 rounded-3xl border border-slate-800">
-            <div className="flex justify-center">
-              <div className="relative">
-                <Loader2 className="animate-spin text-emerald-500" size={64} />
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <UserPlus className="text-emerald-200" size={24} />
+          <div className="w-full max-w-2xl animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
+            {!hasRequested ? (
+              <div className="bg-slate-900 p-8 rounded-3xl border border-slate-800 space-y-6">
+                <div className="space-y-2">
+                  <h3 className="text-2xl font-bold">기존 회사 찾기</h3>
+                  <p className="text-slate-400 text-sm">소속된 회사의 이름을 검색하여 가입 요청을 보낼 수 있습니다.</p>
+                </div>
+                
+                <form onSubmit={handleSearch} className="flex gap-2">
+                  <input 
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="회사 이름 검색..."
+                    className="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                  />
+                  <button 
+                    disabled={isSearching}
+                    type="submit"
+                    className="bg-emerald-600 hover:bg-emerald-500 px-6 rounded-xl font-bold transition-all disabled:opacity-50"
+                  >
+                    {isSearching ? <Loader2 className="animate-spin" /> : '검색'}
+                  </button>
+                </form>
+
+                <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2">
+                  {searchResults.map(tenant => (
+                    <div key={tenant.id} className="flex items-center justify-between p-4 bg-slate-950/50 rounded-2xl border border-slate-800 hover:border-emerald-500/30 transition-all">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 bg-slate-800 rounded-lg flex items-center justify-center">
+                          <Building2 size={20} className="text-slate-500" />
+                        </div>
+                        <div className="font-bold">{tenant.name}</div>
+                      </div>
+                      <button 
+                        onClick={() => handleRequestJoin(tenant.id, tenant.name)}
+                        className="px-4 py-2 bg-emerald-600/10 text-emerald-500 hover:bg-emerald-600 hover:text-white rounded-lg text-sm font-bold transition-all"
+                      >
+                        가입 요청
+                      </button>
+                    </div>
+                  ))}
+                  {searchQuery && searchResults.length === 0 && !isSearching && (
+                    <p className="text-center py-8 text-slate-500 italic">검색 결과가 없습니다.</p>
+                  )}
+                </div>
+
+                <button 
+                  onClick={() => setStep('choice')}
+                  className="w-full text-slate-500 hover:text-white text-sm transition-colors py-2"
+                >
+                  뒤로 가기
+                </button>
+              </div>
+            ) : (
+              <div className="bg-slate-900 p-10 rounded-3xl border border-slate-800 text-center space-y-8">
+                <div className="flex justify-center">
+                  <div className="relative">
+                    <Loader2 className="animate-spin text-emerald-500" size={64} />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <CheckCircle2 className="text-emerald-500" size={24} />
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <h3 className="text-2xl font-bold">관리자의 승인을 기다리는 중</h3>
+                  <p className="text-slate-400">
+                    가입 요청이 전송되었습니다. 관리자가 승인하면 <br />
+                    즉시 워크스페이스에 입장할 수 있습니다.
+                  </p>
+                </div>
+                <div className="flex flex-col gap-4">
+                  <button 
+                    onClick={() => window.location.reload()}
+                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-bold py-4 rounded-xl transition-all"
+                  >
+                    새로고침하여 상태 확인
+                  </button>
+                  <button 
+                    onClick={() => setStep('choice')}
+                    className="text-slate-500 hover:text-white text-sm transition-colors"
+                  >
+                    다른 방법 선택하기
+                  </button>
                 </div>
               </div>
-            </div>
-            <div className="space-y-3">
-              <h3 className="text-2xl font-bold">관리자의 승인을 기다리는 중</h3>
-              <p className="text-slate-400">
-                가입하신 이메일(<span className="text-slate-200 font-medium">{firebaseUser?.email}</span>)로 <br />
-                관리자가 초대를 완료하면 즉시 입장이 가능합니다.
-              </p>
-            </div>
-            <div className="flex flex-col gap-4">
-              <button 
-                onClick={() => window.location.reload()}
-                className="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-4 rounded-xl transition-all"
-              >
-                새로고침하여 상태 확인
-              </button>
-              <button 
-                onClick={() => setStep('choice')}
-                className="text-slate-500 hover:text-white text-sm transition-colors"
-              >
-                다른 방법 선택하기
-              </button>
-            </div>
+            )}
           </div>
         )}
 
