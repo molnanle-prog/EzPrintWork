@@ -288,9 +288,48 @@ export class DataService {
         }
     }
 
-    async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
-    async updateStaff(staff: Staff) { const { id, ...data } = staff; await this.updateEntity('staff', id, data); }
-    async deleteStaff(id: string) { await this.updateEntity('staff', id, { isDeleted: true, active: false }); }
+    async addStaff(staff: Staff) { 
+        await this.addEntity('staff', staff); 
+        if (staff.email && this.tenantId) {
+            try {
+                await setDoc(doc(firestore, 'invitations', staff.email.trim().toLowerCase()), {
+                    tenantId: this.tenantId,
+                    role: staff.role || 'staff',
+                    name: staff.name,
+                    staffId: staff.id
+                });
+            } catch (e) {
+                console.error("Error creating invitation:", e);
+            }
+        }
+    }
+    async updateStaff(staff: Staff) { 
+        const { id, ...data } = staff; 
+        await this.updateEntity('staff', id, data); 
+        if (staff.email && this.tenantId) {
+            try {
+                await setDoc(doc(firestore, 'invitations', staff.email.trim().toLowerCase()), {
+                    tenantId: this.tenantId,
+                    role: staff.role || 'staff',
+                    name: staff.name,
+                    staffId: staff.id
+                });
+            } catch (e) {
+                console.error("Error updating invitation:", e);
+            }
+        }
+    }
+    async deleteStaff(id: string) { 
+        const staff = this.getStaff().find(s => s.id === id);
+        await this.updateEntity('staff', id, { isDeleted: true, active: false }); 
+        if (staff && staff.email) {
+            try {
+                await deleteDoc(doc(firestore, 'invitations', staff.email.trim().toLowerCase()));
+            } catch (e) {
+                console.error("Error deleting invitation:", e);
+            }
+        }
+    }
     
     // Join Requests
     getJoinRequests(): JoinRequest[] {

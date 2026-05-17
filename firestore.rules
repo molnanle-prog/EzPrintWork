@@ -167,5 +167,12 @@ service cloud.firestore {
         allow write: if isAdmin(tenantId) && isValidId(settingId);
       }
     }
+
+    // 5. Invitations (Pre-invites for instant employee onboarding)
+    match /invitations/{email} {
+      allow get: if isSignedIn() && request.auth.token.email.lower() == email.lower();
+      allow create, update: if isSignedIn() && isAdmin(incoming().tenantId);
+      allow delete: if isSignedIn() && (request.auth.token.email.lower() == email.lower() || isAdmin(existing().tenantId));
+    }
   }
 }

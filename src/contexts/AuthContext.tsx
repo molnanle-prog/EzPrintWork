@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, db } from '../services/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 
@@ -42,7 +42,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
       } else {
-        // Create profile if it doesn't exist
+        // Check if there is an invitation for this email (Pre-invite auto-link)
+        let tenantId: string | null = null;
+        let role = 'staff';
+        
+        try {
+          if (user.email) {
+            const inviteDoc = await getDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
+            if (inviteDoc.exists()) {
+              const inviteData = inviteDoc.data();
+              tenantId = inviteData.tenantId || null;
+              role = inviteData.role || 'staff';
+              
+              // 1. Link the staff record with the user's uid in the tenant subcollection
+              if (inviteData.staffId && tenantId) {
+                await setDoc(doc(db, `tenants/${tenantId}/staff/${inviteData.staffId}`), {
+                  uid: user.uid,
+                  active: true
+                }, { merge: true });
+              }
+              
+              // 2. Delete the consumed invitation
+              await deleteDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
+            }
+          }
+        } catch (e) {
+          console.warn("Failed checking or linking invitations:", e);
+        }
+
+        // Create profile
         const newUser: AppUser = {
           uid: user.uid,
           id: user.uid,
@@ -51,11 +79,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           name: user.displayName || '사용자',
           photoURL: user.photoURL || '',
           avatarUrl: user.photoURL || '',
-          tenantId: null,
-          role: 'staff' // Default role
+          tenantId,
+          role
         };
         await setDoc(doc(db, 'users', user.uid), newUser);
         setCurrentUser(newUser);
+        if (tenantId) {
+          dataService.setTenant(tenantId);
+        }
       }
     } catch (error) {
       console.error("Error fetching user profile:", error);
