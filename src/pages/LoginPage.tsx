@@ -8,6 +8,9 @@ export const LoginPage: React.FC = () => {
     const [isLoggingIn, setIsLoggingIn] = useState(false);
 
     const handleDownloadShortcut = () => {
+        const isConfirmed = window.confirm('바탕화면 바로가기 아이콘 파일을 다운로드하시겠습니까?\n\n다운로드 후, 다운로드 폴더의 파일을 컴퓨터 바탕화면에 마우스로 끌어다(드래그) 놓고 사용하세요!');
+        if (!isConfirmed) return;
+
         const shortcutContent = `[InternetShortcut]
 URL=https://ez-hub.kr/ezpw/
 IDList=
@@ -19,12 +22,11 @@ IconFile=https://ez-hub.kr/favicon.ico
         const url = window.URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = 'EzPrintWork 바로가기.url';
+        link.download = 'EzPrintWork 바탕화면 바로가기.url';
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
         window.URL.revokeObjectURL(url);
-        toast.success('바탕화면 아이콘 파일이 다운로드되었습니다. 바탕화면에 드래그하여 사용하세요!');
     };
 
     const handleGoogleLogin = async () => {
