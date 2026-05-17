@@ -141,7 +141,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             action: '칸반 이동',
             details: `${fromStatus} → ${toStatus}`
         });
-        }
     }
     
     updatedJob.history = newHistory;

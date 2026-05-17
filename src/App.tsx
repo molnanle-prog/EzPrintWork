@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuth } from './contexts/AuthContext';
 import { LoginPage } from './pages/LoginPage';
 import { MainPage } from './pages/MainPage';
@@ -36,7 +36,7 @@ function App() {
     }
 
     return (
-        <BrowserRouter>
+        <Router>
             <div className="h-screen w-screen overflow-hidden">
                 <Routes>
                     <Route 
@@ -59,7 +59,7 @@ function App() {
                 </Routes>
                 <Toaster richColors position="top-right" />
             </div>
-        </BrowserRouter>
+        </Router>
     );
 }
 
