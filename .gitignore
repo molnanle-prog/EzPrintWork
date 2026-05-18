@@ -42,3 +42,7 @@ yarn-error.log*
 electron/dist/
 EzPrintWork/
 license-flow-manager/
+
+# Large Installers
+public/downloads/*.exe
+public/downloads/*.zip
