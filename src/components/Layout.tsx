@@ -62,11 +62,21 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [staff, setStaff] = useState<Staff[]>([]);
   const [companyName, setCompanyName] = useState('EzPrintWork');
   const [isElectron, setIsElectron] = useState(false);
+  const [showDownloadBanner, setShowDownloadBanner] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return !localStorage.getItem('hide-desktop-banner');
+    }
+    return true;
+  });
   
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [opacity, setOpacity] = useState(1);
   const [appVersion, setAppVersion] = useState('2.0.0 (Cloud)');
+
+  useEffect(() => {
+    setIsElectron(typeof window !== 'undefined' && !!window.electron);
+  }, []);
 
   useEffect(() => {
     const handleOpenUpgrade = () => setShowUpgradeModal(true);
@@ -292,6 +302,39 @@ IconFile=https://ez-hub.kr/favicon.ico
                         </button>
                     </div>
                 </header>
+            )}
+            
+            {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
+            {!isElectron && showDownloadBanner && !isPinned && (
+                <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
+                    <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
+                            <Zap size={16} className="fill-white text-yellow-300 animate-pulse" />
+                        </div>
+                        <div className="flex flex-col md:flex-row md:items-baseline gap-1 md:gap-3 text-left">
+                            <span className="text-sm font-black tracking-tight">EzPrintWork 데스크톱 전용 앱으로 100% 성능을 누리세요!</span>
+                            <span className="text-xs text-blue-100/90 font-medium">바탕화면 바로가기 및 파일 탐색기(돋보기) 자동 연동 등 모든 로컬 연동이 가능해집니다.</span>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button 
+                            onClick={() => window.open('/downloads/EzPrintWork_Setup.exe', '_blank')}
+                            className="bg-white text-blue-700 hover:bg-blue-50 px-3.5 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
+                        >
+                            앱 다운로드 및 설치
+                        </button>
+                        <button 
+                            onClick={() => {
+                                localStorage.setItem('hide-desktop-banner', 'true');
+                                setShowDownloadBanner(false);
+                            }}
+                            className="text-blue-100 hover:text-white hover:bg-white/10 p-1.5 rounded-lg transition-colors"
+                            title="다시 보지 않기"
+                        >
+                            <X size={16} />
+                        </button>
+                    </div>
+                </div>
             )}
             
             <div className={`flex-1 flex flex-col min-h-0 relative bg-slate-100 dark:bg-slate-900 ${isPinned ? 'p-1' : 'p-2 md:p-3 lg:p-4'}`}>
