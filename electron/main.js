@@ -87,10 +87,11 @@ let localServer;
 
 function startLocalServer() {
     localServer = http.createServer(async (req, res) => {
-        // CORS 헤더 설정 (어떤 웹 주소에서든 로컬 통신 허용)
+        // CORS 헤더 및 Chrome Private Network Access(PNA) 허용 설정
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', '*');
+        res.setHeader('Access-Control-Allow-Private-Network', 'true'); // 중요: 크롬 브라우저의 로컬 보안(PNA) 우회 헤더
 
         if (req.method === 'OPTIONS') {
             res.writeHead(200);
