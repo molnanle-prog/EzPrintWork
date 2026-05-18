@@ -16,7 +16,7 @@ const PREMIUM_PAPERS = ['반누보', '랑데뷰', '아르떼', '휘라레', '띤
 const STANDARD_PAPERS = ['스노우지(일반)', '아트지', '모조지'];
 
 const PREMIUM_WEIGHTS = ['190g', '210g', '240g', '250g', '310g'];
-const STANDARD_WEIGHTS = ['100g', '120g', '150g', '180g', '250g', '300g'];
+const STANDARD_WEIGHTS = ['80g', '100g', '120g', '150g', '180g', '250g', '300g'];
 
 const CLIENT_TIERS = [
     { name: '일반 고객', discount: 0, color: 'text-slate-500' },

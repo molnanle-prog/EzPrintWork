@@ -123,7 +123,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         name: '카탈로그/책자',
         sizes: ['A4 (210x297)', 'A5 (148x210)', 'B5 (182x257)', '규격외'],
         paperTypes: ['아트지', '스노우지', '모조지', '랑데뷰', '아르떼'],
-        paperWeights: ['100g', '120g', '150g', '180g', '200g', '250g']
+        paperWeights: ['80g', '100g', '120g', '150g', '180g', '200g', '250g']
     }
 ];
 
