@@ -25,8 +25,11 @@ function createWindow() {
         autoHideMenuBar: true
     });
 
-    const startUrl = process.env.ELECTRON_START_URL || 'http://localhost:5173';
-    win.loadURL(startUrl);
+    if (process.env.ELECTRON_START_URL) {
+        win.loadURL(process.env.ELECTRON_START_URL);
+    } else {
+        win.loadFile(path.join(__dirname, '../dist/index.html'));
+    }
 }
 
 // 프로토콜 파싱 및 폴더 열기 실행 함수
