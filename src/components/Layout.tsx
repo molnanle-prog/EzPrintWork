@@ -320,8 +320,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = '/ezpw/downloads/EzPrintWork_Setup.zip';
-                                link.setAttribute('download', 'EzPrintWork_Setup.zip');
+                                link.href = 'https://github.com/molnanle-prog/EzPrintWork/releases/download/v1.2.0/EzPrintWork.Setup.1.2.0.exe';
+                                link.setAttribute('download', 'EzPrintWork.Setup.1.2.0.exe');
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);
