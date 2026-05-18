@@ -116,7 +116,7 @@ export const OnboardingPage: React.FC = () => {
 
             {/* Join Company Card */}
             <button 
-              onClick={handleJoinRequest}
+              onClick={() => setStep('join')}
               className="group relative bg-slate-900/50 border border-slate-800 hover:border-emerald-500/50 p-10 rounded-[2.5rem] text-left transition-all hover:bg-slate-900 hover:shadow-[0_0_60px_-15px_rgba(16,185,129,0.3)] active:scale-[0.98]"
             >
               <div className="mb-8 inline-flex p-5 bg-emerald-500/10 rounded-2xl text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-all duration-300">

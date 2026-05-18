@@ -7,6 +7,7 @@ import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
 import { useDialog } from '../../contexts/DialogContext';
 import { NetworkPathPicker } from '../settings/NetworkPathPicker';
+import { LocalPathInput } from './LocalPathInput';
 import { useAuth } from '../../contexts/AuthContext';
 
 
@@ -414,54 +415,6 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     updateCurrentSpecs({ processing: updated });
   };
 
-  const handleCopyPath = async () => {
-    if (editedJob.filePath) {
-      navigator.clipboard.writeText(editedJob.filePath);
-      setPathCopied(true);
-      setTimeout(() => setPathCopied(false), 2000);
-    } else {
-      await showAlert("대상 파일 경로가 입력되지 않았습니다.");
-    }
-  };
-
-  const handleOpenPath = () => {
-    if (!editedJob.filePath) {
-      showAlert("열 수 있는 경로가 없습니다.");
-      return;
-    }
-
-    const isElectron = typeof window !== 'undefined' && !!window.electron;
-    if (isElectron && typeof window.electron.openPath === 'function') {
-        // 데스크탑 앱: 즉시 탐색기 실행
-        window.electron.openPath(editedJob.filePath);
-    } else {
-        // 웹 브라우저: 심부름꾼(커넥터) 호출
-        window.location.href = `ezpw://open?path=${encodeURIComponent(editedJob.filePath)}`;
-        
-        // 안내 메시지 (처음 사용자용)
-        setTimeout(() => {
-            if (confirm("탐색기가 열리지 않나요? '심부름꾼(커넥터)'이 설치되어 있어야 합니다. 다운로드 페이지로 이동할까요?")) {
-                window.open('https://example.com/connector-download', '_blank');
-            }
-        }, 2000);
-    }
-  };
-
-  const handleSelectPath = async () => {
-    const isElectron = typeof window !== 'undefined' && !!window.electron;
-    if (isElectron && typeof window.electron.selectFileOrFolder === 'function') {
-        const path = await window.electron.selectFileOrFolder();
-        if (path) {
-            setEditedJob({...editedJob, filePath: path});
-        }
-    } else {
-        // 웹 브라우저에서는 탐색기를 직접 열 수 없으므로 입력창에 포커스를 줍니다.
-        const input = document.getElementById('target-file-path-input');
-        if (input) input.focus();
-        showAlert("웹 브라우저에서는 보안상 탐색기를 직접 열 수 없습니다. 경로를 직접 입력하거나 복사해서 붙여넣어 주세요.");
-    }
-  };
-
   const handleReorder = async (pastJob: Job) => {
     if (await showConfirm(`'${pastJob.title}'의 사양을 불러오시겠습니까?`)) {
       const importedSubJobs = pastJob.subJobs && pastJob.subJobs.length > 0 ? pastJob.subJobs : [{ id: '1', type: pastJob.type, specs: pastJob.specs }];
@@ -636,8 +589,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                 <div className="flex justify-between items-center"><span className="text-slate-500">대상 파일 경로:</span> 
                                     {editedJob.filePath ? (
                                         <div className="flex items-center gap-2 max-w-[200px]">
-                                            <button onClick={handleOpenPath} className="text-blue-600 font-bold hover:underline truncate" title={editedJob.filePath}>{editedJob.filePath}</button>
-                                            <button onClick={handleOpenPath} className="p-1 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 shrink-0" title="탐색기에서 열기"><FolderOpen size={14}/></button>
+                                            <span className="text-blue-600 font-bold truncate" title={editedJob.filePath}>{editedJob.filePath}</span>
                                         </div>
                                     ) : <span className="text-slate-400">없음</span>}
                                 </div>
@@ -889,23 +841,10 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
               </div>
 
               {/* NAS Path */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex-none">
-                <label className="text-[11px] font-bold text-slate-500 mb-0.5 block flex items-center gap-2"><FolderOpen size={12} /> 대상 파일 경로</label>
-                <div className="flex gap-1">
-                  <input 
-                    id="target-file-path-input"
-                    type="text" 
-                    value={editedJob.filePath || ''} 
-                    onChange={(e) => setEditedJob({...editedJob, filePath: e.target.value})} 
-                    className="flex-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 focus:ring-1 focus:ring-blue-500 truncate" 
-                    placeholder="\\NAS\Data\..." 
-                    title={editedJob.filePath} 
-                  />
-                  <button onClick={handleSelectPath} className="p-1.5 rounded border bg-slate-100 border-slate-200 text-slate-600 hover:bg-blue-50 hover:text-blue-600" title="찾기 (탐색기 열기)"><Search size={14} /></button>
-                  <button onClick={handleOpenPath} className="p-1.5 rounded border bg-blue-600 border-blue-600 text-white hover:bg-blue-700 transition-colors" title="열기 (폴더로 이동)"><FolderOpen size={14} /></button>
-                  <button onClick={handleCopyPath} className={`p-1.5 rounded border transition-colors shrink-0 ${pathCopied ? 'bg-emerald-50 border-emerald-200 text-emerald-600' : 'bg-white border-slate-200 text-slate-500 hover:text-blue-600 hover:border-blue-300'}`}>{pathCopied ? <Check size={14} /> : <Copy size={14} />}</button>
-                </div>
-              </div>
+              <LocalPathInput 
+                value={editedJob.filePath || ''} 
+                onChange={(path) => setEditedJob({...editedJob, filePath: path})} 
+              />
               
               {/* Payment */}
               <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative overflow-hidden flex-none">

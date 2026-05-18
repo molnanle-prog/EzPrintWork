@@ -4,6 +4,7 @@ title EzPrintWork One-Click Deploy Script
 echo ===================================================
 echo [1/3] Building EzPrintWork Web Version...
 echo ===================================================
+if exist dist rmdir /s /q dist
 call npx vite build --config vite.config.ts
 
 if %errorlevel% neq 0 (
@@ -16,7 +17,7 @@ echo ===================================================
 echo [2/3] Copying built files to Homepage path...
 echo ===================================================
 set CURRENT_DIR=%~dp0
-set HOMEPAGE_DIR=%CURRENT_DIR%..\ez-hub-homepage
+set HOMEPAGE_DIR=%CURRENT_DIR%..\..\ez-hub-homepage
 
 :: Copy to public (for future homepage builds)
 if not exist "%HOMEPAGE_DIR%\public\ezpw" mkdir "%HOMEPAGE_DIR%\public\ezpw"

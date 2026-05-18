@@ -3,6 +3,15 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 
+// 프로토콜 등록 (ezpw://)
+if (process.defaultApp) {
+  if (process.argv.length >= 2) {
+    app.setAsDefaultProtocolClient('ezpw', process.execPath, [path.resolve(process.argv[1])]);
+  }
+} else {
+  app.setAsDefaultProtocolClient('ezpw');
+}
+
 function createWindow() {
     const win = new BrowserWindow({
         width: 1280,
@@ -20,16 +29,116 @@ function createWindow() {
     win.loadURL(startUrl);
 }
 
-app.whenReady().then(() => {
-    createWindow();
+// 프로토콜 파싱 및 폴더 열기 실행 함수
+function handleProtocolUrl(argv) {
+    const prefix = 'ezpw://open?path=';
+    const arg = argv.find(a => a.startsWith(prefix) || a.startsWith('ezpw://'));
+    if (!arg) return;
 
-    app.on('activate', () => {
-        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    try {
+        let targetPath = '';
+        if (arg.startsWith(prefix)) {
+            targetPath = decodeURIComponent(arg.substring(prefix.length));
+        } else {
+            const urlObj = new URL(arg);
+            targetPath = urlObj.searchParams.get('path') || '';
+        }
+
+        if (targetPath) {
+            shell.openPath(targetPath);
+        }
+    } catch (e) {
+        console.error('Protocol URL 파싱 오류:', e);
+    }
+}
+
+// 싱글 인스턴스 락 설정 (중복 실행 방지 및 프로토콜 전달 연동)
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+    app.quit();
+} else {
+    app.on('second-instance', (event, commandLine, workingDirectory) => {
+        // 이미 켜진 앱이 있으면 활성화
+        const win = BrowserWindow.getAllWindows()[0];
+        if (win) {
+            if (win.isMinimized()) win.restore();
+            win.focus();
+        }
+        // 웹 브라우저에서 보낸 주소(프로토콜) 처리
+        handleProtocolUrl(commandLine);
     });
-});
+
+    app.whenReady().then(() => {
+        createWindow();
+        startLocalServer();
+        // 앱이 프로토콜 호출로 처음 켜졌을 때 처리
+        handleProtocolUrl(process.argv);
+    });
+}
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
+});
+
+// --- 웹 브라우저 연동용 로컬 HTTP 서버 (127.0.0.1:23230) ---
+const http = require('http');
+let localServer;
+
+function startLocalServer() {
+    localServer = http.createServer(async (req, res) => {
+        // CORS 헤더 설정 (어떤 웹 주소에서든 로컬 통신 허용)
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', '*');
+
+        if (req.method === 'OPTIONS') {
+            res.writeHead(200);
+            res.end();
+            return;
+        }
+
+        try {
+            // URL 파싱
+            const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+
+            if (reqUrl.pathname === '/select') {
+                const { canceled, filePaths } = await dialog.showOpenDialog({
+                    properties: ['openFile', 'openDirectory']
+                });
+                const selectedPath = canceled ? '' : filePaths[0];
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ path: selectedPath }));
+            } else if (reqUrl.pathname === '/open') {
+                const targetPath = reqUrl.searchParams.get('path');
+                if (!targetPath) {
+                    res.writeHead(400);
+                    res.end('Missing path');
+                    return;
+                }
+                await shell.openPath(targetPath);
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ success: true }));
+            } else {
+                res.writeHead(404);
+                res.end('Not Found');
+            }
+        } catch (error) {
+            console.error("로컬 서버 오류:", error);
+            res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ error: error.message }));
+        }
+    });
+
+    localServer.listen(23230, '127.0.0.1', () => {
+        console.log('Local helper server running on http://127.0.0.1:23230');
+    });
+}
+
+app.on('will-quit', () => {
+    if (localServer) {
+        localServer.close();
+    }
 });
 
 // --- IPC 핸들러 (실제 시스템 기능) ---

@@ -156,11 +156,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     }
 
     const columnJobs = newAllJobs
-        .filter(j => j.status === newStatusKey)
-        .sort((a, b) => a.order - b.order);
+        .filter((j: Job) => j.status === newStatusKey)
+        .sort((a: Job, b: Job) => a.order - b.order);
 
     if (targetJobId) {
-        const targetIndex = columnJobs.findIndex(j => j.id === targetJobId);
+        const targetIndex = columnJobs.findIndex((j: Job) => j.id === targetJobId);
         if (targetIndex !== -1) {
             columnJobs.splice(targetIndex, 0, updatedJob);
         } else {
@@ -170,11 +170,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         columnJobs.push(updatedJob);
     }
 
-    columnJobs.forEach((job, index) => {
+    columnJobs.forEach((job: Job, index: number) => {
         job.order = index;
     });
 
-    newAllJobs = newAllJobs.filter(j => j.status !== newStatusKey);
+    newAllJobs = newAllJobs.filter((j: Job) => j.status !== newStatusKey);
     newAllJobs = [...newAllJobs, ...columnJobs];
 
     try {
@@ -206,7 +206,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     
     // 유효한 직원만 찾고 중복 제거
     const uniqueValidStaff = Array.from(new Set(staffIds))
-        .map(id => staff.find(s => s.id === id))
+        .map(id => staff.find((s: Staff) => s.id === id))
         .filter((s): s is Staff => !!s && !s.isDeleted);
 
     if (uniqueValidStaff.length === 0) return '미배정';
@@ -216,27 +216,27 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const getJobsForStatus = (statusKey: string) => {
-    return displayJobs.filter(j => j.status === statusKey).sort((a,b) => a.order - b.order);
+    return displayJobs.filter((j: Job) => j.status === statusKey).sort((a: Job, b: Job) => a.order - b.order);
   };
 
   const getAdStatusKey = () => {
     if (visibleStatusDefinitions.length === 0) return null;
     
     // Calculate job counts for each visible column
-    const counts = visibleStatusDefinitions.map(status => ({
+    const counts = visibleStatusDefinitions.map((status: JobStatusDefinition) => ({
         key: status.key,
         count: getJobsForStatus(status.key).length
     }));
 
     // Find the minimum count
-    const minCount = Math.min(...counts.map(c => c.count));
+    const minCount = Math.min(...counts.map((c: any) => c.count));
     
     // Filter columns that have the minimum count
-    const candidates = counts.filter(c => c.count === minCount);
+    const candidates = counts.filter((c: any) => c.count === minCount);
     
     // Preference: If 'DELIVERY' is in candidates, use it. 
     // Otherwise use the column with fewest items (last one in list if tied).
-    const hasDelivery = candidates.find(c => c.key === 'DELIVERY');
+    const hasDelivery = candidates.find((c: any) => c.key === 'DELIVERY');
     if (hasDelivery) return 'DELIVERY';
     
     return candidates[candidates.length - 1].key;
@@ -264,7 +264,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     createdAt: new Date().toISOString(),
     dueDate: new Date(Date.now() + 86400000).toISOString(),
     progress: 0,
-    type: db.getJobTypes()[0]?.name || '기타',
+    type: db.getJobTypes()[0] || '기타',
     price: 0,
     order: 0,
     history: [] // Initialize empty history
