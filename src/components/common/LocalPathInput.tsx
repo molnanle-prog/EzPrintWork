@@ -90,7 +90,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         
         setTimeout(() => {
             if (confirm("⚠️ 폴더가 열리지 않나요?\n\n이 기능은 'EzPrintWork 데스크톱 전용 앱'이 설치되어 있어야 작동합니다. 지금 데스크톱 전용 앱을 설치하시겠습니까?")) {
-                window.open('/downloads/EzPrintWork_Setup.exe', '_blank');
+                window.open('/ezpw/downloads/EzPrintWork_Setup.exe', '_blank');
             }
         }, 2000);
     }
@@ -114,7 +114,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         // 데스크톱 앱이 실행 중이 아니거나 미설치 상태일 때 명확한 기능 구분 설명 및 다운로드 안내
         if (confirm("⚠️ '파일 탐색기(돋보기) 연동' 기능은 데스크톱 전용 앱에서만 사용 가능합니다.\n\n데스크톱 전용 앱을 설치하시면 바탕화면에 아이콘이 생성되며, 모든 로컬 탐색기 연동 기능을 제약 없이 즉시 사용하실 수 있습니다.\n\n지금 데스크톱 전용 앱을 다운로드하여 설치하시겠습니까?")) {
             // 실제 다운로드 링크 (홈페이지 루트의 downloads 폴더 또는 배포 경로로 연결)
-            window.open('/downloads/EzPrintWork_Setup.exe', '_blank');
+            window.open('/ezpw/downloads/EzPrintWork_Setup.exe', '_blank');
         }
     }
   };
