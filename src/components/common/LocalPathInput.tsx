@@ -85,12 +85,12 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
             return;
         }
 
-        // 2차: 심부름꾼(커넥터) 호출
+        // 2차: 등록된 프로토콜(ezpw://) 호출 (설치되어 있으면 자동으로 앱을 부팅하고 폴더를 열어줌)
         window.location.href = `ezpw://open?path=${encodeURIComponent(value)}`;
         
         setTimeout(() => {
-            if (confirm("탐색기가 열리지 않나요? '심부름꾼(커넥터)'이 설치되어 있어야 합니다. 다운로드 페이지로 이동할까요?")) {
-                window.open('https://example.com/connector-download', '_blank');
+            if (confirm("⚠️ 폴더가 열리지 않나요?\n\n이 기능은 'EzPrintWork 데스크톱 전용 앱'이 설치되어 있어야 작동합니다. 지금 데스크톱 전용 앱을 설치하시겠습니까?")) {
+                window.open('/downloads/EzPrintWork_Setup.exe', '_blank');
             }
         }, 2000);
     }
