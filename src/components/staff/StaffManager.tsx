@@ -8,8 +8,14 @@ import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { UpgradeModal } from '../common/UpgradeModal';
 
+// Firebase Secondary Auth imports for silent user creation/management
+import { initializeApp, getApp } from 'firebase/app';
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updatePassword, signOut } from 'firebase/auth';
+import { doc, setDoc } from 'firebase/firestore';
+import { firebaseConfig, db as firestore } from '../../services/firebase';
+
 export const StaffManager: React.FC = () => {
-  const { tenantPlan } = useAuth();
+  const { tenantPlan, currentUser } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -68,14 +74,109 @@ export const StaffManager: React.FC = () => {
 
   const handleSaveStaff = async (staff: Staff) => {
       try {
+          const tenantId = currentUser?.tenantId;
+          if (!tenantId) {
+              await showAlert('오류: 테넌트 정보가 존재하지 않습니다.');
+              return;
+          }
+
+          let uid = staff.uid || '';
+
+          // 1. 로그인 크리덴셜 정보가 제공된 경우 Firebase Auth 백그라운드 등록 및 동기화 수행
+          if (staff.loginId && staff.password) {
+              const email = staff.loginId.includes('@') ? staff.loginId.trim() : `${staff.loginId.trim()}@ez-hub.kr`;
+
+              // 보조 Firebase App 인스턴스 초기화 (관리자 세션 영향 차단)
+              let secondaryApp;
+              try {
+                  secondaryApp = getApp('Secondary');
+              } catch (e) {
+                  secondaryApp = initializeApp(firebaseConfig, 'Secondary');
+              }
+              const secondaryAuth = getAuth(secondaryApp);
+
+              if (!uid) {
+                  // 신규 계정 백그라운드 생성
+                  try {
+                      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, staff.password);
+                      uid = userCredential.user.uid;
+                      staff.uid = uid;
+
+                      // 글로벌 테넌트 매핑을 위한 users/{uid} 생성
+                      await setDoc(doc(firestore, 'users', uid), {
+                          uid,
+                          id: uid,
+                          email,
+                          displayName: staff.name,
+                          name: staff.name,
+                          tenantId,
+                          role: 'staff'
+                      });
+
+                      await signOut(secondaryAuth);
+                  } catch (authError: any) {
+                      if (authError.code === 'auth/email-already-in-use') {
+                          await showAlert('오류: 이미 가입되어 사용 중인 아이디(이메일)입니다.');
+                          return;
+                      }
+                      throw authError;
+                  }
+              } else {
+                  // 패스워드 또는 정보 변경 처리
+                  const oldStaff = staffList.find(s => s.id === staff.id);
+                  if (oldStaff && oldStaff.password !== staff.password) {
+                      try {
+                          // 이전 비밀번호로 보조 세션 로그인 후 패스워드 변경 승인
+                          const oldEmail = oldStaff.loginId?.includes('@') ? oldStaff.loginId.trim() : `${oldStaff.loginId?.trim()}@ez-hub.kr`;
+                          const oldPassword = oldStaff.password || '';
+
+                          await signInWithEmailAndPassword(secondaryAuth, oldEmail, oldPassword);
+                          if (secondaryAuth.currentUser) {
+                              await updatePassword(secondaryAuth.currentUser, staff.password);
+                          }
+                          await signOut(secondaryAuth);
+                      } catch (updateError) {
+                          console.warn("Silent auth update failed, trying fallback create:", updateError);
+                          // 이전 계정 매핑이 유실된 경우 대비해 대체 재생성 시도
+                          try {
+                              const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, staff.password);
+                              uid = userCredential.user.uid;
+                              staff.uid = uid;
+                              await setDoc(doc(firestore, 'users', uid), {
+                                  uid,
+                                  id: uid,
+                                  email,
+                                  displayName: staff.name,
+                                  name: staff.name,
+                                  tenantId,
+                                  role: 'staff'
+                              });
+                              await signOut(secondaryAuth);
+                          } catch (fallbackError) {
+                              await showAlert('오류: 아이디 패스워드 설정 변경 권한이 없거나 중복된 아이디입니다.');
+                              return;
+                          }
+                      }
+                  }
+                  
+                  // 글로벌 사용자 Profile 동기화 유지
+                  await setDoc(doc(firestore, 'users', uid), {
+                      displayName: staff.name,
+                      name: staff.name,
+                      email: email
+                  }, { merge: true });
+              }
+          }
+
+          // 2. 테넌트 내부 DB 정보 저장
           if (editingStaff) {
               await db.updateStaff(staff);
           } else {
               await db.addStaff(staff);
           }
           setIsModalOpen(false);
-      } catch (error) {
-          showAlert(getErrorMessage(error));
+      } catch (error: any) {
+          showAlert('직원 등록 처리 중 오류가 발생했습니다: ' + (error.message || getErrorMessage(error)));
       }
   };
 

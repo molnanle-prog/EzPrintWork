@@ -82,6 +82,8 @@ export interface Staff {
   active: boolean;
   email: string;
   uid?: string; // Firebase User ID link
+  loginId?: string; // Custom login ID
+  password?: string; // Plaintext password (stored in private tenant staff collection)
   joinDate: string;
   isDeleted?: boolean; 
 }

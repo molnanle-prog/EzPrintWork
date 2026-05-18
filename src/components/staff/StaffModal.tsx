@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Staff } from '../../types';
 import { db, formatPhoneNumber } from '../../services/dataService';
-import { X, User, Phone, Shield, Save, Hash, Settings, Plus, Camera, Upload } from 'lucide-react';
+import { X, User, Phone, Shield, Save, Hash, Settings, Plus, Camera, Upload, Key } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 
 interface StaffModalProps {
@@ -26,6 +26,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
     phoneCompany: '',
     extensionNumber: '',
     email: '',
+    loginId: '',
+    password: '',
     joinDate: new Date().toISOString().split('T')[0],
     active: true,
     avatarUrl: ''
@@ -47,6 +49,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         phoneCompany: '',
         extensionNumber: '',
         email: '',
+        loginId: '',
+        password: '',
         joinDate: new Date().toISOString().split('T')[0],
         active: true,
         avatarUrl: `https://i.pravatar.cc/150?u=${Date.now()}`
@@ -61,6 +65,11 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         return;
     }
 
+    if ((formData.loginId && !formData.password) || (!formData.loginId && formData.password)) {
+        await showAlert('로그인 계정을 사용하려면 아이디와 비밀번호를 모두 입력해야 합니다.');
+        return;
+    }
+
     const finalData: Staff = {
         id: staff?.id || Date.now().toString(),
         name: formData.name || '',
@@ -70,6 +79,9 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         phoneCompany: formData.phoneCompany || '',
         extensionNumber: formData.extensionNumber || '',
         email: formData.email || '',
+        loginId: formData.loginId || '',
+        password: formData.password || '',
+        uid: formData.uid || '',
         joinDate: formData.joinDate || new Date().toISOString().split('T')[0],
         avatarUrl: formData.avatarUrl || `https://i.pravatar.cc/150?u=${Date.now()}`,
         active: formData.active !== undefined ? formData.active : true,
@@ -345,6 +357,38 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
                   value={formData.joinDate || ''}
                   onChange={(e) => setFormData({...formData, joinDate: e.target.value})}
                   className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
+                />
+            </div>
+          </div>
+
+          {/* 로그인 계정 설정 Group */}
+          <div className="space-y-2 p-4 bg-blue-50/50 rounded-xl border border-blue-100">
+            <label className="text-sm font-bold text-blue-800 flex items-center gap-2 mb-2">
+              <Key size={16} /> 로그인 계정 설정 (선택)
+            </label>
+            <p className="text-xs text-slate-500 font-medium mb-1.5 pl-1">
+              직원이 프로그램에 로그인할 수 있도록 ID와 비밀번호를 생성해 줍니다.
+            </p>
+            
+            <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-600 w-20 text-right">아이디 (ID)</span>
+                <input 
+                  type="text" 
+                  value={formData.loginId || ''}
+                  onChange={(e) => setFormData({...formData, loginId: e.target.value})}
+                  className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
+                  placeholder="예: staff01 (또는 이메일)"
+                />
+            </div>
+            
+            <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-600 w-20 text-right">비밀번호</span>
+                <input 
+                  type="text" 
+                  value={formData.password || ''}
+                  onChange={(e) => setFormData({...formData, password: e.target.value})}
+                  className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
+                  placeholder="6자리 이상의 비밀번호"
                 />
             </div>
           </div>

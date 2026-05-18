@@ -1,11 +1,14 @@
 import React, { useState } from 'react';
 import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor } from 'lucide-react';
+import { GoogleAuthProvider, signInWithPopup, signInWithEmailAndPassword } from 'firebase/auth';
+import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User } from 'lucide-react';
 import { toast } from 'sonner';
 
 export const LoginPage: React.FC = () => {
     const [isLoggingIn, setIsLoggingIn] = useState(false);
+    const [loginId, setLoginId] = useState('');
+    const [password, setPassword] = useState('');
+    const [isStaffLoggingIn, setIsStaffLoggingIn] = useState(false);
 
     const handleDownloadShortcut = () => {
         const isConfirmed = window.confirm('바탕화면 바로가기 아이콘 파일을 다운로드하시겠습니까?\n\n다운로드 후, 다운로드 폴더의 파일을 컴퓨터 바탕화면에 마우스로 끌어다(드래그) 놓고 사용하세요!');
@@ -32,14 +35,61 @@ IconFile=https://ez-hub.kr/favicon.ico
     const handleGoogleLogin = async () => {
         setIsLoggingIn(true);
         const provider = new GoogleAuthProvider();
+        provider.setCustomParameters({
+            prompt: 'select_account'
+        });
+
+        // 25초 후 자동 타임아웃 해제 장치
+        const timeoutId = setTimeout(() => {
+            setIsLoggingIn((current) => {
+                if (current) {
+                    toast.error('구글 로그인 창이 닫혔거나 응답이 지연되어 로딩을 초기화합니다.');
+                    return false;
+                }
+                return current;
+            });
+        }, 25000);
+
         try {
             await signInWithPopup(auth, provider);
+            clearTimeout(timeoutId);
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
         } catch (error: any) {
+            clearTimeout(timeoutId);
             console.error(error);
-            toast.error('로그인 중 오류가 발생했습니다: ' + error.message);
+            if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
+                toast.error('구글 로그인 창이 닫혔습니다.');
+            } else {
+                toast.error('로그인 중 오류가 발생했습니다: ' + error.message);
+            }
         } finally {
+            clearTimeout(timeoutId);
             setIsLoggingIn(false);
+        }
+    };
+
+    const handleStaffLogin = async (e: React.FormEvent) => {
+        e.preventDefault();
+        if (!loginId.trim() || !password.trim()) {
+            toast.error('아이디와 비밀번호를 모두 입력해주세요.');
+            return;
+        }
+
+        setIsStaffLoggingIn(true);
+        const email = loginId.includes('@') ? loginId.trim() : `${loginId.trim()}@ez-hub.kr`;
+
+        try {
+            await signInWithEmailAndPassword(auth, email, password);
+            toast.success('직원 로그인에 성공했습니다! 환영합니다.');
+        } catch (error: any) {
+            console.error(error);
+            if (error.code === 'auth/user-not-found' || error.code === 'auth/wrong-password' || error.code === 'auth/invalid-credential') {
+                toast.error('아이디 또는 비밀번호가 올바르지 않습니다.');
+            } else {
+                toast.error('로그인 오류: ' + error.message);
+            }
+        } finally {
+            setIsStaffLoggingIn(false);
         }
     };
 
@@ -78,8 +128,18 @@ IconFile=https://ez-hub.kr/favicon.ico
                             ) : (
                                 <Chrome className="text-blue-600 group-hover:scale-110 transition-transform" size={24} />
                             )}
-                            구글 계정으로 로그인
+                            구글 계정으로 로그인 (관리자)
                         </button>
+
+                        {isLoggingIn && (
+                            <button
+                                type="button"
+                                onClick={() => setIsLoggingIn(false)}
+                                className="text-xs text-rose-400 hover:text-rose-300 font-bold py-1.5 transition-colors animate-pulse text-center bg-rose-950/20 rounded-xl border border-rose-900/30"
+                            >
+                                로그인 창을 닫았거나 로딩이 멈췄나요? [여기]를 눌러 초기화
+                            </button>
+                        )}
 
                         <button 
                             onClick={handleDownloadShortcut}
@@ -89,6 +149,60 @@ IconFile=https://ez-hub.kr/favicon.ico
                             바탕화면에 아이콘 만들기 (다운로드)
                         </button>
                     </div>
+
+                    {/* Divider */}
+                    <div className="relative flex items-center justify-center py-2">
+                        <div className="border-t border-slate-800/80 w-full"></div>
+                        <span className="absolute bg-slate-900 px-3 text-[10px] font-black text-slate-500 tracking-widest uppercase">또는 직원 로그인</span>
+                    </div>
+
+                    {/* Staff Login Form */}
+                    <form onSubmit={handleStaffLogin} className="space-y-4">
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-bold text-slate-400 block pl-1">직원 아이디 (ID)</label>
+                            <div className="relative">
+                                <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                                    <User size={18} />
+                                </span>
+                                <input 
+                                    type="text" 
+                                    value={loginId}
+                                    onChange={(e) => setLoginId(e.target.value)}
+                                    placeholder="관리자가 생성한 ID 입력"
+                                    className="w-full pl-11 pr-4 py-3.5 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
+                                />
+                            </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-bold text-slate-400 block pl-1">비밀번호 (Password)</label>
+                            <div className="relative">
+                                <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                                    <Lock size={18} />
+                                </span>
+                                <input 
+                                    type="password" 
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder="비밀번호 입력"
+                                    className="w-full pl-11 pr-4 py-3.5 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
+                                />
+                            </div>
+                        </div>
+
+                        <button 
+                            type="submit" 
+                            disabled={isStaffLoggingIn}
+                            className="w-full flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-4 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-600/15"
+                        >
+                            {isStaffLoggingIn ? (
+                                <Loader2 className="animate-spin" size={20} />
+                            ) : (
+                                <LogIn size={20} />
+                            )}
+                            직원 로그인
+                        </button>
+                    </form>
 
                     <div className="pt-4 flex flex-col gap-4 text-center">
                         <div className="flex items-center justify-center gap-2 text-slate-600 text-xs font-bold uppercase tracking-widest">

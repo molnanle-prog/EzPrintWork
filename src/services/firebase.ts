@@ -2,7 +2,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore, doc, getDocFromCache, getDocFromServer } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
-const firebaseConfig = {
+export const firebaseConfig = {
   "projectId": "gen-lang-client-0746903005",
   "appId": "1:19768956246:web:a6cc6b3ca6ffbd53e572f7",
   "apiKey": "AIzaSyB04AtEe56eeP40C4cDS7-uvvaPZHa3pkQ",
