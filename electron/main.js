@@ -28,7 +28,7 @@ function createWindow() {
     if (process.env.ELECTRON_START_URL) {
         win.loadURL(process.env.ELECTRON_START_URL);
     } else {
-        win.loadFile(path.join(__dirname, '../dist/index.html'));
+        win.loadURL('https://ez-hub.kr/ezpw/');
     }
 }
 
