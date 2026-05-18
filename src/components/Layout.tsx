@@ -318,7 +318,14 @@ IconFile=https://ez-hub.kr/favicon.ico
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                         <button 
-                            onClick={() => window.open('/ezpw/downloads/EzPrintWork_Setup.exe', '_blank')}
+                            onClick={() => {
+                                const link = document.createElement('a');
+                                link.href = '/ezpw/downloads/EzPrintWork_Setup.exe';
+                                link.setAttribute('download', 'EzPrintWork_Setup.exe');
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                            }}
                             className="bg-white text-blue-700 hover:bg-blue-50 px-3.5 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
                         >
                             앱 다운로드 및 설치
