@@ -111,7 +111,11 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
             return;
         }
 
-        showAlert("데스크톱 앱(EzPrintWork)이 실행 중이 아닙니다.\n\n웹 브라우저에서 '찾기(돋보기)' 기능을 즉시 사용하시려면 PC에서 EzPrintWork 데스크톱 앱을 실행해 주세요.\n(앱이 꺼져있을 때는 보안상 경로를 직접 복사해서 붙여넣으셔야 합니다.)");
+        // 데스크톱 앱이 실행 중이 아니거나 미설치 상태일 때 설치 권장 및 다운로드 유도
+        if (confirm("데스크톱 연동 프로그램(EzPrintWork)이 실행 중이 아닙니다.\n\n이 컴퓨터에서 처음 사용하시는 경우 연동 프로그램을 설치하셔야 '찾기(돋보기)' 기능을 연동하실 수 있습니다.\n(한 번만 설치하시면 그 이후로는 자동 실행되어 평생 편리하게 탐색기 기능이 연동됩니다!)\n\n지금 EzPrintWork 연동 프로그램 설치 파일을 다운로드하시겠습니까?")) {
+            // 실제 다운로드 링크 (홈페이지 루트의 downloads 폴더 또는 배포 경로로 연결)
+            window.open('/downloads/EzPrintWork_Setup.exe', '_blank');
+        }
     }
   };
 
