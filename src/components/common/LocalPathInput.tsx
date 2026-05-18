@@ -36,6 +36,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
       
       if (response.ok) {
         const data = await response.json();
+        localStorage.setItem('desktop-app-installed', 'true');
         return { success: true, data };
       }
       return { success: false };

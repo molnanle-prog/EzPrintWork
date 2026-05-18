@@ -64,7 +64,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [isElectron, setIsElectron] = useState(false);
   const [showDownloadBanner, setShowDownloadBanner] = useState(() => {
     if (typeof window !== 'undefined') {
-      return !localStorage.getItem('hide-desktop-banner');
+      return !localStorage.getItem('hide-desktop-banner') && !localStorage.getItem('desktop-app-installed');
     }
     return true;
   });
@@ -75,7 +75,37 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [appVersion, setAppVersion] = useState('2.0.0 (Cloud)');
 
   useEffect(() => {
-    setIsElectron(typeof window !== 'undefined' && !!window.electron);
+    const isRunningInElectron = typeof window !== 'undefined' && !!window.electron;
+    setIsElectron(isRunningInElectron);
+    
+    if (isRunningInElectron) {
+      localStorage.setItem('desktop-app-installed', 'true');
+      setShowDownloadBanner(false);
+      return;
+    }
+
+    // 웹 브라우저: 로컬 헬퍼 서버가 실행 중인지 조용히 백그라운드 체크 진행
+    const checkLocalHelper = async () => {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 1000); // 1초 타임아웃
+        
+        const response = await fetch('http://127.0.0.1:23230/select', { 
+          method: 'GET', 
+          signal: controller.signal 
+        });
+        clearTimeout(timeoutId);
+        
+        if (response.status === 200 || response.status === 400 || response.ok) {
+          localStorage.setItem('desktop-app-installed', 'true');
+          setShowDownloadBanner(false);
+        }
+      } catch (error) {
+        // 백그라운드 무소음 예외 처리
+      }
+    };
+
+    checkLocalHelper();
   }, []);
 
   useEffect(() => {
