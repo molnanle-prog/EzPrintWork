@@ -212,6 +212,8 @@ export interface Tenant {
   licenseExpiresAt?: string;
   plan: 'free' | 'pro';
   createdAt: string;
+  businessNumber?: string;
+  joinCode?: string;
 }
 
 export interface AppUser {

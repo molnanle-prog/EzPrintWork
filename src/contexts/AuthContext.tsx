@@ -17,6 +17,7 @@ interface AuthContextType {
   isAuthenticated: boolean;
   tenantPlan: 'free' | 'pro';
   updatePlan: (plan: 'free' | 'pro') => void;
+  loginCustomSession: (user: AppUser, plan: 'free' | 'pro') => void;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -80,7 +81,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           photoURL: user.photoURL || '',
           avatarUrl: user.photoURL || '',
           tenantId,
-          role
+          role: role as 'admin' | 'staff' | 'superadmin'
         };
         await setDoc(doc(db, 'users', user.uid), newUser);
         setCurrentUser(newUser);
@@ -90,6 +91,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (error) {
       console.error("Error fetching user profile:", error);
+    }
+  };
+
+  const loginCustomSession = (user: AppUser, plan: 'free' | 'pro') => {
+    localStorage.setItem('customUser', JSON.stringify(user));
+    localStorage.setItem('customTenantPlan', plan);
+    setCurrentUser(user);
+    setTenantPlan(plan);
+    if (user.tenantId) {
+      dataService.setTenant(user.tenantId);
     }
   };
 
@@ -135,7 +146,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (user) {
         await fetchUserProfile(user);
       } else {
-        setCurrentUser(null);
+        // Fallback: Check if there is a custom session in localStorage!
+        const savedCustomUser = localStorage.getItem('customUser');
+        if (savedCustomUser) {
+          try {
+            const userData = JSON.parse(savedCustomUser) as AppUser;
+            setCurrentUser(userData);
+            if (userData.tenantId) {
+              dataService.setTenant(userData.tenantId);
+            }
+            const savedPlan = localStorage.getItem('customTenantPlan') as 'free' | 'pro';
+            setTenantPlan(savedPlan || 'free');
+          } catch (e) {
+            console.error("Failed to parse custom local user session:", e);
+            setCurrentUser(null);
+          }
+        } else {
+          setCurrentUser(null);
+        }
       }
       setLoading(false);
     });
@@ -144,7 +172,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const logout = async () => {
+    localStorage.removeItem('customUser');
+    localStorage.removeItem('customTenantPlan');
     await signOut(auth);
+    setCurrentUser(null);
+    setFirebaseUser(null);
   };
 
   console.log('AuthProvider State:', { hasFirebaseUser: !!firebaseUser, hasCurrentUser: !!currentUser, loading });
@@ -158,7 +190,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       loading, 
       logout, 
       refreshUser,
-      isAuthenticated: !!firebaseUser 
+      isAuthenticated: !!firebaseUser,
+      loginCustomSession
     }}>
       {children}
     </AuthContext.Provider>

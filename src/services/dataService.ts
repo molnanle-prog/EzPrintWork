@@ -210,10 +210,18 @@ export class DataService {
     private notify() { this.listeners.forEach(l => l()); }
 
     // --- SaaS Methods ---
-    async createTenant(name: string, ownerUid: string): Promise<string> {
+    async createTenant(name: string, ownerUid: string, businessNumber?: string, joinCode?: string): Promise<string> {
         const tenantRef = doc(collection(firestore, 'tenants'));
         const tenantId = tenantRef.id;
-        await setDoc(tenantRef, { id: tenantId, name, ownerId: ownerUid, plan: 'free', createdAt: new Date().toISOString() });
+        await setDoc(tenantRef, { 
+            id: tenantId, 
+            name, 
+            ownerId: ownerUid, 
+            plan: 'free', 
+            createdAt: new Date().toISOString(),
+            businessNumber: businessNumber || '',
+            joinCode: joinCode || ''
+        });
         await updateDoc(doc(firestore, 'users', ownerUid), { tenantId, role: 'admin' });
         const settingsRef = (s: string) => doc(firestore, `tenants/${tenantId}/settings`, s);
         await setDoc(settingsRef('statusDefinitions'), { definitions: INITIAL_STATUS_DEFINITIONS });

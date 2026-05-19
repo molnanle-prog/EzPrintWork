@@ -9,6 +9,8 @@ export const OnboardingPage: React.FC = () => {
   const { firebaseUser, logout, refreshUser } = useAuth();
   const [isCreating, setIsCreating] = useState(false);
   const [companyName, setCompanyName] = useState('');
+  const [businessNumber, setBusinessNumber] = useState('');
+  const [joinCode, setJoinCode] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -24,9 +26,14 @@ export const OnboardingPage: React.FC = () => {
       return;
     }
 
+    if (!joinCode.trim() || joinCode.trim().length < 6) {
+      toast.error('회사 입장 코드는 최소 6글자 이상이어야 합니다.');
+      return;
+    }
+
     setIsCreating(true);
     try {
-      await db.createTenant(companyName.trim(), firebaseUser.uid);
+      await db.createTenant(companyName.trim(), firebaseUser.uid, businessNumber.trim(), joinCode.trim());
       toast.success('회사가 성공적으로 생성되었습니다!');
       await refreshUser();
       navigate('/', { replace: true });
@@ -136,23 +143,54 @@ export const OnboardingPage: React.FC = () => {
         {step === 'create' && (
           <div className="w-full max-w-md animate-in fade-in slide-in-from-bottom-4 duration-500">
             <form onSubmit={handleCreateCompany} className="space-y-6 bg-slate-900 p-8 rounded-3xl border border-slate-800">
+              <div className="space-y-2 text-center pb-2 border-b border-slate-800">
+                <h3 className="text-xl font-black">회사(워크스페이스) 개설</h3>
+                <p className="text-xs text-slate-500 font-medium">관리자 정보와 사내 연동 코드를 설정합니다.</p>
+              </div>
+
               <div className="space-y-2">
-                <label className="text-sm font-bold text-slate-400 ml-1">회사명 (워크스페이스 이름)</label>
+                <label className="text-xs font-bold text-slate-400 ml-1">회사명 *</label>
                 <input 
                   autoFocus
                   type="text"
                   value={companyName}
                   onChange={(e) => setCompanyName(e.target.value)}
-                  placeholder="예: (주)이지프린트"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                  placeholder="예: 상록인쇄기획"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
                   required
                 />
               </div>
-              <div className="flex flex-col gap-3">
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 ml-1">사업자등록번호</label>
+                <input 
+                  type="text"
+                  value={businessNumber}
+                  onChange={(e) => setBusinessNumber(e.target.value)}
+                  placeholder="예: 123-45-67890 (선택 사항)"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 ml-1">회사 입장 코드 (직원 가입용 고유 키) *</label>
+                <input 
+                  type="text"
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value)}
+                  placeholder="직원 연동을 위한 6자 이상의 코드 입력"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
+                  required
+                  minLength={6}
+                />
+                <span className="text-[10px] text-slate-500 block pl-1 font-medium">직원들이 본인의 사내 아이디를 생성하여 해당 회사로 소속될 때 사용하는 필수 암호 코드입니다.</span>
+              </div>
+
+              <div className="flex flex-col gap-3 pt-2">
                 <button 
                   disabled={isCreating}
                   type="submit"
-                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2"
+                  className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-4 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-blue-500/10"
                 >
                   {isCreating ? <Loader2 className="animate-spin" /> : <CheckCircle2 size={20} />}
                   워크스페이스 생성 완료
@@ -160,7 +198,7 @@ export const OnboardingPage: React.FC = () => {
                 <button 
                   type="button"
                   onClick={() => setStep('choice')}
-                  className="text-slate-500 hover:text-white text-sm transition-colors py-2"
+                  className="text-slate-500 hover:text-white text-sm transition-colors py-2 font-bold"
                 >
                   뒤로 가기
                 </button>
