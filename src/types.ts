@@ -33,6 +33,7 @@ export interface JobItem {
   id: string;
   type: string;       // 명함, 전단지...
   specs: JobSpecs;    // Specific specs for this item
+  completed?: boolean; // 개별 품목 완료 상태
 }
 
 // Generic log for all job changes

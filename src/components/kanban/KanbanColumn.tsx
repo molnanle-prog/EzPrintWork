@@ -113,6 +113,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
             onDropOnCard={handleCardDrop}
             isMyJob={currentUserId ? (job.assignedStaffIds?.includes(currentUserId) || job.assignedStaffId === currentUserId) : false}
             isCompact={isCompact}
+            currentUserId={currentUserId}
           />
         ))}
 

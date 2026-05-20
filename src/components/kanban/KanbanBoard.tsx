@@ -1,12 +1,12 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { db, getErrorMessage } from '../../services/dataService';
 import { Job, Staff, Priority, JobStatusDefinition, JobHistoryLog } from '../../types';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanColumn } from './KanbanColumn';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
-import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2 } from 'lucide-react';
+import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users } from 'lucide-react';
 
 interface KanbanBoardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -29,6 +29,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const { currentUser, tenantPlan } = useAuth();
   const { showAlert } = useDialog();
+
+  // 스마트 실시간 필터 상태
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterOnlyMyJobs, setFilterOnlyMyJobs] = useState(false);
+  const [filterUnpaidOnly, setFilterUnpaidOnly] = useState(false);
+  const [filterUrgentOnly, setFilterUrgentOnly] = useState(false);
+  const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('all');
 
   // Optimized Data Loading
   const loadBoardData = () => {
@@ -215,8 +222,50 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     return uniqueValidStaff.map(s => `${s.name}(${s.role})`).join(', ');
   };
 
+  // 스마트 실시간 필터 파이프라인
+  const filteredJobs = useMemo(() => {
+    return displayJobs.filter(job => {
+      // 1. 실시간 텍스트 검색어 필터
+      if (searchQuery.trim()) {
+        const query = searchQuery.toLowerCase();
+        const matchesTitle = job.title.toLowerCase().includes(query);
+        const matchesClient = job.clientName.toLowerCase().includes(query);
+        const matchesType = job.type.toLowerCase().includes(query);
+        const matchesSpecPaper = job.specs.paperType?.toLowerCase().includes(query) || false;
+        
+        if (!matchesTitle && !matchesClient && !matchesType && !matchesSpecPaper) {
+          return false;
+        }
+      }
+      
+      // 2. 내 작업만 보기 필터
+      if (filterOnlyMyJobs && currentUser) {
+        const isMyJob = job.assignedStaffIds?.includes(currentUser.id) || job.assignedStaffId === currentUser.id;
+        if (!isMyJob) return false;
+      }
+      
+      // 3. 미결제만 보기 필터
+      if (filterUnpaidOnly) {
+        if (job.paymentStatus === '결제완료') return false;
+      }
+      
+      // 4. 긴급만 보기 필터
+      if (filterUrgentOnly) {
+        if (job.priority === Priority.NORMAL) return false;
+      }
+      
+      // 5. 특정 담당자 필터
+      if (selectedStaffFilter !== 'all') {
+        const hasStaff = job.assignedStaffIds?.includes(selectedStaffFilter) || job.assignedStaffId === selectedStaffFilter;
+        if (!hasStaff) return false;
+      }
+      
+      return true;
+    });
+  }, [displayJobs, searchQuery, filterOnlyMyJobs, filterUnpaidOnly, filterUrgentOnly, selectedStaffFilter, currentUser]);
+
   const getJobsForStatus = (statusKey: string) => {
-    return displayJobs.filter((j: Job) => j.status === statusKey).sort((a: Job, b: Job) => a.order - b.order);
+    return filteredJobs.filter((j: Job) => j.status === statusKey).sort((a: Job, b: Job) => a.order - b.order);
   };
 
   const getAdStatusKey = () => {
@@ -291,93 +340,167 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             filter: invert(1);
         }
       `}</style>
-      <div className="flex justify-between px-0 py-1.5 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 items-center shadow-sm z-20 relative flex-none gap-2">
-        {/* Left: Stats & Action */}
-        <div className="flex items-center gap-1.5 md:gap-2 flex-1">
-             <div className="hidden sm:flex gap-1.5 text-xs md:text-sm font-bold mr-1">
-               <div className="flex items-center gap-1 px-2.5 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800 transition-colors">
-                  <AlertCircle size={14} />
-                  <span>긴급: {activeJobsStats.filter(j => j.priority !== Priority.NORMAL).length}</span>
-               </div>
-               <div className="flex items-center gap-1 px-2.5 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800 transition-colors">
-                  <Clock size={14} />
-                  <span>진행: {activeJobsStats.filter(j => j.status !== 'DELIVERY').length}</span>
-               </div>
-             </div>
-             
-             <div className="relative">
-                <button 
-                  onClick={() => setShowFilterPopover(!showFilterPopover)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all border
-                    ${showFilterPopover 
-                        ? 'bg-blue-600 border-blue-600 text-white shadow-lg' 
-                        : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400'}`}
-                >
-                    <Filter size={14} />
-                    <span className="hidden lg:inline">단계 필터</span>
-                    <span className="px-1.5 bg-slate-200 dark:bg-slate-700 rounded text-[10px] text-slate-600 dark:text-slate-400">
-                        {visibleStatusDefinitions.length}/{allStatusDefinitions.length}
-                    </span>
-                </button>
+      <div className="flex flex-col md:flex-row justify-between p-2 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 items-stretch md:items-center shadow-sm z-20 relative flex-none gap-2">
+        {/* Left/Middle: Live Smart Filter Controls */}
+        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+          {/* Real-time search bar */}
+          <div className="relative flex items-center w-full sm:w-48 md:w-56 lg:w-64 transition-all duration-300 focus-within:sm:w-56 focus-within:md:w-64 focus-within:lg:w-72">
+            <Search size={14} className="absolute left-3 text-slate-400 pointer-events-none" />
+            <input
+              type="text"
+              placeholder="작업명, 고객명, 용지 검색..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="pl-8 pr-7 py-1.5 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-400 dark:placeholder-slate-500 shadow-inner"
+            />
+            {searchQuery && (
+              <button 
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 text-[10px] font-black"
+                title="지우기"
+              >
+                ✕
+              </button>
+            )}
+          </div>
 
-                {showFilterPopover && (
-                    <>
-                        <div className="fixed inset-0 z-30" onClick={() => setShowFilterPopover(false)}></div>
-                        <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-2 z-40 overflow-hidden animate-in fade-in zoom-in duration-200">
-                            <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-700 mb-1">
-                                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">보드 구성 설정</p>
-                            </div>
-                            <div className="max-h-[300px] overflow-y-auto custom-scrollbar p-1 space-y-1">
-                                {allStatusDefinitions.map(status => (
-                                    <button
-                                        key={status.key}
-                                        onClick={() => toggleStatusVisibility(status.key)}
-                                        className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors group"
-                                    >
-                                        <span className={`text-sm font-bold ${hiddenStatusKeys.includes(status.key) ? 'text-slate-400' : 'text-slate-700 dark:text-slate-200'}`}>
-                                            {status.label}
-                                        </span>
-                                        {!hiddenStatusKeys.includes(status.key) ? (
-                                            <div className="bg-blue-600 text-white rounded-full p-0.5">
-                                                <CheckCircle2 size={14} />
-                                            </div>
-                                        ) : (
-                                            <div className="w-4 h-4 border-2 border-slate-200 dark:border-slate-600 rounded"></div>
-                                        )}
-                                    </button>
-                                ))}
-                            </div>
+          {/* Quick toggle: My Jobs */}
+          <button
+            onClick={() => setFilterOnlyMyJobs(!filterOnlyMyJobs)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-black transition-all border select-none hover:scale-105 active:scale-95
+              ${filterOnlyMyJobs 
+                ? 'bg-blue-600 border-blue-600 text-white shadow-md shadow-blue-500/20 hover:bg-blue-700' 
+                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400 dark:hover:border-slate-500'}`}
+            title="본인에게 배정된 작업만 표시합니다"
+          >
+            <User size={13} />
+            <span>내 작업</span>
+          </button>
+
+          {/* Quick toggle: Unpaid */}
+          <button
+            onClick={() => setFilterUnpaidOnly(!filterUnpaidOnly)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-black transition-all border select-none hover:scale-105 active:scale-95
+              ${filterUnpaidOnly 
+                ? 'bg-rose-600 border-rose-600 text-white shadow-md shadow-rose-500/20 hover:bg-rose-700' 
+                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-rose-400 dark:hover:border-slate-500'}`}
+            title="결제대기 또는 일부결제 상태인 작업만 표시합니다"
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 border border-white"></span>
+            <span>미결제</span>
+          </button>
+
+          {/* Quick toggle: Urgent */}
+          <button
+            onClick={() => setFilterUrgentOnly(!filterUrgentOnly)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-black transition-all border select-none hover:scale-105 active:scale-95
+              ${filterUrgentOnly 
+                ? 'bg-amber-500 border-amber-500 text-white shadow-md shadow-amber-500/20 hover:bg-amber-600' 
+                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-amber-400 dark:hover:border-slate-500'}`}
+            title="긴급 또는 매우긴급 우선순위 작업만 표시합니다"
+          >
+            <AlertCircle size={13} />
+            <span>긴급만</span>
+          </button>
+
+          {/* Dropdown: Staff filter */}
+          <div className="relative flex items-center">
+            <select
+              value={selectedStaffFilter}
+              onChange={(e) => setSelectedStaffFilter(e.target.value)}
+              className="appearance-none bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-7 pr-8 py-1.5 text-xs font-black text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer shadow-sm hover:border-blue-400 dark:hover:border-slate-500 transition-colors"
+              title="특정 작업 담당자별로 필터링합니다"
+            >
+              <option value="all">전체 담당자</option>
+              {staff.filter(s => !s.isDeleted).map(s => (
+                <option key={s.id} value={s.id}>{s.name} ({s.role})</option>
+              ))}
+            </select>
+            <Users size={13} className="absolute left-2.5 text-slate-400 pointer-events-none" />
+            <div className="absolute right-2.5 pointer-events-none text-slate-400">
+              <svg className="w-3.5 h-3.5 fill-current" viewBox="0 0 20 20">
+                <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
+              </svg>
+            </div>
+          </div>
+
+          <div className="w-px h-5 bg-slate-200 dark:bg-slate-700 hidden lg:block"></div>
+
+          {/* Column Toggle (단계 필터) */}
+          <div className="relative">
+            <button 
+              onClick={() => setShowFilterPopover(!showFilterPopover)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all border hover:scale-105 active:scale-95
+                ${showFilterPopover 
+                    ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-500/20' 
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400'}`}
+              title="특정 단계를 숨기거나 표시합니다"
+            >
+                <Filter size={14} />
+                <span>단계 설정</span>
+                <span className="px-1.5 bg-slate-100 dark:bg-slate-700 rounded text-[10px] text-slate-600 dark:text-slate-400 group-hover:bg-blue-700">
+                    {visibleStatusDefinitions.length}/{allStatusDefinitions.length}
+                </span>
+            </button>
+
+            {showFilterPopover && (
+                <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowFilterPopover(false)}></div>
+                    <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-2 z-40 overflow-hidden animate-in fade-in zoom-in duration-200">
+                        <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-700 mb-1">
+                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">보드 구성 설정</p>
                         </div>
-                    </>
-                )}
-             </div>
+                        <div className="max-h-[300px] overflow-y-auto custom-scrollbar p-1 space-y-1">
+                            {allStatusDefinitions.map(status => (
+                                <button
+                                    key={status.key}
+                                    onClick={() => toggleStatusVisibility(status.key)}
+                                    className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors group"
+                                >
+                                    <span className={`text-sm font-bold ${hiddenStatusKeys.includes(status.key) ? 'text-slate-400' : 'text-slate-700 dark:text-slate-200'}`}>
+                                        {status.label}
+                                    </span>
+                                    {!hiddenStatusKeys.includes(status.key) ? (
+                                        <div className="bg-blue-600 text-white rounded-full p-0.5">
+                                            <CheckCircle2 size={14} />
+                                        </div>
+                                    ) : (
+                                        <div className="w-4 h-4 border-2 border-slate-200 dark:border-slate-600 rounded"></div>
+                                    )}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                </>
+            )}
+          </div>
 
-             <button 
-               onClick={() => setIsCreatingJob(true)}
-               title="새로운 작업을 등록합니다"
-               className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1.5 shadow-sm transition-all hover:scale-105 active:scale-95 ml-1"
-             >
-               <Plus size={18} />
-               <span className="hidden sm:inline">작업 등록</span>
-               <span className="sm:hidden">등록</span>
-             </button>
+          {/* Add Job button */}
+          <button 
+            onClick={() => setIsCreatingJob(true)}
+            title="새로운 작업을 등록합니다"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95"
+          >
+            <Plus size={16} />
+            <span>작업 등록</span>
+          </button>
         </div>
 
-        {/* Right: Date Picker */}
+        {/* Right: Date Picker for Completed Jobs */}
         <div 
-            className="flex items-center gap-2 bg-blue-50 dark:bg-slate-700 px-2.5 md:px-3.5 py-1.5 rounded-lg border border-blue-100 dark:border-slate-600 shadow-sm transition-all hover:shadow-md max-w-full"
+            className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm transition-all hover:shadow-md shrink-0"
             title="선택한 날짜에 완료된 작업도 표시합니다 (과거 이력 조회용)"
         >
-           <span className="text-xs md:text-sm font-extrabold text-blue-700 dark:text-blue-300 flex items-center gap-1.5 whitespace-nowrap">
-             <CalendarIcon size={16} />
-             <span className="hidden sm:inline">완료 기준일</span>
+           <span className="text-xs font-black text-slate-500 dark:text-slate-400 flex items-center gap-1.5 whitespace-nowrap">
+             <CalendarIcon size={14} />
+             <span>완료 기준일</span>
            </span>
-           <div className="w-px h-4 bg-blue-200 dark:bg-slate-500"></div>
+           <div className="w-px h-4 bg-slate-200 dark:bg-slate-700"></div>
            <input 
              type="date" 
              value={selectedDate}
              onChange={(e) => setSelectedDate(e.target.value)}
-             className="bg-white dark:bg-slate-800 border border-blue-200 dark:border-slate-600 text-slate-800 dark:text-slate-100 text-xs md:text-sm rounded-md focus:ring-2 focus:ring-blue-500 block px-2 py-1 md:px-2.5 md:py-1.5 cursor-pointer font-bold shadow-sm hover:border-blue-400 min-w-0 flex-1"
+             className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold rounded-md focus:ring-2 focus:ring-blue-500 block px-2 py-1 cursor-pointer shadow-sm hover:border-blue-400 min-w-0"
            />
         </div>
       </div>

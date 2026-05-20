@@ -26,7 +26,7 @@ export const LoginPage: React.FC = () => {
     const [hasSearched, setHasSearched] = useState(false);
 
     // 구글 시트 연동 웹훅 URL (대표님께서 발급받으신 주소로 나중에 교체해주세요)
-    const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbz_PLEASE_REPLACE_THIS/exec";
+    const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyv8iMZs_3Pb-Dk3gJO7YEeFAOPA_DzD93YPHxyMHMQXN5-Xt0iQnRe1AoJiSY8EPuE/exec";
 
 
     const handleDownloadShortcut = () => {
