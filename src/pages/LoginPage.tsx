@@ -62,18 +62,43 @@ IconFile=https://ez-hub.kr/favicon.ico
         const timeoutId = setTimeout(() => {
             setIsLoggingIn((current) => {
                 if (current) {
-                    toast.error('구글 로그인 창이 닫혔거나 응답이 지연되어 로딩을 초기화합니다.');
+                    toast.error('구글 로그인 응답이 지연되어 로딩을 초기화합니다.');
                     return false;
                 }
                 return current;
             });
         }, 25000);
 
+        // Electron 등에서 팝업 닫힘 이벤트를 감지하기 어려운 경우를 대비해 
+        // 메인 윈도우 포커스 복귀 시 로딩 해제 처리
+        let focusTimeoutId: any;
+        const onFocus = () => {
+            focusTimeoutId = setTimeout(() => {
+                setIsLoggingIn((current) => {
+                    if (current) {
+                        toast.error('구글 로그인 창이 닫혔습니다.');
+                        clearTimeout(timeoutId);
+                        return false;
+                    }
+                    return current;
+                });
+            }, 1000);
+            window.removeEventListener('focus', onFocus);
+        };
+        
+        setTimeout(() => {
+            window.addEventListener('focus', onFocus);
+        }, 1000);
+
         try {
             await signInWithPopup(auth, provider);
+            window.removeEventListener('focus', onFocus);
+            if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
         } catch (error: any) {
+            window.removeEventListener('focus', onFocus);
+            if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
             console.error(error);
             if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
@@ -82,6 +107,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                 toast.error('로그인 중 오류가 발생했습니다: ' + error.message);
             }
         } finally {
+            window.removeEventListener('focus', onFocus);
+            if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
             setIsLoggingIn(false);
         }
