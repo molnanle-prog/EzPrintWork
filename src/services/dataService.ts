@@ -3,7 +3,7 @@ import {
     query, onSnapshot, addDoc, writeBatch
 } from 'firebase/firestore';
 import { db as firestore, auth, storage } from './firebase';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { ref, uploadBytes, getDownloadURL, listAll, deleteObject, getMetadata } from 'firebase/storage';
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
     JobStatusDefinition, AppUser, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
@@ -25,6 +25,14 @@ export const formatPhoneNumber = (value: string) => {
         if (clean.length <= 10) return `${clean.slice(0, 3)}-${clean.slice(3, 6)}-${clean.slice(6)}`;
         return `${clean.slice(0, 3)}-${clean.slice(3, 7)}-${clean.slice(7)}`;
     }
+};
+
+export const formatBusinessNumber = (value: string) => {
+    if (!value) return '';
+    const clean = value.replace(/[^0-9]/g, '').slice(0, 10);
+    if (clean.length <= 3) return clean;
+    if (clean.length <= 5) return `${clean.slice(0, 3)}-${clean.slice(3)}`;
+    return `${clean.slice(0, 3)}-${clean.slice(3, 5)}-${clean.slice(5)}`;
 };
 
 export const getErrorMessage = (error: any): string => {
@@ -147,6 +155,8 @@ export class DataService {
     private listeners: (() => void)[] = [];
     private unsubscribers: (() => void)[] = [];
     private syncStatus: 'synced' | 'disconnected' | 'error' = 'disconnected';
+    private loadedCollections = new Set<string>();
+    private hasRunAutoBackupThisSession = false;
 
     getSyncStatus() { return this.syncStatus; }
 
@@ -171,11 +181,15 @@ export class DataService {
     private startSyncing() {
         if (!this.tenantId) return;
         this.syncStatus = 'synced';
+        this.loadedCollections.clear();
+        this.hasRunAutoBackupThisSession = false;
         const collectionNames = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'requests'];
         collectionNames.forEach(colName => {
             const path = `tenants/${this.tenantId}/${colName}`;
             const unsub = onSnapshot(query(collection(firestore, path)), (snapshot) => {
                 this.data[colName] = snapshot.docs.map(doc => ({ ...doc.data() as any, id: doc.id }));
+                this.loadedCollections.add(colName);
+                this.checkInitialLoadAndBackup();
                 this.notify();
             }, (error) => {
                 console.warn(`[DataService] Sync restricted for ${colName}:`, error.message);
@@ -189,9 +203,12 @@ export class DataService {
         });
         
         const settingsPath = `tenants/${this.tenantId}/settings`;
-        ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles', 'nasConfig'].forEach(setting => {
+        const settingNames = ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles', 'nasConfig'];
+        settingNames.forEach(setting => {
             const unsub = onSnapshot(doc(firestore, settingsPath, setting), (snap) => {
                 if (snap.exists()) this.data[setting] = [snap.data()];
+                this.loadedCollections.add(setting);
+                this.checkInitialLoadAndBackup();
                 this.notify();
             }, (error) => {
                 console.error(`Sync error for ${setting}:`, error);
@@ -200,6 +217,17 @@ export class DataService {
             });
             this.unsubscribers.push(unsub);
         });
+    }
+
+    private checkInitialLoadAndBackup() {
+        if (!this.hasRunAutoBackupThisSession && this.loadedCollections.size >= 10) {
+            this.hasRunAutoBackupThisSession = true;
+            setTimeout(() => {
+                this.runDailyAutoBackup().catch(err => {
+                    console.error("[AutoBackup] Session auto backup error:", err);
+                });
+            }, 5000); // 5 seconds grace period for absolute stabilization
+        }
     }
 
     subscribe(listener: () => void) {
@@ -502,19 +530,190 @@ export class DataService {
     }
 
     async importData(json: string): Promise<boolean> {
+        if (!this.tenantId) return false;
         try {
-            const data = JSON.parse(json);
-            // This is a simplified import for SaaS. In a real scenario, this would need careful merging or overwriting.
-            // For now, we'll just log and return false as a placeholder for safety.
-            console.warn("Import data not fully implemented for SaaS version yet.");
-            return false;
+            const backup = JSON.parse(json);
+            if (!backup || typeof backup !== 'object') return false;
+
+            const collectionNames = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'requests'];
+            const settingNames = ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles', 'nasConfig'];
+
+            // 1. Restore regular collections
+            for (const colName of collectionNames) {
+                const items = backup[colName];
+                if (!Array.isArray(items)) continue;
+
+                // Delete current documents in this collection from firestore first to ensure a clean slate
+                const currentSnap = await getDocs(collection(firestore, `tenants/${this.tenantId}/${colName}`));
+                const deleteBatch = writeBatch(firestore);
+                currentSnap.docs.forEach(doc => {
+                    deleteBatch.delete(doc.ref);
+                });
+                await deleteBatch.commit();
+
+                // Write new documents in chunks of 500 (Firestore batch limit)
+                const chunks = [];
+                for (let i = 0; i < items.length; i += 500) {
+                    chunks.push(items.slice(i, i + 500));
+                }
+
+                for (const chunk of chunks) {
+                    const writeBatchInstance = writeBatch(firestore);
+                    chunk.forEach((item: any) => {
+                        if (!item.id) return;
+                        const docRef = doc(firestore, `tenants/${this.tenantId}/${colName}/${item.id}`);
+                        writeBatchInstance.set(docRef, item);
+                    });
+                    await writeBatchInstance.commit();
+                }
+            }
+
+            // 2. Restore settings
+            for (const setting of settingNames) {
+                const settingDataArray = backup[setting];
+                if (!Array.isArray(settingDataArray) || settingDataArray.length === 0) continue;
+                const settingData = settingDataArray[0];
+                if (settingData) {
+                    await setDoc(doc(firestore, `tenants/${this.tenantId}/settings/${setting}`), settingData);
+                }
+            }
+
+            return true;
         } catch (e) {
+            console.error("Failed to import data:", e);
             return false;
         }
     }
 
     exportData(): string {
         return JSON.stringify(this.data);
+    }
+
+    // --- Cloud Backup & Capacity Management ---
+
+    async uploadBackupToCloud(jsonData: string, fileName: string): Promise<string> {
+        if (!this.tenantId) throw new Error("Tenant ID is not set");
+        const storageRef = ref(storage, `tenants/${this.tenantId}/backups/${fileName}`);
+        const blob = new Blob([jsonData], { type: 'application/json' });
+        await uploadBytes(storageRef, blob);
+        return await getDownloadURL(storageRef);
+    }
+
+    async listCloudBackups(): Promise<{ name: string, date: string, size: string }[]> {
+        if (!this.tenantId) return [];
+        const folderRef = ref(storage, `tenants/${this.tenantId}/backups`);
+        try {
+            const res = await listAll(folderRef);
+            const backups = await Promise.all(res.items.map(async (item) => {
+                let sizeStr = '알 수 없음';
+                try {
+                    const meta = await getMetadata(item);
+                    const kb = Math.round(meta.size / 1024);
+                    sizeStr = `${kb} KB`;
+                } catch (e) {}
+                
+                return {
+                    name: item.name,
+                    date: item.name.replace('.json', ''),
+                    size: sizeStr
+                };
+            }));
+            
+            // Sort chronologically (latest first)
+            return backups.sort((a, b) => b.name.localeCompare(a.name));
+        } catch (e) {
+            console.error("Failed to list cloud backups:", e);
+            return [];
+        }
+    }
+
+    async deleteCloudBackup(fileName: string): Promise<void> {
+        if (!this.tenantId) return;
+        const fileRef = ref(storage, `tenants/${this.tenantId}/backups/${fileName}`);
+        await deleteObject(fileRef);
+    }
+
+    async runDailyAutoBackup(force = false): Promise<boolean> {
+        if (!this.tenantId) return false;
+        
+        const todayStr = new Date().toISOString().split('T')[0];
+        const lastBackupKey = `ezpw_last_backup_date_${this.tenantId}`;
+        const lastBackupDate = localStorage.getItem(lastBackupKey);
+        
+        if (!force && lastBackupDate === todayStr) {
+            console.log(`[AutoBackup] Already backed up today: ${todayStr}`);
+            return false;
+        }
+        
+        console.log(`[AutoBackup] Starting daily auto-backup for ${todayStr}...`);
+        try {
+            const dataStr = this.exportData();
+            const fileName = `${todayStr}.json`;
+            await this.uploadBackupToCloud(dataStr, fileName);
+            localStorage.setItem(lastBackupKey, todayStr);
+            
+            // Electron Offline Safekeeping
+            if (typeof window !== 'undefined' && (window as any).electron) {
+                try {
+                    const electron = (window as any).electron;
+                    const customPath = localStorage.getItem('ezpw_local_backup_path');
+                    
+                    let localPath = '';
+                    const isWin = navigator.platform.toLowerCase().includes('win');
+                    const sep = isWin ? '\\' : '/';
+
+                    if (customPath) {
+                        localPath = customPath.endsWith(sep) 
+                            ? `${customPath}${fileName}` 
+                            : `${customPath}${sep}${fileName}`;
+                    } else {
+                        let docsPath = '';
+                        if (typeof electron.getDocumentsPath === 'function') {
+                            docsPath = await electron.getDocumentsPath();
+                        }
+                        if (!docsPath) {
+                            docsPath = 'C:\\Users\\CEO\\Documents'; // fallback
+                        }
+                        localPath = `${docsPath}${sep}EzPrintWork_Backups${sep}${fileName}`;
+                    }
+                    
+                    await electron.saveFile(localPath, dataStr);
+                    console.log(`[AutoBackup] Saved local safety copy to: ${localPath}`);
+                } catch (localErr) {
+                    console.warn("[AutoBackup] Local electron save failed (non-blocking):", localErr);
+                }
+            }
+            
+            // Capacity protection: Rolling 30-day window
+            const backups = await this.listCloudBackups();
+            if (backups.length > 30) {
+                const oldBackups = backups.slice(30);
+                for (const old of oldBackups) {
+                    await this.deleteCloudBackup(old.name);
+                    console.log(`[AutoBackup] Pruned old cloud backup: ${old.name}`);
+                }
+            }
+            
+            console.log(`[AutoBackup] Daily auto-backup completed successfully!`);
+            return true;
+        } catch (e) {
+            console.error(`[AutoBackup] Daily auto-backup failed:`, e);
+            return false;
+        }
+    }
+
+    async restoreFromCloudBackup(fileName: string): Promise<boolean> {
+        if (!this.tenantId) return false;
+        try {
+            const storageRef = ref(storage, `tenants/${this.tenantId}/backups/${fileName}`);
+            const url = await getDownloadURL(storageRef);
+            const res = await fetch(url);
+            const jsonText = await res.text();
+            return await this.importData(jsonText);
+        } catch (e) {
+            console.error("Failed to restore from cloud backup:", e);
+            return false;
+        }
     }
 
     // --- Getters (Real-time data access) ---

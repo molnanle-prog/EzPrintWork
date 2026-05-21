@@ -8,5 +8,6 @@ contextBridge.exposeInMainWorld('electron', {
     createDatabaseFile: (defaultPath) => ipcRenderer.invoke('create-database-file', defaultPath),
     saveFile: (path, content) => ipcRenderer.invoke('save-file', { path, content }),
     readFile: (path) => ipcRenderer.invoke('read-file', path),
-    exists: (path) => ipcRenderer.invoke('exists', path)
+    exists: (path) => ipcRenderer.invoke('exists', path),
+    getDocumentsPath: () => ipcRenderer.invoke('get-documents-path')
 });

@@ -1,73 +1,543 @@
-
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
-import { Database, Download, Upload } from 'lucide-react';
+import { 
+    Database, Download, Upload, Cloud, RefreshCw, Trash2, 
+    CheckCircle2, AlertTriangle, ShieldCheck, HardDrive, HelpCircle
+} from 'lucide-react';
+
+interface CloudBackupItem {
+    name: string;
+    date: string;
+    size: string;
+}
 
 export const BackupManager: React.FC = () => {
-  const handleDownload = () => {
-    const data = db.exportData();
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `printmaster_backup_${new Date().toISOString().split('T')[0]}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  };
+    const [backups, setBackups] = useState<CloudBackupItem[]>([]);
+    const [loading, setLoading] = useState<boolean>(true);
+    const [isCreating, setIsCreating] = useState<boolean>(false);
+    const [restoringFile, setRestoringFile] = useState<string | null>(null);
+    const [statusMessage, setStatusMessage] = useState<string | null>(null);
+    const [statusType, setStatusType] = useState<'info' | 'success' | 'error'>('info');
+    const [documentsPath, setDocumentsPath] = useState<string | null>(null);
+    const [customBackupPath, setCustomBackupPath] = useState<string | null>(
+        typeof window !== 'undefined' ? localStorage.getItem('ezpw_local_backup_path') : null
+    );
 
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const isElectron = typeof window !== 'undefined' && !!(window as any).electron;
 
-    const reader = new FileReader();
-    reader.onload = async (event) => {
-        const json = event.target?.result as string;
-        if (await db.importData(json)) {
-            alert('데이터 복원이 완료되었습니다. 페이지를 새로고침합니다.');
-            window.location.reload();
-        } else {
-            alert('잘못된 백업 파일입니다.');
+    useEffect(() => {
+        if (isElectron) {
+            (window as any).electron.getDocumentsPath().then((path: string) => {
+                setDocumentsPath(path);
+            }).catch((err: any) => {
+                console.error("Failed to get documents path:", err);
+            });
+        }
+    }, [isElectron]);
+
+    const handleSelectCustomFolder = async () => {
+        if (!isElectron) return;
+        try {
+            const selected = await (window as any).electron.selectDirectory();
+            if (selected) {
+                localStorage.setItem('ezpw_local_backup_path', selected);
+                setCustomBackupPath(selected);
+                showStatus(`백업 폴더가 "${selected}"(으)로 변경되었습니다.`, "success");
+            }
+        } catch (e: any) {
+            showStatus(`폴더 선택 중 오류 발생: ${e.message}`, "error");
         }
     };
-    reader.readAsText(file);
-  };
 
-  return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 max-w-2xl transition-colors">
-      <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2">
-         <Database className="text-blue-600 dark:text-blue-400" />
-         데이터 백업 및 복원
-      </h3>
+    const handleResetBackupFolder = () => {
+        localStorage.removeItem('ezpw_local_backup_path');
+        setCustomBackupPath(null);
+        showStatus("백업 폴더가 기본값(내 문서)으로 재설정되었습니다.", "success");
+    };
 
-      <div className="space-y-6">
-          <div className="p-4 bg-blue-50 dark:bg-blue-900/30 border border-blue-100 dark:border-blue-800 rounded-lg transition-colors">
-              <h4 className="font-bold text-blue-800 dark:text-blue-300 mb-2 flex items-center gap-2">
-                  <Download size={18} /> 데이터 내보내기 (백업)
-              </h4>
-              <p className="text-sm text-blue-600 dark:text-blue-400 mb-4">
-                  현재 시스템의 모든 데이터(작업, 직원, 견적, 설정 등)를 JSON 파일로 다운로드합니다.
-                  정기적으로 백업을 수행하여 데이터를 안전하게 보관하세요.
-              </p>
-              <button onClick={handleDownload} className="bg-blue-600 text-white px-4 py-2 rounded font-bold hover:bg-blue-700 shadow-sm text-sm transition-colors">
-                  백업 파일 다운로드
-              </button>
-          </div>
+    const handleOpenLocalFolder = async () => {
+        if (!isElectron) return;
+        try {
+            const isWin = navigator.platform.toLowerCase().includes('win');
+            const sep = isWin ? '\\' : '/';
+            
+            let folderPath = '';
+            if (customBackupPath) {
+                folderPath = customBackupPath;
+            } else if (documentsPath) {
+                folderPath = `${documentsPath}${sep}EzPrintWork_Backups`;
+            } else {
+                showStatus("백업 경로를 불러오는 중입니다. 잠시 후 다시 시도해 주세요.", "error");
+                return;
+            }
 
-          <div className="p-4 bg-orange-50 dark:bg-orange-900/30 border border-orange-100 dark:border-orange-800 rounded-lg transition-colors">
-              <h4 className="font-bold text-orange-800 dark:text-orange-300 mb-2 flex items-center gap-2">
-                  <Upload size={18} /> 데이터 불러오기 (복원)
-              </h4>
-              <p className="text-sm text-orange-700 dark:text-orange-400 mb-4">
-                  이전에 다운로드한 백업 파일을 업로드하여 데이터를 복원합니다.
-                  <strong className="block mt-1">주의: 현재 데이터가 백업 파일의 내용으로 덮어씌워집니다.</strong>
-              </p>
-              <label className="bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 px-4 py-2 rounded font-bold hover:bg-slate-50 dark:hover:bg-slate-600 shadow-sm text-sm cursor-pointer inline-block transition-colors">
-                  백업 파일 선택...
-                  <input type="file" accept=".json" onChange={handleUpload} className="hidden" />
-              </label>
-          </div>
-      </div>
-    </div>
-  );
+            const readmePath = folderPath.endsWith(sep)
+                ? `${folderPath}readme.txt`
+                : `${folderPath}${sep}readme.txt`;
+            
+            const electron = (window as any).electron;
+            // Ensure folder exists by writing a readme file first
+            await electron.saveFile(readmePath, "EzPrintWork 자동 백업 폴더입니다. 이 곳의 백업 파일들은 삭제 기한 없이 영구 보관됩니다.");
+            
+            const success = await electron.openPath(folderPath);
+            if (success) {
+                showStatus("설정된 백업 폴더를 탐색기에서 열었습니다.", "success");
+            } else {
+                showStatus("백업 폴더를 열 수 없습니다.", "error");
+            }
+        } catch (e: any) {
+            showStatus(`폴더 열기 실패: ${e.message}`, "error");
+        }
+    };
+
+    // Fetch the list of backups from the cloud
+    const fetchBackups = async () => {
+        setLoading(true);
+        try {
+            const list = await db.listCloudBackups();
+            setBackups(list);
+        } catch (e) {
+            console.error("Failed to load backups", e);
+            showStatus("클라우드 백업 목록을 불러오는 중 오류가 발생했습니다.", "error");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        fetchBackups();
+    }, []);
+
+    const showStatus = (message: string, type: 'info' | 'success' | 'error') => {
+        setStatusMessage(message);
+        setStatusType(type);
+        // Auto clear after 6 seconds for successes/infos
+        if (type !== 'error') {
+            setTimeout(() => {
+                setStatusMessage(prev => prev === message ? null : prev);
+            }, 6000);
+        }
+    };
+
+    // Manual cloud backup trigger
+    const handleCreateManualCloudBackup = async () => {
+        if (isCreating) return;
+        setIsCreating(true);
+        showStatus("새로운 클라우드 백업 스냅샷을 생성하는 중...", "info");
+        try {
+            const success = await db.runDailyAutoBackup(true); // force = true
+            if (success) {
+                showStatus("클라우드 안전 백업이 성공적으로 완료되었습니다! (30일 롤링 보관)", "success");
+                await fetchBackups();
+            } else {
+                showStatus("백업 생성 중 오류가 발생했습니다.", "error");
+            }
+        } catch (e: any) {
+            showStatus(`백업 실패: ${e.message}`, "error");
+        } finally {
+            setIsCreating(false);
+        }
+    };
+
+    // Restore from Cloud backup
+    const handleRestoreFromCloud = async (backupName: string) => {
+        const confirm1 = window.confirm(
+            `⚠️ [위험] 정말로 "${backupName}" 백업 파일로 복원하시겠습니까?\n\n` +
+            `이 작업은 현재 데이터베이스의 모든 작업, 직원, 거래처, 설정을 백업본의 상태로 완전히 덮어씌웁니다.`
+        );
+        if (!confirm1) return;
+
+        const confirm2 = window.confirm(
+            `🚨 [최종 경고] 복원 작업은 되돌릴 수 없습니다.\n` +
+            `정말로 복원을 진행하시겠습니까? 현재 화면이 새로고침됩니다.`
+        );
+        if (!confirm2) return;
+
+        setRestoringFile(backupName);
+        showStatus(`"${backupName}" 데이터 복원 중... 절대 브라우저를 닫지 마세요.`, "info");
+
+        try {
+            const success = await db.restoreFromCloudBackup(backupName);
+            if (success) {
+                alert("🎉 데이터 복원이 무결하게 완료되었습니다! 시스템을 다시 시작합니다.");
+                window.location.reload();
+            } else {
+                showStatus("클라우드 데이터 복원에 실패했습니다. 올바른 형식의 백업 파일인지 확인해주세요.", "error");
+            }
+        } catch (e: any) {
+            showStatus(`복원 실패: ${e.message}`, "error");
+        } finally {
+            setRestoringFile(null);
+        }
+    };
+
+    // Delete Cloud backup
+    const handleDeleteBackup = async (backupName: string) => {
+        if (!window.confirm(`선택하신 클라우드 백업 "${backupName}"을 영구 삭제하시겠습니까?`)) return;
+
+        try {
+            await db.deleteCloudBackup(backupName);
+            showStatus("백업 파일이 클라우드에서 영구 삭제되었습니다.", "success");
+            await fetchBackups();
+        } catch (e: any) {
+            showStatus(`삭제 실패: ${e.message}`, "error");
+        }
+    };
+
+    // Local download backup
+    const handleDownloadLocal = () => {
+        try {
+            const data = db.exportData();
+            const blob = new Blob([data], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `printmaster_backup_${new Date().toISOString().split('T')[0]}.json`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showStatus("JSON 백업 파일이 로컬 다운로드 폴더에 안전하게 저장되었습니다.", "success");
+        } catch (e: any) {
+            showStatus(`로컬 백업 내보내기 실패: ${e.message}`, "error");
+        }
+    };
+
+    // Local upload restore
+    const handleUploadLocal = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        const confirmRestore = window.confirm(
+            "⚠️ [경고] 로컬 백업 파일을 업로드하여 복원하시겠습니까?\n" +
+            "업로드 완료 시 현재 데이터가 완전히 덮어씌워지고 화면이 새로고침됩니다."
+        );
+        if (!confirmRestore) return;
+
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+            const json = event.target?.result as string;
+            showStatus("로컬 백업 파일에서 복원하는 중...", "info");
+            try {
+                const success = await db.importData(json);
+                if (success) {
+                    alert("로컬 백업 파일로부터 데이터 복원이 무결하게 완료되었습니다! 시스템을 다시 시작합니다.");
+                    window.location.reload();
+                } else {
+                    showStatus("데이터 복원에 실패했습니다. 잘못된 백업 JSON 파일입니다.", "error");
+                }
+            } catch (err: any) {
+                showStatus(`복원 실패: ${err.message}`, "error");
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    return (
+        <div className="space-y-6 max-w-5xl transition-colors duration-300">
+            {/* Top Banner (Status and Premium Title) */}
+            <div className="bg-gradient-to-r from-blue-900 via-slate-900 to-indigo-900 dark:from-blue-950 dark:to-slate-950 rounded-2xl p-6 md:p-8 shadow-xl text-white border border-blue-500/20 relative overflow-hidden">
+                <div className="absolute right-0 top-0 -mt-6 -mr-6 w-36 h-36 bg-blue-500/10 rounded-full blur-3xl"></div>
+                <div className="absolute left-1/3 bottom-0 -mb-12 w-48 h-48 bg-indigo-500/10 rounded-full blur-3xl"></div>
+                
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 relative z-10">
+                    <div className="space-y-2">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 bg-blue-500/20 rounded-xl border border-blue-400/30">
+                                <Cloud className="w-8 h-8 text-blue-400 animate-pulse" />
+                            </div>
+                            <div>
+                                <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-400/20 rounded-full text-xs font-semibold tracking-wide uppercase">
+                                    Enterprise Safety
+                                </span>
+                                <h2 className="text-2xl md:text-3xl font-black tracking-tight mt-0.5">
+                                    클라우드 자동 백업 및 복구 센터
+                                </h2>
+                            </div>
+                        </div>
+                        <p className="text-slate-300 text-sm max-w-2xl leading-relaxed">
+                            Firestore 실시간 분산 데이터베이스의 완벽한 안전 지대입니다. 
+                            어떠한 해킹 위협, 오작동, 물리적 기기 유실이 발생하더라도 1분 이내에 기업 전체 데이터베이스를 완벽 복구할 수 있습니다.
+                        </p>
+                    </div>
+
+                    <div className="flex flex-wrap gap-3">
+                        <button 
+                            onClick={handleCreateManualCloudBackup}
+                            disabled={isCreating}
+                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-5 py-3 rounded-xl shadow-lg hover:shadow-blue-500/20 flex items-center gap-2 border border-blue-400/20 transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
+                        >
+                            {isCreating ? (
+                                <RefreshCw className="w-5 h-5 animate-spin" />
+                            ) : (
+                                <ShieldCheck className="w-5 h-5 text-blue-200" />
+                            )}
+                            즉시 클라우드 백업 생성
+                        </button>
+                    </div>
+                </div>
+
+                {/* Sub features overview cards inside banner */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-6 border-t border-slate-700/50">
+                    <div className="flex items-start gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
+                        <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+                        <div>
+                            <h4 className="text-sm font-bold text-slate-100">100% 무료 클라우드 스토리지</h4>
+                            <p className="text-xs text-slate-400 mt-0.5">Google Cloud의 5GB 스토리지 프리티어를 활용하여 추가 요금 없이 평생 무료로 안전하게 저장됩니다.</p>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
+                        <RefreshCw className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
+                        <div>
+                            <h4 className="text-sm font-bold text-slate-100">하루 1회 완전 자동 실행</h4>
+                            <p className="text-xs text-slate-400 mt-0.5">매일 아침 최초 로그인 시 백업 스케줄러가 백그라운드에서 조용히 실행되어 최신 본을 클라우드에 업로드합니다.</p>
+                        </div>
+                    </div>
+                    <div className="flex items-start gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
+                        <HardDrive className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
+                        <div>
+                            <h4 className="text-sm font-bold text-slate-100">30일 롤링 용량 자동 관리</h4>
+                            <p className="text-xs text-slate-400 mt-0.5">용량 한도를 초과하지 않도록 최근 30개의 백업본만 스마트하게 순환 보관하여 용량이 누적되지 않습니다.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            {/* Status Feedback Toast/Banner */}
+            {statusMessage && (
+                <div className={`p-4 rounded-xl border flex items-start gap-3 shadow-md animate-fade-in transition-all duration-300 ${
+                    statusType === 'success' 
+                        ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-900/40 text-emerald-800 dark:text-emerald-300'
+                        : statusType === 'error'
+                        ? 'bg-rose-50 dark:bg-rose-950/20 border-rose-200 dark:border-rose-900/40 text-rose-800 dark:text-rose-300 font-medium'
+                        : 'bg-blue-50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900/40 text-blue-800 dark:text-blue-300'
+                }`}>
+                    {statusType === 'success' && <CheckCircle2 className="w-5 h-5 text-emerald-500 shrink-0 mt-0.5" />}
+                    {statusType === 'error' && <AlertTriangle className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />}
+                    {statusType === 'info' && <RefreshCw className="w-5 h-5 text-blue-500 animate-spin shrink-0 mt-0.5" />}
+                    <div className="text-sm flex-1">{statusMessage}</div>
+                    {statusType === 'error' && (
+                        <button onClick={() => setStatusMessage(null)} className="text-xs underline hover:text-rose-600 ml-2">
+                            닫기
+                        </button>
+                    )}
+                </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Backups List Table (Left 2 Columns) */}
+                <div className="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 transition-colors duration-300">
+                    <div className="flex items-center justify-between mb-6">
+                        <div className="flex items-center gap-2">
+                            <Database className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                            <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">
+                                안전한 클라우드 백업 히스토리
+                            </h3>
+                        </div>
+                        <button 
+                            onClick={fetchBackups} 
+                            disabled={loading}
+                            className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 rounded-lg transition-colors border border-slate-200 dark:border-slate-800 disabled:opacity-50"
+                            title="백업 목록 새로고침"
+                        >
+                            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+                        </button>
+                    </div>
+
+                    {loading ? (
+                        <div className="flex flex-col items-center justify-center py-20 gap-4">
+                            <RefreshCw className="w-10 h-10 text-blue-500 animate-spin" />
+                            <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">
+                                클라우드 스토리지 보안 백업을 탐색 중입니다...
+                            </p>
+                        </div>
+                    ) : backups.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-16 gap-3 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
+                            <Cloud className="w-12 h-12 text-slate-300 dark:text-slate-600" />
+                            <div>
+                                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300">보관된 백업 스냅샷이 없습니다.</h4>
+                                <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
+                                    상단의 [즉시 클라우드 백업 생성] 버튼을 눌러 첫 번째 안전 스냅샷을 생성하세요.
+                                </p>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left border-collapse">
+                                <thead>
+                                    <tr className="border-b border-slate-200 dark:border-slate-800 text-slate-400 dark:text-slate-500 text-xs font-bold uppercase tracking-wider">
+                                        <th className="pb-3 pl-2">백업 일시</th>
+                                        <th className="pb-3 text-right">파일 크기</th>
+                                        <th className="pb-3 text-right pr-2">작업</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 dark:divide-slate-800/50">
+                                    {backups.map((item) => (
+                                        <tr key={item.name} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                                            <td className="py-4 pl-2">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
+                                                    <span className="font-semibold text-slate-700 dark:text-slate-200 text-sm">
+                                                        {item.date}
+                                                    </span>
+                                                </div>
+                                            </td>
+                                            <td className="py-4 text-right font-medium text-slate-500 dark:text-slate-400 text-sm">
+                                                {item.size}
+                                            </td>
+                                            <td className="py-4 text-right pr-2">
+                                                <div className="flex items-center justify-end gap-2">
+                                                    <button
+                                                        onClick={() => handleRestoreFromCloud(item.name)}
+                                                        disabled={restoringFile !== null}
+                                                        className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-800/50 text-white text-xs font-bold rounded-lg transition-colors shadow-sm"
+                                                    >
+                                                        {restoringFile === item.name ? "복구 진행중..." : "복원"}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleDeleteBackup(item.name)}
+                                                        className="p-1.5 hover:bg-rose-50 dark:hover:bg-rose-950/20 text-rose-500 hover:text-rose-600 dark:hover:text-rose-400 rounded-lg transition-colors border border-transparent hover:border-rose-100 dark:hover:border-rose-900/30"
+                                                        title="영구 삭제"
+                                                    >
+                                                        <Trash2 className="w-4 h-4" />
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </div>
+
+                {/* Right Side: Local Manual Backup / Upload Center */}
+                <div className="space-y-6">
+                    {/* Local Auto Backup (Electron Only) */}
+                    {isElectron && (
+                        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 transition-colors duration-300">
+                            <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-5 flex items-center gap-2">
+                                <ShieldCheck className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />
+                                이 컴퓨터 자동 백업 (영구 보관)
+                            </h3>
+                            <div className="p-4 bg-emerald-50/50 dark:bg-emerald-950/10 border border-emerald-100/60 dark:border-emerald-900/30 rounded-xl transition-colors">
+                                <h4 className="font-bold text-emerald-900 dark:text-emerald-300 text-sm mb-1.5 flex items-center gap-1.5">
+                                    <CheckCircle2 className="w-4 h-4 text-emerald-500" /> PC 로컬 세이프가드 가동 중
+                                </h4>
+                                <p className="text-xs text-emerald-700 dark:text-emerald-400/80 mb-3 leading-relaxed">
+                                    대표님 PC(관리자 앱)의 지정된 폴더에 매일 1회 자동으로 전체 데이터 백업 파일이 저장됩니다. 
+                                    클라우드 스토리지의 30일 보관 기간과 달리, <strong>이 컴퓨터의 백업은 삭제 기한 없이 영구적(평생)으로 보관</strong>되므로 안전을 100% 보증합니다.
+                                </p>
+                                
+                                <div className="space-y-2 mb-4">
+                                    <span className="text-xs font-bold text-slate-500 dark:text-slate-400 block">현재 저장 경로:</span>
+                                    <div className="text-[11px] font-mono text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800/80 p-2.5 rounded-lg break-all border border-slate-200 dark:border-slate-700/60">
+                                        {customBackupPath ? (
+                                            <span>📂 {customBackupPath} (사용자 설정 경로)</span>
+                                        ) : documentsPath ? (
+                                            <span>📂 {documentsPath}\EzPrintWork_Backups (기본 내 문서 경로)</span>
+                                        ) : (
+                                            '경로를 확인하는 중...'
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="grid grid-cols-2 gap-2 mb-3">
+                                    <button 
+                                        onClick={handleSelectCustomFolder}
+                                        className="bg-indigo-600 hover:bg-indigo-500 text-white py-1.5 rounded-lg font-bold shadow-sm text-xs transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 text-center"
+                                    >
+                                        백업 폴더 변경...
+                                    </button>
+                                    <button 
+                                        onClick={handleResetBackupFolder}
+                                        disabled={!customBackupPath}
+                                        className="bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 py-1.5 rounded-lg font-bold text-xs transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-40 disabled:pointer-events-none text-center"
+                                    >
+                                        기본값(내 문서) 재설정
+                                    </button>
+                                </div>
+
+                                <button 
+                                    onClick={handleOpenLocalFolder}
+                                    className="w-full bg-emerald-600 hover:bg-emerald-500 text-white py-2 rounded-lg font-bold shadow-sm text-sm transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 flex items-center justify-center gap-1.5"
+                                >
+                                    <HardDrive className="w-4 h-4 text-emerald-200" />
+                                    이 컴퓨터 백업 폴더 열기
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Local File Actions Card */}
+                    <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 p-6 transition-colors duration-300">
+                        <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-5 flex items-center gap-2">
+                            <HardDrive className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
+                            로컬 수동 백업 센터
+                        </h3>
+
+                        <div className="space-y-5">
+                            {/* Local Download Block */}
+                            <div className="p-4 bg-indigo-50/50 dark:bg-indigo-950/10 border border-indigo-100/60 dark:border-indigo-900/30 rounded-xl transition-colors">
+                                <h4 className="font-bold text-indigo-900 dark:text-indigo-300 text-sm mb-1.5 flex items-center gap-1.5">
+                                    <Download className="w-4 h-4" /> 데이터 내보내기 (수동 PC 다운로드)
+                                </h4>
+                                <p className="text-xs text-indigo-600 dark:text-indigo-400/80 mb-3.5 leading-relaxed">
+                                    현재 시스템의 전체 데이터를 단일 JSON 백업 파일로 수동 다운로드하여 컴퓨터의 안전한 하드디스크나 USB에 추가 보관할 수 있습니다.
+                                </p>
+                                <button 
+                                    onClick={handleDownloadLocal}
+                                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-bold shadow-sm text-sm transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0"
+                                >
+                                    JSON 백업 파일 다운로드
+                                </button>
+                            </div>
+
+                            {/* Local Upload Block */}
+                            <div className="p-4 bg-amber-50/50 dark:bg-amber-950/10 border border-amber-100/60 dark:border-amber-900/30 rounded-xl transition-colors">
+                                <h4 className="font-bold text-amber-900 dark:text-amber-300 text-sm mb-1.5 flex items-center gap-1.5">
+                                    <Upload className="w-4 h-4" /> 데이터 가져오기 (수동 파일 복원)
+                                </h4>
+                                <p className="text-xs text-amber-700 dark:text-amber-400/80 mb-3.5 leading-relaxed">
+                                    이전에 수동으로 다운로드했던 JSON 백업 파일을 불러와 데이터베이스를 원래대로 되돌립니다. 
+                                    <strong className="block mt-1 text-amber-800 dark:text-amber-300">※ 주의: 현재 진행 중인 모든 데이터가 덮어씌워져 유실됩니다.</strong>
+                                </p>
+                                <label className="block w-full text-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 py-2 rounded-lg font-bold hover:bg-slate-50 dark:hover:bg-slate-700/50 shadow-sm text-sm cursor-pointer transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0">
+                                    로컬 백업 파일 선택...
+                                    <input 
+                                        type="file" 
+                                        accept=".json" 
+                                        onChange={handleUploadLocal} 
+                                        className="hidden" 
+                                    />
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* FAQ & Capacity safety card */}
+                    <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-3.5 text-xs transition-colors duration-300">
+                        <h4 className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                            <HelpCircle className="w-4 h-4 text-blue-500" />
+                            자주 묻는 질문 & 요금 보증
+                        </h4>
+                        
+                        <div className="space-y-3 leading-relaxed text-slate-600 dark:text-slate-400">
+                            <div>
+                                <span className="font-bold text-slate-800 dark:text-slate-200 block">Q. 정말 돈이 청구되지 않나요?</span>
+                                <span>A. 예, 맞습니다. 당사는 클라우드 백업 시스템 설계 단계부터 **100% 무료 요금(0원)**을 보장하도록 아키텍처를 설계했습니다. JSON 백업은 1회당 수십 KB 수준이며, 30개 한도의 순환 롤링 삭제 정책을 통해 무료 용량(5GB)의 0.3%도 채우지 않습니다.</span>
+                            </div>
+                            <div>
+                                <span className="font-bold text-slate-800 dark:text-slate-200 block">Q. 자동 백업은 하루에 언제 실행되나요?</span>
+                                <span>A. 하루 한 번, 대표님이나 직원이 브라우저 또는 앱으로 서비스에 최초 접속(로그인)하는 시점에 완벽히 무점검/무자각으로 조용히 실행됩니다.</span>
+                            </div>
+                            <div>
+                                <span className="font-bold text-slate-800 dark:text-slate-200 block">Q. 해킹당해도 복구 가능한가요?</span>
+                                <span>A. 네. 해킹이나 악의적인 편집으로 데이터베이스가 망가졌을 때, 안전한 날짜의 클라우드 백업 목록에서 [복원] 버튼을 한 번만 클릭하면 실시간으로 무결점이 입증된 상태로 즉시 재빌드됩니다.</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
 };

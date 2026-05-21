@@ -179,9 +179,14 @@ ipcMain.handle('open-path', async (event, targetPath) => {
 // 4. 파일 저장
 ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
     try {
+        const dir = path.dirname(filePath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
         fs.writeFileSync(filePath, content, 'utf8');
         return true;
     } catch (e) {
+        console.error("파일 저장 중 오류 발생:", e);
         return false;
     }
 });
@@ -201,4 +206,14 @@ ipcMain.handle('read-file', async (event, filePath) => {
 // 6. 파일 존재 여부 확인
 ipcMain.handle('exists', async (event, filePath) => {
     return fs.existsSync(filePath);
+});
+
+// 7. 문서 폴더 경로 가져오기 (백업용)
+ipcMain.handle('get-documents-path', async () => {
+    try {
+        return app.getPath('documents');
+    } catch (e) {
+        console.error("문서 폴더 경로 획득 중 오류:", e);
+        return null;
+    }
 });

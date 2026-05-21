@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { db, formatPhoneNumber, getErrorMessage } from '../../services/dataService';
+import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact } from '../../types';
 import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
@@ -184,7 +184,7 @@ export const ClientManager: React.FC = () => {
       // 3. Business Registration Number (XXX-XX-XXXXX)
       const bizNumRegex = /\d{3}[-\s]?\d{2}[-\s]?\d{5}/;
       const bizMatch = text.match(bizNumRegex);
-      if (bizMatch) extractedData.businessRegistrationNumber = bizMatch[0];
+      if (bizMatch) extractedData.businessRegistrationNumber = formatBusinessNumber(bizMatch[0]);
 
       // 4. Try to find name (Very hard without NLP, assume first non-empty line or near "대표")
       // This is a naive implementation
@@ -353,7 +353,7 @@ export const ClientManager: React.FC = () => {
                                     <Hash size={16} className="text-slate-400" />
                                     <input 
                                         value={formData.businessRegistrationNumber || ''}
-                                        onChange={e => setFormData({...formData, businessRegistrationNumber: e.target.value})}
+                                        onChange={e => setFormData({...formData, businessRegistrationNumber: formatBusinessNumber(e.target.value)})}
                                         className={`${inputClass} font-mono`}
                                         placeholder="000-00-00000"
                                     />

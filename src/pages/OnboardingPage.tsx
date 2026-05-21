@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { db } from '../services/dataService';
+import { db, formatBusinessNumber } from '../services/dataService';
 import { Building2, UserPlus, ArrowRight, Loader2, LogOut, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -166,7 +166,7 @@ export const OnboardingPage: React.FC = () => {
                 <input 
                   type="text"
                   value={businessNumber}
-                  onChange={(e) => setBusinessNumber(e.target.value)}
+                  onChange={(e) => setBusinessNumber(formatBusinessNumber(e.target.value))}
                   placeholder="예: 123-45-67890 (선택 사항)"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
                 />

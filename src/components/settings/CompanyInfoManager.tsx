@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { db, formatPhoneNumber } from '../../services/dataService';
+import { db, formatPhoneNumber, formatBusinessNumber } from '../../services/dataService';
 import { CompanyInfo } from '../../types';
 import { Building, Save, Check, Copy, History } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
@@ -41,6 +41,8 @@ export const CompanyInfoManager: React.FC = () => {
       let finalValue = value;
       if (field === 'phone' || field === 'fax') {
           finalValue = formatPhoneNumber(value);
+      } else if (field === 'businessNumber') {
+          finalValue = formatBusinessNumber(value);
       }
       setInfo({ ...info, [field]: finalValue });
   };
