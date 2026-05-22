@@ -35,11 +35,17 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
 
   useEffect(() => {
     // Load roles from DB
-    setRoles(db.getRoles());
+    const dbRoles = db.getRoles();
 
     if (staff) {
+      if (staff.role && !dbRoles.includes(staff.role)) {
+        setRoles([staff.role, ...dbRoles]);
+      } else {
+        setRoles(dbRoles);
+      }
       setFormData(staff);
     } else {
+      setRoles(dbRoles);
       // Set default avatar for new staff (random fallback)
       setFormData({
         name: '',
@@ -168,7 +174,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50 sticky top-0 z-10">
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <User className="text-blue-600" />
-            {isEdit ? '직원 정보 수정' : '신규 직원 등록'}
+            직원 정보 수정
           </h2>
           <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
             <X size={24} className="text-slate-500" />
@@ -399,14 +405,14 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
                 onClick={onClose} 
                 className="flex-1 py-3 text-slate-600 font-bold bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
              >
-                취소
+                취소하기
              </button>
              <button 
                 type="submit" 
                 className="flex-1 py-3 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2"
              >
                 <Save size={18} />
-                저장하기
+                정보 업데이트
              </button>
           </div>
 

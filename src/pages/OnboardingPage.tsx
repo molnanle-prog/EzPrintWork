@@ -34,6 +34,27 @@ export const OnboardingPage: React.FC = () => {
     setIsCreating(true);
     try {
       await db.createTenant(companyName.trim(), firebaseUser.uid, businessNumber.trim(), joinCode.trim());
+      
+      // 구글 시트 대표 가입 웹훅 비동기 전송
+      try {
+        const { GAS_WEBHOOK_URL } = await import('../constants');
+        await fetch(GAS_WEBHOOK_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify({
+            action: "signup_owner",
+            companyName: companyName.trim(),
+            businessNumber: businessNumber.trim(),
+            joinCode: joinCode.trim(),
+            ownerUid: firebaseUser.uid,
+            ownerEmail: firebaseUser.email || '',
+            ownerName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '대표'
+          })
+        });
+      } catch (err) {
+        console.error("Google Sheets Sync Error (signup_owner):", err);
+      }
+
       toast.success('회사가 성공적으로 생성되었습니다!');
       await refreshUser();
       navigate('/', { replace: true });

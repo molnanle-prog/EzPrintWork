@@ -9,9 +9,9 @@ interface UserProfileProps {
 export const UserProfile: React.FC<UserProfileProps> = ({ compact = false }) => {
   const { currentUser, firebaseUser, logout } = useAuth();
 
-  if (!firebaseUser || !currentUser) return null;
+  if (!currentUser) return null;
 
-  const photoURL = firebaseUser.photoURL || currentUser.photoURL;
+  const photoURL = firebaseUser?.photoURL || currentUser.photoURL;
 
   if (compact) {
     return (
@@ -49,8 +49,10 @@ export const UserProfile: React.FC<UserProfileProps> = ({ compact = false }) => 
         )}
       </div>
       <div className="flex-1 min-w-0">
-        <p className="text-base font-bold text-white truncate">{currentUser.displayName || firebaseUser.email}</p>
-        <p className="text-xs text-slate-400 uppercase font-bold tracking-wider">{currentUser.role}</p>
+        <p className="text-base font-bold text-white truncate">{currentUser.displayName || firebaseUser?.email || currentUser.email}</p>
+        <p className="text-xs text-slate-400 uppercase font-bold tracking-wider">
+          {currentUser.role === 'admin' ? '관리자' : (currentUser.role === 'staff' ? '직원' : currentUser.role)}
+        </p>
       </div>
       <button 
         onClick={logout}

@@ -69,6 +69,76 @@ export const NasManager: React.FC = () => {
       }
   };
 
+  // 직원을 위한 간단한 상태 대시보드 렌더링
+  if (!isAdmin) {
+    const isConnected = config.isEnabled && config.status === 'connected';
+
+    return (
+      <div className="max-w-4xl p-8 space-y-8 animate-in fade-in duration-500">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 flex items-center gap-3">
+              <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
+                <Globe size={22} />
+              </div>
+              클라우드 / NAS 연결 상태
+            </h3>
+            <p className="text-slate-500 dark:text-slate-400 mt-2 text-sm font-medium">
+              상위 관리자가 지정한 클라우드 및 사내 NAS 연동 상태를 실시간으로 모니터링합니다.
+            </p>
+          </div>
+        </div>
+
+        {/* Connection Status Card */}
+        <div className="bg-white dark:bg-slate-800 rounded-[2rem] shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden">
+          <div className="p-8">
+            <div className="flex flex-col md:flex-row items-center gap-8">
+              <div className={`w-24 h-24 rounded-[2rem] flex items-center justify-center shrink-0 shadow-inner
+                ${isConnected ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-slate-100 dark:bg-slate-900/30 text-slate-400'}`}
+              >
+                <Globe size={48} className={isConnected ? "animate-pulse" : ""} />
+              </div>
+              <div className="flex-1 text-center md:text-left space-y-4">
+                <div className="space-y-1.5">
+                  <div className={`inline-flex items-center gap-1.5 px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-wider
+                    ${isConnected ? 'bg-emerald-50 dark:bg-emerald-900/50 text-emerald-600' : 'bg-slate-50 dark:bg-slate-900/50 text-slate-400'}`}
+                  >
+                    <CheckCircle size={10} /> 
+                    {isConnected ? '정상 작동 중' : '연결 대기 상태'}
+                  </div>
+                  <h4 className="text-2xl font-black text-slate-800 dark:text-slate-100">
+                    {isConnected ? '클라우드 허브 정상 연결됨' : '관리자 설정 대기 중'}
+                  </h4>
+                </div>
+
+                <p className="text-sm font-medium text-slate-500 dark:text-slate-400 leading-relaxed">
+                  {isConnected 
+                    ? '상위 관리자가 설정한 회사의 공동 클라우드 및 NAS 연결이 정상 작동 중입니다. 작업 데이터가 실시간으로 안전하게 동기화됩니다.' 
+                    : '회사의 클라우드 동기화 또는 NAS 저장소가 아직 연결되지 않았거나 연동 대기 상태입니다. 상위 관리자가 시스템 설정을 완료하면 자동으로 동기화가 활성화됩니다.'}
+                </p>
+
+                {isConnected && config.path && (
+                  <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-800 flex items-center gap-2">
+                    <div className="bg-white dark:bg-slate-800 px-2.5 py-1 rounded-lg text-[9px] font-black text-slate-400 uppercase tracking-tighter shrink-0 border border-slate-100 dark:border-slate-700">Storage Path</div>
+                    <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-400 truncate">
+                      {config.path}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-slate-50 dark:bg-slate-900/50 px-8 py-5 border-t border-slate-100 dark:border-slate-800 flex items-center gap-3 text-slate-500 dark:text-slate-400 text-xs">
+            <Info size={14} className="text-blue-500 shrink-0" />
+            <span>본 화면은 일반 직원 계정용 조회 전용 뷰입니다. 서버 폴더 경로 변경은 관리자(대표자) 계정으로 로그인해야 가능합니다.</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-5xl p-8 space-y-8 animate-in fade-in duration-500">
       {/* Header */}

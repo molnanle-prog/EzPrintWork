@@ -190,7 +190,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       loading, 
       logout, 
       refreshUser,
-      isAuthenticated: !!firebaseUser,
+      isAuthenticated: !!firebaseUser || !!currentUser,
       loginCustomSession
     }}>
       {children}

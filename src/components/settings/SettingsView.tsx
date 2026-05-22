@@ -10,7 +10,8 @@ import { ProductManager } from './ProductManager';
 import { CompanyInfoManager } from './CompanyInfoManager';
 import { StatusManager } from './StatusManager'; 
 import { SmsManager } from './SmsManager'; // Added
-import { Users, ScrollText, Building2, Calculator, Database, Shield, Server, Lock, Package, Building, ListChecks, MessageSquare } from 'lucide-react';
+import { ProfileManager } from './ProfileManager';
+import { Users, ScrollText, Building2, Calculator, Database, Shield, Server, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const SettingsView: React.FC = () => {
@@ -18,17 +19,18 @@ export const SettingsView: React.FC = () => {
   const isAdmin = currentUser?.role === 'admin' || currentUser?.email === 'molnanle@gmail.com';
   
   // Default to 'nas' for regular users, 'staff' for admin
-  const [activeSubTab, setActiveSubTab] = useState(isAdmin ? 'staff' : 'nas');
+  const [activeSubTab, setActiveSubTab] = useState(isAdmin ? 'staff' : 'profile');
 
   useEffect(() => {
-    // If a regular user tries to access a restricted tab, redirect to NAS
-    if (!isAdmin && activeSubTab !== 'nas' && activeSubTab !== 'product') {
-        setActiveSubTab('nas');
+    // If a regular user tries to access a restricted tab, redirect to Profile
+    if (!isAdmin && activeSubTab !== 'profile' && activeSubTab !== 'nas') {
+        setActiveSubTab('profile');
     }
   }, [isAdmin, activeSubTab]);
 
   const renderContent = () => {
     switch (activeSubTab) {
+        case 'profile': return <ProfileManager />;
         case 'staff': return isAdmin ? <StaffManager /> : null;
         case 'company': return isAdmin ? <CompanyInfoManager /> : null;
         case 'status': return isAdmin ? <StatusManager /> : null; 
@@ -39,11 +41,12 @@ export const SettingsView: React.FC = () => {
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
         case 'nas': return <NasManager />;
         case 'backup': return isAdmin ? <BackupManager /> : null;
-        default: return <NasManager />;
+        default: return isAdmin ? <StaffManager /> : <ProfileManager />;
     }
   };
 
   const allMenuItems = [
+    { id: 'profile', label: '개인정보 변경', icon: User, adminOnly: false },
     { id: 'staff', label: '직원 관리', icon: Users, adminOnly: true },
     { id: 'company', label: '회사 정보', icon: Building, adminOnly: true },
     { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true }, 

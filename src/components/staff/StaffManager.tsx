@@ -7,6 +7,18 @@ import { StaffModal } from './StaffModal';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { UpgradeModal } from '../common/UpgradeModal';
+import { GAS_WEBHOOK_URL } from '../../constants';
+
+// 연락처 추출 유틸리티 함수
+const getStaffContact = (staff: Staff): string => {
+  const parts: string[] = [];
+  if (staff.phoneOffice) parts.push(`사무실: ${staff.phoneOffice}`);
+  if (staff.phone) parts.push(`개인: ${staff.phone}`);
+  if (staff.phoneCompany) parts.push(`회사: ${staff.phoneCompany}`);
+  if (staff.extensionNumber) parts.push(`내선: ${staff.extensionNumber}`);
+  return parts.length > 0 ? parts.join(' | ') : '';
+};
+
 
 // Firebase Secondary Auth imports for silent user creation/management
 import { initializeApp, getApp } from 'firebase/app';
@@ -42,7 +54,27 @@ export const StaffManager: React.FC = () => {
     const staff = staffList.find(s => s.id === id);
     if (!staff) return;
     try {
-        await db.updateStaff({ ...staff, active: !staff.active });
+        const nextActive = !staff.active;
+        await db.updateStaff({ ...staff, active: nextActive });
+
+        // 구글 시트 직원 활성화 상태 웹훅 전송
+        try {
+            const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+            const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+            await fetch(GAS_WEBHOOK_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                body: JSON.stringify({
+                    action: "active_staff",
+                    companyName,
+                    loginId: pureId,
+                    staffName: staff.name,
+                    active: nextActive
+                })
+            });
+        } catch (err) {
+            console.error("Google Sheets Sync Error (active_staff):", err);
+        }
     } catch (error) {
         showAlert(getErrorMessage(error));
     }
@@ -51,7 +83,28 @@ export const StaffManager: React.FC = () => {
   const handleDelete = async (id: string, name: string) => {
     if (await showConfirm(`'${name}' 직원을 정말 삭제하시겠습니까?\n\n삭제하더라도 과거 작업 내역의 담당자 기록은 유지됩니다.`)) {
       try {
+          const staff = staffList.find(s => s.id === id);
           await db.deleteStaff(id);
+
+          // 구글 시트 직원 삭제 웹훅 전송
+          if (staff) {
+              try {
+                  const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+                  const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+                  await fetch(GAS_WEBHOOK_URL, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                      body: JSON.stringify({
+                          action: "delete_staff",
+                          companyName,
+                          loginId: pureId,
+                          staffName: staff.name
+                      })
+                  });
+              } catch (err) {
+                  console.error("Google Sheets Sync Error (delete_staff):", err);
+              }
+          }
       } catch (error) {
           showAlert(getErrorMessage(error));
       }
@@ -171,8 +224,50 @@ export const StaffManager: React.FC = () => {
           // 2. 테넌트 내부 DB 정보 저장
           if (editingStaff) {
               await db.updateStaff(staff);
+
+              // 구글 시트 직원 수정 웹훅 전송
+              try {
+                  const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+                  const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+                  await fetch(GAS_WEBHOOK_URL, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                      body: JSON.stringify({
+                          action: "update_staff",
+                          companyName,
+                          loginId: pureId,
+                          password: staff.password || '',
+                          staffName: staff.name,
+                          staffRole: staff.role || '직원',
+                          contact: getStaffContact(staff)
+                      })
+                  });
+              } catch (err) {
+                  console.error("Google Sheets Sync Error (update_staff):", err);
+              }
           } else {
               await db.addStaff(staff);
+
+              // 구글 시트 직원 추가 웹훅 전송
+              try {
+                  const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+                  const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+                  await fetch(GAS_WEBHOOK_URL, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                      body: JSON.stringify({
+                          action: "add_staff",
+                          companyName,
+                          loginId: pureId,
+                          password: staff.password || '',
+                          staffName: staff.name,
+                          staffRole: staff.role || '직원',
+                          contact: getStaffContact(staff)
+                      })
+                  });
+              } catch (err) {
+                  console.error("Google Sheets Sync Error (add_staff):", err);
+              }
           }
           setIsModalOpen(false);
       } catch (error: any) {
@@ -188,6 +283,29 @@ export const StaffManager: React.FC = () => {
       try {
           await db.approveJoinRequest(request);
           showAlert(`${request.userName} 직원의 등록을 승인했습니다.`);
+
+          // 구글 시트 직원 승인 웹훅 전송
+          try {
+              const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+              const approvedStaff = db.getStaff().find(s => s.id === request.userId);
+              const pureId = approvedStaff?.loginId?.includes('@') ? approvedStaff.loginId.split('@')[0] : (approvedStaff?.loginId || request.userEmail.split('@')[0]);
+              
+              await fetch(GAS_WEBHOOK_URL, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                  body: JSON.stringify({
+                      action: "add_staff",
+                      companyName,
+                      loginId: pureId,
+                      password: approvedStaff?.password || '',
+                      staffName: request.userName,
+                      staffRole: approvedStaff?.role || '디자이너',
+                      contact: approvedStaff ? getStaffContact(approvedStaff) : ''
+                  })
+              });
+          } catch (err) {
+              console.error("Google Sheets Sync Error (approve_request/add_staff):", err);
+          }
       } catch (error) {
           showAlert(getErrorMessage(error));
       }

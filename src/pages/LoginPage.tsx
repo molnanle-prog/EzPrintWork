@@ -4,6 +4,7 @@ import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
+import { GAS_WEBHOOK_URL } from '../constants';
 
 export const LoginPage: React.FC = () => {
     const { loginCustomSession } = useAuth();
@@ -24,9 +25,6 @@ export const LoginPage: React.FC = () => {
     const [searchResults, setSearchResults] = useState<{ id: string; name: string }[]>([]);
     const [isSearchingCompany, setIsSearchingCompany] = useState(false);
     const [hasSearched, setHasSearched] = useState(false);
-
-    // 구글 시트 연동 웹훅 URL (대표님께서 발급받으신 주소로 나중에 교체해주세요)
-    const GAS_WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbyv8iMZs_3Pb-Dk3gJO7YEeFAOPA_DzD93YPHxyMHMQXN5-Xt0iQnRe1AoJiSY8EPuE/exec";
 
 
     const handleDownloadShortcut = () => {
@@ -91,11 +89,57 @@ IconFile=https://ez-hub.kr/favicon.ico
         }, 1000);
 
         try {
-            await signInWithPopup(auth, provider);
+            const result = await signInWithPopup(auth, provider);
+            const user = result.user;
             window.removeEventListener('focus', onFocus);
             if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
+
+            // 구글 시트 대표자 로그인 웹훅 비동기 전송
+            if (user) {
+                (async () => {
+                    try {
+                        const { doc, getDoc } = await import('firebase/firestore');
+                        const { db: firestoreDb } = await import('../services/firebase');
+                        
+                        // 1. users/{uid} 에서 tenantId 획득
+                        const userDocRef = doc(firestoreDb, 'users', user.uid);
+                        const userDocSnap = await getDoc(userDocRef);
+                        
+                        let tenantId = '';
+                        let userName = user.displayName || '';
+                        if (userDocSnap.exists()) {
+                            const uData = userDocSnap.data();
+                            tenantId = uData.tenantId || '';
+                            if (uData.name) userName = uData.name;
+                        }
+                        
+                        if (tenantId) {
+                            // 2. tenants/{tenantId} 에서 회사명 획득
+                            const tenantDocRef = doc(firestoreDb, 'tenants', tenantId);
+                            const tenantDocSnap = await getDoc(tenantDocRef);
+                            if (tenantDocSnap.exists()) {
+                                const tenantData = tenantDocSnap.data();
+                                const companyNameVal = tenantData.name || '';
+                                
+                                await fetch(GAS_WEBHOOK_URL, {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                                    body: JSON.stringify({
+                                        action: "login_owner",
+                                        companyName: companyNameVal,
+                                        ownerEmail: user.email || '',
+                                        ownerName: userName
+                                    })
+                                });
+                            }
+                        }
+                    } catch (err) {
+                        console.error("Google Sheets Sync Error (login_owner):", err);
+                    }
+                })();
+            }
         } catch (error: any) {
             window.removeEventListener('focus', onFocus);
             if (focusTimeoutId) clearTimeout(focusTimeoutId);
@@ -177,6 +221,40 @@ IconFile=https://ez-hub.kr/favicon.ico
 
             loginCustomSession(appUser, tenantPlan as 'free' | 'pro');
             toast.success(tenantName ? `[${tenantName}] 직원 로그인에 성공했습니다! 환영합니다.` : '직원 로그인에 성공했습니다! 환영합니다.');
+
+            // 구글 시트 직원 로그인 웹훅 비동기 전송
+            (async () => {
+                try {
+                    let realRole = userData.position || userData.role || '사원';
+                    
+                    try {
+                        const { doc, getDoc } = await import('firebase/firestore');
+                        const { db: firestoreDb } = await import('../services/firebase');
+                        const staffDocRef = doc(firestoreDb, `tenants/${tenantId}/staff`, userDoc.id);
+                        const staffDocSnap = await getDoc(staffDocRef);
+                        if (staffDocSnap.exists()) {
+                            const staffData = staffDocSnap.data();
+                            realRole = staffData.role || realRole;
+                        }
+                    } catch (roleErr) {
+                        console.warn("Failed to fetch custom staff role for webhook, using fallback:", roleErr);
+                    }
+
+                    await fetch(GAS_WEBHOOK_URL, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify({
+                            action: "login_staff",
+                            companyName: tenantName || '',
+                            loginId: loginId.trim(),
+                            staffName: userData.userName || userData.name || '사원',
+                            staffRole: realRole
+                        })
+                    });
+                } catch (err) {
+                    console.error("Google Sheets Sync Error (login_staff):", err);
+                }
+            })();
         } catch (error: any) {
             console.error("Staff login error:", error);
             toast.error('로그인 중 오류가 발생했습니다: ' + error.message);
