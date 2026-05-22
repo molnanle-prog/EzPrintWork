@@ -18,6 +18,7 @@ interface KanbanCardProps {
   isMyJob: boolean;
   isCompact?: boolean;
   currentUserId?: string; // Linear-style 단축키 배정을 위한 현재 사용자 ID
+  isTvMode?: boolean;
 }
 
 export const KanbanCard: React.FC<KanbanCardProps> = ({ 
@@ -29,7 +30,8 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   onDropOnCard,
   isMyJob,
   isCompact = false,
-  currentUserId
+  currentUserId,
+  isTvMode = false
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -316,14 +318,14 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   } 
   
   if (job.priority === Priority.VERY_URGENT) {
-    cardStyleClass = "bg-red-50/80 dark:bg-red-950/20 border-red-500 dark:border-red-900 border-2 neon-glow-red";
+    cardStyleClass = `bg-red-50/80 dark:bg-red-950/20 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} shadow-md`;
   } else if (job.priority === Priority.URGENT) {
-    cardStyleClass = "bg-amber-50/60 dark:bg-amber-950/10 border-amber-400 dark:border-amber-900 border neon-glow-amber";
+    cardStyleClass = `bg-orange-50/60 dark:bg-orange-950/10 ${isTvMode ? 'flowing-border-orange-lg' : 'flowing-border-orange'} shadow-sm`;
   } else if (!isDone) {
     if (daysRemaining < 0) {
-       cardStyleClass = "bg-rose-50/60 dark:bg-rose-950/20 border-rose-600 dark:border-rose-800 border-2 shadow-lg shadow-rose-200/20";
+       cardStyleClass = `bg-rose-50/60 dark:bg-rose-950/20 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} shadow-md`;
     } else if (daysRemaining <= 1) {
-       cardStyleClass = "bg-orange-50/40 dark:bg-orange-950/10 border-orange-400 dark:border-orange-900 border shadow-md animate-pulse";
+       cardStyleClass = `bg-orange-50/40 dark:bg-orange-950/10 ${isTvMode ? 'flowing-border-orange-lg' : 'flowing-border-orange'} shadow-sm`;
     } else if (!isMyJob) {
        if (daysRemaining <= 3) cardStyleClass = "bg-white dark:bg-slate-800 border-slate-400 dark:border-slate-600 shadow-sm";
        else if (daysRemaining <= 5) cardStyleClass = "bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 shadow-sm";
@@ -380,8 +382,149 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   }
 
   // ----------------------------------------------------------------------
+  // TV / MONITORING VIEW (대형 4K 화면 전용 고가독성 뷰)
+  // ----------------------------------------------------------------------
+  if (isTvMode) {
+    const getSimpleColor = (color?: string) => {
+      if (!color) return '미지정';
+      const lowercase = color.toLowerCase();
+      if (lowercase.includes('컬러') || lowercase.includes('4도') || lowercase.includes('8도') || lowercase.includes('칼라') || lowercase.includes('color')) {
+        return '컬러';
+      }
+      if (lowercase.includes('먹') || lowercase.includes('흑백') || lowercase.includes('1도') || lowercase.includes('흑') || lowercase.includes('mono') || lowercase.includes('gray')) {
+        return '흑백';
+      }
+      return color.replace(/\([^)]*\)/g, '').trim(); // 괄호 부분 제거 등 간소화
+    };
+
+    return (
+      <div 
+        draggable
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+        className={`
+          py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium
+          ${cardStyleClass}
+          active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
+        `}
+        onClick={() => onSelect(job)}
+      >
+        <style>{`
+          .backdrop-blur-premium {
+            backdrop-filter: blur(8px);
+          }
+        `}</style>
+
+        {/* 1. Header: Badges */}
+        <div className="flex justify-between items-start pointer-events-none">
+          <div className="flex gap-2 flex-wrap items-center">
+             {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-extrabold shadow-sm tracking-wide">MY</span>}
+             
+             {/* Priority Badge */}
+             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-bold shadow-sm`}>
+              {job.priority}
+             </span>
+
+             {/* Payment Badge */}
+             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-extrabold shadow-sm`}>
+               {job.paymentStatus || '결제대기'}
+             </span>
+
+             {/* Smart File Badge */}
+             {job.filePath ? (
+               <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-bold shadow-sm">
+                 <FileText size={12} />
+                 <span>파일</span>
+               </span>
+             ) : (
+               <span className="text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-extrabold shadow-sm">
+                 <ShieldAlert size={12} />
+                 <span>파일없음</span>
+               </span>
+             )}
+          </div>
+        </div>
+
+        {/* 2. Title and Client (Enlarged) */}
+        <div className="pointer-events-none flex flex-col gap-0.5">
+          <h4 className="font-black text-slate-800 dark:text-slate-100 text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1" title={job.title}>
+            {job.title}
+          </h4>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-bold leading-tight">{job.clientName}</p>
+        </div>
+
+        {/* 3. Specs & Giant Quantity Box */}
+        <div className="flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none">
+          <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-black flex-1 min-w-0 leading-tight">
+             <div className="truncate flex items-center gap-1.5">
+                <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📄</span>
+                <span className="truncate">{job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}</span>
+             </div>
+             <div className="truncate flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📏</span>
+                <span className="truncate">{job.specs.size || '규격 미지정'} ({getSimpleColor(job.specs.printColor)})</span>
+             </div>
+          </div>
+          <div className="shrink-0 flex flex-col items-center justify-center bg-blue-50 dark:bg-blue-950/30 px-2.5 py-1.5 rounded-lg border border-blue-100 dark:border-blue-900/40 shadow-sm text-center min-w-[70px]">
+             <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase tracking-widest font-black mb-0.5 leading-none">수량</span>
+             <span className="text-[20px] lg:text-[22px] text-blue-700 dark:text-blue-300 font-black leading-none whitespace-nowrap">
+                {job.specs.quantity || '미지정'}
+             </span>
+          </div>
+        </div>
+
+        {/* 4. Footer: Assignee & Due Date (Enlarged) */}
+        <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none shrink-0">
+          <div className="flex items-center gap-2 min-w-0">
+            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
+               {isMultiStaff ? <Users size={14} /> : <User size={14} />}
+            </div>
+            <span className={`text-[12px] font-black truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300'}`} title={staffName}>
+                {staffName}
+            </span>
+          </div>
+          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-lg border-2 border-slate-100 dark:border-slate-800 shrink-0 font-black text-xs ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-200 dark:border-red-900/60' : ''}`}>
+            {job.priority === Priority.VERY_URGENT && <AlertTriangle size={13} className="text-red-500" />}
+            <span className="font-mono text-xs">
+              {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ----------------------------------------------------------------------
   // STANDARD VIEW (일반 정보 가득 카드형)
   // ----------------------------------------------------------------------
+  const getCleanPrintColor = (color?: string) => {
+    if (!color) return '도수 미지정';
+    const lowercase = color.toLowerCase();
+    let side = '';
+    if (lowercase.includes('단면')) side = '단면';
+    else if (lowercase.includes('양면')) side = '양면';
+    
+    let colorType = '';
+    if (lowercase.includes('컬러') || lowercase.includes('4도') || lowercase.includes('8도') || lowercase.includes('칼라') || lowercase.includes('color')) {
+      colorType = '컬러';
+    } else if (lowercase.includes('흑백') || lowercase.includes('먹') || lowercase.includes('흑') || lowercase.includes('mono') || lowercase.includes('gray')) {
+      colorType = '흑백';
+    } else if (lowercase.includes('1도')) {
+      colorType = '1도';
+    } else if (lowercase.includes('2도')) {
+      colorType = '2도';
+    } else {
+      colorType = color.replace(/\([^)]*\)/g, '').trim();
+    }
+    
+    if (side && colorType) return `${side}, ${colorType}`;
+    return colorType || color;
+  };
+
+  const showDetails = isHovered || isTvMode;
+
   return (
     <div 
       draggable
@@ -392,30 +535,26 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={`
-        p-3 rounded-xl shadow-sm border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-2.5 relative overflow-hidden backdrop-blur-premium
+        p-3 rounded-xl shadow-sm border transition-all duration-300 cursor-grab active:cursor-grabbing group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium
         ${cardStyleClass}
-        active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
+        active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50
       `}
       onClick={() => onSelect(job)}
     >
-      {/* 프리미엄 네온 키프레임 애니메이션용 인라인 스타일 */}
+      {/* 프리미엄 블러 효과 인라인 스타일 */}
       <style>{`
-        @keyframes neonPulseRed {
-          0%, 100% { box-shadow: 0 0 3px rgba(239, 68, 68, 0.25), inset 0 0 1px rgba(239, 68, 68, 0.1); }
-          50% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.55), inset 0 0 3px rgba(239, 68, 68, 0.25); border-color: rgba(239, 68, 68, 0.85); }
-        }
-        @keyframes neonPulseAmber {
-          0%, 100% { box-shadow: 0 0 3px rgba(245, 158, 11, 0.18), inset 0 0 1px rgba(245, 158, 11, 0.08); }
-          50% { box-shadow: 0 0 9px rgba(245, 158, 11, 0.45), inset 0 0 3px rgba(245, 158, 11, 0.2); border-color: rgba(245, 158, 11, 0.75); }
-        }
-        .neon-glow-red {
-          animation: neonPulseRed 2s infinite alternate;
-        }
-        .neon-glow-amber {
-          animation: neonPulseAmber 2.5s infinite alternate;
-        }
         .backdrop-blur-premium {
           backdrop-filter: blur(8px);
+        }
+        .custom-horizontal-scrollbar::-webkit-scrollbar {
+          height: 3px;
+        }
+        .custom-horizontal-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .custom-horizontal-scrollbar::-webkit-scrollbar-thumb {
+          background: rgba(156, 163, 175, 0.3);
+          border-radius: 9999px;
         }
       `}</style>
 
@@ -434,21 +573,21 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
              {job.paymentStatus || '결제대기'}
            </span>
 
-           {/* 원본 파일 유/무 표시 스마트 배지 (EzImpo 핵심) */}
+           {/* 원본 파일 유/무 표시 스마트 배지 */}
            {job.filePath ? (
              <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-bold shadow-sm" title={`원본 파일 등록됨\n${job.filePath}`}>
                <FileText size={10} />
                <span>파일</span>
              </span>
            ) : (
-             <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-extrabold shadow-sm animate-pulse" title="인쇄용 원본 파일 경로가 지정되지 않았습니다!">
+             <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-extrabold shadow-sm" title="인쇄용 원본 파일 경로가 지정되지 않았습니다!">
                <ShieldAlert size={10} />
                <span>파일없음</span>
              </span>
            )}
         </div>
         
-        {/* Grip Icon & More menu (Always interactable on hover) */}
+        {/* Grip Icon & More menu */}
         <div className="flex gap-1 text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0">
           <GripHorizontal size={16} className="cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity hover:text-slate-500" />
           <button className="hover:text-slate-600 dark:hover:text-slate-400 transition-colors p-0.5" title="추가 메뉴">
@@ -459,121 +598,79 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       
       {/* 2. Main Title and Client */}
       <div className="pointer-events-none flex flex-col gap-0.5">
-        <h4 className="font-extrabold text-slate-800 dark:text-slate-100 text-[14px] lg:text-[15px] leading-snug truncate" title={job.title}>
+        <h4 className="font-black text-slate-800 dark:text-slate-100 text-[15px] lg:text-[16px] leading-snug truncate" title={job.title}>
           {job.title}
         </h4>
-        <p className="text-xs text-slate-400 dark:text-slate-400 truncate">{job.clientName}</p>
+        <p className="text-xs font-bold text-slate-400 dark:text-slate-400 truncate">{job.clientName}</p>
       </div>
 
-      {/* 3. 인쇄소 특화 프리미엄 사양(Spec) 표시부 */}
-      <div className="grid grid-cols-2 gap-1.5 bg-slate-50/60 dark:bg-slate-900/30 p-2 rounded-xl border border-slate-100 dark:border-slate-800/60 text-[10px] text-slate-600 dark:text-slate-300 font-bold leading-tight pointer-events-none">
-        <div className="truncate" title={job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}>
-           📄 {job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}
-        </div>
-        <div className="truncate">
-           📏 {job.specs.size || '규격 미지정'}
-        </div>
-        <div className="truncate">
-           🎨 {job.specs.printColor || '도수 미지정'}
-        </div>
-        <div className="truncate text-blue-600 dark:text-blue-400">
-           📦 {job.specs.quantity || '수량 미지정'}
-        </div>
-      </div>
-
-      {/* 4. 세부 품목(Sub-Job) 개별 체크박스 리스트 */}
-      {subJobsList.length > 0 && (
-         <div className="flex flex-col gap-1 border-t border-slate-100 dark:border-slate-800/80 pt-2 pointer-events-auto">
-            <div className="flex items-center justify-between text-[9px] font-black text-slate-400 dark:text-slate-500 uppercase tracking-wider mb-0.5">
-               <span>세부 품목 ({subJobsList.filter(s => s.completed).length}/{subJobsList.length})</span>
-               <span className="font-mono text-blue-600">{job.progress}%</span>
-            </div>
-            <div className="flex flex-wrap gap-1 max-h-[72px] overflow-y-auto custom-scrollbar">
-               {subJobsList.map((sub, idx) => (
-                  <button
-                     key={sub.id || idx}
-                     onClick={(e) => handleToggleSubJob(e, idx)}
-                     className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] border transition-all font-bold select-none
-                       ${sub.completed 
-                         ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400' 
-                         : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-400 hover:bg-blue-50/30'}`}
-                  >
-                     <div className={`w-3 h-3 rounded-full flex items-center justify-center shrink-0 border
-                       ${sub.completed 
-                         ? 'bg-emerald-500 border-emerald-600 text-white' 
-                         : 'border-slate-300 dark:border-slate-500'}`}
-                     >
-                        {sub.completed && <CheckCircle size={8} className="stroke-[3]" />}
-                     </div>
-                     <span className="truncate max-w-[80px]">{sub.type}</span>
-                  </button>
-               ))}
-            </div>
-         </div>
-      )}
-
-      {/* 5. Footer: Assignee & Due Date */}
-      <div className="flex items-center justify-between pt-2 border-t border-slate-100 dark:border-slate-800/80 text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 pointer-events-none shrink-0">
-        <div className="flex items-center gap-1.5 min-w-0">
-          <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-400'}`}>
-             {isMultiStaff ? <Users size={12} /> : <User size={12} />}
+      {/* 3. 상세 정보 컨테이너 (스펙 그리드, 품목 배지, 담당자/D-day 푸터 통합 아코디언) */}
+      <div 
+        className={`
+          flex flex-col gap-2.5 transition-all duration-300 ease-in-out
+          ${showDetails 
+            ? 'max-h-[350px] opacity-100 mt-2 translate-y-0 visible' 
+            : 'max-h-0 opacity-0 overflow-hidden mt-0 -translate-y-2 invisible pointer-events-none'}
+        `}
+      >
+        {/* 3-A. 인쇄소 특화 프리미엄 사양(Spec) 그리드 */}
+        <div className="grid grid-cols-2 gap-2 bg-slate-50/70 dark:bg-slate-900/40 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 text-slate-700 dark:text-slate-200 font-extrabold leading-tight pointer-events-none">
+          <div className="truncate text-[12px] lg:text-[13px] font-black flex items-center gap-1" title={job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}>
+             <span className="shrink-0 text-[13px]">📄</span>
+             <span className="truncate">{job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}</span>
           </div>
-          <span className={`text-[10px] font-bold truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
-              {staffName}
-          </span>
+          <div className="truncate text-[12px] lg:text-[13px] font-black flex items-center gap-1" title={job.specs.size || '규격 미지정'}>
+             <span className="shrink-0 text-[13px]">📏</span>
+             <span className="truncate">{job.specs.size || '규격 미지정'}</span>
+          </div>
+          <div className="truncate text-[12px] lg:text-[13px] font-black flex items-center gap-1" title={job.specs.printColor || '도수 미지정'}>
+             <span className="shrink-0 text-[13px]">🎨</span>
+             <span className="truncate">{getCleanPrintColor(job.specs.printColor)}</span>
+          </div>
+          <div className="truncate text-[12px] lg:text-[13px] font-black text-blue-600 dark:text-blue-400 flex items-center gap-1" title={job.specs.quantity || '수량 미지정'}>
+             <span className="shrink-0 text-[13px]">📦</span>
+             <span className="truncate">{job.specs.quantity || '수량 미지정'}</span>
+          </div>
         </div>
-        <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-2 py-0.5 rounded-md border border-slate-100 dark:border-slate-800 shrink-0 font-bold ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-100 dark:border-red-900/60' : ''}`}>
-          {job.priority === Priority.VERY_URGENT && <AlertTriangle size={11} className="text-red-500 animate-pulse" />}
-          <span className="font-mono text-[10px]">
-            {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}
-          </span>
+
+        {/* 3-B. 세부 품목 품목명 가로 박스 배지 나열형 개편 (체크박스 제거, 접혀 있을 땐 숨김) */}
+        {subJobsList.length > 0 && (
+           <div className="flex flex-col gap-1 border-t border-slate-100 dark:border-slate-800/80 pt-2.5 pointer-events-auto">
+              <div className="flex flex-wrap gap-1 max-h-[48px] overflow-x-auto custom-horizontal-scrollbar pb-1">
+                 {subJobsList.map((sub, idx) => (
+                    <span
+                       key={sub.id || idx}
+                       className={`
+                         px-2 py-0.5 rounded-full text-[10px] font-bold border shadow-sm shrink-0 select-none
+                         ${sub.completed 
+                           ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400' 
+                           : 'bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300'}`}
+                    >
+                       {sub.type}
+                    </span>
+                 ))}
+              </div>
+           </div>
+        )}
+
+        {/* 3-C. Footer: Assignee & Due Date */}
+        <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 dark:border-slate-800/80 text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 pointer-events-none shrink-0">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
+               {isMultiStaff ? <Users size={12} /> : <User size={12} />}
+            </div>
+            <span className={`text-[10px] font-bold truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
+                {staffName}
+            </span>
+          </div>
+          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-2 py-0.5 rounded-md border border-slate-100 dark:border-slate-800 shrink-0 font-bold ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-100 dark:border-red-900/60' : ''}`}>
+            {job.priority === Priority.VERY_URGENT && <AlertTriangle size={11} className="text-red-500" />}
+            <span className="font-mono text-[10px]">
+              {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}
+            </span>
+          </div>
         </div>
       </div>
-
-      {/* 6. 카드 호버 시 나타나는 스마트 슬라이드 퀵 액션 패널 (Trello/Jira style) */}
-      {isHovered && (
-         <div 
-            className="absolute top-0 right-0 h-full bg-slate-50/95 dark:bg-slate-800/95 border-l border-slate-200 dark:border-slate-700 flex flex-col justify-center items-center gap-2.5 px-2.5 py-2 animate-in slide-in-from-right duration-200 z-30 shadow-2xl pointer-events-auto cursor-default"
-            onClick={(e) => e.stopPropagation()} 
-         >
-            {/* A. NAS 폴더 열기 (Electron 브릿지) */}
-            <button
-               onClick={handleOpenNASFolder}
-               className={`p-2 rounded-xl border flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow-sm
-                 ${job.filePath 
-                   ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700 hover:shadow-blue-500/20' 
-                   : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-800 opacity-60 cursor-not-allowed'}`}
-               title={job.filePath ? `로컬 NAS 원본 폴더 열기\n(${job.filePath})` : '설정된 파일 경로가 없습니다'}
-               disabled={!job.filePath}
-            >
-               <FolderOpen size={16} />
-            </button>
-
-            {/* B. EzImpo 터잡기 엔진 작동 및 Hot Folder 전송 */}
-            <button
-               onClick={(e) => { e.stopPropagation(); handleEzImpoTrigger(); }}
-               className={`p-2 rounded-xl border flex items-center justify-center transition-all hover:scale-105 active:scale-95 shadow-sm
-                 ${job.filePath 
-                   ? 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 hover:shadow-emerald-500/20' 
-                   : 'bg-slate-100 dark:bg-slate-700 text-slate-400 dark:text-slate-600 border-slate-200 dark:border-slate-800 opacity-60 cursor-not-allowed'}`}
-               title={job.filePath ? 'EzImpo 자동 터잡기 엔진 작동 및 Hot Folder 파일 전송' : '파일 경로가 설정되어야 작동 가능합니다'}
-               disabled={!job.filePath}
-            >
-               <Play size={16} className="fill-current" />
-            </button>
-
-            <div className="w-6 h-px bg-slate-200 dark:bg-slate-700"></div>
-
-            {/* C. 상세 보기 편집 모달 열기 */}
-            <button
-               onClick={(e) => { e.stopPropagation(); onSelect(job); }}
-               className="p-2 bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-600 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-600 hover:border-blue-400 transition-all hover:scale-105 active:scale-95 shadow-sm"
-               title="상세 수정 모달 열기"
-            >
-               <MoreVertical size={16} />
-            </button>
-         </div>
-      )}
     </div>
   );
 };

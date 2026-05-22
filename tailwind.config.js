@@ -48,6 +48,10 @@ module.exports = {
             '0%': { transform: 'translateX(-8px)', opacity: '0' },
             '100%': { transform: 'translateX(0)', opacity: '1' },
         },
+        'pulse-gentle': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.75' },
+        },
       },
       animation: {
         'in': 'fade-in 0.5s ease-out',
@@ -59,6 +63,7 @@ module.exports = {
         'slide-in-from-top-1': 'slide-in-from-top-1 0.2s ease-out',
         'slide-in-from-top-2': 'slide-in-from-top-2 0.2s ease-out',
         'slide-in-from-left-2': 'slide-in-from-left-2 0.3s ease-out',
+        'pulse-slow': 'pulse-gentle 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
       },
     },
   },

@@ -272,15 +272,18 @@ export class DataService {
     private async addEntity(col: string, entity: any) {
         if (!this.tenantId) return;
         const id = entity.id || doc(collection(firestore, `tenants/${this.tenantId}/${col}`)).id;
-        await setDoc(doc(firestore, `tenants/${this.tenantId}/${col}/${id}`), { 
+        const dataToSave = { 
             ...entity, 
             id,
             createdAt: entity.createdAt || new Date().toISOString() 
-        });
+        };
+        const cleanData = JSON.parse(JSON.stringify(dataToSave));
+        await setDoc(doc(firestore, `tenants/${this.tenantId}/${col}/${id}`), cleanData);
     }
     private async updateEntity(col: string, id: string, entity: any) {
         if (!this.tenantId) return;
-        await updateDoc(doc(firestore, `tenants/${this.tenantId}/${col}/${id}`), entity);
+        const cleanEntity = JSON.parse(JSON.stringify(entity));
+        await updateDoc(doc(firestore, `tenants/${this.tenantId}/${col}/${id}`), cleanEntity);
     }
     private async deleteEntity(col: string, id: string) {
         if (!this.tenantId) return;
@@ -313,9 +316,10 @@ export class DataService {
             jobs.forEach(job => {
                 if (!job.id) return;
                 const { id, ...data } = job;
+                const cleanData = JSON.parse(JSON.stringify(data));
                 const jobRef = doc(firestore, `tenants/${this.tenantId}/jobs/${id}`);
                 // Use set with merge: true instead of update to avoid "No document to update" errors
-                batch.set(jobRef, data, { merge: true });
+                batch.set(jobRef, cleanData, { merge: true });
             });
             await batch.commit();
         } catch (error) {

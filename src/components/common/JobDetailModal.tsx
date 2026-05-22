@@ -85,7 +85,7 @@ const TIME_OPTIONS = (() => {
 })();
 const AFTER_HOURS_VALUE = '19:00';
 
-const SpecSelect = ({ label, value, options, onChange, onAdd, icon, suffix, subLabel }: any) => {
+const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix, subLabel }: any) => {
     const isCustomValue = value && options.length > 0 && !options.includes(value);
     const [forceDirect, setForceDirect] = useState(false);
     const isDirect = isCustomValue || forceDirect || options.length === 0;

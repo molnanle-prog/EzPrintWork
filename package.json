@@ -7,10 +7,12 @@
   "scripts": {
     "start": "electron .",
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "vite build",
     "serve": "vite preview",
     "lint": "tsc --noEmit",
-    "package": "electron-builder"
+    "package": "electron-builder",
+    "deploy": "node scripts/deploy.js",
+    "deploy:app": "node scripts/deploy-app.js"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",

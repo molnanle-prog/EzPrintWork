@@ -56,10 +56,25 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
 
 export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => {
   const { tenantPlan } = useAuth();
+  const [isTvMode, setIsTvMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ezprint_tv_mode') === 'true';
+    }
+    return false;
+  });
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [selectedSearchJob, setSelectedSearchJob] = useState<Job | null>(null);
   const [staff, setStaff] = useState<Staff[]>([]);
+
+  useEffect(() => {
+    const handleTvModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      setIsTvMode(customEvent.detail.isTvMode);
+    };
+    window.addEventListener('ezprint-tv-mode-change', handleTvModeChange);
+    return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
+  }, []);
   const [companyName, setCompanyName] = useState('EzPrintWork');
   const [isElectron, setIsElectron] = useState(false);
   const [showDownloadBanner, setShowDownloadBanner] = useState(() => {
@@ -153,7 +168,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     <div className={containerClass} style={{ opacity: isPinned ? opacity : 1 }}>
       
       {/* Title Bar */}
-      <div className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors ${isPinned ? 'bg-blue-900' : 'bg-slate-900 dark:bg-slate-950'}`}>
+      <div className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors ${isPinned ? 'bg-blue-900' : 'bg-slate-900 dark:bg-slate-950'} ${isTvMode ? 'hidden' : ''}`}>
           <div className="flex items-center gap-2 px-3 text-slate-300">
               <Printer size={isPinned ? 14 : 16} className={isPinned ? "text-yellow-400" : "text-blue-500"} />
               <span className={`font-bold tracking-wide ${isPinned ? 'text-[10px]' : 'text-xs'}`}>
@@ -164,7 +179,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
       <div className="flex-1 flex overflow-hidden relative">
         {/* Sidebar - Hover based expansion */}
-        {!isPinned && (
+        {!isPinned && !isTvMode && (
           <aside 
               className={`hidden lg:flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-2xl transition-all duration-300 ease-out shrink-0 z-50 border-r border-slate-800 ${isSidebarExpanded ? 'w-72' : 'w-14'}`}
               onMouseEnter={() => setIsSidebarExpanded(true)}
@@ -299,7 +314,7 @@ IconFile=https://ez-hub.kr/favicon.ico
         )}
 
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-            {!isPinned && (
+            {!isPinned && !isTvMode && (
                 <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-4 md:px-5 lg:px-7">
                     <div className="flex items-baseline gap-3">
                         <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg md:text-xl">
@@ -335,7 +350,7 @@ IconFile=https://ez-hub.kr/favicon.ico
             )}
             
             {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
-            {!isElectron && showDownloadBanner && !isPinned && (
+            {!isElectron && showDownloadBanner && !isPinned && !isTvMode && (
                 <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
@@ -374,7 +389,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                 </div>
             )}
             
-            <div className={`flex-1 flex flex-col min-h-0 relative bg-slate-100 dark:bg-slate-900 ${isPinned ? 'p-1' : 'p-2 md:p-3 lg:p-4'}`}>
+            <div className={`flex-1 flex flex-col min-h-0 relative bg-slate-100 dark:bg-slate-900 ${isPinned ? 'p-1' : isTvMode ? 'p-0.5' : 'p-2 md:p-3 lg:p-4'}`}>
                 {children}
             </div>
             
@@ -400,7 +415,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                 </div>
             )}
             
-            <ChatWidget />
+            {!isTvMode && <ChatWidget />}
         </main>
       </div>
 

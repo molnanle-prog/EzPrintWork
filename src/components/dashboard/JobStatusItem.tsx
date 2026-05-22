@@ -45,17 +45,17 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
   let dateTextStyles = "";
 
   if (job.priority === Priority.VERY_URGENT) {
-    containerStyles += " bg-red-50 dark:bg-red-900/20 border-red-500 border-2 shadow-sm ring-1 ring-red-200 dark:ring-red-800 animate-pulse";
+    containerStyles += " bg-red-50 dark:bg-red-900/20 flowing-border-red-sm shadow-sm";
     priorityBadgeStyles = "bg-red-600 text-white shadow-sm";
   } else if (job.priority === Priority.URGENT) {
-    containerStyles += " bg-red-50/50 dark:bg-red-900/10 border-red-300 dark:border-red-800 border shadow-sm animate-pulse";
+    containerStyles += " bg-red-50/50 dark:bg-red-900/10 flowing-border-orange-sm shadow-sm";
     priorityBadgeStyles = "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800";
   } else {
     if (daysRemaining < 0 && !isDone) {
-       containerStyles += " bg-slate-50 dark:bg-slate-800 border-slate-400 dark:border-slate-500 border shadow-sm animate-pulse";
+       containerStyles += " bg-slate-50 dark:bg-slate-800 flowing-border-red-sm shadow-sm";
        dateTextStyles = "text-slate-800 dark:text-slate-200 font-extrabold";
     } else if (daysRemaining <= 1 && !isDone) {
-       containerStyles += " bg-orange-50/50 dark:bg-orange-900/10 border-orange-300 dark:border-orange-800 border shadow-sm animate-pulse";
+       containerStyles += " bg-orange-50/50 dark:bg-orange-900/10 flowing-border-orange-sm shadow-sm";
        dateTextStyles = "text-red-600 dark:text-red-400 font-bold";
     } else if (daysRemaining <= 3) {
        containerStyles += " bg-white dark:bg-slate-700 border-slate-400 dark:border-slate-500 border transition-all hover:shadow-lg shadow-sm";

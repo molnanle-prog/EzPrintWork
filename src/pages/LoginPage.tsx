@@ -753,14 +753,14 @@ IconFile=https://ez-hub.kr/favicon.ico
                         <span 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Setup.exe';
-                                link.download = 'EzPrintWork-Setup.exe';
+                                link.href = '/downloads/EzPrintWork-Setup.zip';
+                                link.download = 'EzPrintWork-Setup.zip';
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);
                             }} 
-                            className="inline-block ml-1 text-slate-800/10 hover:text-slate-500/30 cursor-default select-none text-[8px] transition-colors"
-                            title=""
+                            className="inline-block ml-1 text-slate-600 hover:text-slate-400 cursor-pointer select-none text-sm transition-colors font-medium"
+                            title="EzPrintWork 데스크톱 앱 다운로드"
                         >ⓓ</span>
                     </p>
                 </footer>

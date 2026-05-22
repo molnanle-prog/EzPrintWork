@@ -6,7 +6,7 @@ import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanColumn } from './KanbanColumn';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
-import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users } from 'lucide-react';
+import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv } from 'lucide-react';
 
 interface KanbanBoardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -23,6 +23,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     return saved ? JSON.parse(saved) : [];
   });
   const [showFilterPopover, setShowFilterPopover] = useState(false);
+  const [isTvMode, setIsTvMode] = useState<boolean>(() => {
+    return localStorage.getItem('ezprint_tv_mode') === 'true';
+  });
   
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
@@ -340,7 +343,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             filter: invert(1);
         }
       `}</style>
-      <div className="flex flex-col md:flex-row justify-between p-2 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 items-stretch md:items-center shadow-sm z-20 relative flex-none gap-2">
+      <div className={`flex flex-col md:flex-row justify-between p-2 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 items-stretch md:items-center shadow-sm z-20 relative flex-none gap-2 ${isTvMode ? 'hidden' : ''}`}>
         {/* Left/Middle: Live Smart Filter Controls */}
         <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
           {/* Real-time search bar */}
@@ -475,6 +478,24 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             )}
           </div>
 
+          {/* TV 모드 (모니터링 모드) 토글 버튼 */}
+          <button
+            onClick={() => {
+              const nextVal = !isTvMode;
+              setIsTvMode(nextVal);
+              localStorage.setItem('ezprint_tv_mode', String(nextVal));
+              window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all border hover:scale-105 active:scale-95 select-none
+              ${isTvMode 
+                ? 'bg-purple-600 border-purple-600 text-white shadow-lg shadow-purple-500/20 hover:bg-purple-700' 
+                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-purple-400'}`}
+            title="대형 화면용 모니터링 모드로 전환합니다"
+          >
+            <Tv size={14} />
+            <span>모니터링 모드</span>
+          </button>
+
           {/* Add Job button */}
           <button 
             onClick={() => setIsCreatingJob(true)}
@@ -527,6 +548,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                     currentUserId={currentUser?.id}
                     isCompact={statusDef.key === 'DELIVERY' || visibleStatusDefinitions.length > 5}
                     showAd={tenantPlan === 'free' && statusDef.key === adStatusKey}
+                    isTvMode={isTvMode}
                 />
             </div>
           ))}
@@ -560,6 +582,20 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           onUpdate={handleCreateJob}
           isNew={true}
         />
+      )}
+
+      {isTvMode && (
+        <button
+          onClick={() => {
+            setIsTvMode(false);
+            localStorage.setItem('ezprint_tv_mode', 'false');
+            window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
+          }}
+          className="fixed top-3 right-3 z-[9999] flex items-center gap-2 px-4 py-2.5 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-black backdrop-blur-md"
+        >
+          <Tv size={14} className="text-purple-400 animate-pulse" />
+          <span>일반 화면으로 복원 (모니터링 끄기)</span>
+        </button>
       )}
     </div>
   );
