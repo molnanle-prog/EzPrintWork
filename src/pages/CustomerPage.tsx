@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../services/dataService';
-import { Users, Search, Plus, Filter, MoreHorizontal, Mail, Phone, Building, Download, Upload } from 'lucide-react';
+import { Users, User, Search, Plus, Filter, MoreHorizontal, Mail, Phone, Building, Download, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 
 export const CustomerPage: React.FC = () => {

@@ -20,6 +20,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "better-sqlite3": "^12.6.2",
     "crypto-js": "^4.2.0",
+    "date-fns": "^4.3.0",
     "firebase": "^12.13.0",
     "framer-motion": "^12.38.0",
     "html2canvas": "^1.4.1",

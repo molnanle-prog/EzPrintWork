@@ -48,7 +48,19 @@ export const getErrorMessage = (error: any): string => {
     return message;
 };
 
-export const calculateEstimate = (specs: any, config: PricingConfig) => {
+export interface EstimateResult {
+    paperCost: number;
+    printCost: number;
+    processingCost: number;
+    totalCost: number;
+    recommendedPrice: number;
+    subtotal?: number;
+    tax?: number;
+    total?: number;
+    details?: any[];
+}
+
+export const calculateEstimate = (specs: any, config: PricingConfig): EstimateResult => {
     const qtyStr = specs.quantity?.toString().replace(/[^0-9]/g, '') || '0';
     const qty = parseInt(qtyStr) || 0;
     if (qty === 0) return { paperCost: 0, printCost: 0, processingCost: 0, totalCost: 0, recommendedPrice: 0 };
@@ -772,6 +784,62 @@ export class DataService {
     async addLeave(leave: StaffLeave) { await this.addEntity('leaves', leave); }
     async updateLeave(leave: StaffLeave) { const { id, ...data } = leave; await this.updateEntity('leaves', id, data); }
     async deleteLeave(id: string) { await this.deleteEntity('leaves', id); }
+
+    // --- Added for Resolving TS Compiler & Hybrid Integration Errors ---
+    async addMessage(msg: ChatMessage) {
+        await this.addEntity('messages', msg);
+    }
+
+    searchJobs(q: string): Job[] {
+        const t = q.toLowerCase();
+        return this.getAllJobs().filter(j => 
+            j.title.toLowerCase().includes(t) || 
+            j.clientName.toLowerCase().includes(t) || 
+            (j.contactPerson && j.contactPerson.toLowerCase().includes(t))
+        );
+    }
+
+    getActionLogs(): { success: boolean; data: any[]; error?: string } {
+        try {
+            const logs: any[] = [];
+            this.getAllJobs().forEach(j => {
+                if (j.history) {
+                    j.history.forEach((h, idx) => {
+                        const staffMember = this.getStaff().find(s => s.id === h.staffId);
+                        const staffName = staffMember ? staffMember.name : '시스템';
+                        logs.push({
+                            id: `${j.id}_${idx}`,
+                            timestamp: h.timestamp,
+                            userName: staffName,
+                            machineId: 'Cloud Server',
+                            actionType: h.action,
+                            details: `[${j.title}] ${h.details}`
+                        });
+                    });
+                }
+            });
+            logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+            return { success: true, data: logs };
+        } catch (e) {
+            return { success: false, data: [], error: e instanceof Error ? e.message : String(e) };
+        }
+    }
+
+    exportCustomersToCsv(): { success: boolean; data: string } {
+        const clients = this.getClients();
+        const headers = ['\uFEFF회사명/거래처', '담당자', '연락처', '등록일']; // UTF-8 BOM to prevent Excel encoding issues
+        const rows = clients.map(c => [
+            c.name,
+            c.contactPerson || '',
+            c.phone || '',
+            (c as any).createdAt || ''
+        ]);
+        const csvContent = [
+            headers.join(','), 
+            ...rows.map(r => r.map(val => `"${val.replace(/"/g, '""')}"`).join(','))
+        ].join('\n');
+        return { success: true, data: csvContent };
+    }
 }
 
 export const db = new DataService();

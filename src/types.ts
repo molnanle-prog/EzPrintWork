@@ -184,13 +184,15 @@ export interface NasConfig {
 
 export interface SmsConfig {
   mode: 'app' | 'api'; 
-  provider: 'coolsms' | 'aligo';
+  provider: 'coolsms' | 'aligo' | 'solapi' | 'munjavibe' | 'gabia';
   apiKey: string;
   apiSecret: string;
   senderNumber: string; 
   pfId?: string;
   useAlimtalk?: boolean;
   alimtalkTemplates?: Record<string, string>;
+  completedMessageTemplate?: string;
+  sendOnComplete?: boolean;
 }
 
 export interface CompanyInfo {

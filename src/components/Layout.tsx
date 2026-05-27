@@ -265,35 +265,24 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <UserProfile compact={!isSidebarExpanded} />
                     </div>
 
-                    {/* Download Shortcut Button */}
-                    <button 
-                        onClick={() => {
-                            const isConfirmed = window.confirm('바탕화면 바로가기 아이콘 파일을 다운로드하시겠습니까?\n\n다운로드 후, 다운로드 폴더의 파일을 컴퓨터 바탕화면에 마우스로 끌어다(드래그) 놓고 사용하세요!');
-                            if (!isConfirmed) return;
-
-                            const shortcutContent = `[InternetShortcut]
-URL=https://ez-hub.kr/ezpw/
-IDList=
-HotKey=0
-IconIndex=0
-IconFile=https://ez-hub.kr/favicon.ico
-`;
-                            const blob = new Blob([shortcutContent], { type: 'text/plain;charset=utf-8' });
-                            const url = window.URL.createObjectURL(blob);
-                            const link = document.createElement('a');
-                            link.href = url;
-                            link.download = 'EzPrintWork 바탕화면 바로가기.url';
-                            document.body.appendChild(link);
-                            link.click();
-                            document.body.removeChild(link);
-                            window.URL.revokeObjectURL(url);
-                        }} 
-                        className={`flex items-center w-full px-3 py-3 rounded-xl transition-all text-slate-500 hover:text-white hover:bg-slate-800 ${!isSidebarExpanded ? 'justify-center' : 'gap-4'}`}
-                        title={!isSidebarExpanded ? '바탕화면에 아이콘 만들기' : ''}
-                    >
-                        <ArrowDownToLine size={22} className="text-blue-500 hover:scale-110 transition-transform" />
-                        {isSidebarExpanded && <span className="text-[15px] font-bold text-slate-300">바탕화면에 아이콘 만들기</span>}
-                    </button>
+                    {/* 데스크톱 앱 다운로드 버튼 (웹 모드에서 노출) */}
+                    {!isElectron && (
+                        <button 
+                            onClick={() => {
+                                const link = document.createElement('a');
+                                link.href = 'https://github.com/molnanle-prog/EzPrintWork/releases/download/v1.2.0/EzPrintWork.Setup.1.2.0.exe';
+                                link.setAttribute('download', 'EzPrintWork.Setup.1.2.0.exe');
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                            }} 
+                            className={`flex items-center w-full px-3 py-3 rounded-xl transition-all text-slate-500 hover:text-white hover:bg-slate-800 ${!isSidebarExpanded ? 'justify-center' : 'gap-4'}`}
+                            title={!isSidebarExpanded ? '데스크톱 앱 다운로드' : ''}
+                        >
+                            <ArrowDownToLine size={22} className="text-blue-500 hover:scale-110 transition-transform animate-bounce" style={{ animationDuration: '3s' }} />
+                            {isSidebarExpanded && <span className="text-[15px] font-bold text-slate-300">데스크톱 앱 다운로드</span>}
+                        </button>
+                    )}
 
                     {/* Settings Button */}
                     <button 

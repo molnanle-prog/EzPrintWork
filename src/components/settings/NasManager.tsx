@@ -8,6 +8,7 @@ import { useAuth } from '../../contexts/AuthContext';
 export const NasManager: React.FC = () => {
   const [config, setConfig] = useState<NasConfig>({ isEnabled: false, path: '', status: 'disconnected' });
   const [isProcessing, setIsProcessing] = useState(false);
+  const [showSecurityModal, setShowSecurityModal] = useState(false);
   const { currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin' || currentUser?.id === 'admin';
 
@@ -191,8 +192,8 @@ export const NasManager: React.FC = () => {
                             </button>
                         </div>
                     ) : (
-                        <div className="space-y-6">
-                            <div className="inline-block p-8 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-[2rem] text-blue-800 dark:text-blue-300 text-left max-w-xl shadow-sm">
+                        <div className="space-y-6 flex flex-col items-center w-full">
+                            <div className="inline-block p-8 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-[2rem] text-blue-800 dark:text-blue-300 text-left max-w-xl shadow-sm w-full">
                                 <div className="flex items-start gap-4">
                                     <div className="w-12 h-12 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-center text-blue-600 shadow-sm shrink-0">
                                         <Globe size={24} />
@@ -206,6 +207,33 @@ export const NasManager: React.FC = () => {
                                     </div>
                                 </div>
                             </div>
+
+                            {isAdmin && (
+                                <div className="w-full max-w-xl bg-slate-50 dark:bg-slate-900/40 p-6 rounded-2xl border border-slate-200 dark:border-slate-700 mt-4 space-y-4 text-left animate-in fade-in duration-300">
+                                    <h5 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                                        <Settings2 size={16} className="text-blue-600"/>
+                                        수동 폴더 경로 입력 (관리자용)
+                                    </h5>
+                                    <p className="text-xs text-slate-500 leading-relaxed">
+                                        웹 브라우저의 보안 정책상 폴더 선택창을 직접 띄울 수 없습니다. 아래에 사내 NAS 경로 또는 공용 공유 폴더의 절대 경로(예: <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold text-[10px]">\\192.168.0.100\EzPrintShared</code> 또는 <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold text-[10px]">C:\EzPrintShared</code>)를 직접 입력해 주세요.
+                                    </p>
+                                    <div className="flex gap-2">
+                                        <input 
+                                            type="text"
+                                            value={config.path || ''}
+                                            onChange={(e) => setConfig({ ...config, path: e.target.value })}
+                                            placeholder="예: \\192.168.0.100\EzPrintShared 또는 C:\EzPrintShared"
+                                            className="flex-1 p-2.5 text-sm border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 outline-none"
+                                        />
+                                        <button
+                                            onClick={handleSetupSharedFolder}
+                                            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95"
+                                        >
+                                            경로 저장
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -271,6 +299,22 @@ export const NasManager: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* 공용 공유 폴더 가이드 상시 노출 */}
+            <div className="mt-8 bg-amber-50/50 dark:bg-amber-950/10 border border-amber-200 dark:border-amber-900/50 rounded-2xl p-6 text-left text-xs text-slate-600 dark:text-slate-400 space-y-3 shadow-inner">
+                <h5 className="font-extrabold text-amber-800 dark:text-amber-400 flex items-center gap-1.5 text-sm">
+                    📁 사내 공용 공유 폴더 설정 방법 안내 (공유 가이드)
+                </h5>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                    작업 데이터를 직원들이 함께 열고 공유하려면 사내 PC 한 대를 메인으로 지정해 폴더를 공유하거나 NAS를 도입하셔야 합니다.
+                </p>
+                <ol className="list-decimal list-inside space-y-1.5 leading-relaxed text-slate-600 dark:text-slate-400">
+                    <li><strong>폴더 생성:</strong> 메인 PC의 C: 또는 D드라이브 경로에 <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">EzPrintShared</code> 폴더를 만듭니다.</li>
+                    <li><strong>네트워크 공유:</strong> 폴더 우클릭 &gt; [속성] &gt; [공유] 탭 &gt; [공유(S)...]를 누른 후 <span className="font-bold text-amber-800 dark:text-amber-400">Everyone</span>을 추가하고 권한을 <strong>읽기/쓰기</strong>로 부여합니다.</li>
+                    <li><strong>공유 경로 파악:</strong> 같은 네트워크 내의 직원 PC에서 접속 가능한 윈도우 네트워크 경로(예: <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">\\메인PC이름\EzPrintShared</code> 또는 메인PC의 고정 IP인 <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">\\192.168.0.XX\EzPrintShared</code>)를 메모합니다.</li>
+                    <li><strong>경로 입력 및 저장:</strong> 위 경로를 이곳 저장 폴더(Storage Path) 란에 저장하고 모든 직원들도 동일한 경로를 적용하면, 실시간 공유 및 작업 파일 자동 열기 기능이 완벽하게 작동합니다!</li>
+                </ol>
+            </div>
         </div>
         
         {/* Bottom Tips */}
@@ -279,9 +323,72 @@ export const NasManager: React.FC = () => {
                 <Info size={16} className="text-blue-500" />
                 <span>데이터는 클라우드Hub에 안전하게 저장되며, 위 경로는 실제 파일을 열기 위한 용도로만 사용됩니다.</span>
             </div>
-            <a href="#" className="text-blue-600 font-bold text-sm hover:underline">클라우드 보안 가이드 보기</a>
+            <button onClick={() => setShowSecurityModal(true)} className="text-blue-600 font-bold text-sm hover:underline">클라우드 보안 가이드 보기</button>
         </div>
       </div>
+
+      {/* 클라우드 보안 가이드 모달 */}
+      {showSecurityModal && (
+        <div className="fixed inset-0 bg-black/65 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200" onClick={() => setShowSecurityModal(false)}>
+          <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col transform transition-all animate-in zoom-in-95 duration-300" onClick={e => e.stopPropagation()}>
+            <div className="p-6 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900/50">
+              <h4 className="text-lg font-black text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <Globe size={20} className="text-blue-600" />
+                🛡️ Cloud Hub 보안 및 공유 기술 가이드
+              </h4>
+              <button onClick={() => setShowSecurityModal(false)} className="text-slate-400 hover:text-slate-600 font-bold text-sm p-1">닫기</button>
+            </div>
+            
+            <div className="p-6 space-y-6 overflow-y-auto max-h-[60vh] custom-scrollbar text-left text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
+              <div className="space-y-2">
+                <h5 className="font-extrabold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">🔑 1. 데이터 보안 및 실시간 암호화</h5>
+                <p className="text-xs">
+                  클라우드 허브(Cloud Hub)와 로컬 PC/NAS 간의 모든 데이터 전송은 SSL/TLS 256비트 표준 군용 수준 암호화 터널을 통해 안전하게 암호화 전송됩니다. 외부 해킹이나 스니핑 공격으로부터 철저히 보호받습니다.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <h5 className="font-extrabold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">📁 2. 하이브리드 로컬-클라우드 아키텍처</h5>
+                <p className="text-xs">
+                  작업 파일(일반 대용량 원본 파일 등)은 사용자가 직접 설정한 사내의 안전한 <strong>로컬 디스크/NAS 또는 공용 공유 폴더</strong>에 그대로 머무릅니다. 클라우드 허브는 파일의 위치 경로 메타데이터와 중요 작업 정보만 동기화하므로, 대용량 파일이 무단 외부로 업로드되거나 유출될 우려가 전혀 없는 지능적인 하이브리드 모델을 채택하고 있습니다.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <h5 className="font-extrabold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">💻 3. 사내 공유 폴더 구축 방법 (다자간 동시 공유 권장)</h5>
+                <p className="text-xs">
+                  회사의 메인 PC 또는 NAS에 공용 공유 폴더를 생성하면 모든 직원이 동일한 실제 파일을 언제든 더블 클릭하여 열 수 있어 협업 시 최고의 효율을 낼 수 있습니다.
+                </p>
+                <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-2xl border border-slate-100 dark:border-slate-800 text-[11px] text-slate-500 space-y-2">
+                  <p className="font-bold text-slate-700 dark:text-slate-300">💡 윈도우(Windows) 공유 폴더 설정 4단계:</p>
+                  <ul className="list-disc list-inside space-y-1">
+                    <li><strong>[1단계]</strong> 메인 PC의 C: 또는 D드라이브 등 안전한 경로에 <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">EzPrintShared</code> 폴더 생성</li>
+                    <li><strong>[2단계]</strong> 생성한 폴더 우클릭 &gt; [속성] &gt; [공유] 탭 선택 &gt; [공유] 단추 클릭</li>
+                    <li><strong>[3단계]</strong> 선택 창에서 <span className="font-bold">Everyone</span>을 추가하고, 사용 권한 수준을 <strong>읽기/쓰기</strong>로 변경 및 저장</li>
+                    <li><strong>[4단계]</strong> 네트워크 경로(예: <code className="bg-amber-100 text-amber-900 dark:bg-amber-950/50 dark:text-amber-300 px-1.5 py-0.5 rounded font-mono font-bold">\\사용자PC이름\EzPrintShared</code>)를 복사하여 대표님/직원 설정에 입력</li>
+                  </ul>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <h5 className="font-extrabold text-slate-800 dark:text-slate-200 flex items-center gap-1.5">🔐 4. 접근 통제 및 접근 로그 관리</h5>
+                <p className="text-xs">
+                  등록된 인가 직원(SaaS Tenant 테넌트 내 사용자)만이 파일 동기화 경로에 접근할 수 있으며, 관리자 설정 페이지의 모든 이력은 데이터베이스에 안전하게 기록 및 로그화됩니다.
+                </p>
+              </div>
+            </div>
+            
+            <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50 flex justify-end">
+              <button 
+                onClick={() => setShowSecurityModal(false)}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-md active:scale-95"
+              >
+                가이드 확인 완료
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

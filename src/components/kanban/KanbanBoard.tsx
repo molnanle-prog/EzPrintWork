@@ -31,7 +31,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const { currentUser, tenantPlan } = useAuth();
-  const { showAlert } = useDialog();
+  const { showAlert, showConfirm } = useDialog();
 
   // 스마트 실시간 필터 상태
   const [searchQuery, setSearchQuery] = useState('');
@@ -158,6 +158,42 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     if (newStatusKey === 'DELIVERY' && draggedJob.status !== 'DELIVERY') {
         updatedJob.completedAt = new Date().toISOString();
         updatedJob.progress = 100;
+        
+        // --- 완료 알림 문자 발송 및 이력 자동 기록 트리거 ---
+        const smsConfig = db.getSmsConfig();
+        if (smsConfig && smsConfig.sendOnComplete && draggedJob.clientPhone) {
+            const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+            const { replaceTemplateVariables, sendCompleteSms } = await import('../../services/smsService');
+            
+            const rawTemplate = smsConfig.completedMessageTemplate || 
+              `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 찾으러 내방해 주시기 바랍니다. 감사합니다.`;
+            const previewMsg = replaceTemplateVariables(rawTemplate, draggedJob, companyName);
+            
+            const isConfirmed = await showConfirm(
+              `[완료 알림 문자 발송]\n\n고객님(${draggedJob.clientPhone})께 완료 안내 문자를 전송하시겠습니까?\n\n[문자 미리보기]\n${previewMsg}`
+            );
+            
+            if (isConfirmed) {
+                const res = await sendCompleteSms(draggedJob, smsConfig, companyName);
+                if (res.success) {
+                    newHistory.push({
+                        timestamp: new Date().toISOString(),
+                        staffId: currentUser.id,
+                        action: '문자 발송',
+                        details: `완료 문자 발송 성공 (수신: ${draggedJob.clientPhone})\n내용: ${res.sentContent}`
+                    });
+                    await showAlert('완료 알림 문자가 정상적으로 발송되었습니다.');
+                } else {
+                    newHistory.push({
+                        timestamp: new Date().toISOString(),
+                        staffId: currentUser.id,
+                        action: '문자 발송 실패',
+                        details: `발송 실패: ${res.message} (수신: ${draggedJob.clientPhone})`
+                    });
+                    await showAlert(`문자 발송 실패: ${res.message}`);
+                }
+            }
+        }
     } else if (newStatusKey !== 'DELIVERY' && draggedJob.status === 'DELIVERY') {
         updatedJob.completedAt = undefined;
         updatedJob.progress = getProgressForStatus(newStatusKey);

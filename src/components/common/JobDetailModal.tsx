@@ -306,12 +306,21 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       setEditedJob({ ...editedJob, assignedStaffIds: newIds, assignedStaffId: primaryId });
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!currentUser) {
         showAlert("사용자 정보가 없어 저장할 수 없습니다.");
         return;
     }
     const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
+    
+    // --- 완료 상태 전환 여부 확인 ---
+    let isStatusChangedToDelivery = false;
+    if (isNew && editedJob.status === 'DELIVERY') {
+        isStatusChangedToDelivery = true;
+    } else if (!isNew && job.status !== editedJob.status && editedJob.status === 'DELIVERY') {
+        isStatusChangedToDelivery = true;
+    }
+
     if (isNew) {
         newHistory.push({
             timestamp: new Date().toISOString(),
@@ -385,7 +394,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     let summaryDesc = `[${mainItem.specs.paperType}] ${mainItem.specs.size} / ${mainItem.specs.quantity}`;
     if (subJobs.length > 1) summaryDesc += ` 외 ${subJobs.length - 1}건`;
 
-    const finalJob: Job = { 
+    let finalJob: Job = { 
         ...editedJob, 
         id: isNew ? Date.now().toString() : editedJob.id,
         history: newHistory,
@@ -395,6 +404,45 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
         subJobs: subJobs,
         assignedStaffId: (editedJob.assignedStaffIds && editedJob.assignedStaffIds.length > 0) ? editedJob.assignedStaffIds[0] : undefined
     };
+
+    // --- 완료 알림 문자 발송 및 이력 자동 기록 트리거 ---
+    if (isStatusChangedToDelivery && finalJob.clientPhone) {
+        const smsConfig = db.getSmsConfig();
+        if (smsConfig && smsConfig.sendOnComplete) {
+            const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+            const { replaceTemplateVariables, sendCompleteSms } = await import('../../services/smsService');
+            
+            const rawTemplate = smsConfig.completedMessageTemplate || 
+              `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 찾으러 내방해 주시기 바랍니다. 감사합니다.`;
+            const previewMsg = replaceTemplateVariables(rawTemplate, finalJob, companyName);
+            
+            const isConfirmed = await showConfirm(
+              `[완료 알림 문자 발송]\n\n고객님(${finalJob.clientPhone})께 완료 안내 문자를 전송하시겠습니까?\n\n[문자 미리보기]\n${previewMsg}`
+            );
+            
+            if (isConfirmed) {
+                const res = await sendCompleteSms(finalJob, smsConfig, companyName);
+                if (res.success) {
+                    finalJob.history!.push({
+                        timestamp: new Date().toISOString(),
+                        staffId: currentUser.id,
+                        action: '문자 발송',
+                        details: `완료 문자 발송 성공 (수신: ${finalJob.clientPhone})\n내용: ${res.sentContent}`
+                    });
+                    await showAlert('완료 알림 문자가 정상적으로 발송되었습니다.');
+                } else {
+                    finalJob.history!.push({
+                        timestamp: new Date().toISOString(),
+                        staffId: currentUser.id,
+                        action: '문자 발송 실패',
+                        details: `발송 실패: ${res.message} (수신: ${finalJob.clientPhone})`
+                    });
+                    await showAlert(`문자 발송 실패: ${res.message}`);
+                }
+            }
+        }
+    }
+
     onUpdate(finalJob);
   };
 
@@ -668,7 +716,18 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
                 {/* Footer */}
                 <div className="p-4 border-t border-slate-200 flex justify-end gap-3 bg-white flex-none">
-                    <button onClick={() => setShowPrintModal(true)} className="mr-auto px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                    <div className="mr-auto flex gap-2">
+                        <button onClick={() => setShowPrintModal(true)} className="px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                        <button 
+                            onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
+                            disabled={!editedJob.clientPhone}
+                            className={`px-4 py-2.5 rounded-lg font-bold transition-colors flex items-center gap-2 border ${editedJob.clientPhone ? 'bg-amber-100 text-amber-800 hover:bg-amber-200 border-amber-300' : 'bg-slate-50 text-slate-400 border-slate-200 cursor-not-allowed'}`}
+                            title={editedJob.clientPhone ? "고객 알림 문자 전송" : "연락처 없음"}
+                        >
+                            <MessageCircle size={18} />
+                            <span>{editedJob.clientPhone ? "문자" : "연락처없음"}</span>
+                        </button>
+                    </div>
                     <button onClick={onClose} className="px-5 py-2.5 text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition-colors">닫기</button>
                     <button onClick={() => setViewMode('edit')} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md transition-all flex items-center gap-2"><FileEdit size={18}/> 상세 정보 및 수정</button>
                 </div>
@@ -1024,7 +1083,20 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
           </div>
           <div className="p-4 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 flex-none">
             {!isNew && (<button onClick={handleDelete} className="mr-auto px-4 py-2.5 text-red-500 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-2" title="이 작업을 완전히 삭제합니다"><Trash2 size={18} /><span className="hidden sm:inline">삭제</span></button>)}
-            {!isNew && (<button onClick={() => setShowPrintModal(true)} className="px-4 py-2.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>)}
+            {!isNew && (
+              <>
+                <button onClick={() => setShowPrintModal(true)} className="px-4 py-2.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                <button 
+                    onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
+                    disabled={!editedJob.clientPhone}
+                    className={`px-4 py-2.5 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm ${editedJob.clientPhone ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                    title={editedJob.clientPhone ? "고객 알림 문자 전송" : "연락처 없음"}
+                >
+                    <MessageCircle size={18} />
+                    <span>{editedJob.clientPhone ? "문자" : "연락처없음"}</span>
+                </button>
+              </>
+            )}
             <button onClick={() => isNew ? onClose() : setViewMode('summary')} className="px-5 py-2.5 text-slate-600 hover:bg-slate-200 rounded-lg font-medium transition-colors" title={isNew ? "닫기" : "요약 보기로 돌아가기"}>취소</button>
             <button onClick={handleSave} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md transition-all hover:scale-[1.02] flex items-center gap-2" title="작업 내용 저장">{isNew ? <><Check size={18}/> 신규 등록</> : '저장 완료'}</button>
           </div>
@@ -1032,7 +1104,16 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
           )}
         </div>
       </div>
-      {showContactModal && (<ClientContactModal job={editedJob} onClose={() => setShowContactModal(false)} />)}
+      {showContactModal && (
+        <ClientContactModal 
+          job={editedJob} 
+          onClose={() => setShowContactModal(false)} 
+          onUpdate={(updatedJob) => {
+            setEditedJob(updatedJob);
+            onUpdate(updatedJob);
+          }} 
+        />
+      )}
       {showPrintModal && (<JobOrderPreviewModal job={editedJob} onClose={() => setShowPrintModal(false)} />)}
     </>
   );

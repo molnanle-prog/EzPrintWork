@@ -91,7 +91,7 @@ export const ClientManager: React.FC = () => {
         if (editingId) {
             await db.updateClient({ ...clientToSave, id: editingId } as Client);
         } else {
-            await db.addClient(clientToSave);
+            await db.addClient(clientToSave as Client);
         }
         setIsModalOpen(false);
     } catch (error) {
