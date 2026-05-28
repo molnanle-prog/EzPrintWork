@@ -34,18 +34,24 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
   });
 
   useEffect(() => {
-    // Load roles from DB
+    // Load roles from DB and merge with default system roles to ensure newly added roles exist
     const dbRoles = db.getRoles();
+    const DEFAULT_ROLES = ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"];
+    const mergedRoles = Array.from(new Set([...dbRoles, ...DEFAULT_ROLES]));
 
     if (staff) {
-      if (staff.role && !dbRoles.includes(staff.role)) {
-        setRoles([staff.role, ...dbRoles]);
+      if (staff.role && !mergedRoles.includes(staff.role)) {
+        setRoles([staff.role, ...mergedRoles]);
       } else {
-        setRoles(dbRoles);
+        setRoles(mergedRoles);
       }
-      setFormData(staff);
+      const cleanEmail = staff.email?.endsWith('@ez-hub.kr') ? '' : (staff.email || '');
+      setFormData({
+        ...staff,
+        email: cleanEmail
+      });
     } else {
-      setRoles(dbRoles);
+      setRoles(mergedRoles);
       // Set default avatar for new staff (random fallback)
       setFormData({
         name: '',

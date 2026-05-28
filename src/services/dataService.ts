@@ -267,7 +267,7 @@ export class DataService {
         await setDoc(settingsRef('statusDefinitions'), { definitions: INITIAL_STATUS_DEFINITIONS });
         await setDoc(settingsRef('productDefinitions'), { definitions: INITIAL_PRODUCT_DEFINITIONS });
         await setDoc(settingsRef('pricing'), { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 });
-        await setDoc(settingsRef('roles'), { roles: ["관리자", "디자이너", "인쇄기장", "후가공", "배송"] });
+        await setDoc(settingsRef('roles'), { roles: ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"] });
         return tenantId;
     }
 
@@ -399,12 +399,15 @@ export class DataService {
     async approveJoinRequest(request: JoinRequest) {
         if (!this.tenantId) return;
         
+        // 가상 이메일(@ez-hub.kr)인 경우 실제 연락처 필드 오염 방지를 위해 빈 값으로 정제
+        const cleanEmail = request.userEmail?.endsWith('@ez-hub.kr') ? '' : (request.userEmail || '');
+
         // 1. Create Staff record
         const newStaff: Staff = {
             id: request.userId, // Use userId as staff id for linking
             uid: request.userId,
             name: request.userName,
-            email: request.userEmail,
+            email: cleanEmail,
             role: '디자이너', // Default role
             active: true,
             joinDate: new Date().toISOString(),
@@ -756,7 +759,7 @@ export class DataService {
     getPricingConfig(): PricingConfig { return (this.data['pricing']?.[0] || { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 }) as PricingConfig; }
     getCompanyInfo(): CompanyInfo { return (this.data['companyInfo']?.[0] || { name: 'EzPrintWork' }) as CompanyInfo; }
     getSmsConfig() { return this.data['smsConfig']?.[0] || {}; }
-    getRoles(): string[] { return this.data['roles']?.[0]?.roles || ["관리자", "디자이너", "인쇄기장"]; }
+    getRoles(): string[] { return this.data['roles']?.[0]?.roles || ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"]; }
 
     // Search Helpers
     searchClients(q: string): Client[] {

@@ -14,15 +14,16 @@ if (process.defaultApp) {
 
 function createWindow() {
     const win = new BrowserWindow({
-        width: 1280,
-        height: 800,
+        width: 1300,
+        height: 900,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
             contextIsolation: true
         },
         title: "EzPrintWork",
-        autoHideMenuBar: true
+        autoHideMenuBar: true,
+        frame: false // 타이틀바 및 브라우저 기본 프레임을 숨겨 프로그램 창처럼 구현
     });
 
     if (process.env.ELECTRON_START_URL) {
@@ -216,4 +217,26 @@ ipcMain.handle('get-documents-path', async () => {
         console.error("문서 폴더 경로 획득 중 오류:", e);
         return null;
     }
+});
+
+// 8. 창 제어 (최소화, 최대화, 닫기)
+ipcMain.on('window-minimize', () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (win) win.minimize();
+});
+
+ipcMain.on('window-maximize', () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (win) {
+        if (win.isMaximized()) {
+            win.unmaximize();
+        } else {
+            win.maximize();
+        }
+    }
+});
+
+ipcMain.on('window-close', () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (win) win.close();
 });

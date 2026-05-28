@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { auth } from '../services/firebase';
 import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search } from 'lucide-react';
+import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { GAS_WEBHOOK_URL } from '../constants';
@@ -14,6 +14,11 @@ export const LoginPage: React.FC = () => {
     const [loginId, setLoginId] = useState('');
     const [password, setPassword] = useState('');
     const [isStaffLoggingIn, setIsStaffLoggingIn] = useState(false);
+
+    const [isElectron, setIsElectron] = useState(false);
+    useEffect(() => {
+        setIsElectron(typeof window !== 'undefined' && !!window.electron);
+    }, []);
 
     // B2B Staff Self-Signup States
     const [isStaffSignup, setIsStaffSignup] = useState(false);
@@ -427,7 +432,71 @@ IconFile=https://ez-hub.kr/favicon.ico
     };
 
     return (
-        <div className="min-h-screen w-full bg-slate-950 flex items-center justify-center p-6 font-sans">
+        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-start overflow-y-auto p-6 font-sans pt-16">
+            {/* 데스크톱 앱 프레임리스 타이틀바 (로그인 화면 전용) */}
+            <div 
+                className="fixed top-0 left-0 right-0 h-10 bg-slate-950 border-b border-slate-900 flex justify-between items-center select-none z-[100]"
+                style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+            >
+                <div className="flex items-center gap-2 px-4 text-slate-400">
+                    <Printer size={16} className="text-blue-500" />
+                    <span className="text-xs font-bold tracking-wide">EzPrintWork Cloud</span>
+                </div>
+                
+                <div 
+                    className="flex items-center h-full text-slate-400" 
+                    style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+                >
+                    <button 
+                        type="button"
+                        onClick={() => {
+                            if (window.electron?.minimize) {
+                                window.electron.minimize();
+                            } else {
+                                toast.info('최소화는 데스크톱 전용 앱에서 지원됩니다.');
+                            }
+                        }}
+                        className="w-12 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                        title="최소화"
+                    >
+                        <Minus size={14} />
+                    </button>
+                    <button 
+                        type="button"
+                        onClick={() => {
+                            if (window.electron?.maximize) {
+                                window.electron.maximize();
+                            } else {
+                                if (!document.fullscreenElement) {
+                                    document.documentElement.requestFullscreen().catch(() => {});
+                                } else {
+                                    document.exitFullscreen();
+                                }
+                            }
+                        }}
+                        className="w-12 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                        title="최대화"
+                    >
+                        <Square size={12} />
+                    </button>
+                    <button 
+                        type="button"
+                        onClick={() => {
+                            if (window.electron?.close) {
+                                window.electron.close();
+                            } else {
+                                if (confirm('로그인 화면을 닫거나 종료하시겠습니까?')) {
+                                    window.close();
+                                }
+                            }
+                        }}
+                        className="w-12 h-full flex items-center justify-center hover:bg-red-600 hover:text-white transition-colors"
+                        title="닫기"
+                    >
+                        <X size={14} />
+                    </button>
+                </div>
+            </div>
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
                 <div className="absolute -top-[25%] -left-[10%] w-[70%] h-[70%] bg-blue-600/10 rounded-full blur-[120px]"></div>
                 <div className="absolute -bottom-[25%] -right-[10%] w-[60%] h-[60%] bg-indigo-600/10 rounded-full blur-[100px]"></div>
@@ -456,41 +525,61 @@ IconFile=https://ez-hub.kr/favicon.ico
  
                     {!isStaffSignup && (
                         <>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div className="flex flex-col gap-2">
-                                    <button 
-                                        onClick={handleGoogleLogin}
-                                        disabled={isLoggingIn}
-                                        className="w-full h-full min-h-[56px] group relative flex items-center justify-center gap-3 bg-white hover:bg-slate-50 text-slate-950 py-2.5 rounded-2xl transition-all active:scale-[0.98] shadow-xl hover:shadow-white/5 disabled:opacity-50"
-                                    >
-                                        {isLoggingIn ? (
-                                            <Loader2 className="animate-spin text-blue-600" size={24} />
-                                        ) : (
-                                            <Chrome className="text-blue-600 group-hover:scale-110 transition-transform" size={24} />
-                                        )}
-                                        <div className="flex flex-col items-start leading-tight text-left">
-                                            <span className="text-[14px] font-extrabold text-slate-900">구글로 시작하기</span>
-                                            <span className="text-[10px] font-bold text-slate-500 tracking-tight">가입 및 로그인 (관리자)</span>
-                                        </div>
-                                    </button>
-
-                                    {isLoggingIn && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setIsLoggingIn(false)}
-                                            className="text-[10px] text-rose-400 hover:text-rose-300 font-bold py-1.5 transition-colors animate-pulse text-center bg-rose-950/20 rounded-xl border border-rose-900/30"
+                            <div className="space-y-3">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="flex flex-col gap-2">
+                                        <button 
+                                            onClick={handleGoogleLogin}
+                                            disabled={isLoggingIn}
+                                            className="w-full h-full min-h-[56px] group relative flex items-center justify-center gap-3 bg-white hover:bg-slate-50 text-slate-950 py-2.5 rounded-2xl transition-all active:scale-[0.98] shadow-xl hover:shadow-white/5 disabled:opacity-50"
                                         >
-                                            로딩 멈춤 초기화
+                                            {isLoggingIn ? (
+                                                <Loader2 className="animate-spin text-blue-600" size={24} />
+                                            ) : (
+                                                <Chrome className="text-blue-600 group-hover:scale-110 transition-transform" size={24} />
+                                            )}
+                                            <div className="flex flex-col items-start leading-tight text-left">
+                                                <span className="text-[14px] font-extrabold text-slate-900">구글로 시작하기</span>
+                                                <span className="text-[10px] font-bold text-slate-500 tracking-tight">가입 및 로그인 (관리자)</span>
+                                            </div>
                                         </button>
-                                    )}
+
+                                        {isLoggingIn && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setIsLoggingIn(false)}
+                                                className="text-[10px] text-rose-400 hover:text-rose-300 font-bold py-1.5 transition-colors animate-pulse text-center bg-rose-950/20 rounded-xl border border-rose-900/30"
+                                            >
+                                                로딩 멈춤 초기화
+                                            </button>
+                                        )}
+                                    </div>
+
+                                    <button 
+                                        onClick={handleDownloadShortcut}
+                                        className="w-full h-full min-h-[56px] flex items-center justify-center gap-2 bg-slate-800/40 hover:bg-slate-800/80 border border-slate-700 text-slate-300 font-bold py-3 rounded-2xl transition-all active:scale-[0.98] text-[13px]"
+                                    >
+                                        <Monitor size={15} className="text-blue-400" />
+                                        바탕화면 아이콘 만들기
+                                    </button>
                                 </div>
 
                                 <button 
-                                    onClick={handleDownloadShortcut}
-                                    className="w-full h-full min-h-[56px] flex items-center justify-center gap-2 bg-slate-800/40 hover:bg-slate-800/80 border border-slate-700 text-slate-300 font-bold py-3 rounded-2xl transition-all active:scale-[0.98] text-[13px]"
+                                    onClick={() => {
+                                        const link = document.createElement('a');
+                                        link.href = '/downloads/EzPrintWork-Setup.zip';
+                                        link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                        document.body.appendChild(link);
+                                        link.click();
+                                        document.body.removeChild(link);
+                                    }}
+                                    className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
                                 >
-                                    <Monitor size={15} className="text-blue-400" />
-                                    바탕화면 아이콘 만들기
+                                    <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
+                                    <div className="flex flex-col items-start leading-tight text-left">
+                                        <span className="text-[14px] font-black">PC 전용 앱 다운로드 (.zip)</span>
+                                        <span className="text-[10px] text-blue-200/85 font-medium tracking-tight">Squircle 아이콘 & 프레임리스 (압축 해제 후 즉시 사용)</span>
+                                    </div>
                                 </button>
                             </div>
 
@@ -701,6 +790,11 @@ IconFile=https://ez-hub.kr/favicon.ico
                                         <option value="후가공" className="bg-slate-950 text-slate-200">후가공</option>
                                         <option value="배송" className="bg-slate-950 text-slate-200">배송</option>
                                         <option value="관리자" className="bg-slate-950 text-slate-200">관리부서</option>
+                                        <option value="실장" className="bg-slate-950 text-slate-200">실장</option>
+                                        <option value="부장" className="bg-slate-950 text-slate-200">부장</option>
+                                        <option value="과장" className="bg-slate-950 text-slate-200">과장</option>
+                                        <option value="대리" className="bg-slate-950 text-slate-200">대리</option>
+                                        <option value="사원" className="bg-slate-950 text-slate-200">사원</option>
                                     </select>
                                     <p className="text-[11px] text-slate-500 font-semibold pl-1 mt-1 leading-relaxed">
                                         ※ 본인의 정확한 직책이 없는 경우 임의 선택해 주세요. 가입 완료 후 언제든지 수정 가능합니다.

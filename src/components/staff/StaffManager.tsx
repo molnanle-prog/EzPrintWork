@@ -163,7 +163,10 @@ export const StaffManager: React.FC = () => {
                           displayName: staff.name,
                           name: staff.name,
                           tenantId,
-                          role: 'staff'
+                          role: 'staff',
+                          loginId: staff.loginId.trim(),
+                          password: staff.password.trim(),
+                          position: staff.role
                       });
 
                       await signOut(secondaryAuth);
@@ -202,7 +205,10 @@ export const StaffManager: React.FC = () => {
                                   displayName: staff.name,
                                   name: staff.name,
                                   tenantId,
-                                  role: 'staff'
+                                  role: 'staff',
+                                  loginId: staff.loginId.trim(),
+                                  password: staff.password.trim(),
+                                  position: staff.role
                               });
                               await signOut(secondaryAuth);
                           } catch (fallbackError) {
@@ -213,11 +219,15 @@ export const StaffManager: React.FC = () => {
                   }
                   
                   // 글로벌 사용자 Profile 동기화 유지
-                  await setDoc(doc(firestore, 'users', uid), {
+                  const userProfileUpdate: any = {
                       displayName: staff.name,
                       name: staff.name,
                       email: email
-                  }, { merge: true });
+                  };
+                  if (staff.loginId) userProfileUpdate.loginId = staff.loginId.trim();
+                  if (staff.password) userProfileUpdate.password = staff.password.trim();
+                  
+                  await setDoc(doc(firestore, 'users', uid), userProfileUpdate, { merge: true });
               }
           }
 
@@ -426,7 +436,7 @@ export const StaffManager: React.FC = () => {
                             {staff.phoneOffice}
                         </div>
                     )}
-                    {staff.email && (
+                    {staff.email && !staff.email.endsWith('@ez-hub.kr') && (
                         <div className="flex items-center" title="이메일">
                             <Mail size={14} className="mr-2 text-slate-400 dark:text-slate-500 shrink-0" />
                             {staff.email}
@@ -440,6 +450,25 @@ export const StaffManager: React.FC = () => {
                     )}
                     {!staff.phone && !staff.phoneCompany && !staff.phoneOffice && !staff.extensionNumber && !staff.email && (
                         <span className="text-slate-400 dark:text-slate-500 italic text-xs pl-1">등록된 정보 없음</span>
+                    )}
+                    {currentUser?.role === 'admin' && (staff.loginId || staff.password) && (
+                        <div className="mt-3 p-2.5 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900 rounded-xl text-xs space-y-1.5 animate-in fade-in duration-200">
+                            <div className="text-[10px] font-black text-blue-600 dark:text-blue-400 uppercase tracking-wider pl-0.5 mb-1">
+                                로그인 계정 정보 (관리자 전용)
+                            </div>
+                            {staff.loginId && (
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-400 dark:text-slate-500 font-bold">아이디 (ID):</span>
+                                    <span className="font-mono font-black text-blue-700 dark:text-blue-300">{staff.loginId}</span>
+                                </div>
+                            )}
+                            {staff.password && (
+                                <div className="flex items-center justify-between">
+                                    <span className="text-slate-400 dark:text-slate-500 font-bold">비밀번호:</span>
+                                    <span className="font-mono font-black text-blue-700 dark:text-blue-300 select-all" title="더블 클릭하여 복사">{staff.password}</span>
+                                </div>
+                            )}
+                        </div>
                     )}
                 </div>
 

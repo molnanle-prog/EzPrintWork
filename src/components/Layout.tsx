@@ -168,12 +168,76 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     <div className={containerClass} style={{ opacity: isPinned ? opacity : 1 }}>
       
       {/* Title Bar */}
-      <div className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors ${isPinned ? 'bg-blue-900' : 'bg-slate-900 dark:bg-slate-950'} ${isTvMode ? 'hidden' : ''}`}>
+      <div 
+        className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors ${isPinned ? 'bg-blue-900' : 'bg-slate-900 dark:bg-slate-950'} ${isTvMode ? 'hidden' : ''}`}
+        style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+      >
           <div className="flex items-center gap-2 px-3 text-slate-300">
               <Printer size={isPinned ? 14 : 16} className={isPinned ? "text-yellow-400" : "text-blue-500"} />
               <span className={`font-bold tracking-wide ${isPinned ? 'text-[10px]' : 'text-xs'}`}>
                   {isPinned ? `EzPrint v${appVersion} (위젯)` : `EzPrintWork Cloud v${appVersion}`}
               </span>
+          </div>
+          
+          {/* Windows-style Window Controls */}
+          <div 
+            className="flex items-center h-full text-slate-400" 
+            style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+          >
+              <button 
+                onClick={() => {
+                    if (isElectron && window.electron?.minimize) {
+                        window.electron.minimize();
+                    } else {
+                        // Web fallback
+                        alert('최소화는 데스크톱 앱에서 지원됩니다. 바로가기 아이콘을 다운로드하여 앱으로 사용해 보세요!');
+                    }
+                }}
+                className="w-10 lg:w-12 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                title="최소화"
+              >
+                  <Minus size={14} />
+              </button>
+              <button 
+                onClick={() => {
+                    if (isElectron && window.electron?.maximize) {
+                        window.electron.maximize();
+                    } else {
+                        // Web fallback: 브라우저 상단 메뉴/주소창을 없애고 꽉 차게 전체화면 모드 토글
+                        if (!document.fullscreenElement) {
+                            document.documentElement.requestFullscreen().catch((err) => {
+                                console.error('전체화면 오류:', err);
+                            });
+                        } else {
+                            document.exitFullscreen();
+                        }
+                    }
+                }}
+                className="w-10 lg:w-12 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                title={isElectron ? "최대화" : "전체화면 (상단 메뉴 없애기)"}
+              >
+                  <Square size={12} />
+              </button>
+              <button 
+                onClick={() => {
+                    if (isElectron && window.electron?.close) {
+                        window.electron.close();
+                    } else {
+                        // Web fallback
+                        if (confirm('프로그램을 종료하시겠습니까? (웹 페이지가 닫히거나 로그아웃됩니다)')) {
+                            try {
+                                window.close();
+                            } catch (e) {
+                                window.location.href = 'about:blank';
+                            }
+                        }
+                    }
+                }}
+                className="w-10 lg:w-12 h-full flex items-center justify-center hover:bg-red-600 hover:text-white transition-colors"
+                title="닫기"
+              >
+                  <X size={14} />
+              </button>
           </div>
       </div>
 

@@ -46,3 +46,11 @@ license-flow-manager/
 # Large Installers
 public/downloads/*.exe
 public/downloads/*.zip
+
+# Temporary and log files
+*.log
+*.log*
+build_error.txt
+search_temp.js
+search_temp2.js
+

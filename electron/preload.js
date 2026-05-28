@@ -9,5 +9,8 @@ contextBridge.exposeInMainWorld('electron', {
     saveFile: (path, content) => ipcRenderer.invoke('save-file', { path, content }),
     readFile: (path) => ipcRenderer.invoke('read-file', path),
     exists: (path) => ipcRenderer.invoke('exists', path),
-    getDocumentsPath: () => ipcRenderer.invoke('get-documents-path')
+    getDocumentsPath: () => ipcRenderer.invoke('get-documents-path'),
+    minimize: () => ipcRenderer.send('window-minimize'),
+    maximize: () => ipcRenderer.send('window-maximize'),
+    close: () => ipcRenderer.send('window-close')
 });
