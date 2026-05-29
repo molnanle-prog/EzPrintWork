@@ -26,6 +26,15 @@ function createWindow() {
         frame: false // 타이틀바 및 브라우저 기본 프레임을 숨겨 프로그램 창처럼 구현
     });
 
+    // [보안 및 웹 캐시 강제 갱신장치]
+    // Electron 내부 웹 캐시 및 세션 스토리지 정보가 완고하게 갱신되지 않아 
+    // 서버의 최신 보안 패치(자동 로그인 리셋 기능 등)가 적용되지 않는 현상을 방지하기 위해 
+    // 창이 로드되기 직전 세션 캐시를 깨끗하게 강제 삭제 조치합니다.
+    win.webContents.session.clearCache().catch(() => {});
+    win.webContents.session.clearStorageData({
+        storages: ['cookies', 'localstorage', 'indexdb', 'websql', 'serviceworkers', 'cachestorage']
+    }).catch(() => {});
+
     if (process.env.ELECTRON_START_URL) {
         win.loadURL(process.env.ELECTRON_START_URL);
     } else {
