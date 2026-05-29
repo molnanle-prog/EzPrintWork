@@ -190,6 +190,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [currentUser?.tenantId]);
 
   useEffect(() => {
+    // [앱 기동 시 강력한 보안 안전장치]
+    // 사용자가 '자동 로그인 유지'를 수동으로 켜지 않았다면, 
+    // 로컬 디렉토리 캐시나 쿠키가 남아 있어도 안전을 위해 세션을 무조건 파괴하고 초기 로그인 창으로 진입시킵니다.
+    const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
+    if (!keepLoggedIn) {
+      console.log("[AuthSecurity] Keep-login is not active. Cleaning up local session caches.");
+      sessionStorage.removeItem('customUser');
+      sessionStorage.removeItem('customTenantPlan');
+      signOut(auth).catch(() => {});
+    }
+
     if (DEV_BYPASS_LOGIN) {
       const mockUser = {
         uid: 'dev-admin-uid',

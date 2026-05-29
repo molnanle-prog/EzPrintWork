@@ -17,6 +17,7 @@ export const LoginPage: React.FC = () => {
 
     const [selectedTenantId, setSelectedTenantId] = useState('');
     const [rememberCompany, setRememberCompany] = useState(false);
+    const [keepLoggedIn, setKeepLoggedIn] = useState(false);
     const [isSearchingLoginCompany, setIsSearchingLoginCompany] = useState(false);
     const [hasSearchedLogin, setHasSearchedLogin] = useState(false);
     const [loginCompanySearchResults, setLoginCompanySearchResults] = useState<{ id: string; name: string }[]>([]);
@@ -34,6 +35,10 @@ export const LoginPage: React.FC = () => {
             setSelectedTenantId(savedId);
             setRememberCompany(true);
         }
+
+        // 자동 로그인 유지 설정 복원
+        const keep = localStorage.getItem('keepLoggedIn') === 'true';
+        setKeepLoggedIn(keep);
     }, []);
 
     // B2B Staff Self-Signup States
@@ -245,6 +250,16 @@ IconFile=https://ez-hub.kr/favicon.ico
         }
     };
 
+    const handleToggleKeepLoggedIn = (checked: boolean) => {
+        setKeepLoggedIn(checked);
+        localStorage.setItem('keepLoggedIn', checked ? 'true' : 'false');
+        if (checked) {
+            toast.info('자동 로그인 상태 유지가 켜졌습니다. 공용 PC인 경우 보안을 위해 꺼주시기 바랍니다.');
+        } else {
+            toast.success('자동 로그인 상태 유지가 꺼졌습니다. 프로그램 재부팅 시 초기화됩니다.');
+        }
+    };
+
     const handleStaffLogin = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!selectedTenantId) {
@@ -262,10 +277,10 @@ IconFile=https://ez-hub.kr/favicon.ico
             const { collection, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
             const { db } = await import('../services/firebase');
             
-            // 회사 ID(tenantId)와 직원 아이디 및 패스워드를 묶어서 쿼리하도록 개선 (회사별 아이디 중복 문제 해결)
+            // [회사별 독립 직원 인증 체계]
+            // 글로벌 'users' 대신 회사별 직원 서브컬렉션 'tenants/{tenantId}/staff'에서 직접 직원을 조회하여 회사별 아이디 중복 문제를 완전히 격리 해결합니다.
             const userQuery = query(
-                collection(db, 'users'),
-                where('tenantId', '==', selectedTenantId),
+                collection(db, `tenants/${selectedTenantId}/staff`),
                 where('loginId', '==', loginId.trim()),
                 where('password', '==', password.trim())
             );
@@ -279,13 +294,7 @@ IconFile=https://ez-hub.kr/favicon.ico
 
             const userDoc = userSnapshot.docs[0];
             const userData = userDoc.data();
-            const tenantId = userData.tenantId;
-
-            if (!tenantId) {
-                toast.error('등록된 회사 정보가 없는 직원 계정입니다.');
-                setIsStaffLoggingIn(false);
-                return;
-            }
+            const tenantId = selectedTenantId; // 서브컬렉션 소속이므로 selectedTenantId가 곧 tenantId가 됩니다.
 
             // Retrieve the tenant's plan info
             const tenantDocRef = doc(db, 'tenants', tenantId);
@@ -695,18 +704,33 @@ IconFile=https://ez-hub.kr/favicon.ico
                                 <div className="flex justify-between items-center pl-1">
                                     <label className="text-xs font-bold text-slate-400 block">소속 회사 선택 *</label>
                                     
-                                    {/* "선택회사 저장" 체크박스 */}
-                                    <div className="flex items-center gap-1.5">
-                                        <input 
-                                            type="checkbox"
-                                            id="rememberCompanyCheckbox"
-                                            checked={rememberCompany}
-                                            onChange={(e) => handleToggleRememberCompany(e.target.checked)}
-                                            className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
-                                        />
-                                        <label htmlFor="rememberCompanyCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
-                                            선택회사 저장
-                                        </label>
+                                    {/* "선택회사 저장" 및 "자동 로그인 유지" 체크박스 */}
+                                    <div className="flex items-center gap-3">
+                                        <div className="flex items-center gap-1.5">
+                                            <input 
+                                                type="checkbox"
+                                                id="rememberCompanyCheckbox"
+                                                checked={rememberCompany}
+                                                onChange={(e) => handleToggleRememberCompany(e.target.checked)}
+                                                className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                            />
+                                            <label htmlFor="rememberCompanyCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
+                                                선택회사 저장
+                                            </label>
+                                        </div>
+
+                                        <div className="flex items-center gap-1.5">
+                                            <input 
+                                                type="checkbox"
+                                                id="keepLoggedInCheckbox"
+                                                checked={keepLoggedIn}
+                                                onChange={(e) => handleToggleKeepLoggedIn(e.target.checked)}
+                                                className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                            />
+                                            <label htmlFor="keepLoggedInCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
+                                                자동 로그인 유지
+                                            </label>
+                                        </div>
                                     </div>
                                 </div>
                                 
