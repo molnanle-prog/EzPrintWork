@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, db } from '../services/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 
@@ -19,6 +19,35 @@ interface AuthContextType {
   updatePlan: (plan: 'free' | 'pro') => void;
   loginCustomSession: (user: AppUser, plan: 'free' | 'pro') => void;
 }
+
+// [결제 만료 및 미결제 실시간 자동 판별 엔진]
+// plan이 유료(pro, u3, u5 등)라 하더라도 만료일이 지났거나 paymentStatus가 PAID/FREE가 아니라면 즉각 'free' 광고형으로 강제 변환합니다.
+export const determineTenantPlan = (tenantData: any): 'free' | 'pro' => {
+  if (!tenantData) return 'free';
+
+  const plan = tenantData.plan || 'free';
+  const paymentStatus = tenantData.paymentStatus || 'UNPAID';
+  const licenseExpiresAt = tenantData.licenseExpiresAt || null;
+
+  // 1. 유료 플랜 타입 대조 (pro, pro_plus, u3, u5, u10, service 등)
+  const isPaidPlanType = ['pro', 'pro_plus', 'u3', 'u5', 'u10', 'service'].includes(plan);
+  if (!isPaidPlanType) return 'free';
+
+  // 2. 결제 미완료 시 즉각 광고형 모드 자동 변환 (UNPAID 등)
+  if (paymentStatus !== 'PAID' && paymentStatus !== 'FREE') {
+    return 'free';
+  }
+
+  // 3. 선불 요금제 만료일 경과 시 즉각 광고형 모드 자동 변환
+  if (licenseExpiresAt) {
+    const expireDate = new Date(licenseExpiresAt);
+    if (!isNaN(expireDate.getTime()) && expireDate < new Date()) {
+      return 'free';
+    }
+  }
+
+  return 'pro';
+};
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -62,7 +91,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // Fetch tenant plan
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
-              setTenantPlan(tenantDoc.data().plan || 'free');
+              setTenantPlan(determineTenantPlan(tenantDoc.data()));
           }
         }
       } else {
@@ -132,6 +161,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await fetchUserProfile(firebaseUser);
     }
   };
+
+  // [SSOT 실시간 요금제 동기화 엔진] 
+  // 테넌트 문서의 실시간 동적 상태 변화(onSnapshot)를 완벽히 감지하여,
+  // 대표님이 매니저 프로그램에서 요금제를 바꾸는 즉시 사용 중인 화면에 실시간(1초 이내) 갱신 적용합니다.
+  useEffect(() => {
+    if (!currentUser || !currentUser.tenantId) {
+      return;
+    }
+    
+    console.log(`[RealtimePlanSync] Subscribing to tenant: ${currentUser.tenantId}`);
+    const tenantRef = doc(db, 'tenants', currentUser.tenantId);
+    
+    const unsubscribe = onSnapshot(tenantRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const determined = determineTenantPlan(docSnap.data());
+        console.log(`[RealtimePlanSync] Tenant plan updated in real-time (Determined: ${determined})`);
+        setTenantPlan(determined);
+      }
+    }, (err) => {
+      console.error("[RealtimePlanSync] Real-time subscription failed:", err);
+    });
+    
+    return () => {
+      console.log(`[RealtimePlanSync] Unsubscribing from tenant: ${currentUser.tenantId}`);
+      unsubscribe();
+    };
+  }, [currentUser?.tenantId]);
 
   useEffect(() => {
     if (DEV_BYPASS_LOGIN) {
