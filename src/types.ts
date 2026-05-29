@@ -192,6 +192,7 @@ export interface SmsConfig {
   useAlimtalk?: boolean;
   alimtalkTemplates?: Record<string, string>;
   completedMessageTemplate?: string;
+  billingMessageTemplate?: string;
   sendOnComplete?: boolean;
 }
 

@@ -16,7 +16,7 @@ const DEFAULT_TEMPLATES = [
   { label: '시안 확인', content: '[시안] {고객명}님 {작업명} 시안 전송됨. 확인후 회신부탁드립니다.' },
   { label: '인쇄 진행', content: '[진행] {고객명}님 {작업명} 시안확정. 인쇄/제작 시작합니다.' },
   { label: '제작 완료', content: '[완료] {고객명}님 {작업명} 제작완료. 방문/퀵 수령 가능합니다.' },
-  { label: '계좌 안내', content: '[계좌] OO은행 123-456-7890 (예금주) / {금액}원 입금요망' },
+  { label: '계좌 안내', content: '[계좌] {계좌정보} / {금액}원 입금요망' },
 ];
 
 // EUC-KR 바이트 길이 계산 헬퍼
@@ -67,11 +67,25 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
     const savedTemplates = localStorage.getItem('pm_msg_templates');
     const savedPrefix = localStorage.getItem('pm_msg_prefix');
     
-    let loadedTemplates = DEFAULT_TEMPLATES;
+    let loadedTemplates = [...DEFAULT_TEMPLATES];
     if (savedTemplates) {
-        loadedTemplates = JSON.parse(savedTemplates);
-        setTemplates(loadedTemplates);
+        try {
+            loadedTemplates = JSON.parse(savedTemplates);
+        } catch (e) {
+            console.error('Failed to parse saved templates:', e);
+        }
     }
+
+    // DB의 문자 설정에 커스텀 계좌 안내 템플릿이 정의되어 있다면 덮어쓰기
+    const savedSmsConfig = db.getSmsConfig();
+    if (savedSmsConfig && savedSmsConfig.billingMessageTemplate) {
+        const billingIdx = loadedTemplates.findIndex(t => t.label === '계좌 안내');
+        if (billingIdx !== -1) {
+            loadedTemplates[billingIdx].content = savedSmsConfig.billingMessageTemplate;
+        }
+    }
+
+    setTemplates(loadedTemplates);
     
     if (savedPrefix) {
         setPrefix(savedPrefix);
@@ -115,9 +129,19 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
 
   const applyTemplate = (index: number) => {
       let content = templates[index].content;
-      content = content.replace(/{고객명}/g, job.clientName || '고객');
+      const companyInfo = db.getCompanyInfo();
+      const companyName = companyInfo.name || '';
+      const bankAccount = companyInfo.bankAccount || '계좌번호 미등록';
+      
+      content = content.replace(/{고객명}/g, job.contactPerson || job.clientName || '고객');
+      content = content.replace(/{거래처}/g, job.clientName || '');
       content = content.replace(/{작업명}/g, job.title || '작업');
+      content = content.replace(/{주문명}/g, job.title || '작업');
       content = content.replace(/{금액}/g, job.price.toLocaleString() || '0');
+      content = content.replace(/{회사명}/g, companyName);
+      content = content.replace(/{연락처}/g, job.clientPhone || '');
+      content = content.replace(/{계좌정보}/g, bankAccount);
+      content = content.replace(/{계좌번호}/g, bankAccount);
       
       setBody(content);
   };

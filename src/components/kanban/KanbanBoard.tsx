@@ -38,6 +38,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [filterOnlyMyJobs, setFilterOnlyMyJobs] = useState(false);
   const [filterUnpaidOnly, setFilterUnpaidOnly] = useState(false);
   const [filterUrgentOnly, setFilterUrgentOnly] = useState(false);
+  const [filterCanceled, setFilterCanceled] = useState(false);
   const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('all');
 
   // Optimized Data Loading
@@ -54,6 +55,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     const userFiltered = dbVisibleStatuses.filter(s => !hiddenStatusKeys.includes(s.key));
     setVisibleStatusDefinitions(userFiltered);
     const filteredJobs = allJobs.filter(job => {
+      // 0. 취소된 건 필터링: '취소 건 조회' 스위치가 활성화되었을 때만 취소된 작업 노출
+      if (job.status === 'CANCELED') {
+        return filterCanceled;
+      }
+
       // 1. Active jobs are always visible
       if (job.status !== 'DELIVERY') return true;
 
@@ -89,7 +95,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         loadBoardData();
     });
     return () => unsubscribe();
-  }, [selectedDate]); // Reload if date changes
+  }, [selectedDate, filterCanceled]); // Reload if date or cancel filter changes
 
   useEffect(() => {
     localStorage.setItem('ezprint_hidden_columns', JSON.stringify(hiddenStatusKeys));
@@ -372,16 +378,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           opacity: 1;
           width: 20px;
           height: 20px;
-          margin-left: 0.5rem;
-        }
-        /* Dark mode icon invert */
-        .dark input[type="date"]::-webkit-calendar-picker-indicator {
-            filter: invert(1);
+          margin: 0;
         }
       `}</style>
-      <div className={`flex flex-col md:flex-row justify-between p-2 bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 items-stretch md:items-center shadow-sm z-20 relative flex-none gap-2 ${isTvMode ? 'hidden' : ''}`}>
-        {/* Left/Middle: Live Smart Filter Controls */}
-        <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+
+      {/* Header Controls */}
+      {!isTvMode && (
+        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between p-3.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 shadow-sm shrink-0">
+        <div className="flex flex-wrap gap-2 items-center flex-1 min-w-0">
           {/* Real-time search bar */}
           <div className="relative flex items-center w-full sm:w-48 md:w-56 lg:w-64 transition-all duration-300 focus-within:sm:w-56 focus-within:md:w-64 focus-within:lg:w-72">
             <Search size={14} className="absolute left-3 text-slate-400 pointer-events-none" />
@@ -390,12 +394,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
               placeholder="작업명, 고객명, 용지 검색..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 pr-7 py-1.5 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-400 dark:placeholder-slate-500 shadow-inner"
+              className="pl-8 pr-7 py-1.5 w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-200 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-400 dark:placeholder-slate-500 shadow-inner"
             />
             {searchQuery && (
               <button 
                 onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 text-[10px] font-black"
+                className="absolute right-2.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 text-[10px] font-semibold"
                 title="지우기"
               >
                 ✕
@@ -406,7 +410,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           {/* Quick toggle: My Jobs */}
           <button
             onClick={() => setFilterOnlyMyJobs(!filterOnlyMyJobs)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-black transition-all border select-none hover:scale-105 active:scale-95
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border select-none hover:scale-105 active:scale-95
               ${filterOnlyMyJobs 
                 ? 'bg-blue-600 border-blue-600 text-white shadow-md shadow-blue-500/20 hover:bg-blue-700' 
                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400 dark:hover:border-slate-500'}`}
@@ -419,7 +423,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           {/* Quick toggle: Unpaid */}
           <button
             onClick={() => setFilterUnpaidOnly(!filterUnpaidOnly)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-black transition-all border select-none hover:scale-105 active:scale-95
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border select-none hover:scale-105 active:scale-95
               ${filterUnpaidOnly 
                 ? 'bg-rose-600 border-rose-600 text-white shadow-md shadow-rose-500/20 hover:bg-rose-700' 
                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-rose-400 dark:hover:border-slate-500'}`}
@@ -432,7 +436,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           {/* Quick toggle: Urgent */}
           <button
             onClick={() => setFilterUrgentOnly(!filterUrgentOnly)}
-            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-black transition-all border select-none hover:scale-105 active:scale-95
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border select-none hover:scale-105 active:scale-95
               ${filterUrgentOnly 
                 ? 'bg-amber-500 border-amber-500 text-white shadow-md shadow-amber-500/20 hover:bg-amber-600' 
                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-amber-400 dark:hover:border-slate-500'}`}
@@ -447,7 +451,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             <select
               value={selectedStaffFilter}
               onChange={(e) => setSelectedStaffFilter(e.target.value)}
-              className="appearance-none bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-7 pr-8 py-1.5 text-xs font-black text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer shadow-sm hover:border-blue-400 dark:hover:border-slate-500 transition-colors"
+              className="appearance-none bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg pl-7 pr-8 py-1.5 text-xs font-medium text-slate-600 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 cursor-pointer shadow-sm hover:border-blue-400 dark:hover:border-slate-500 transition-colors"
               title="특정 작업 담당자별로 필터링합니다"
             >
               <option value="all">전체 담당자</option>
@@ -469,7 +473,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           <div className="relative">
             <button 
               onClick={() => setShowFilterPopover(!showFilterPopover)}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all border hover:scale-105 active:scale-95
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border hover:scale-105 active:scale-95
                 ${showFilterPopover 
                     ? 'bg-blue-600 border-blue-600 text-white shadow-lg shadow-blue-500/20' 
                     : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400'}`}
@@ -487,7 +491,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                     <div className="fixed inset-0 z-30" onClick={() => setShowFilterPopover(false)}></div>
                     <div className="absolute top-full left-0 mt-2 w-56 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-2 z-40 overflow-hidden animate-in fade-in zoom-in duration-200">
                         <div className="px-3 py-2 border-b border-slate-100 dark:border-slate-700 mb-1">
-                            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">보드 구성 설정</p>
+                            <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest">보드 구성 설정</p>
                         </div>
                         <div className="max-h-[300px] overflow-y-auto custom-scrollbar p-1 space-y-1">
                             {allStatusDefinitions.map(status => (
@@ -496,7 +500,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                                     onClick={() => toggleStatusVisibility(status.key)}
                                     className="w-full flex items-center justify-between px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors group"
                                 >
-                                    <span className={`text-sm font-bold ${hiddenStatusKeys.includes(status.key) ? 'text-slate-400' : 'text-slate-700 dark:text-slate-200'}`}>
+                                    <span className={`text-sm font-medium ${hiddenStatusKeys.includes(status.key) ? 'text-slate-400' : 'text-slate-700 dark:text-slate-200'}`}>
                                         {status.label}
                                     </span>
                                     {!hiddenStatusKeys.includes(status.key) ? (
@@ -521,14 +525,29 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
               setIsTvMode(nextVal);
               localStorage.setItem('ezprint_tv_mode', String(nextVal));
               window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
+              
+              // 브라우저 기본 주소창, 탭바, 북마크바를 완전히 감추는 웹 표준 전체화면(Fullscreen) API 연동
+              if (nextVal) {
+                if (document.documentElement.requestFullscreen) {
+                  document.documentElement.requestFullscreen().catch((err) => {
+                    console.log("전체화면 진입 실패:", err);
+                  });
+                }
+              } else {
+                if (document.fullscreenElement && document.exitFullscreen) {
+                  document.exitFullscreen().catch((err) => {
+                    console.log("전체화면 해제 실패:", err);
+                  });
+                }
+              }
             }}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all border hover:scale-105 active:scale-95 select-none
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border select-none hover:scale-105 active:scale-95 shadow-md
               ${isTvMode 
-                ? 'bg-purple-600 border-purple-600 text-white shadow-lg shadow-purple-500/20 hover:bg-purple-700' 
-                : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-purple-400'}`}
+                ? 'bg-purple-600 dark:bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-500/40 hover:bg-purple-700' 
+                : 'bg-purple-900 dark:bg-purple-950 border-purple-800 dark:border-purple-900 text-white hover:bg-purple-800 dark:hover:bg-purple-900 hover:border-purple-500'}`}
             title="대형 화면용 모니터링 모드로 전환합니다"
           >
-            <Tv size={14} />
+            <Tv size={14} className={isTvMode ? "text-white animate-pulse" : "text-purple-300"} />
             <span>모니터링 모드</span>
           </button>
 
@@ -536,7 +555,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           <button 
             onClick={() => setIsCreatingJob(true)}
             title="새로운 작업을 등록합니다"
-            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-black flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95"
           >
             <Plus size={16} />
             <span>작업 등록</span>
@@ -548,7 +567,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             className="flex items-center gap-2 bg-slate-50 dark:bg-slate-800/80 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm transition-all hover:shadow-md shrink-0"
             title="선택한 날짜에 완료된 작업도 표시합니다 (과거 이력 조회용)"
         >
-           <span className="text-xs font-black text-slate-500 dark:text-slate-400 flex items-center gap-1.5 whitespace-nowrap">
+           <span className="text-xs font-medium text-slate-500 dark:text-slate-400 flex items-center gap-1.5 whitespace-nowrap">
              <CalendarIcon size={14} />
              <span>완료 기준일</span>
            </span>
@@ -557,10 +576,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
              type="date" 
              value={selectedDate}
              onChange={(e) => setSelectedDate(e.target.value)}
-             className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-bold rounded-md focus:ring-2 focus:ring-blue-500 block px-2 py-1 cursor-pointer shadow-sm hover:border-blue-400 min-w-0"
+             className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-semibold rounded-md focus:ring-2 focus:ring-blue-500 block px-2 py-1 cursor-pointer shadow-sm hover:border-blue-400 min-w-0"
            />
         </div>
       </div>
+      )}
 
       <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0">
         {/* Responsive Width logic: 
@@ -626,8 +646,15 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             setIsTvMode(false);
             localStorage.setItem('ezprint_tv_mode', 'false');
             window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
+            
+            // 모니터링 모드 종료 시 전체화면 상태도 안전하게 빠져나옴
+            if (document.fullscreenElement && document.exitFullscreen) {
+              document.exitFullscreen().catch((err) => {
+                console.log("전체화면 해제 실패:", err);
+              });
+            }
           }}
-          className="fixed top-3 right-3 z-[9999] flex items-center gap-2 px-4 py-2.5 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-black backdrop-blur-md"
+          className="fixed top-3 right-3 z-[9999] flex items-center gap-2 px-4 py-2.5 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-semibold backdrop-blur-md"
         >
           <Tv size={14} className="text-purple-400 animate-pulse" />
           <span>일반 화면으로 복원 (모니터링 끄기)</span>

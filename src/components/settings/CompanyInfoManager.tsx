@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber } from '../../services/dataService';
 import { CompanyInfo } from '../../types';
-import { Building, Save, Check, Copy, History } from 'lucide-react';
+import { Building, Save, Check, Copy, History, Search } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -45,6 +44,45 @@ export const CompanyInfoManager: React.FC = () => {
           finalValue = formatBusinessNumber(value);
       }
       setInfo({ ...info, [field]: finalValue });
+  };
+
+  const handleAddressSearch = () => {
+    const scriptId = 'daum-postcode-script';
+    const existingScript = document.getElementById(scriptId);
+
+    const openPostcode = () => {
+      new (window as any).daum.Postcode({
+        oncomplete: (data: any) => {
+          let fullAddress = data.address;
+          let extraAddress = '';
+
+          if (data.addressType === 'R') { // 도로명 주소
+            if (data.bname !== '') {
+              extraAddress += data.bname;
+            }
+            if (data.buildingName !== '') {
+              extraAddress += extraAddress !== '' ? `, ${data.buildingName}` : data.buildingName;
+            }
+            fullAddress += extraAddress !== '' ? ` (${extraAddress})` : '';
+          }
+
+          setInfo(prev => ({ ...prev, address: fullAddress }));
+        }
+      }).open();
+    };
+
+    if (!existingScript) {
+      const script = document.createElement('script');
+      script.id = scriptId;
+      script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+      script.onload = openPostcode;
+      script.onerror = () => {
+        alert('주소 검색 서비스를 불러오는 데 실패했습니다. 네트워크 연결을 확인해주세요.');
+      };
+      document.body.appendChild(script);
+    } else {
+      openPostcode();
+    }
   };
 
   const inputClass = "w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 transition-colors";
@@ -153,13 +191,23 @@ export const CompanyInfoManager: React.FC = () => {
 
               <div className="md:col-span-2 space-y-2">
                   <label className="text-sm font-bold text-slate-700 dark:text-slate-300">주소</label>
-                  <input 
-                    type="text"
-                    value={info.address || ''}
-                    onChange={e => handleChange('address', e.target.value)}
-                    className={inputClass}
-                    placeholder="서울시 ..."
-                  />
+                  <div className="flex gap-2">
+                      <input 
+                        type="text"
+                        value={info.address || ''}
+                        onChange={e => handleChange('address', e.target.value)}
+                        className={inputClass}
+                        placeholder="도로명 주소 검색 또는 상세 주소 입력"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddressSearch}
+                        className="px-5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-sm transition-all flex items-center gap-1.5 active:scale-95 shrink-0 shadow-md"
+                      >
+                        <Search size={15} />
+                        주소 검색
+                      </button>
+                  </div>
               </div>
 
               <div className="md:col-span-2 space-y-2">

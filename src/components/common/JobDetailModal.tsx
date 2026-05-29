@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog } from '../../types';
 import { db, calculateEstimate, formatPhoneNumber, getErrorMessage } from '../../services/dataService';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, ArrowRightCircle, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen } from 'lucide-react';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, ArrowRightCircle, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, FastForward } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
 import { useDialog } from '../../contexts/DialogContext';
@@ -72,7 +72,6 @@ interface JobDetailModalProps {
 }
 
 const PRINT_COLORS = ['선택안함', '단면 4도(컬러)', '양면 8도(컬러)', '단면 1도(흑백)', '양면 2도(흑백)', '별색'];
-const PROCESSING_OPTIONS = ['유광코팅', '무광코팅', '오시', '미싱', '타공', '귀도리', '접지', '무선제본', '중철제본', '스프링제본', '박가공', '형압', '양면테이프', '도무송', '미싱(절취선)', '넘버링'];
 
 const TIME_OPTIONS = (() => {
   const times = [];
@@ -89,7 +88,7 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
     const isCustomValue = value && options.length > 0 && !options.includes(value);
     const [forceDirect, setForceDirect] = useState(false);
     const isDirect = isCustomValue || forceDirect || options.length === 0;
-    const inputClass = "w-full px-3 py-2 h-10 bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400";
+    const inputClass = "w-full px-2.5 py-1.5 h-[34px] bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400";
 
     const processSuffix = (val: string) => {
         if (!val) return val;
@@ -118,7 +117,7 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
 
     return (
         <div className="space-y-1">
-            <div className="h-6 flex items-center justify-between">
+            <div className="h-5 flex items-center justify-between">
                 <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
                     {icon} {label}
                     {subLabel && <span className="text-[10px] text-slate-400 font-normal ml-1">({subLabel})</span>}
@@ -183,6 +182,10 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const [viewMode, setViewMode] = useState<'summary' | 'edit'>(isNew ? 'edit' : 'summary');
   const [activeTabIdx, setActiveTabIdx] = useState(0); 
   
+  const [processingOptions, setProcessingOptions] = useState<string[]>([]);
+  const [customInputVal, setCustomInputVal] = useState('');
+  const [isCustomChecked, setIsCustomChecked] = useState(false);
+  
   const [showContactModal, setShowContactModal] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
@@ -208,9 +211,21 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   useEffect(() => {
     setStatusDefinitions(db.getStatusDefinitions());
     setProductDefs(db.getProductDefinitions());
-    const unsubscribe = db.subscribe(() => setProductDefs(db.getProductDefinitions()));
+    setProcessingOptions(db.getProcessingDefinitions());
+    const unsubscribe = db.subscribe(() => {
+        setProductDefs(db.getProductDefinitions());
+        setProcessingOptions(db.getProcessingDefinitions());
+    });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (currentSpecs && processingOptions.length > 0) {
+        const customVal = currentSpecs.processing.find(opt => !processingOptions.includes(opt)) || '';
+        setCustomInputVal(customVal);
+        setIsCustomChecked(customVal !== '');
+    }
+  }, [activeTabIdx, editedJob.subJobs, processingOptions]);
 
   const currentDef = productDefs.find(d => d.name === currentSubJob.type) || 
                      productDefs.find(d => d.name === '기타') || 
@@ -457,10 +472,127 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       }
   };
 
+  const handleCancelJob = async () => {
+      if (!currentUser) {
+          showAlert("사용자 정보가 없어 작업을 취소할 수 없습니다.");
+          return;
+      }
+      if (await showConfirm(`'${editedJob.title}' 작업을 취소 처리하고 보관하시겠습니까?`)) {
+          const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
+          newHistory.push({
+              timestamp: new Date().toISOString(),
+              staffId: currentUser.id,
+              action: '작업 취소',
+              details: '소비자 요청으로 작업을 취소 및 보관 처리했습니다.'
+          });
+
+          const finalJob: Job = {
+              ...editedJob,
+              status: 'CANCELED',
+              paymentStatus: '취소',
+              history: newHistory
+          };
+
+          try {
+              await db.updateJob(finalJob);
+              onUpdate(finalJob);
+              onClose();
+          } catch (error) {
+              showAlert(getErrorMessage(error));
+          }
+      }
+  };
+
+  const handleRestoreJob = async () => {
+      if (!currentUser) {
+          showAlert("사용자 정보가 없어 작업을 복구할 수 없습니다.");
+          return;
+      }
+      if (await showConfirm(`취소된 '${editedJob.title}' 작업을 원래 공정으로 다시 복구하시겠습니까?`)) {
+          const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
+          newHistory.push({
+              timestamp: new Date().toISOString(),
+              staffId: currentUser.id,
+              action: '작업 복구',
+              details: '취소 상태에서 일반 접수(RECEIVED) 단계로 복구 완료했습니다.'
+          });
+
+          const finalJob: Job = {
+              ...editedJob,
+              status: 'RECEIVED',
+              paymentStatus: '결제대기',
+              history: newHistory
+          };
+
+          try {
+              await db.updateJob(finalJob);
+              onUpdate(finalJob);
+              onClose();
+          } catch (error) {
+              showAlert(getErrorMessage(error));
+          }
+      }
+  };
+
+  const handleFastCompleteJob = async () => {
+      if (!currentUser) {
+          showAlert("사용자 정보가 없어 조기 완료를 처리할 수 없습니다.");
+          return;
+      }
+      if (await showConfirm(`'${editedJob.title}' 작업의 남은 단계를 모두 건너뛰고 '즉시 완료(납품)' 처리하시겠습니까?`)) {
+          const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
+          newHistory.push({
+              timestamp: new Date().toISOString(),
+              staffId: currentUser.id,
+              action: '즉시 완료',
+              details: '중간 제작 공정을 건너뛰고 조기 완료 처리 완료했습니다.'
+          });
+
+          const finalJob: Job = {
+              ...editedJob,
+              status: 'DELIVERY',
+              progress: 100,
+              completedAt: new Date().toISOString(),
+              history: newHistory
+          };
+
+          try {
+              await db.updateJob(finalJob);
+              onUpdate(finalJob);
+              onClose();
+          } catch (error) {
+              showAlert(getErrorMessage(error));
+          }
+      }
+  };
+
   const toggleProcessing = (option: string) => {
     const current = currentSpecs.processing || [];
     const updated = current.includes(option) ? current.filter(item => item !== option) : [...current, option];
     updateCurrentSpecs({ processing: updated });
+  };
+
+  const handleCustomInputChange = (newVal: string) => {
+      setCustomInputVal(newVal);
+      const current = currentSpecs.processing || [];
+      const clean = current.filter(opt => processingOptions.includes(opt));
+      if (newVal.trim() !== '') {
+          updateCurrentSpecs({ processing: [...clean, newVal.trim()] });
+      } else {
+          updateCurrentSpecs({ processing: clean });
+      }
+  };
+
+  const handleCustomCheckboxToggle = () => {
+      if (isCustomChecked) {
+          setIsCustomChecked(false);
+          setCustomInputVal('');
+          const current = currentSpecs.processing || [];
+          const clean = current.filter(opt => processingOptions.includes(opt));
+          updateCurrentSpecs({ processing: clean });
+      } else {
+          setIsCustomChecked(true);
+      }
   };
 
   const handleReorder = async (pastJob: Job) => {
@@ -479,8 +611,12 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   };
 
   const handleCalculate = () => {
-    const result = calculateEstimate(currentSpecs, db.getPricingConfig());
-    setEstimateResult({ cost: result.totalCost, recommended: result.recommendedPrice });
+    if (estimateResult) {
+      setEstimateResult(null);
+    } else {
+      const result = calculateEstimate(currentSpecs, db.getPricingConfig());
+      setEstimateResult({ cost: result.totalCost, recommended: result.recommendedPrice });
+    }
   };
 
   const applyEstimate = () => {
@@ -578,7 +714,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const createdAtDatePart = new Date(editedJob.createdAt).toISOString().split('T')[0];
   const createdAtDisplayTime = getDisplayTime(editedJob.createdAt);
 
-  const inputClass = "w-full px-3 py-2 h-10 bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400";
+  const inputClass = "w-full px-2.5 py-1.5 h-[34px] bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400";
   const sidebarInputClass = "w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-sm text-slate-700 focus:ring-1 focus:ring-blue-500";
   const availableStaff = staff.filter(s => !s.isDeleted && s.active);
   const selectedStaffIds = editedJob.assignedStaffIds || [];
@@ -587,11 +723,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   return (
     <>
       <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl overflow-hidden flex flex-col h-[90vh]">
+        <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col max-h-[92vh] h-auto">
           {viewMode === 'summary' ? (
             <div className="flex flex-col h-full bg-slate-50">
                 {/* Header */}
-                <div className="p-6 border-b border-slate-200 flex justify-between items-start bg-white flex-none">
+                <div className="py-3 px-5 border-b border-slate-200 flex justify-between items-start bg-white flex-none">
                     <div className="flex items-start gap-4 w-full max-w-3xl">
                         <div className={`p-3 rounded-xl shrink-0 mt-1 shadow-sm ${editedJob.priority === Priority.VERY_URGENT ? 'bg-red-100 text-red-600' : editedJob.priority === Priority.URGENT ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
                             <FileText size={28} />
@@ -733,231 +869,254 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                 </div>
             </div>
           ) : (
-            <div className="flex flex-col h-full">
-              {/* Header */}
-              <div className="p-6 border-b border-slate-200 flex justify-between items-start bg-slate-50 flex-none">
-            <div className="flex items-start gap-4 w-full max-w-3xl">
-              <div className={`p-3 rounded-xl shrink-0 mt-1 shadow-sm ${editedJob.priority === Priority.VERY_URGENT ? 'bg-red-100 text-red-600' : editedJob.priority === Priority.URGENT ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
-                  <FileText size={28} />
-              </div>
-              <div className="w-full relative">
-                <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2 w-full mb-3">
-                  <input 
-                      value={editedJob.title}
-                      onChange={(e) => setEditedJob({...editedJob, title: e.target.value})}
-                      className="bg-transparent border-none focus:ring-0 p-2 -ml-2 font-bold w-full text-slate-800 placeholder-slate-300 caret-blue-600 focus:bg-white/60 rounded-lg transition-colors"
-                      placeholder={isNew ? "통합 작업 제목 (예: 삼성전자 3월 주문건)" : "작업 제목 입력"}
-                  />
-                </h2>
-                
-                <div className="flex gap-4 items-center text-base relative">
-                    <div className="flex items-center gap-2 flex-1 relative group">
-                        <Building2 size={18} className="text-slate-400 shrink-0" />
-                        <input 
-                            value={editedJob.clientName}
-                            onChange={(e) => handleClientSearch(e.target.value, 'company')}
-                            onFocus={() => { if(editedJob.clientName.length > 1) setShowClientSearch(true); }}
-                            onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
-                            className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-700 w-full placeholder-slate-300 font-bold py-2 transition-colors"
-                            placeholder="고객사(상호)"
-                        />
-                    </div>
-                    <div className="flex items-center gap-2 w-32 sm:w-40 relative">
-                        <User size={18} className="text-slate-400 shrink-0" />
-                        <input 
-                            value={editedJob.contactPerson || ''}
-                            onChange={(e) => handleClientSearch(e.target.value, 'person')}
-                            onFocus={() => { if((editedJob.contactPerson || '').length > 1) setShowClientSearch(true); }}
-                            onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
-                            className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-600 w-full placeholder-slate-300 py-2 transition-colors"
-                            placeholder="담당자명"
-                        />
-                    </div>
-                    <div className="flex items-center gap-2 w-40 sm:w-48">
-                        <Phone size={18} className="text-slate-400 shrink-0" />
-                        <input 
-                            value={editedJob.clientPhone || ''}
-                            onChange={(e) => setEditedJob({...editedJob, clientPhone: formatPhoneNumber(e.target.value)})}
-                            className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-600 w-full placeholder-slate-300 py-2 transition-colors"
-                            placeholder="연락처"
-                        />
-                        {!isNew && editedJob.clientPhone && (
-                            <button onClick={() => setShowContactModal(true)} className="p-1.5 ml-2 bg-blue-50 text-blue-600 rounded-lg hover:bg-blue-100 shrink-0 shadow-sm">
-                                <MessageCircle size={16} />
-                            </button>
-                        )}
-                    </div>
-                    {showClientSearch && clientSearchResults.length > 0 && (
-                        <div className="absolute top-12 left-0 w-full bg-white border border-slate-200 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto">
-                            {clientSearchResults.map(client => (
-                                <button key={client.id} onMouseDown={() => selectClient(client)} className="w-full text-left px-4 py-3 hover:bg-blue-50 flex flex-col border-b border-slate-50 last:border-0">
-                                    <div className="font-bold text-slate-800 text-sm">{client.name}</div>
-                                    <div className="text-xs text-slate-500 flex gap-2 mt-1"><span>{client.contactPerson}</span><span>|</span><span>{client.phone}</span></div>
+            <div className="flex flex-col h-full bg-slate-50">
+              {/* Header - 패딩 축소 및 레이아웃 정리 */}
+              <div className="py-1.5 px-4 border-b border-slate-200 flex justify-between items-start bg-slate-50 flex-none">
+                <div className="flex items-start gap-3 w-full max-w-3xl">
+                  <div className={`p-2 rounded-xl shrink-0 mt-0.5 shadow-sm ${editedJob.priority === Priority.VERY_URGENT ? 'bg-red-100 text-red-600' : editedJob.priority === Priority.URGENT ? 'bg-orange-100 text-orange-600' : 'bg-blue-100 text-blue-600'}`}>
+                      <FileText size={24} />
+                  </div>
+                  <div className="w-full relative">
+                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2 w-full mb-1.5">
+                      <span className="text-xs font-bold text-slate-500 shrink-0 select-none">제목 :</span>
+                      <input 
+                          value={editedJob.title}
+                          onChange={(e) => setEditedJob({...editedJob, title: e.target.value})}
+                          className="bg-transparent border-b border-slate-300 focus:border-blue-500 focus:ring-0 p-1 -ml-1 font-bold w-full text-slate-800 placeholder-slate-300 caret-blue-600 focus:bg-white/60 rounded-md transition-all outline-none text-lg"
+                          placeholder={isNew ? "통합 작업 제목 (예: 삼성전자 3월 주문건)" : "작업 제목 입력"}
+                      />
+                    </h2>
+                    
+                    <div className="flex gap-4 items-center text-sm relative py-0.5">
+                        <div className="flex items-center gap-1.5 flex-1 relative group">
+                            <Building2 size={14} className="text-slate-400 shrink-0" />
+                            <span className="text-xs font-bold text-slate-500 shrink-0 select-none">거래처 :</span>
+                            <input 
+                                value={editedJob.clientName}
+                                onChange={(e) => handleClientSearch(e.target.value, 'company')}
+                                onFocus={() => { if(editedJob.clientName.length > 1) setShowClientSearch(true); }}
+                                onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
+                                className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-700 w-full placeholder-slate-300 font-bold py-1 transition-colors text-sm"
+                                placeholder="고객사(상호)"
+                            />
+                        </div>
+                        <div className="flex items-center gap-1.5 w-36 sm:w-44 relative">
+                            <User size={14} className="text-slate-400 shrink-0" />
+                            <span className="text-xs font-bold text-slate-500 shrink-0 select-none">담당 :</span>
+                            <input 
+                                value={editedJob.contactPerson || ''}
+                                onChange={(e) => handleClientSearch(e.target.value, 'person')}
+                                onFocus={() => { if((editedJob.contactPerson || '').length > 1) setShowClientSearch(true); }}
+                                onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
+                                className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-600 w-full placeholder-slate-300 py-1 transition-colors text-sm"
+                                placeholder="담당자명"
+                            />
+                        </div>
+                        <div className="flex items-center gap-1.5 w-40 sm:w-52">
+                            <Phone size={14} className="text-slate-400 shrink-0" />
+                            <span className="text-xs font-bold text-slate-500 shrink-0 select-none">연락처 :</span>
+                            <input 
+                                value={editedJob.clientPhone || ''}
+                                onChange={(e) => setEditedJob({...editedJob, clientPhone: formatPhoneNumber(e.target.value)})}
+                                className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-600 w-full placeholder-slate-300 py-1 transition-colors text-sm"
+                                placeholder="연락처"
+                            />
+                            {!isNew && editedJob.clientPhone && (
+                                <button onClick={() => setShowContactModal(true)} className="p-1 ml-1.5 bg-blue-50 text-blue-600 rounded hover:bg-blue-100 shrink-0 shadow-sm">
+                                    <MessageCircle size={14} />
                                 </button>
-                            ))}
+                            )}
                         </div>
-                    )}
-                </div>
-              </div>
-            </div>
-            <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors shrink-0"><X size={28} className="text-slate-400 hover:text-slate-600" /></button>
-          </div>
-
-          <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
-            {/* Left Column: Sidebar - Adjusted for 1920x1080 (Whole Scroll) */}
-            <div className="w-full lg:w-1/3 bg-slate-50 p-2 border-r border-slate-200 flex flex-col gap-2 overflow-hidden">
-              
-              {/* Past Jobs History */}
-              {isNew && pastJobs.length > 0 && (
-                <div className="bg-white border-2 border-blue-100 rounded-lg p-2 shadow-sm animate-in slide-in-from-left-2 duration-300 flex-none">
-                  <div className="flex items-center justify-between mb-1.5 px-1">
-                     <h3 className="text-xs font-bold text-blue-700 flex items-center gap-1"><History size={12} /> 최근 주문 이력</h3>
-                     <span className="text-[10px] bg-blue-100 text-blue-600 px-1.5 rounded-full font-bold">{pastJobs.length}건</span>
-                  </div>
-                  <div className="space-y-1.5 max-h-32 overflow-y-auto custom-scrollbar pr-1">
-                    {pastJobs.slice(0, 3).map(pj => (
-                      <div key={pj.id} className="flex gap-2 p-1.5 rounded bg-slate-50 border border-slate-200 hover:bg-blue-50 hover:border-blue-200 transition-colors group items-center">
-                        <div className="w-6 h-6 rounded bg-slate-200 flex items-center justify-center shrink-0 text-[10px] text-slate-500 font-bold">{pj.type.substring(0,1)}</div>
-                        <div className="flex-1 min-w-0"><p className="text-[11px] font-bold text-slate-800 truncate">{pj.title}</p></div>
-                        <button onClick={() => handleReorder(pj)} className="px-2 py-0.5 bg-white border border-slate-200 text-[10px] font-bold text-blue-600 rounded hover:bg-blue-600 hover:text-white transition-colors shrink-0">불러오기</button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Status & Priority */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex gap-2 flex-none">
-                <div className="flex-1">
-                    <label className="text-[11px] font-bold text-slate-500 mb-0.5 block">상태</label>
-                    <select value={editedJob.status} onChange={(e) => setEditedJob({...editedJob, status: e.target.value })} className={sidebarInputClass}>
-                        {statusDefinitions.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
-                    </select>
-                </div>
-                <div className="flex-1">
-                    <label className="text-[11px] font-bold text-slate-500 mb-0.5 block">우선순위</label>
-                    <select value={editedJob.priority} onChange={(e) => setEditedJob({...editedJob, priority: e.target.value as Priority})} className={sidebarInputClass}>
-                        {Object.values(Priority).map(p => <option key={p} value={p}>{p}</option>)}
-                    </select>
-                </div>
-              </div>
-
-              {/* Staff */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative z-20 flex-none">
-                <div className="flex-1">
-                    <label className="text-[11px] font-bold text-slate-500 mb-0.5 flex items-center gap-1"><Users size={12}/> 담당자 (다중 선택 가능)</label>
-                    <div className="relative">
-                        <div className="w-full min-h-[34px] p-1 bg-slate-50 border border-slate-200 rounded flex flex-wrap gap-1 items-center cursor-pointer hover:border-blue-300 transition-colors" onClick={() => setIsStaffDropdownOpen(!isStaffDropdownOpen)}>
-                            {selectedStaffIds.length === 0 && <span className="text-slate-400 text-sm px-1">담당자 선택...</span>}
-                            {selectedStaffIds.map(id => {
-                                const s = staff.find(st => st.id === id);
-                                return s ? (
-                                    <span key={id} className="bg-white border border-slate-300 text-slate-700 text-[11px] px-1.5 py-0.5 rounded-md flex items-center gap-1 font-bold shadow-sm">
-                                        {s.name}<span className="text-[9px] text-slate-400 font-normal">({s.role})</span>
-                                        <button onClick={(e) => { e.stopPropagation(); toggleStaff(id); }} className="hover:text-red-500"><X size={10}/></button>
-                                    </span>
-                                ) : null;
-                            })}
-                        </div>
-                        {isStaffDropdownOpen && (
-                            <>
-                                <div className="fixed inset-0 z-10" onClick={() => setIsStaffDropdownOpen(false)}></div>
-                                <div className="absolute top-full left-0 w-full mt-1 bg-white border border-slate-300 rounded-lg shadow-xl max-h-48 overflow-y-auto z-20 custom-scrollbar animate-in fade-in zoom-in-95 duration-100">
-                                    {availableStaff.map(s => (
-                                        <div key={s.id} onClick={() => toggleStaff(s.id)} className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 flex items-center justify-between ${selectedStaffIds.includes(s.id) ? 'bg-blue-50 text-blue-700 font-bold' : 'text-slate-700'}`}>
-                                            <span>{s.name} <span className="text-xs text-slate-400 font-normal ml-1">({s.role})</span></span>
-                                            {selectedStaffIds.includes(s.id) && <Check size={14} />}
-                                        </div>
-                                    ))}
-                                </div>
-                            </>
-                        )}
                     </div>
-                </div>
-              </div>
-              
-              {/* Dates */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex-none">
-                <label className="text-[11px] font-bold text-slate-500 mb-0.5 block">접수일 설정</label>
-                <div className="flex flex-col gap-1.5">
-                    <input type="date" value={createdAtDatePart} onChange={(e) => handleCreatedAtDateChange(e.target.value)} className={sidebarInputClass} style={{ colorScheme: 'light' }} />
-                    <select value={createdAtDisplayTime} onChange={(e) => handleCreatedAtTimeChange(e.target.value)} className={sidebarInputClass}>
-                        {TIME_OPTIONS.map(t => (<option key={t} value={t}>{t}</option>))}
-                        <option value={AFTER_HOURS_VALUE}>18:00 이후</option>
-                    </select>
-                </div>
-              </div>
-
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex-none">
-                <label className="text-[11px] font-bold text-slate-500 mb-0.5 block">납기일 설정</label>
-                <div className="flex flex-col gap-1.5">
-                    <input type="date" value={datePart} onChange={(e) => handleDateChange(e.target.value)} className={sidebarInputClass} style={{ colorScheme: 'light' }} />
-                    <select value={displayTime} onChange={(e) => handleTimeChange(e.target.value)} className={sidebarInputClass}>
-                        {TIME_OPTIONS.map(t => (<option key={t} value={t}>{t}</option>))}
-                        <option value={AFTER_HOURS_VALUE}>18:00 이후</option>
-                    </select>
-                </div>
-              </div>
-
-              {/* NAS Path */}
-              <LocalPathInput 
-                value={editedJob.filePath || ''} 
-                onChange={(path) => setEditedJob({...editedJob, filePath: path})} 
-              />
-              
-              {/* Payment */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm relative overflow-hidden flex-none">
-                <div className="flex justify-between items-center mb-1.5">
-                   <label className="text-[11px] font-bold text-slate-500 flex items-center gap-1"><DollarSign size={12} /> 견적 및 결제</label>
-                   <button onClick={handleCalculate} className="text-[10px] flex items-center gap-1 bg-slate-800 text-yellow-400 px-2 py-0.5 rounded-full font-bold hover:bg-slate-700 transition-colors"><Calculator size={10} /> ⚡현재항목 추가</button>
-                </div>
-                {estimateResult && (<div className="mb-2 bg-slate-100 p-2 rounded border border-slate-200 animate-in fade-in zoom-in duration-200"><div className="flex justify-between text-xs mb-1"><span className="text-slate-500">예상 원가:</span><span className="font-mono text-slate-600">{estimateResult.cost.toLocaleString()}원</span></div><div className="flex justify-between text-sm font-bold items-center"><span className="text-slate-700">추천 공급가:</span><div className="flex items-center gap-2"><span className="text-blue-600">+{estimateResult.recommended.toLocaleString()}원</span><button onClick={applyEstimate} className="bg-blue-600 text-white p-1 rounded hover:bg-blue-700"><ArrowRightCircle size={14} /></button></div></div></div>)}
-                <div className="flex items-center gap-2 mb-2"><input type="number" value={editedJob.price} onChange={(e) => setEditedJob({...editedJob, price: Number(e.target.value)})} className="w-full p-1.5 bg-white border border-slate-300 rounded text-right font-bold text-sm text-blue-700 focus:ring-1 focus:ring-blue-500" /><span className="text-xs font-bold text-slate-600 whitespace-nowrap">원 (총액)</span></div>
-                <div className="flex items-center gap-2"><label className="text-[11px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-1"><CreditCard size={12} /> 상태:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-1 rounded text-xs font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="결제완료">결제완료</option></select></div>
-                {!isNew && onNavigateToQuote && (<button onClick={() => onNavigateToQuote(editedJob.linkedQuoteId)} className="mt-2 w-full py-1.5 bg-blue-50 border border-blue-100 text-blue-600 text-xs font-bold rounded hover:bg-blue-100 transition-colors flex items-center justify-center gap-1"><FileText size={12} />견적서 바로가기</button>)}
-              </div>
-
-              {/* History - Takes remaining space and scrolls */}
-              <div className="bg-white p-2 rounded-lg border border-slate-200 shadow-sm flex flex-col flex-1 min-h-0 overflow-hidden">
-                  <label className="text-[11px] font-bold text-slate-500 mb-1.5 block flex items-center gap-1 shrink-0"><History size={12} /> 작업 이력</label>
-                  <div className="flex-1 overflow-y-auto custom-scrollbar pr-1">
-                      {editedJob.history && editedJob.history.length > 0 ? (
-                          <HistoryTimeline history={editedJob.history} staff={staff} />
-                      ) : (
-                          <div className="h-full flex items-center justify-center text-center text-slate-400 text-xs p-4">
-                              <p>기록된 이력이 없습니다.<br/>작업 상태를 변경하거나<br/>내용을 저장하면 기록이 시작됩니다.</p>
-                          </div>
-                      )}
                   </div>
+                </div>
+                <button onClick={onClose} className="p-1.5 hover:bg-slate-200 rounded-full transition-colors shrink-0"><X size={24} className="text-slate-400 hover:text-slate-600" /></button>
               </div>
-            </div>
 
-            {/* Right Column: Detailed Specs */}
-            <div className="flex-1 flex flex-col bg-white overflow-hidden">
-                <div className={`flex items-end gap-2 px-3 pt-3 bg-slate-100 border-b border-slate-200 flex-none transition-all ${shouldWrapTabs ? 'flex-wrap h-auto' : 'overflow-x-auto custom-scrollbar h-14'}`}>
+              {/* Main Body - 개별 독립 스크롤을 보장하여 좌우 컬럼 세로 정렬을 완벽하게 동기화 */}
+              <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0 max-h-[72vh] bg-slate-50 lg:items-stretch">
+                {/* Left Column: Sidebar - items-stretch에 의해 우측과 정확히 동일한 높이를 가지도록 self-stretch 설정 */}
+                <div className="w-full lg:w-[45%] bg-slate-50 border-r border-slate-200 flex flex-col lg:self-stretch h-auto shrink-0 min-h-0">
+                  
+                  {/* Top Section: 접수 내용들 - 내용이 많을 때 독립적으로 스크롤되도록 설정 */}
+                  <div className="w-full py-1.5 px-2.5 flex flex-col gap-1.5 flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                      {/* Past Jobs History */}
+                      {isNew && pastJobs.length > 0 && (
+                        <div className="bg-white border border-blue-100 rounded-lg p-2 shadow-sm animate-in slide-in-from-left-2 duration-300">
+                          <div className="flex items-center justify-between mb-1 px-1">
+                             <h3 className="text-[11px] font-bold text-blue-700 flex items-center gap-1"><History size={11} /> 최근 주문 이력</h3>
+                             <span className="text-[9px] bg-blue-100 text-blue-600 px-1 rounded-full font-bold">{pastJobs.length}건</span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-20 overflow-y-auto custom-scrollbar pr-1">
+                            {pastJobs.slice(0, 4).map(pj => (
+                              <div key={pj.id} className="flex gap-1.5 p-1 rounded bg-slate-50 border border-slate-200 hover:bg-blue-50 hover:border-blue-200 transition-colors group items-center">
+                                <div className="w-5 h-5 rounded bg-slate-200 flex items-center justify-center shrink-0 text-[9px] text-slate-500 font-bold">{pj.type.substring(0,1)}</div>
+                                <div className="flex-1 min-w-0"><p className="text-[10px] font-bold text-slate-800 truncate">{pj.title}</p></div>
+                                <button onClick={() => handleReorder(pj)} className="px-1.5 py-0.5 bg-white border border-slate-200 text-[9px] font-bold text-blue-600 rounded hover:bg-blue-600 hover:text-white transition-colors shrink-0">불러오기</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 그리드로 묶는 핵심 레이아웃 전환! */}
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                        {/* Status & Priority */}
+                        <div className="bg-white py-1.5 px-2 rounded-lg border border-slate-200 shadow-sm flex gap-1.5">
+                          <div className="flex-1">
+                              <label className="text-[10px] font-bold text-slate-500 mb-0.5 block">상태</label>
+                              <select value={editedJob.status} onChange={(e) => setEditedJob({...editedJob, status: e.target.value })} className={sidebarInputClass}>
+                                  {statusDefinitions.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
+                              </select>
+                          </div>
+                          <div className="flex-1">
+                              <label className="text-[10px] font-bold text-slate-500 mb-0.5 block">우선순위</label>
+                              <select value={editedJob.priority} onChange={(e) => setEditedJob({...editedJob, priority: e.target.value as Priority})} className={sidebarInputClass}>
+                                  {Object.values(Priority).map(p => <option key={p} value={p}>{p}</option>)}
+                              </select>
+                          </div>
+                        </div>
+
+                        {/* Dates 1: 접수일 */}
+                        <div className="bg-white py-1.5 px-2 rounded-lg border border-slate-200 shadow-sm">
+                          <label className="text-[10px] font-bold text-slate-500 mb-0.5 block">접수일 설정</label>
+                          <div className="flex gap-1 items-center">
+                              <input 
+                                  type="date" 
+                                  value={createdAtDatePart} 
+                                  onChange={(e) => handleCreatedAtDateChange(e.target.value)} 
+                                  className="w-full py-0.5 pl-1 pr-0 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 focus:ring-1 focus:ring-blue-500 flex-1 outline-none min-w-0" 
+                                  style={{ colorScheme: 'light' }} 
+                              />
+                              <select 
+                                  value={createdAtDisplayTime} 
+                                  onChange={(e) => handleCreatedAtTimeChange(e.target.value)} 
+                                  className="py-0.5 pl-0.5 pr-2 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 w-[68px] shrink-0 outline-none cursor-pointer font-medium"
+                              >
+                                  {TIME_OPTIONS.map(t => (<option key={t} value={t}>{t}</option>))}
+                                  <option value={AFTER_HOURS_VALUE}>18:00~</option>
+                              </select>
+                          </div>
+                        </div>
+
+                        {/* Payment */}
+                        <div className="bg-white py-1.5 px-2 rounded-lg border border-slate-200 shadow-sm relative overflow-hidden flex flex-col justify-between">
+                          <div className="flex justify-between items-center mb-0.5">
+                             <label className="text-[10px] font-bold text-slate-500 flex items-center gap-1"><DollarSign size={10} /> 견적 및 결제</label>
+                             <button onClick={handleCalculate} className="text-[9px] flex items-center gap-0.5 bg-slate-800 text-yellow-400 px-1.5 py-0.5 rounded-full font-bold hover:bg-slate-700 transition-colors"><Calculator size={9} /> ⚡계산</button>
+                          </div>
+                          {estimateResult && (<div className="mb-1 bg-slate-100 p-1.5 rounded border border-slate-200 animate-in fade-in zoom-in duration-200"><div className="flex justify-between text-[11px] mb-0.5"><span className="text-slate-500">원가:</span><span className="font-mono text-slate-600">{estimateResult.cost.toLocaleString()}원</span></div><div className="flex justify-between text-[11px] font-bold items-center"><span className="text-slate-700">공급가:</span><div className="flex items-center gap-1"><span className="text-blue-600">+{estimateResult.recommended.toLocaleString()}원</span><button onClick={applyEstimate} className="bg-blue-600 text-white p-0.5 rounded hover:bg-blue-700"><ArrowRightCircle size={10} /></button></div></div></div>)}
+                          <div className="flex items-center gap-1 mb-1"><input type="number" value={editedJob.price} onChange={(e) => setEditedJob({...editedJob, price: Number(e.target.value)})} className="w-full p-0.5 bg-white border border-slate-300 rounded text-right font-bold text-xs text-blue-700 focus:ring-1 focus:ring-blue-500" /><span className="text-[10px] font-bold text-slate-600 whitespace-nowrap">원</span></div>
+                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일일부결제</option><option value="결제완료">결제완료</option></select></div>
+                        </div>
+
+                        {/* Dates 2: 납기일 */}
+                        <div className="bg-white py-1.5 px-2 rounded-lg border border-slate-200 shadow-sm">
+                          <label className="text-[10px] font-bold text-slate-500 mb-0.5 block">납기일 설정</label>
+                          <div className="flex gap-1 items-center">
+                              <input 
+                                  type="date" 
+                                  value={datePart} 
+                                  onChange={(e) => handleDateChange(e.target.value)} 
+                                  className="w-full py-0.5 pl-1 pr-0 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 focus:ring-1 focus:ring-blue-500 flex-1 outline-none min-w-0" 
+                                  style={{ colorScheme: 'light' }} 
+                              />
+                              <select 
+                                  value={displayTime} 
+                                  onChange={(e) => handleTimeChange(e.target.value)} 
+                                  className="py-0.5 pl-0.5 pr-2 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 w-[68px] shrink-0 outline-none cursor-pointer font-medium"
+                              >
+                                  {TIME_OPTIONS.map(t => (<option key={t} value={t}>{t}</option>))}
+                                  <option value={AFTER_HOURS_VALUE}>18:00~</option>
+                              </select>
+                          </div>
+                        </div>
+
+                        {/* Staff - 2열 차지 */}
+                        <div className="bg-white py-1.5 px-2 rounded-lg border border-slate-200 shadow-sm col-span-1 sm:col-span-2">
+                          <label className="text-[10px] font-bold text-slate-500 mb-1 flex items-center gap-1"><Users size={11}/> 담당자 지정 (토글)</label>
+                          <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto custom-scrollbar pr-1">
+                              {availableStaff.length === 0 ? (
+                                  <span className="text-slate-400 text-[10px]">등록된 담당자 직원이 없습니다.</span>
+                              ) : (
+                                  availableStaff.map(s => {
+                                      const isSelected = selectedStaffIds.includes(s.id);
+                                      return (
+                                          <button 
+                                              type="button"
+                                              key={s.id} 
+                                              onClick={() => toggleStaff(s.id)}
+                                              className={`px-2 py-0.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-0.5 ${
+                                                  isSelected 
+                                                  ? 'bg-blue-600 border-blue-600 text-white shadow-sm hover:bg-blue-700' 
+                                                  : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-800'
+                                              }`}
+                                          >
+                                              {isSelected && <Check size={10} />}
+                                              <span>{s.name}</span>
+                                              <span className={`text-[9px] font-normal ${isSelected ? 'text-blue-200' : 'text-slate-400'}`}>
+                                                  ({s.role})
+                                              </span>
+                                          </button>
+                                      );
+                                  })
+                              )}
+                          </div>
+                        </div>
+
+                        {/* NAS Path - 2열 차지 */}
+                        <div className="col-span-1 sm:col-span-2">
+                          <LocalPathInput 
+                            value={editedJob.filePath || ''} 
+                            onChange={(path) => setEditedJob({...editedJob, filePath: path})} 
+                          />
+                        </div>
+                      </div>
+                  </div>
+
+                  {/* 구분 실선 및 작업 이력 영역 - 크기 변화 없이 위치만 아래로 내려서(mt-auto) 우측 추가메모 바닥 라인과 정렬을 통일 */}
+                  <div className="space-y-0.5 mt-auto pt-2.5 px-3.5 pb-3.5 flex flex-col h-[270px] shrink-0">
+                    <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 shrink-0"><History size={12} /> 작업 이력</label>
+                    <div className="flex-1 bg-white p-2 rounded-lg border border-slate-300 shadow-sm overflow-hidden flex flex-col min-h-0">
+                        <div className="flex-1 overflow-y-auto custom-scrollbar pr-1 text-xs">
+                            {editedJob.history && editedJob.history.length > 0 ? (
+                                <HistoryTimeline history={editedJob.history} staff={staff} />
+                            ) : (
+                                <div className="h-full flex items-center justify-center text-center text-slate-400 text-[11px] py-2">
+                                    <p>기록된 이력이 없습니다. 작업 상태를 변경하거나 내용을 저장하면 기록이 시작됩니다.</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                  </div>
+                </div>
+
+            {/* Right Column: Detailed Specs - 55% 너비, 좌측 사이드바와 세로 높이 동기화 */}
+            <div className="flex-1 flex flex-col bg-white lg:self-stretch h-auto min-h-0">
+                <div className={`flex items-end gap-1.5 px-2.5 pt-2 bg-slate-100 border-b border-slate-200 flex-none transition-all ${shouldWrapTabs ? 'flex-wrap h-auto' : 'overflow-x-auto overflow-y-hidden custom-scrollbar h-11'}`}>
                     {(editedJob.subJobs || []).map((subJob, idx) => (
-                        <button key={idx} onClick={() => setActiveTabIdx(idx)} className={`flex items-center justify-center gap-2 px-4 py-2.5 rounded-t-lg text-sm font-bold min-w-[100px] border-t border-x relative transition-all ${activeTabIdx === idx ? 'bg-white text-blue-700 border-slate-200 border-b-white -mb-[1px] z-10 shadow-[0_-2px_3px_rgba(0,0,0,0.02)]' : 'bg-slate-200 text-slate-500 border-transparent hover:bg-slate-300/50 mb-1'}`}>
-                            <span className="truncate max-w-[120px] flex items-center h-5">{idx + 1}. {subJob.type}</span>
-                            {(editedJob.subJobs || []).length > 1 && (<span onClick={(e) => { e.stopPropagation(); handleRemoveSubJob(idx); }} className="p-0.5 rounded-full hover:bg-red-100 hover:text-red-500 ml-1 transition-colors"><X size={12} /></span>)}
+                        <button key={idx} onClick={() => setActiveTabIdx(idx)} className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-t-md text-xs sm:text-sm font-bold min-w-[90px] border-t border-x relative transition-all ${activeTabIdx === idx ? 'bg-white text-blue-700 border-slate-200 border-b-white -mb-[1px] z-10 shadow-[0_-2px_3px_rgba(0,0,0,0.02)]' : 'bg-slate-200 text-slate-500 border-transparent hover:bg-slate-300/50 mb-0.5'}`}>
+                            <span className="truncate max-w-[100px] flex items-center h-4">{idx + 1}. {subJob.type}</span>
+                            {(editedJob.subJobs || []).length > 1 && (<span onClick={(e) => { e.stopPropagation(); handleRemoveSubJob(idx); }} className="p-0.5 rounded-full hover:bg-red-100 hover:text-red-500 ml-1 transition-colors"><X size={10} /></span>)}
                         </button>
                     ))}
-                    <button onClick={handleAddSubJob} className="flex items-center gap-1.5 px-3 py-2 mb-1.5 rounded-md text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm"><Plus size={14} />상품추가</button>
+                    <button onClick={handleAddSubJob} className="flex items-center gap-1 px-2 py-1 mb-1 rounded-md text-[11px] font-bold text-slate-600 bg-white border border-slate-200 hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all shadow-sm"><Plus size={12} />상품추가</button>
                 </div>
 
-                <div className="flex-1 p-6 overflow-y-auto custom-scrollbar border-t border-slate-100">
-                    <div className="flex justify-between items-center mb-6 border-b border-slate-100 pb-2">
-                        <div className="flex items-center gap-3"><h3 className="font-bold text-slate-700 flex items-center gap-2"><Layers size={18} /> 제작 사양</h3></div>
-                        <div className="flex gap-1 bg-slate-100 p-1 rounded-lg">
-                            <button onClick={() => setColorMode('color')} title="컬러 인쇄 모드로 설정" className={`px-3 py-1 rounded text-xs font-bold transition-all ${isColor ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-1"><Droplets size={12} className={isColor ? 'fill-blue-600' : ''}/> 컬러</span></button>
-                            <button onClick={() => setColorMode('bw')} title="흑백 인쇄 모드로 설정" className={`px-3 py-1 rounded text-xs font-bold transition-all ${isBW ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-1"><Droplets size={12} className={isBW ? 'fill-black' : ''}/> 흑백</span></button>
+                <div className="flex-1 flex flex-col p-3.5 border-t border-slate-100 overflow-y-auto custom-scrollbar min-h-0">
+                    <div className="flex justify-between items-center mb-2 border-b border-slate-100 pb-1.5">
+                        <div className="flex items-center gap-2"><h3 className="font-bold text-slate-700 flex items-center gap-1.5 text-sm sm:text-base"><Layers size={16} /> 제작 사양</h3></div>
+                        <div className="flex gap-0.5 bg-slate-100 p-0.5 rounded-md">
+                            <button onClick={() => setColorMode('color')} title="컬러 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isColor ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isColor ? 'fill-blue-600' : ''}/> 컬러</span></button>
+                            <button onClick={() => setColorMode('bw')} title="흑백 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isBW ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isBW ? 'fill-black' : ''}/> 흑백</span></button>
                         </div>
                     </div>
                     
                     {/* Product Type & Size (Always Visible) */}
-                    <div className="mb-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="mb-2.5">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                              <div className="space-y-1">
-                                <div className="flex justify-between items-center h-6">
+                                <div className="flex justify-between items-center h-5">
                                     <label className="text-sm font-bold text-slate-700 flex items-center gap-1"><Package size={16}/> 작업 종류 (품목)</label>
                                     <button onClick={() => setIsManagingTypes(!isManagingTypes)} className="text-xs text-blue-600 font-bold hover:underline flex items-center gap-1" title="작업 종류 목록 편집"><Settings size={12}/> {isManagingTypes ? '닫기' : '관리'}</button>
                                 </div>
@@ -972,15 +1131,15 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         </div>
                         
                         {isManagingTypes && (
-                            <div className="mt-3 bg-slate-50 p-4 rounded-xl border border-blue-100 shadow-sm animate-in slide-in-from-top-2">
-                                <div className="flex items-center justify-between mb-3"><h4 className="text-xs font-bold text-slate-600">목록 편집</h4></div>
-                                <div className="flex flex-col gap-3">
+                            <div className="mt-2 bg-slate-50 p-2.5 rounded-xl border border-blue-100 shadow-sm animate-in slide-in-from-top-2">
+                                <div className="flex items-center justify-between mb-2"><h4 className="text-xs font-bold text-slate-600">목록 편집</h4></div>
+                                <div className="flex flex-col gap-2">
                                     <div className="flex gap-2 items-center">
-                                        <input value={newTypeInput} onChange={(e) => setNewTypeInput(e.target.value)} placeholder="새 종류 추가 (예: 엽서)" className="text-sm p-2 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 placeholder-slate-400 min-w-[200px]" onKeyDown={(e) => e.key === 'Enter' && handleAddType()} />
-                                        <button onClick={handleAddType} title="새 종류 추가" className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg shadow-sm transition-colors font-bold text-sm flex items-center gap-1"><Plus size={16}/> 추가</button>
+                                        <input value={newTypeInput} onChange={(e) => setNewTypeInput(e.target.value)} placeholder="새 종류 추가 (예: 엽서)" className="text-sm p-1.5 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 placeholder-slate-400 min-w-[200px] h-[34px]" onKeyDown={(e) => e.key === 'Enter' && handleAddType()} />
+                                        <button onClick={handleAddType} title="새 종류 추가" className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg shadow-sm transition-colors font-bold text-sm flex items-center gap-1 h-[34px]"><Plus size={16}/> 추가</button>
                                     </div>
-                                    <div className="flex flex-wrap gap-2 p-2 bg-white border border-slate-200 rounded-lg min-h-[40px]">
-                                        {productDefs.map(t => (<div key={t.name} className="text-xs bg-slate-50 text-slate-700 font-medium border border-slate-300 rounded px-2 py-1 flex gap-2 items-center shadow-sm group">{t.name} <button onClick={() => handleDeleteType(t.name)} className="text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full p-0.5 transition-colors" title="이 종류 삭제"><X size={12}/></button></div>))}
+                                    <div className="flex flex-wrap gap-1.5 p-1.5 bg-white border border-slate-200 rounded-lg min-h-[40px]">
+                                        {productDefs.map(t => (<div key={t.name} className="text-xs bg-slate-50 text-slate-700 font-medium border border-slate-300 rounded px-2 py-0.5 flex gap-1.5 items-center shadow-sm group">{t.name} <button onClick={() => handleDeleteType(t.name)} className="text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full p-0.5 transition-colors" title="이 종류 삭제"><X size={12}/></button></div>))}
                                     </div>
                                 </div>
                             </div>
@@ -989,17 +1148,17 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
                     {/* Dynamic Specs Section based on Type */}
                     {isBooklet ? (
-                        <div className="mb-4 space-y-4">
+                        <div className="mb-2.5 space-y-2.5">
                             {/* Cover Section */}
-                            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm relative">
-                                <h4 className="text-sm font-bold text-blue-700 mb-3 flex items-center gap-2">
+                            <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 shadow-sm relative">
+                                <h4 className="text-sm font-bold text-blue-700 mb-1.5 flex items-center gap-2">
                                     <BookOpen size={16} /> 표지 (Cover)
                                 </h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                     <SpecSelect label="용지 종류" subLabel="표지" value={currentSpecs.paperType} options={currentDef.paperTypes} onChange={(val: string) => updateCurrentSpecs({ paperType: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperTypes', val)} icon={<File size={16} />} />
                                     <SpecSelect label="평량 (두께)" subLabel="표지" value={currentSpecs.paperWeight} options={currentDef.paperWeights} onChange={(val: string) => updateCurrentSpecs({ paperWeight: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperWeights', val)} icon={<Layers size={16} />} suffix="g" />
-                                    <div className="space-y-1">
-                                        <div className="h-6 flex items-center justify-between">
+                                    <div className="space-y-0.5">
+                                        <div className="h-5 flex items-center justify-between">
                                             <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
                                                 <Palette size={16}/> 인쇄 도수 <span className="text-[10px] text-slate-400 font-normal ml-1">(표지)</span>
                                             </label>
@@ -1015,15 +1174,15 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             </div>
 
                             {/* Inner Section */}
-                            <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 shadow-sm relative">
-                                <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+                            <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 shadow-sm relative">
+                                <h4 className="text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-2">
                                     <FileText size={16} /> 내지 (Inner Pages)
                                 </h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                                     <SpecSelect label="용지 종류" subLabel="내지" value={currentSpecs.paperTypeInner || ''} options={currentDef.paperTypes} onChange={(val: string) => updateCurrentSpecs({ paperTypeInner: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperTypes', val)} icon={<File size={16} />} />
                                     <SpecSelect label="평량 (두께)" subLabel="내지" value={currentSpecs.paperWeightInner || ''} options={currentDef.paperWeights} onChange={(val: string) => updateCurrentSpecs({ paperWeightInner: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperWeights', val)} icon={<Layers size={16} />} suffix="g" />
-                                    <div className="space-y-1">
-                                        <div className="h-6 flex items-center justify-between">
+                                    <div className="space-y-0.5">
+                                        <div className="h-5 flex items-center justify-between">
                                             <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
                                                 <Palette size={16}/> 인쇄 도수 <span className="text-[10px] text-slate-400 font-normal ml-1">(내지)</span>
                                             </label>
@@ -1039,8 +1198,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             </div>
 
                             {/* Quantity (Common) */}
-                            <div className="space-y-1">
-                                <div className="h-6 flex items-center">
+                            <div className="space-y-0.5">
+                                <div className="h-5 flex items-center">
                                     <label className="text-sm font-bold text-slate-700 flex items-center gap-1"><Printer size={16}/> 수량</label>
                                 </div>
                                 <input type="text" value={currentSpecs.quantity} onChange={(e) => updateCurrentSpecs({ quantity: e.target.value })} placeholder="예: 500권" className={inputClass} />
@@ -1048,11 +1207,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         </div>
                     ) : (
                         // Standard Specs (Non-Booklet)
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-2.5">
                             <SpecSelect label="용지 종류" value={currentSpecs.paperType} options={currentDef.paperTypes} onChange={(val: string) => updateCurrentSpecs({ paperType: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperTypes', val)} icon={<File size={16} />} />
                             <SpecSelect label="평량 (두께)" value={currentSpecs.paperWeight} options={currentDef.paperWeights} onChange={(val: string) => updateCurrentSpecs({ paperWeight: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperWeights', val)} icon={<Layers size={16} />} suffix="g" />
-                            <div className="space-y-1">
-                                <div className="h-6 flex items-center">
+                            <div className="space-y-0.5">
+                                <div className="h-5 flex items-center">
                                     <label className="text-sm font-bold text-slate-700 flex items-center gap-1"><Palette size={16}/> 인쇄 도수</label>
                                 </div>
                                 <div className="relative">
@@ -1062,8 +1221,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                     <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500"><svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg></div>
                                 </div>
                             </div>
-                            <div className="space-y-1">
-                                <div className="h-6 flex items-center">
+                            <div className="space-y-0.5">
+                                <div className="h-5 flex items-center">
                                     <label className="text-sm font-bold text-slate-700 flex items-center gap-1"><Printer size={16}/> 수량</label>
                                 </div>
                                 <input type="text" value={currentSpecs.quantity} onChange={(e) => updateCurrentSpecs({ quantity: e.target.value })} placeholder="예: 500매, 10건, 3box" className={inputClass} />
@@ -1071,25 +1230,106 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         </div>
                     )}
 
-                    <div className="mb-4">
-                        <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-2"><Scissors size={12}/> 후가공 옵션</label>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                        {PROCESSING_OPTIONS.map((opt) => (<label key={opt} className={`flex items-center gap-2 p-2 rounded border cursor-pointer transition-all text-sm ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />{opt}</label>))}
+                    <div className="mb-2.5">
+                        <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션</label>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                        {processingOptions.map((opt) => (<label key={opt} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />{opt}</label>))}
+                        
+                        {/* 기타 (직접입력) 체크박스 배지 수동 추가 */}
+                        <label className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${isCustomChecked ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                            <input 
+                                type="checkbox" 
+                                checked={isCustomChecked} 
+                                onChange={handleCustomCheckboxToggle} 
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" 
+                            />
+                            기타 (직접입력)
+                        </label>
                         </div>
+                        
+                        {/* 기타 (직접입력) 활성화 시 스르륵 열리는 입력 인풋창 */}
+                        {isCustomChecked && (
+                            <div className="mt-1.5 animate-in slide-in-from-top-1 duration-200">
+                                <input 
+                                    type="text"
+                                    value={customInputVal}
+                                    onChange={(e) => handleCustomInputChange(e.target.value)}
+                                    placeholder="특수 후가공 사양을 직접 기입하세요 (예: 금박 30x40mm 우측하단)"
+                                    className="w-full px-2.5 py-1.5 h-[34px] bg-slate-50 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-blue-500 focus:bg-white text-sm placeholder-slate-400 font-medium outline-none transition-all"
+                                />
+                            </div>
+                        )}
                     </div>
-                    <div className="space-y-1"><label className="text-xs font-semibold text-slate-500 flex items-center gap-1"><Tag size={12}/> 추가 메모 / 특이사항</label><textarea value={currentSpecs.memo} onChange={(e) => updateCurrentSpecs({ memo: e.target.value })} rows={6} className="w-full p-2.5 bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400" placeholder="작업 관련 추가 지시사항이나 메모를 입력하세요."/></div>
+                    {/* 우측 추가 메모 / 특이사항 본문 복원 - mt-auto를 지정해 우측 컬럼 최하단으로 내림 */}
+                    <div className="space-y-0.5 mt-auto pt-2.5">
+                        <label className="text-xs font-semibold text-slate-500 flex items-center gap-1"><Tag size={12}/> 추가 메모 / 특이사항</label>
+                        <textarea 
+                            value={currentSpecs.memo} 
+                            onChange={(e) => updateCurrentSpecs({ memo: e.target.value })} 
+                            rows={3} 
+                            className="w-full p-2 bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400 font-medium outline-none resize-none" 
+                            placeholder="작업 관련 추가 지시사항이나 메모를 입력하세요."
+                        />
+                    </div>
                 </div>
             </div>
           </div>
-          <div className="p-4 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 flex-none">
-            {!isNew && (<button onClick={handleDelete} className="mr-auto px-4 py-2.5 text-red-500 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-2" title="이 작업을 완전히 삭제합니다"><Trash2 size={18} /><span className="hidden sm:inline">삭제</span></button>)}
+          <div className="p-2.5 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 flex-none">
+            {!isNew && (
+              <div className="mr-auto flex items-center gap-2 transition-all">
+                {/* 1. 작업 삭제 */}
+                <button 
+                  onClick={handleDelete} 
+                  className="px-3 py-1.5 text-red-500 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
+                  title="이 작업을 완전히 전산에서 영구 삭제합니다"
+                >
+                  <Trash2 size={16} />
+                  <span className="hidden sm:inline">삭제</span>
+                </button>
+
+                <div className="w-px h-4 bg-slate-200 flex-none"></div>
+
+                {/* 2. 작업 취소 / 작업 복구 */}
+                {editedJob.status !== 'CANCELED' ? (
+                  <button 
+                    onClick={handleCancelJob} 
+                    className="px-3 py-1.5 text-orange-600 hover:bg-orange-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
+                    title="소비자 취소로 이 작업을 취소 보관함으로 옮깁니다"
+                  >
+                    <FileX size={16} />
+                    <span className="hidden md:inline">작업 취소</span>
+                  </button>
+                ) : (
+                  <button 
+                    onClick={handleRestoreJob} 
+                    className="px-3 py-1.5 text-blue-600 hover:bg-blue-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
+                    title="취소된 작업을 다시 진행 중인 공정으로 복원합니다"
+                  >
+                    <RotateCcw size={16} />
+                    <span className="hidden md:inline">작업 복구</span>
+                  </button>
+                )}
+
+                {/* 3. 즉시 완료 (조기 패스) */}
+                {editedJob.status !== 'DELIVERY' && editedJob.status !== 'CANCELED' && (
+                  <button 
+                    onClick={handleFastCompleteJob} 
+                    className="px-3 py-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8 flex-none" 
+                    title="제작 단계를 건너뛰고 조기 완료 처리합니다"
+                  >
+                    <FastForward size={16} />
+                    <span className="hidden md:inline">즉시 완료</span>
+                  </button>
+                )}
+              </div>
+            )}
             {!isNew && (
               <>
-                <button onClick={() => setShowPrintModal(true)} className="px-4 py-2.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                <button onClick={() => setShowPrintModal(true)} className="px-4 py-1.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
                 <button 
                     onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
                     disabled={!editedJob.clientPhone}
-                    className={`px-4 py-2.5 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm ${editedJob.clientPhone ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                    className={`px-4 py-1.5 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm ${editedJob.clientPhone ? 'bg-amber-500 text-white hover:bg-amber-600' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
                     title={editedJob.clientPhone ? "고객 알림 문자 전송" : "연락처 없음"}
                 >
                     <MessageCircle size={18} />
@@ -1097,8 +1337,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                 </button>
               </>
             )}
-            <button onClick={() => isNew ? onClose() : setViewMode('summary')} className="px-5 py-2.5 text-slate-600 hover:bg-slate-200 rounded-lg font-medium transition-colors" title={isNew ? "닫기" : "요약 보기로 돌아가기"}>취소</button>
-            <button onClick={handleSave} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md transition-all hover:scale-[1.02] flex items-center gap-2" title="작업 내용 저장">{isNew ? <><Check size={18}/> 신규 등록</> : '저장 완료'}</button>
+            <button onClick={() => isNew ? onClose() : setViewMode('summary')} className="px-5 py-1.5 text-slate-600 hover:bg-slate-200 rounded-lg font-medium transition-colors" title={isNew ? "닫기" : "요약 보기로 돌아가기"}>취소</button>
+            <button onClick={handleSave} className="px-8 py-1.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md transition-all hover:scale-[1.02] flex items-center gap-2" title="작업 내용 저장">{isNew ? <><Check size={18}/> 신규 등록</> : '저장 완료'}</button>
           </div>
             </div>
           )}

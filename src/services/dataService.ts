@@ -100,6 +100,8 @@ export const getHolidayName = (date: Date): string | null => {
     return specificHolidays[dateStr] || null;
 };
 
+const INITIAL_PROCESSING_DEFINITIONS = ['유광코팅', '무광코팅', '오시', '미싱', '타공', '귀도리', '접지', '무선제본', '중철제본', '스프링제본', '박가공', '형압', '양면테이프', '도무송', '미싱(절취선)', '넘버링'];
+
 const INITIAL_STATUS_DEFINITIONS: JobStatusDefinition[] = [
     { key: 'RECEIVED', label: '접수' },
     { key: 'DESIGN', label: '디자인' },
@@ -215,7 +217,7 @@ export class DataService {
         });
         
         const settingsPath = `tenants/${this.tenantId}/settings`;
-        const settingNames = ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles', 'nasConfig'];
+        const settingNames = ['productDefinitions', 'statusDefinitions', 'pricing', 'companyInfo', 'smsConfig', 'roles', 'nasConfig', 'processingDefinitions'];
         settingNames.forEach(setting => {
             const unsub = onSnapshot(doc(firestore, settingsPath, setting), (snap) => {
                 if (snap.exists()) this.data[setting] = [snap.data()];
@@ -266,6 +268,7 @@ export class DataService {
         const settingsRef = (s: string) => doc(firestore, `tenants/${tenantId}/settings`, s);
         await setDoc(settingsRef('statusDefinitions'), { definitions: INITIAL_STATUS_DEFINITIONS });
         await setDoc(settingsRef('productDefinitions'), { definitions: INITIAL_PRODUCT_DEFINITIONS });
+        await setDoc(settingsRef('processingDefinitions'), { definitions: INITIAL_PROCESSING_DEFINITIONS });
         await setDoc(settingsRef('pricing'), { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 });
         await setDoc(settingsRef('roles'), { roles: ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"] });
         return tenantId;
@@ -751,6 +754,8 @@ export class DataService {
 
     getStatusDefinitions(): JobStatusDefinition[] { return (this.data['statusDefinitions']?.[0]?.definitions || INITIAL_STATUS_DEFINITIONS) as JobStatusDefinition[]; }
     getProductDefinitions(): JobTypeDefinition[] { return (this.data['productDefinitions']?.[0]?.definitions || INITIAL_PRODUCT_DEFINITIONS) as JobTypeDefinition[]; }
+    getProcessingDefinitions(): string[] { return (this.data['processingDefinitions']?.[0]?.definitions || INITIAL_PROCESSING_DEFINITIONS) as string[]; }
+    async saveProcessingDefinitions(definitions: string[]) { await this.updateSetting('processingDefinitions', { definitions }); }
     async restoreProductDefaults() {
         if (!this.tenantId) return;
         await this.saveProductDefinitions(INITIAL_PRODUCT_DEFINITIONS);

@@ -89,11 +89,11 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
       onDrop={handleDrop}
     >
       <div className="p-1.5 lg:p-2 flex items-center justify-between border-b border-slate-200 dark:border-slate-700 bg-white/50 dark:bg-slate-800/50 rounded-t-xl backdrop-blur-sm sticky top-0 z-10">
-        <h3 className={`font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2 ${isTvMode ? 'text-[19px] lg:text-[22px] font-black' : 'text-[15px] lg:text-[17px]'}`}>
+        <h3 className={`font-medium text-slate-700 dark:text-slate-200 flex items-center gap-2 ${isTvMode ? 'text-[19px] lg:text-[22px] font-medium' : 'text-[15px] lg:text-[17px]'}`}>
           <div className={`rounded-full shadow-sm ${isTvMode ? 'w-3 h-3' : 'w-2 h-2'} ${getColorForStatus(statusDef.key)}`} />
           {statusDef.label}
         </h3>
-        <span className={`bg-white dark:bg-slate-700 rounded-full font-bold text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600 shadow-sm ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5 font-black' : 'text-[10px] px-2 py-0.5'}`}>
+        <span className={`bg-white dark:bg-slate-700 rounded-full font-medium text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600 shadow-sm ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5 font-medium' : 'text-[10px] px-2 py-0.5'}`}>
           {jobs.length}
         </span>
       </div>

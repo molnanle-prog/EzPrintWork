@@ -22,6 +22,20 @@ export const ProfileManager: React.FC = () => {
     if (!currentUser) return;
 
     const loadProfile = () => {
+      // 역할이 admin(관리자)인 경우 직원 명단(Staff)에서 매칭하는 로직을 건너뜀 (직원 정보 꼬임 및 오동작 방지)
+      if (currentUser.role === 'admin') {
+        setStaffData(null);
+        setFormData({
+          name: currentUser.displayName || currentUser.name || '',
+          phone: '',
+          phoneOffice: '',
+          phoneCompany: '',
+          extensionNumber: '',
+          password: ''
+        });
+        return;
+      }
+
       // 1. db.getStaff() 목록에서 현재 사용자 매칭 시도 (uid, email, id 기준)
       const allStaff = db.getStaff();
       const matchedStaff = allStaff.find(
@@ -129,10 +143,12 @@ export const ProfileManager: React.FC = () => {
           <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
             <User size={22} />
           </div>
-          개인정보 변경
+          {currentUser.role === 'admin' ? '관리자 정보 변경' : '개인정보 변경'}
         </h3>
         <p className="text-slate-500 dark:text-slate-400 mt-2 text-sm font-medium">
-          본인의 프로필, 다중 연락처 및 로그인 비밀번호를 직접 관리하고 수정할 수 있습니다.
+          {currentUser.role === 'admin'
+            ? '관리자 본인의 프로필 및 정보 권한을 직접 관리하고 확인합니다.'
+            : '본인의 프로필, 다중 연락처 및 로그인 비밀번호를 직접 관리하고 수정할 수 있습니다.'}
         </p>
       </div>
 
@@ -277,18 +293,26 @@ export const ProfileManager: React.FC = () => {
               {/* Password */}
               <div className="space-y-1.5 col-span-1 md:col-span-2">
                 <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Lock size={13} /> 로그인 비밀번호
+                  <Lock size={13} /> {currentUser.role === 'admin' ? '관리자 비밀번호 (변경 불가)' : '로그인 비밀번호'}
                 </label>
-                <input
-                  type="text"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  placeholder="로그인에 사용할 새 비밀번호를 입력하세요"
-                />
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">
-                  비밀번호를 설정하지 않은 경우 빈 칸으로 표시되며, 새로운 비밀번호를 여기에 직접 설정해 사용할 수 있습니다.
-                </p>
+                {currentUser.role === 'admin' ? (
+                  <div className="w-full bg-slate-100 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-2">
+                    <span>💡 구글 소셜 로그인 계정은 구글 보안 설정을 통해 비밀번호를 변경해야 합니다. 본 시스템에서는 소셜 계정의 비밀번호 변경을 지원하지 않습니다.</span>
+                  </div>
+                ) : (
+                  <>
+                    <input
+                      type="text"
+                      value={formData.password}
+                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                      placeholder="로그인에 사용할 새 비밀번호를 입력하세요"
+                    />
+                    <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">
+                      비밀번호를 설정하지 않은 경우 빈 칸으로 표시되며, 새로운 비밀번호를 여기에 직접 설정해 사용할 수 있습니다.
+                    </p>
+                  </>
+                )}
               </div>
             </div>
 

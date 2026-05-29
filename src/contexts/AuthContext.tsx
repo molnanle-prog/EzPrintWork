@@ -31,13 +31,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const fetchUserProfile = async (user: User) => {
     try {
       const userDoc = await getDoc(doc(db, 'users', user.uid));
+      
+      // 구글 등 소셜 계정의 실제 최신 프로필 정보(이름, 이메일, 사진)를 항상 반영하기 위한 동기화 객체 정의
+      const socialProfileData = {
+        email: user.email || '',
+        displayName: user.displayName || '사용자',
+        name: user.displayName || '사용자',
+        photoURL: user.photoURL || '',
+        avatarUrl: user.photoURL || ''
+      };
+
       if (userDoc.exists()) {
         const userData = userDoc.data() as AppUser;
-        setCurrentUser(userData);
-        if (userData.tenantId) {
-          dataService.setTenant(userData.tenantId);
+        
+        // 소셜 계정의 실제 이름과 이메일 정보가 기존 데이터베이스 꼬임으로 왜곡되는 현상을 방지하기 위해 최신 프로필로 병합
+        const updatedUser = {
+          ...userData,
+          ...socialProfileData
+        };
+
+        // Firestore에 소셜 최신 프로필 자동 동기화 (비동기 수행)
+        setDoc(doc(db, 'users', user.uid), socialProfileData, { merge: true }).catch(err => {
+          console.error("Failed to sync social profile to Firestore users:", err);
+        });
+
+        setCurrentUser(updatedUser);
+        
+        if (updatedUser.tenantId) {
+          dataService.setTenant(updatedUser.tenantId);
           // Fetch tenant plan
-          const tenantDoc = await getDoc(doc(db, 'tenants', userData.tenantId));
+          const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
               setTenantPlan(tenantDoc.data().plan || 'free');
           }
@@ -95,8 +118,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginCustomSession = (user: AppUser, plan: 'free' | 'pro') => {
-    localStorage.setItem('customUser', JSON.stringify(user));
-    localStorage.setItem('customTenantPlan', plan);
+    sessionStorage.setItem('customUser', JSON.stringify(user));
+    sessionStorage.setItem('customTenantPlan', plan);
     setCurrentUser(user);
     setTenantPlan(plan);
     if (user.tenantId) {
@@ -146,8 +169,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (user) {
         await fetchUserProfile(user);
       } else {
-        // Fallback: Check if there is a custom session in localStorage!
-        const savedCustomUser = localStorage.getItem('customUser');
+        // Fallback: Check if there is a custom session in sessionStorage!
+        const savedCustomUser = sessionStorage.getItem('customUser');
         if (savedCustomUser) {
           try {
             const userData = JSON.parse(savedCustomUser) as AppUser;
@@ -155,7 +178,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (userData.tenantId) {
               dataService.setTenant(userData.tenantId);
             }
-            const savedPlan = localStorage.getItem('customTenantPlan') as 'free' | 'pro';
+            const savedPlan = sessionStorage.getItem('customTenantPlan') as 'free' | 'pro';
             setTenantPlan(savedPlan || 'free');
           } catch (e) {
             console.error("Failed to parse custom local user session:", e);
@@ -174,6 +197,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     localStorage.removeItem('customUser');
     localStorage.removeItem('customTenantPlan');
+    sessionStorage.removeItem('customUser');
+    sessionStorage.removeItem('customTenantPlan');
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);

@@ -14,6 +14,7 @@ export const SmsManager: React.FC = () => {
     apiSecret: '',
     senderNumber: '',
     completedMessageTemplate: `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 수령하러 방문해 주시기 바랍니다. 감사합니다.`,
+    billingMessageTemplate: `[{회사명}] 입금 요청 안내: 주문하신 '{주문명}'의 결제 계좌 정보입니다. - 계좌: {계좌정보}`,
     sendOnComplete: true
   });
   
@@ -24,7 +25,7 @@ export const SmsManager: React.FC = () => {
   
   const { showAlert, showConfirm } = useDialog();
   const { currentUser } = useAuth(); // 권한 체크용
-
+ 
   useEffect(() => {
     const savedConfig = db.getSmsConfig();
     setConfig({
@@ -34,6 +35,7 @@ export const SmsManager: React.FC = () => {
       apiSecret: savedConfig.apiSecret || '',
       senderNumber: savedConfig.senderNumber || '',
       completedMessageTemplate: savedConfig.completedMessageTemplate || `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 수령하러 방문해 주시기 바랍니다. 감사합니다.`,
+      billingMessageTemplate: savedConfig.billingMessageTemplate || `[{회사명}] 입금 요청 안내: 주문하신 '{주문명}'의 결제 계좌 정보입니다. - 계좌: {계좌정보}`,
       sendOnComplete: savedConfig.sendOnComplete !== undefined ? savedConfig.sendOnComplete : true,
       pfId: savedConfig.pfId || '',
       useAlimtalk: savedConfig.useAlimtalk || false,
@@ -389,14 +391,26 @@ export const SmsManager: React.FC = () => {
             </div>
 
             {config.sendOnComplete && (
-              <div className="space-y-2 animate-in fade-in duration-200">
-                <label className="block text-xs font-bold text-slate-500">완료 문자 내용 템플릿</label>
-                <textarea 
-                  value={config.completedMessageTemplate}
-                  onChange={(e) => handleChange('completedMessageTemplate', e.target.value)}
-                  className={`${inputClass} h-24 text-xs font-medium leading-relaxed resize-y`}
-                  placeholder="완료 시 고객에게 보낼 기본 메시지 내용을 입력하세요."
-                />
+              <div className="space-y-4 animate-in fade-in duration-200">
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-500">완료 문자 내용 템플릿</label>
+                  <textarea 
+                    value={config.completedMessageTemplate}
+                    onChange={(e) => handleChange('completedMessageTemplate', e.target.value)}
+                    className={`${inputClass} h-20 text-xs font-medium leading-relaxed resize-y`}
+                    placeholder="완료 시 고객에게 보낼 기본 메시지 내용을 입력하세요."
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-500">계좌번호 안내 문자 템플릿</label>
+                  <textarea 
+                    value={config.billingMessageTemplate}
+                    onChange={(e) => handleChange('billingMessageTemplate', e.target.value)}
+                    className={`${inputClass} h-20 text-xs font-medium leading-relaxed resize-y`}
+                    placeholder="계좌번호 발송 시 고객에게 보낼 기본 메시지 내용을 입력하세요."
+                  />
+                </div>
                 
                 {/* 변수 치환 안내 배지 */}
                 <div className="bg-blue-50/50 dark:bg-slate-800 p-3 rounded-lg border border-blue-100 dark:border-slate-700 space-y-2">
@@ -406,6 +420,7 @@ export const SmsManager: React.FC = () => {
                     <span className="bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] px-2 py-1 rounded font-bold border border-slate-200 dark:border-slate-600 select-all cursor-pointer" title="클릭하여 복사" onClick={() => navigator.clipboard.writeText('{주문명}')}>{'{주문명}'} : 작업 이름</span>
                     <span className="bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] px-2 py-1 rounded font-bold border border-slate-200 dark:border-slate-600 select-all cursor-pointer" title="클릭하여 복사" onClick={() => navigator.clipboard.writeText('{회사명}')}>{'{회사명}'} : 우리 인쇄소 상호</span>
                     <span className="bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] px-2 py-1 rounded font-bold border border-slate-200 dark:border-slate-600 select-all cursor-pointer" title="클릭하여 복사" onClick={() => navigator.clipboard.writeText('{연락처}')}>{'{연락처}'} : 고객 연락처</span>
+                    <span className="bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-300 text-[10px] px-2 py-1 rounded font-bold border border-slate-200 dark:border-slate-600 select-all cursor-pointer" title="클릭하여 복사" onClick={() => navigator.clipboard.writeText('{계좌정보}')}>{'{계좌정보}'} : 회사 계좌번호</span>
                   </div>
                 </div>
               </div>

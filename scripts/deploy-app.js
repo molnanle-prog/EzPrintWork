@@ -113,11 +113,20 @@ async function main() {
           fs.unlinkSync(targetPath);
         } catch (e) {}
       }
-      
       // PowerShell을 사용하여 초고속 압축
       log('* 데스크톱 앱을 초고속 Zip 파일로 압축 중...', colors.cyan);
       execSync(`powershell -Command "Compress-Archive -Path '${sourcePath}' -DestinationPath '${targetPath}' -Force"`);
       log('✓ 최신 데스크톱 설치본 Zip 압축 및 링킹 완료!', colors.green);
+
+      // .exe 설치 파일도 downloads 폴더로 복사하여 직접 서빙 지원
+      const targetExePath = path.join(downloadsDir, 'EzPrintWork-Setup.exe');
+      if (fs.existsSync(targetExePath)) {
+        try {
+          fs.unlinkSync(targetExePath);
+        } catch (e) {}
+      }
+      fs.copyFileSync(sourcePath, targetExePath);
+      log('✓ 최신 데스크톱 설치본 .exe 복사 완료!', colors.green);
     } else {
       throw new Error('release 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.');
     }

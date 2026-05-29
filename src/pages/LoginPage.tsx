@@ -15,9 +15,25 @@ export const LoginPage: React.FC = () => {
     const [password, setPassword] = useState('');
     const [isStaffLoggingIn, setIsStaffLoggingIn] = useState(false);
 
+    const [selectedTenantId, setSelectedTenantId] = useState('');
+    const [rememberCompany, setRememberCompany] = useState(false);
+    const [isSearchingLoginCompany, setIsSearchingLoginCompany] = useState(false);
+    const [hasSearchedLogin, setHasSearchedLogin] = useState(false);
+    const [loginCompanySearchResults, setLoginCompanySearchResults] = useState<{ id: string; name: string }[]>([]);
+
     const [isElectron, setIsElectron] = useState(false);
     useEffect(() => {
         setIsElectron(typeof window !== 'undefined' && !!window.electron);
+        
+        // 컴포넌트 마운트 시 저장된 회사 정보 복원
+        const saved = localStorage.getItem('savedCompanyName');
+        const savedId = localStorage.getItem('savedTenantId');
+        const remember = localStorage.getItem('rememberCompany') === 'true';
+        if (remember && saved && savedId) {
+            setCompanyName(saved);
+            setSelectedTenantId(savedId);
+            setRememberCompany(true);
+        }
     }, []);
 
     // B2B Staff Self-Signup States
@@ -30,7 +46,6 @@ export const LoginPage: React.FC = () => {
     const [searchResults, setSearchResults] = useState<{ id: string; name: string }[]>([]);
     const [isSearchingCompany, setIsSearchingCompany] = useState(false);
     const [hasSearched, setHasSearched] = useState(false);
-
 
     const handleDownloadShortcut = () => {
         const isConfirmed = window.confirm('바탕화면 바로가기 아이콘 파일을 다운로드하시겠습니까?\n\n다운로드 후, 다운로드 폴더의 파일을 컴퓨터 바탕화면에 마우스로 끌어다(드래그) 놓고 사용하세요!');
@@ -94,6 +109,10 @@ IconFile=https://ez-hub.kr/favicon.ico
         }, 1000);
 
         try {
+            // 브라우저 닫을 시 로그인 리셋되도록 Session Persistence 적용
+            const { setPersistence, browserSessionPersistence } = await import('firebase/auth');
+            await setPersistence(auth, browserSessionPersistence);
+
             const result = await signInWithPopup(auth, provider);
             const user = result.user;
             window.removeEventListener('focus', onFocus);
@@ -163,8 +182,75 @@ IconFile=https://ez-hub.kr/favicon.ico
         }
     };
 
+    const handleSearchLoginCompany = async () => {
+        if (!companyName.trim()) {
+            toast.error('검색할 회사명을 입력해주세요.');
+            return;
+        }
+
+        setIsSearchingLoginCompany(true);
+        setHasSearchedLogin(true);
+        try {
+            const { collection, getDocs, query } = await import('firebase/firestore');
+            const { db } = await import('../services/firebase');
+            
+            const q = query(collection(db, 'tenants'));
+            const snap = await getDocs(q);
+            const term = companyName.trim().toLowerCase();
+            
+            const matches = snap.docs
+                .map(doc => ({ id: doc.id, name: (doc.data().name || '') as string }))
+                .filter(t => t.name.toLowerCase().includes(term));
+                
+            setLoginCompanySearchResults(matches);
+        } catch (error: any) {
+            console.error("Search login company error:", error);
+            toast.error('회사 검색 중 오류가 발생했습니다.');
+        } finally {
+            setIsSearchingLoginCompany(false);
+        }
+    };
+
+    const handleSelectLoginCompany = (id: string, name: string) => {
+        setCompanyName(name);
+        setSelectedTenantId(id);
+        setLoginCompanySearchResults([]);
+        setHasSearchedLogin(false);
+        
+        if (rememberCompany) {
+            localStorage.setItem('savedCompanyName', name);
+            localStorage.setItem('savedTenantId', id);
+            localStorage.setItem('rememberCompany', 'true');
+        } else {
+            localStorage.removeItem('savedCompanyName');
+            localStorage.removeItem('savedTenantId');
+            localStorage.removeItem('rememberCompany');
+        }
+        
+        toast.success(`[${name}] 회사가 선택되었습니다.`);
+    };
+
+    const handleToggleRememberCompany = (checked: boolean) => {
+        setRememberCompany(checked);
+        if (checked) {
+            if (companyName && selectedTenantId) {
+                localStorage.setItem('savedCompanyName', companyName);
+                localStorage.setItem('savedTenantId', selectedTenantId);
+                localStorage.setItem('rememberCompany', 'true');
+            }
+        } else {
+            localStorage.removeItem('savedCompanyName');
+            localStorage.removeItem('savedTenantId');
+            localStorage.removeItem('rememberCompany');
+        }
+    };
+
     const handleStaffLogin = async (e: React.FormEvent) => {
         e.preventDefault();
+        if (!selectedTenantId) {
+            toast.error('먼저 회사를 검색하고 선택해주세요.');
+            return;
+        }
         if (!loginId.trim() || !password.trim()) {
             toast.error('아이디와 비밀번호를 모두 입력해주세요.');
             return;
@@ -176,16 +262,17 @@ IconFile=https://ez-hub.kr/favicon.ico
             const { collection, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
             const { db } = await import('../services/firebase');
             
-            // Query Firestore for the user matching loginId and password globally
+            // 회사 ID(tenantId)와 직원 아이디 및 패스워드를 묶어서 쿼리하도록 개선 (회사별 아이디 중복 문제 해결)
             const userQuery = query(
                 collection(db, 'users'),
+                where('tenantId', '==', selectedTenantId),
                 where('loginId', '==', loginId.trim()),
                 where('password', '==', password.trim())
             );
 
             const userSnapshot = await getDocs(userQuery);
             if (userSnapshot.empty) {
-                toast.error('아이디 또는 비밀번호가 올바르지 않습니다.');
+                toast.error('아이디 또는 비밀번호가 올바르지 않거나 선택한 회사와 일치하지 않습니다.');
                 setIsStaffLoggingIn(false);
                 return;
             }
@@ -223,6 +310,13 @@ IconFile=https://ez-hub.kr/favicon.ico
                 tenantId: tenantId,
                 role: 'staff' as const
             };
+
+            // 회사 저장 선택 옵션 최종 확인
+            if (rememberCompany) {
+                localStorage.setItem('savedCompanyName', tenantName);
+                localStorage.setItem('savedTenantId', tenantId);
+                localStorage.setItem('rememberCompany', 'true');
+            }
 
             loginCustomSession(appUser, tenantPlan as 'free' | 'pro');
             toast.success(tenantName ? `[${tenantName}] 직원 로그인에 성공했습니다! 환영합니다.` : '직원 로그인에 성공했습니다! 환영합니다.');
@@ -596,6 +690,86 @@ IconFile=https://ez-hub.kr/favicon.ico
                     {!isStaffSignup ? (
                         /* Staff Login Form */
                         <form onSubmit={handleStaffLogin} className="space-y-4">
+                            {/* 회사 선택 및 검색 영역 */}
+                            <div className="space-y-2 relative">
+                                <div className="flex justify-between items-center pl-1">
+                                    <label className="text-xs font-bold text-slate-400 block">소속 회사 선택 *</label>
+                                    
+                                    {/* "선택회사 저장" 체크박스 */}
+                                    <div className="flex items-center gap-1.5">
+                                        <input 
+                                            type="checkbox"
+                                            id="rememberCompanyCheckbox"
+                                            checked={rememberCompany}
+                                            onChange={(e) => handleToggleRememberCompany(e.target.checked)}
+                                            className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                        />
+                                        <label htmlFor="rememberCompanyCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
+                                            선택회사 저장
+                                        </label>
+                                    </div>
+                                </div>
+                                
+                                <div className="flex gap-2">
+                                    <div className="relative flex-1">
+                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                                            <Building2 size={16} />
+                                        </span>
+                                        <input 
+                                            type="text" 
+                                            value={companyName}
+                                            onChange={(e) => {
+                                                setCompanyName(e.target.value);
+                                                setSelectedTenantId('');
+                                                if (hasSearchedLogin) setHasSearchedLogin(false);
+                                            }}
+                                            placeholder="회사 이름을 입력하고 검색하세요"
+                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
+                                            required
+                                        />
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={handleSearchLoginCompany}
+                                        disabled={isSearchingLoginCompany}
+                                        className="px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-2xl border border-slate-700 text-sm transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
+                                    >
+                                        {isSearchingLoginCompany ? (
+                                            <Loader2 size={16} className="animate-spin" />
+                                        ) : (
+                                            <Search size={16} />
+                                        )}
+                                        검색
+                                    </button>
+                                </div>
+
+                                {/* 회사 검색 결과 드롭다운 */}
+                                {hasSearchedLogin && (
+                                    <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 border border-slate-800 rounded-2xl p-3 z-50 shadow-2xl space-y-2 max-h-48 overflow-y-auto">
+                                        <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest pl-1 mb-1">회사 검색 결과</div>
+                                        {loginCompanySearchResults.length === 0 ? (
+                                            <div className="text-xs text-slate-500 py-2 text-center">검색 결과가 없습니다. 회사명을 다시 확인해주세요.</div>
+                                        ) : (
+                                            <div className="grid grid-cols-1 gap-1">
+                                                {loginCompanySearchResults.map((res) => (
+                                                    <button
+                                                        key={res.id}
+                                                        type="button"
+                                                        onClick={() => handleSelectLoginCompany(res.id, res.name)}
+                                                        className="w-full text-left px-3 py-2.5 bg-slate-950/40 hover:bg-blue-600/20 hover:border-blue-600/50 border border-slate-800 rounded-xl text-slate-200 text-xs font-semibold transition-all flex items-center justify-between group"
+                                                    >
+                                                        <span>{res.name}</span>
+                                                        <span className="text-[10px] text-blue-400 group-hover:text-blue-300 font-bold flex items-center gap-0.5">
+                                                            선택
+                                                        </span>
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                            </div>
+
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                 <div className="space-y-1.5">
                                     <label className="text-xs font-bold text-slate-400 block pl-1">직원 아이디 (ID)</label>
@@ -607,8 +781,9 @@ IconFile=https://ez-hub.kr/favicon.ico
                                             type="text" 
                                             value={loginId}
                                             onChange={(e) => setLoginId(e.target.value)}
-                                            placeholder="등록한 직원 아이디"
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
+                                            placeholder={selectedTenantId ? "회사 전용 아이디 입력" : "회사를 먼저 선택해 주세요"}
+                                            disabled={!selectedTenantId}
+                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                             required
                                         />
                                     </div>
@@ -625,7 +800,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                                             value={password}
                                             onChange={(e) => setPassword(e.target.value)}
                                             placeholder="비밀번호 입력"
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
+                                            disabled={!selectedTenantId}
+                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                                             required
                                         />
                                     </div>
@@ -634,8 +810,8 @@ IconFile=https://ez-hub.kr/favicon.ico
 
                             <button 
                                 type="submit" 
-                                disabled={isStaffLoggingIn}
-                                className="w-full flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-4 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-600/15"
+                                disabled={isStaffLoggingIn || !selectedTenantId}
+                                className="w-full flex items-center justify-center gap-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white font-bold py-4 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-600/15"
                             >
                                 {isStaffLoggingIn ? (
                                     <Loader2 className="animate-spin" size={20} />

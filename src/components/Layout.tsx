@@ -334,8 +334,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = 'https://github.com/molnanle-prog/EzPrintWork/releases/download/v1.2.0/EzPrintWork.Setup.1.2.0.exe';
-                                link.setAttribute('download', 'EzPrintWork.Setup.1.2.0.exe');
+                                link.href = '/downloads/EzPrintWork-Setup.zip';
+                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);
@@ -418,8 +418,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = 'https://github.com/molnanle-prog/EzPrintWork/releases/download/v1.2.0/EzPrintWork.Setup.1.2.0.exe';
-                                link.setAttribute('download', 'EzPrintWork.Setup.1.2.0.exe');
+                                link.href = '/downloads/EzPrintWork-Setup.zip';
+                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);

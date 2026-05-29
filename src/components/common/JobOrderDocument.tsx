@@ -74,8 +74,11 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   </p>
                 </div>
                 <div className="text-right">
-                  <div className={`font-mono font-bold text-black tracking-widest ${isCompact ? 'text-2xl' : 'text-4xl'}`}><span className="lift-text">{job.id}</span></div>
-                  <div className={`text-slate-600 mt-1 font-bold ${isCompact ? 'text-xs' : 'text-base'}`}><span className="lift-text">발행일: {today}</span></div>
+                  <div className={`font-mono font-bold text-black tracking-normal ${isCompact ? 'text-2xl' : 'text-4xl'}`}><span className="lift-text">{job.id}</span></div>
+                  <div className={`text-slate-600 mt-1 font-bold flex flex-col gap-0.5 text-right leading-tight ${isCompact ? 'text-[11px]' : 'text-[13px]'}`}>
+                    <span className="lift-text">접수일: {new Date(job.createdAt).toLocaleDateString('ko-KR').replace(/\.$/, '')}</span>
+                    <span className="lift-text">납품일: {new Date(job.dueDate).toLocaleDateString('ko-KR').replace(/\.$/, '')}</span>
+                  </div>
                 </div>
               </div>
 

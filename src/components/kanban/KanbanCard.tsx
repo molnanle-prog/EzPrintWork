@@ -310,27 +310,41 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     }
   };
 
-  // --- 프리미엄 카드 글래스모피즘 테두리 & 배경 스타일 결정 ---
-  let cardStyleClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
+  // --- D-Day별 박스 테두리 색상 4단계 및 배경 스타일 결정 ---
+  let borderAndBgClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
   
   if (isMyJob) {
-    cardStyleClass = "bg-white dark:bg-slate-800 border-blue-400 dark:border-blue-600 ring-2 ring-blue-100 dark:ring-blue-900/40 shadow-blue-100 dark:shadow-none";
+    borderAndBgClass = "bg-white dark:bg-slate-800 border-blue-400 dark:border-blue-600 ring-2 ring-blue-100 dark:ring-blue-900/40 shadow-blue-100 dark:shadow-none";
   } 
   
-  if (job.priority === Priority.VERY_URGENT) {
-    cardStyleClass = `bg-red-50/80 dark:bg-red-950/20 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} shadow-md`;
-  } else if (job.priority === Priority.URGENT) {
-    cardStyleClass = `bg-orange-50/60 dark:bg-orange-950/10 ${isTvMode ? 'flowing-border-orange-lg' : 'flowing-border-orange'} shadow-sm`;
-  } else if (!isDone) {
-    if (daysRemaining < 0) {
-       cardStyleClass = `bg-rose-50/60 dark:bg-rose-950/20 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} shadow-md`;
-    } else if (daysRemaining <= 1) {
-       cardStyleClass = `bg-orange-50/40 dark:bg-orange-950/10 ${isTvMode ? 'flowing-border-orange-lg' : 'flowing-border-orange'} shadow-sm`;
-    } else if (!isMyJob) {
-       if (daysRemaining <= 3) cardStyleClass = "bg-white dark:bg-slate-800 border-slate-400 dark:border-slate-600 shadow-sm";
-       else if (daysRemaining <= 5) cardStyleClass = "bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-700 shadow-sm";
+  // 완료 상태가 아닐 때 D-Day 단계별 테두리 및 꽉 찬 배경 색상 강제 지정 (4단계 분기)
+  if (!isDone) {
+    if (daysRemaining <= 0) {
+      // 1단계: 당일 이하 (진한 빨간색 가득 채운 박스 + 빨간 링)
+      borderAndBgClass = "bg-red-200 dark:bg-red-950/70 border-red-500 dark:border-red-400 ring-2 ring-red-200 dark:ring-red-900/60 shadow-md";
+    } else if (daysRemaining === 1) {
+      // 2단계: 1일 이하 (진한 주황색 가득 채운 박스 + 주황 링)
+      borderAndBgClass = "bg-orange-200 dark:bg-orange-950/70 border-orange-500 dark:border-orange-400 ring-1 ring-orange-200 dark:ring-orange-950/20 shadow-sm";
+    } else if (daysRemaining <= 3) {
+      // 3단계: 3일 이하 (진한 앰버색 가득 채운 박스)
+      borderAndBgClass = "bg-amber-200 dark:bg-amber-950/50 border-amber-400 dark:border-amber-500 shadow-sm";
+    } else if (daysRemaining <= 7) {
+      // 4단계: 7일 이하 (일주일전 - 연한 파란색 가득 채운 박스)
+      borderAndBgClass = "bg-blue-200 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700 shadow-sm";
+    } else {
+      // 일주일보다 더 남으면 기본 테두리 (isMyJob 상태 유지)
+      if (!isMyJob) {
+        borderAndBgClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
+      }
     }
   }
+
+  // 우선순위가 VERY_URGENT 인 경우 D-Day보다 우선하는 유동 테두리 효과 및 꽉 찬 배경
+  if (job.priority === Priority.VERY_URGENT && !isDone) {
+    borderAndBgClass = `bg-red-200 dark:bg-red-950/30 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} border-red-600 dark:border-red-500 shadow-md ring-2 ring-red-100 dark:ring-red-950/40`;
+  }
+
+  let cardStyleClass = borderAndBgClass;
 
   if (isDragOver) {
       cardStyleClass = "bg-blue-50/90 dark:bg-blue-900/30 border-2 border-blue-500 shadow-2xl scale-[1.03] z-40 rotate-1";
@@ -354,18 +368,18 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
            <CheckCircle2 size={17} className="fill-emerald-100 dark:fill-none" />
          </div>
          <div className="flex-1 min-w-0 flex items-center gap-2">
-            <span className="font-bold text-slate-800 dark:text-slate-200 text-sm truncate">{job.title}</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-200 text-sm truncate">{job.title}</span>
             <span className="text-xs text-slate-400 truncate hidden xl:inline">- {job.clientName}</span>
             {isMultiJob && (
-                <span className="text-[9px] bg-slate-600 dark:bg-slate-600 text-white px-1.5 py-0.5 rounded-md flex items-center gap-0.5 font-bold shrink-0">
+                <span className="text-[9px] bg-slate-600 dark:bg-slate-600 text-white px-1.5 py-0.5 rounded-md flex items-center gap-0.5 font-semibold shrink-0">
                     <Layers size={9} /> {subJobCount}
                 </span>
             )}
          </div>
          <div className="flex items-center gap-2 shrink-0">
-           <span className="text-xs text-slate-500 dark:text-slate-400 font-medium truncate max-w-[100px]" title={staffName}>{staffName}</span>
+           <span className="text-xs text-slate-500 dark:text-slate-400 font-normal truncate max-w-[100px]" title={staffName}>{staffName}</span>
            <div className="w-px h-3 bg-slate-200 dark:bg-slate-700"></div>
-           <span className={`text-[9px] px-2 py-0.5 rounded-md border font-bold ${getPaymentColor(job.paymentStatus || '결제대기')}`}>
+           <span className={`text-[9px] px-2 py-0.5 rounded-md border font-semibold ${getPaymentColor(job.paymentStatus || '결제대기')}`}>
                 {job.paymentStatus || '결제대기'}
            </span>
            <div className="w-px h-3 bg-slate-200 dark:bg-slate-700"></div>
@@ -420,44 +434,60 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         {/* 1. Header: Badges */}
         <div className="flex justify-between items-start pointer-events-none">
           <div className="flex gap-2 flex-wrap items-center">
-             {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-extrabold shadow-sm tracking-wide">MY</span>}
+             {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
              
              {/* Priority Badge */}
-             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-bold shadow-sm`}>
+             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-normal shadow-sm`}>
               {job.priority}
              </span>
 
              {/* Payment Badge */}
-             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-extrabold shadow-sm`}>
+             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-medium shadow-sm`}>
                {job.paymentStatus || '결제대기'}
              </span>
 
              {/* Smart File Badge */}
              {job.filePath ? (
-               <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-bold shadow-sm">
+               <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-medium shadow-sm">
                  <FileText size={12} />
                  <span>파일</span>
                </span>
              ) : (
-               <span className="text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-extrabold shadow-sm">
+               <span className="text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm">
                  <ShieldAlert size={12} />
                  <span>파일없음</span>
                </span>
              )}
+
+             {/* 작업 종류 (Sub-Jobs) 배지 - 모니터링 모드용 가독성 최적화 */}
+             {subJobsList.map((sub, idx) => (
+               <span
+                 key={sub.id || idx}
+                 onClick={(e) => handleToggleSubJob(e, idx)}
+                 className={`
+                   text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                   ${sub.completed 
+                     ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
+                     : 'bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
+                 title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
+               >
+                 {sub.type}
+               </span>
+             ))}
           </div>
         </div>
 
         {/* 2. Title and Client (Enlarged) */}
         <div className="pointer-events-none flex flex-col gap-0.5">
-          <h4 className="font-black text-slate-800 dark:text-slate-100 text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1" title={job.title}>
+          <h4 className="font-medium text-slate-800 dark:text-slate-100 text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1" title={job.title}>
             {job.title}
           </h4>
-          <p className="text-xs text-slate-500 dark:text-slate-400 font-bold leading-tight">{job.clientName}</p>
+          <p className="text-xs text-slate-500 dark:text-slate-400 font-normal leading-tight">{job.clientName}</p>
         </div>
 
         {/* 3. Specs & Giant Quantity Box */}
         <div className="flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none">
-          <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-black flex-1 min-w-0 leading-tight">
+          <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-normal flex-1 min-w-0 leading-tight">
              <div className="truncate flex items-center gap-1.5">
                 <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📄</span>
                 <span className="truncate">{job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}</span>
@@ -468,8 +498,8 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
              </div>
           </div>
           <div className="shrink-0 flex flex-col items-center justify-center bg-blue-50 dark:bg-blue-950/30 px-2.5 py-1.5 rounded-lg border border-blue-100 dark:border-blue-900/40 shadow-sm text-center min-w-[70px]">
-             <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase tracking-widest font-black mb-0.5 leading-none">수량</span>
-             <span className="text-[20px] lg:text-[22px] text-blue-700 dark:text-blue-300 font-black leading-none whitespace-nowrap">
+             <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase tracking-widest font-medium mb-0.5 leading-none">수량</span>
+             <span className="text-[20px] lg:text-[22px] text-blue-700 dark:text-blue-300 font-medium leading-none whitespace-nowrap">
                 {job.specs.quantity || '미지정'}
              </span>
           </div>
@@ -481,11 +511,11 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
                {isMultiStaff ? <Users size={14} /> : <User size={14} />}
             </div>
-            <span className={`text-[12px] font-black truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300'}`} title={staffName}>
+            <span className={`text-[12px] font-normal truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300'}`} title={staffName}>
                 {staffName}
             </span>
           </div>
-          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-lg border-2 border-slate-100 dark:border-slate-800 shrink-0 font-black text-xs ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-200 dark:border-red-900/60' : ''}`}>
+          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-lg border-2 border-slate-100 dark:border-slate-800 shrink-0 font-normal text-xs ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-200 dark:border-red-900/60' : ''}`}>
             {job.priority === Priority.VERY_URGENT && <AlertTriangle size={13} className="text-red-500" />}
             <span className="font-mono text-xs">
               {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}
@@ -559,38 +589,54 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       `}</style>
 
       {/* 1. Header: Badges & Gripper */}
-      <div className="flex justify-between items-start pointer-events-none">
-        <div className="flex gap-1.5 flex-wrap items-center">
-           {isMyJob && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-600 text-white font-extrabold shadow-sm tracking-wide">MY</span>}
+      <div className="flex justify-between items-center pointer-events-none">
+        <div className="flex gap-1.5 flex-wrap items-center min-w-0 flex-1">
+           {isMyJob && <span className="text-[10px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
            
            {/* Priority Badge */}
-           <span className={`text-[9px] px-1.5 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-bold shadow-sm`}>
+           <span className={`text-[10px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-normal shadow-sm`}>
             {job.priority}
            </span>
 
            {/* Payment Badge */}
-           <span className={`text-[9px] px-1.5 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-extrabold shadow-sm`}>
+           <span className={`text-[10px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-medium shadow-sm`}>
              {job.paymentStatus || '결제대기'}
            </span>
 
            {/* 원본 파일 유/무 표시 스마트 배지 */}
            {job.filePath ? (
-             <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-bold shadow-sm" title={`원본 파일 등록됨\n${job.filePath}`}>
-               <FileText size={10} />
+             <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-normal shadow-sm" title={`원본 파일 등록됨\n${job.filePath}`}>
+               <FileText size={11} />
                <span>파일</span>
              </span>
            ) : (
-             <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-extrabold shadow-sm" title="인쇄용 원본 파일 경로가 지정되지 않았습니다!">
-               <ShieldAlert size={10} />
+             <span className="text-[10px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm" title="인쇄용 원본 파일 경로가 지정되지 않았습니다!">
+               <ShieldAlert size={11} />
                <span>파일없음</span>
              </span>
            )}
+
+           {/* 작업 종류 (Sub-Jobs) 배지 - 클릭하여 완료/대기 토글 가능 */}
+           {subJobsList.map((sub, idx) => (
+             <span
+               key={sub.id || idx}
+               onClick={(e) => handleToggleSubJob(e, idx)}
+               className={`
+                 text-[10px] px-2 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                 ${sub.completed 
+                   ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
+                   : 'bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
+               title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
+             >
+               {sub.type}
+             </span>
+           ))}
         </div>
         
         {/* Grip Icon & More menu */}
-        <div className="flex gap-1 text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0">
+        <div className="flex gap-1 text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
           <GripHorizontal size={16} className="cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity hover:text-slate-500" />
-          <button className="hover:text-slate-600 dark:hover:text-slate-400 transition-colors p-0.5" title="추가 메뉴">
+          <button className="hover:text-slate-600 dark:hover:text-slate-400 transition-colors p-0.5 flex items-center justify-center" title="추가 메뉴">
             <MoreVertical size={16} />
           </button>
         </div>
@@ -598,10 +644,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       
       {/* 2. Main Title and Client */}
       <div className="pointer-events-none flex flex-col gap-0.5">
-        <h4 className="font-black text-slate-800 dark:text-slate-100 text-[15px] lg:text-[16px] leading-snug truncate" title={job.title}>
+        <h4 className="font-medium text-slate-800 dark:text-slate-100 text-[15px] lg:text-[16px] leading-snug truncate" title={job.title}>
           {job.title}
         </h4>
-        <p className="text-xs font-bold text-slate-400 dark:text-slate-400 truncate">{job.clientName}</p>
+        <p className="text-xs font-normal text-slate-400 dark:text-slate-400 truncate">{job.clientName}</p>
       </div>
 
       {/* 3. 상세 정보 컨테이너 (스펙 그리드, 품목 배지, 담당자/D-day 푸터 통합 아코디언) */}
@@ -614,44 +660,26 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         `}
       >
         {/* 3-A. 인쇄소 특화 프리미엄 사양(Spec) 그리드 */}
-        <div className="grid grid-cols-2 gap-2 bg-slate-50/70 dark:bg-slate-900/40 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 text-slate-700 dark:text-slate-200 font-extrabold leading-tight pointer-events-none">
-          <div className="truncate text-[12px] lg:text-[13px] font-black flex items-center gap-1" title={job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}>
+        <div className="grid grid-cols-2 gap-2 bg-slate-50/70 dark:bg-slate-900/40 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 text-slate-700 dark:text-slate-200 font-normal leading-tight pointer-events-none">
+          <div className="truncate text-[12px] lg:text-[13px] font-normal flex items-center gap-1" title={job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}>
              <span className="shrink-0 text-[13px]">📄</span>
              <span className="truncate">{job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}</span>
           </div>
-          <div className="truncate text-[12px] lg:text-[13px] font-black flex items-center gap-1" title={job.specs.size || '규격 미지정'}>
+          <div className="truncate text-[12px] lg:text-[13px] font-normal flex items-center gap-1" title={job.specs.size || '규격 미지정'}>
              <span className="shrink-0 text-[13px]">📏</span>
              <span className="truncate">{job.specs.size || '규격 미지정'}</span>
           </div>
-          <div className="truncate text-[12px] lg:text-[13px] font-black flex items-center gap-1" title={job.specs.printColor || '도수 미지정'}>
+          <div className="truncate text-[12px] lg:text-[13px] font-normal flex items-center gap-1" title={job.specs.printColor || '도수 미지정'}>
              <span className="shrink-0 text-[13px]">🎨</span>
              <span className="truncate">{getCleanPrintColor(job.specs.printColor)}</span>
           </div>
-          <div className="truncate text-[12px] lg:text-[13px] font-black text-blue-600 dark:text-blue-400 flex items-center gap-1" title={job.specs.quantity || '수량 미지정'}>
+          <div className="truncate text-[12px] lg:text-[13px] font-normal text-blue-600 dark:text-blue-400 flex items-center gap-1" title={job.specs.quantity || '수량 미지정'}>
              <span className="shrink-0 text-[13px]">📦</span>
              <span className="truncate">{job.specs.quantity || '수량 미지정'}</span>
           </div>
         </div>
 
-        {/* 3-B. 세부 품목 품목명 가로 박스 배지 나열형 개편 (체크박스 제거, 접혀 있을 땐 숨김) */}
-        {subJobsList.length > 0 && (
-           <div className="flex flex-col gap-1 border-t border-slate-100 dark:border-slate-800/80 pt-2.5 pointer-events-auto">
-              <div className="flex flex-wrap gap-1 max-h-[48px] overflow-x-auto custom-horizontal-scrollbar pb-1">
-                 {subJobsList.map((sub, idx) => (
-                    <span
-                       key={sub.id || idx}
-                       className={`
-                         px-2 py-0.5 rounded-full text-[10px] font-bold border shadow-sm shrink-0 select-none
-                         ${sub.completed 
-                           ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400' 
-                           : 'bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300'}`}
-                    >
-                       {sub.type}
-                    </span>
-                 ))}
-              </div>
-           </div>
-        )}
+
 
         {/* 3-C. Footer: Assignee & Due Date */}
         <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 dark:border-slate-800/80 text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 pointer-events-none shrink-0">
@@ -659,11 +687,11 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
                {isMultiStaff ? <Users size={12} /> : <User size={12} />}
             </div>
-            <span className={`text-[10px] font-bold truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
+            <span className={`text-[10px] font-normal truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
                 {staffName}
             </span>
           </div>
-          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-2 py-0.5 rounded-md border border-slate-100 dark:border-slate-800 shrink-0 font-bold ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-100 dark:border-red-900/60' : ''}`}>
+          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-2 py-0.5 rounded-md border border-slate-100 dark:border-slate-800 shrink-0 font-normal ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-100 dark:border-red-900/60' : ''}`}>
             {job.priority === Priority.VERY_URGENT && <AlertTriangle size={11} className="text-red-500" />}
             <span className="font-mono text-[10px]">
               {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}

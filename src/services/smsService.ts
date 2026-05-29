@@ -1,4 +1,5 @@
 import { Job, SmsConfig } from '../types';
+import { db } from './dataService';
 
 /**
  * Web Crypto API를 사용한 HMAC-SHA256 시그니처 생성기 (의존성 없음)
@@ -27,12 +28,15 @@ async function getSolapiSignature(secret: string, message: string): Promise<stri
  */
 export const replaceTemplateVariables = (template: string, job: Job, companyName: string): string => {
   if (!template) return '';
+  const bankAccount = db.getCompanyInfo().bankAccount || '계좌번호 미등록';
   return template
     .replace(/{고객명}/g, job.contactPerson || job.clientName || '')
     .replace(/{거래처}/g, job.clientName || '')
     .replace(/{주문명}/g, job.title || '')
     .replace(/{회사명}/g, companyName || '')
-    .replace(/{연락처}/g, job.clientPhone || '');
+    .replace(/{연락처}/g, job.clientPhone || '')
+    .replace(/{계좌번호}/g, bankAccount)
+    .replace(/{계좌정보}/g, bankAccount);
 };
 
 /**

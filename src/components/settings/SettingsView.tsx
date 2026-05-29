@@ -11,7 +11,8 @@ import { CompanyInfoManager } from './CompanyInfoManager';
 import { StatusManager } from './StatusManager'; 
 import { SmsManager } from './SmsManager'; // Added
 import { ProfileManager } from './ProfileManager';
-import { Users, ScrollText, Building2, Calculator, Database, Shield, Server, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut } from 'lucide-react';
+import { ProcessingManager } from './ProcessingManager';
+import { Users, ScrollText, Building2, Calculator, Database, Shield, Server, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const SettingsView: React.FC = () => {
@@ -35,6 +36,7 @@ export const SettingsView: React.FC = () => {
         case 'company': return isAdmin ? <CompanyInfoManager /> : null;
         case 'status': return isAdmin ? <StatusManager /> : null; 
         case 'product': return <ProductManager />; 
+        case 'processing': return isAdmin ? <ProcessingManager /> : null;
         case 'paper': return isAdmin ? <PaperManager /> : null;
         case 'client': return isAdmin ? <ClientManager /> : null;
         case 'price': return isAdmin ? <PriceManager /> : null;
@@ -51,6 +53,7 @@ export const SettingsView: React.FC = () => {
     { id: 'company', label: '회사 정보', icon: Building, adminOnly: true },
     { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true }, 
     { id: 'product', label: '상품 관리', icon: Package, adminOnly: true }, 
+    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: true },
     { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true },
     { id: 'client', label: '거래처', icon: Building2, adminOnly: true },
     { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true },
