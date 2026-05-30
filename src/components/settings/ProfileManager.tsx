@@ -3,6 +3,8 @@ import { useAuth } from '../../contexts/AuthContext';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { Staff } from '../../types';
 import { User, Mail, Phone, Shield, Lock, Save, Building, PhoneCall, CheckCircle2, AlertCircle } from 'lucide-react';
+import { doc, setDoc } from 'firebase/firestore';
+import { db as firestore } from '../../services/firebase';
 
 export const ProfileManager: React.FC = () => {
   const { currentUser, refreshUser } = useAuth();
@@ -22,20 +24,6 @@ export const ProfileManager: React.FC = () => {
     if (!currentUser) return;
 
     const loadProfile = () => {
-      // 역할이 admin(관리자)인 경우 직원 명단(Staff)에서 매칭하는 로직을 건너뜀 (직원 정보 꼬임 및 오동작 방지)
-      if (currentUser.role === 'admin') {
-        setStaffData(null);
-        setFormData({
-          name: currentUser.displayName || currentUser.name || '',
-          phone: '',
-          phoneOffice: '',
-          phoneCompany: '',
-          extensionNumber: '',
-          password: ''
-        });
-        return;
-      }
-
       // 1. db.getStaff() 목록에서 현재 사용자 매칭 시도 (uid, email, id 기준)
       const allStaff = db.getStaff();
       const matchedStaff = allStaff.find(
@@ -48,7 +36,7 @@ export const ProfileManager: React.FC = () => {
       if (matchedStaff) {
         setStaffData(matchedStaff);
         setFormData({
-          name: matchedStaff.name || currentUser.displayName || '',
+          name: matchedStaff.name || currentUser.displayName || currentUser.name || '',
           phone: matchedStaff.phone || '',
           phoneOffice: matchedStaff.phoneOffice || '',
           phoneCompany: matchedStaff.phoneCompany || '',
@@ -56,11 +44,16 @@ export const ProfileManager: React.FC = () => {
           password: matchedStaff.password || ''
         });
       } else {
-        // 매칭되는 Staff 데이터가 없는 경우 (예: 테넌트 소유자/관리자)
-        setFormData((prev) => ({
-          ...prev,
-          name: currentUser.displayName || currentUser.name || ''
-        }));
+        // 매칭되는 Staff 데이터가 없는 경우 (예: 테넌트 소유자/관리자 최초 로그인 등)
+        setStaffData(null);
+        setFormData({
+          name: currentUser.displayName || currentUser.name || '',
+          phone: '',
+          phoneOffice: '',
+          phoneCompany: '',
+          extensionNumber: '',
+          password: ''
+        });
       }
     };
 
@@ -92,24 +85,45 @@ export const ProfileManager: React.FC = () => {
     setStatus({ type: null, message: '' });
 
     try {
-      if (staffData) {
-        // 직원이 매칭된 경우 -> db.updateStaff 호출하여 테넌트 내의 직원 데이터 갱신
+      // 직원이 매칭된 경우 또는 현재 로그인한 사용자가 관리자인 경우 프로필 저장을 허용합니다.
+      if (staffData || currentUser.role === 'admin') {
+        const isNewStaff = !staffData;
         const updatedStaff: Staff = {
-          ...staffData,
+          ...(staffData || {}),
+          id: staffData ? staffData.id : currentUser.uid,
+          uid: currentUser.uid,
           name: formData.name.trim(),
           phone: formData.phone,
           phoneOffice: formData.phoneOffice,
           phoneCompany: formData.phoneCompany,
           extensionNumber: formData.extensionNumber,
-          password: formData.password
+          password: formData.password,
+          role: staffData ? staffData.role : '대표자',
+          active: true,
+          email: currentUser.email || '',
+          avatarUrl: staffData?.avatarUrl || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(formData.name.trim())}`,
+          joinDate: staffData?.joinDate || new Date().toISOString()
         };
 
-        await db.updateStaff(updatedStaff);
+        // 1. 테넌트 내부 직원 컬렉션에 저장
+        if (isNewStaff) {
+          await db.addStaff(updatedStaff);
+        } else {
+          await db.updateStaff(updatedStaff);
+        }
+
+        // 2. 글로벌 users 컬렉션에도 정보 실시간 동기화 업데이트
+        await setDoc(doc(firestore, 'users', currentUser.uid), {
+          displayName: formData.name.trim(),
+          name: formData.name.trim(),
+          contactInfo: formData.phone
+        }, { merge: true });
+
         await refreshUser();
         
         setStatus({ type: 'success', message: '개인정보가 성공적으로 업데이트되었습니다.' });
       } else {
-        // 직원이 매칭되지 않는 특수한 경우 (관리자 본인이거나 가상 프로필 상태)
+        // 직원이 매칭되지 않는 특수한 경우 (사원 계정인데 목록에 없는 예외 케이스)
         setStatus({ 
           type: 'error', 
           message: '사내 직원 명단에 등록되지 않은 임시 계정입니다. 상세 정보 수정은 관리자 권한을 통해 "직원 관리" 메뉴에서 등록 및 수정해 주세요.' 
@@ -120,7 +134,7 @@ export const ProfileManager: React.FC = () => {
       setStatus({ type: 'error', message: error.message || '저장 중 오류가 발생했습니다.' });
     } finally {
       setIsSaving(false);
-      // 알림 메시지 자동 초기화 (3초 뒤)
+      // 알림 메시지 자동 초기화 (4초 뒤)
       setTimeout(() => {
         setStatus({ type: null, message: '' });
       }, 4000);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap } from 'lucide-react';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -88,6 +88,52 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [isPinned, setIsPinned] = useState(false);
   const [opacity, setOpacity] = useState(1);
   const [appVersion, setAppVersion] = useState('2.0.0 (Cloud)');
+  const sidebarRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (!isSidebarExpanded) return;
+
+    const handleGlobalMouseMove = (e: MouseEvent) => {
+      if (sidebarRef.current) {
+        const rect = sidebarRef.current.getBoundingClientRect();
+        // 10px buffer to prevent jitter or accidental triggers near the border
+        if (
+          e.clientX > rect.right + 10 ||
+          e.clientX < rect.left - 10 ||
+          e.clientY < rect.top - 10 ||
+          e.clientY > rect.bottom + 10
+        ) {
+          setIsSidebarExpanded(false);
+        }
+      }
+    };
+
+    const handleMouseLeaveWindow = () => {
+      setIsSidebarExpanded(false);
+    };
+
+    const handleMouseOutWindow = (e: MouseEvent) => {
+      if (!e.relatedTarget) {
+        setIsSidebarExpanded(false);
+      }
+    };
+
+    const handleBlur = () => {
+      setIsSidebarExpanded(false);
+    };
+
+    window.addEventListener('mousemove', handleGlobalMouseMove);
+    document.addEventListener('mouseleave', handleMouseLeaveWindow);
+    document.addEventListener('mouseout', handleMouseOutWindow);
+    window.addEventListener('blur', handleBlur);
+
+    return () => {
+      window.removeEventListener('mousemove', handleGlobalMouseMove);
+      document.removeEventListener('mouseleave', handleMouseLeaveWindow);
+      document.removeEventListener('mouseout', handleMouseOutWindow);
+      window.removeEventListener('blur', handleBlur);
+    };
+  }, [isSidebarExpanded]);
 
   useEffect(() => {
     const isRunningInElectron = typeof window !== 'undefined' && !!window.electron;
@@ -245,6 +291,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
         {/* Sidebar - Hover based expansion */}
         {!isPinned && !isTvMode && (
           <aside 
+              ref={sidebarRef}
               className={`hidden lg:flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-2xl transition-all duration-300 ease-out shrink-0 z-50 border-r border-slate-800 ${isSidebarExpanded ? 'w-72' : 'w-14'}`}
               onMouseEnter={() => setIsSidebarExpanded(true)}
               onMouseLeave={() => setIsSidebarExpanded(false)}

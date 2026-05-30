@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, db } from '../services/firebase';
 import { onAuthStateChanged, User, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 
@@ -61,11 +61,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       
-      // 구글 등 소셜 계정의 실제 최신 프로필 정보(이름, 이메일, 사진)를 항상 반영하기 위한 동기화 객체 정의
+      // [이름 오버라이트 방지] 기존 DB에 저장된 실제 사용자 정의 이름이 존재한다면, 소셜 로그인 시 구글 계정명으로 무조건 덮어씌워지는 오류를 원천 차단합니다.
+      const existingName = userDoc.exists() ? ((userDoc.data() as any).name || (userDoc.data() as any).displayName || '') : '';
+      const finalName = (existingName && existingName !== '대표자' && existingName !== '웹 가입자' && existingName !== '사용자')
+        ? existingName
+        : (user.displayName || '사용자');
+
       const socialProfileData = {
         email: user.email || '',
-        displayName: user.displayName || '사용자',
-        name: user.displayName || '사용자',
+        displayName: finalName,
+        name: finalName,
         photoURL: user.photoURL || '',
         avatarUrl: user.photoURL || ''
       };
@@ -73,7 +78,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (userDoc.exists()) {
         const userData = userDoc.data() as AppUser;
         
-        // 소셜 계정의 실제 이름과 이메일 정보가 기존 데이터베이스 꼬임으로 왜곡되는 현상을 방지하기 위해 최신 프로필로 병합
         const updatedUser = {
           ...userData,
           ...socialProfileData
@@ -93,52 +97,169 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (tenantDoc.exists()) {
               setTenantPlan(determineTenantPlan(tenantDoc.data()));
           }
-        }
-      } else {
-        // Check if there is an invitation for this email (Pre-invite auto-link)
-        let tenantId: string | null = null;
-        let role = 'staff';
-        
-        try {
-          if (user.email) {
-            const inviteDoc = await getDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
-            if (inviteDoc.exists()) {
-              const inviteData = inviteDoc.data();
-              tenantId = inviteData.tenantId || null;
-              role = inviteData.role || 'staff';
-              
-              // 1. Link the staff record with the user's uid in the tenant subcollection
-              if (inviteData.staffId && tenantId) {
-                await setDoc(doc(db, `tenants/${tenantId}/staff/${inviteData.staffId}`), {
+
+          // [SSOT 대표자 직원 동기화 자가 치유]
+          // 만약 대표자(admin) 역할이지만 테넌트의 직원 목록(staff) 서브컬렉션에 자신의 정보가 등재되어 있지 않은 경우,
+          // 별도의 계정 추가 없이 자신의 계정 하나로 완벽히 대표와 직원 역할을 겸임할 수 있도록 자가 치유 동기화를 수행합니다.
+          if (updatedUser.role === 'admin') {
+            try {
+              const staffDocRef = doc(db, `tenants/${updatedUser.tenantId}/staff`, user.uid);
+              const staffDoc = await getDoc(staffDocRef);
+              if (!staffDoc.exists()) {
+                await setDoc(staffDocRef, {
+                  id: user.uid,
                   uid: user.uid,
-                  active: true
+                  name: updatedUser.name || (updatedUser as any).userName || user.displayName || '대표자',
+                  role: (updatedUser as any).position || '대표자',
+                  phone: (updatedUser as any).contactInfo || '',
+                  phoneCompany: (updatedUser as any).contactInfo || '',
+                  avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(updatedUser.name || '대표자')}`,
+                  active: true,
+                  email: user.email || updatedUser.email || '',
+                  loginId: (updatedUser as any).loginId || user.email || '',
+                  password: (updatedUser as any).password || '',
+                  joinDate: (updatedUser as any).createdAt || new Date().toISOString()
                 }, { merge: true });
+                console.log(`[AuthSelfHealing] Automatically created missing staff record for admin: ${user.uid}`);
               }
-              
-              // 2. Delete the consumed invitation
-              await deleteDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
+            } catch (staffSyncErr) {
+              console.warn("[AuthSelfHealing] Failed to sync admin as staff:", staffSyncErr);
             }
           }
-        } catch (e) {
-          console.warn("Failed checking or linking invitations:", e);
+        }
+      } else {
+        // [SSOT 자동 자가 치유 병합 엔진]
+        // 만약 매니저 프로그램에서 임시 ID(예: user-fndeynhwo)로 이미 등록해 둔 사용자라면,
+        // 최초 소셜 로그인 시 새 문서를 만드는 대신 기존 문서의 권한과 테넌트 정보를 새 Google UID 문서로 완벽히 이전/병합합니다.
+        let preRegisteredUserDoc: any = null;
+        if (user.email) {
+          try {
+            const usersRef = collection(db, 'users');
+            const q = query(usersRef, where('email', '==', user.email.trim().toLowerCase()));
+            const querySnap = await getDocs(q);
+            if (!querySnap.empty) {
+              // 본인의 실제 Google UID가 아닌 기존 임시 문서를 찾습니다.
+              preRegisteredUserDoc = querySnap.docs.find((d: any) => d.id !== user.uid);
+            }
+          } catch (e) {
+            console.warn("Failed to check pre-registered user by email:", e);
+          }
         }
 
-        // Create profile
-        const newUser: AppUser = {
-          uid: user.uid,
-          id: user.uid,
-          email: user.email || '',
-          displayName: user.displayName || '사용자',
-          name: user.displayName || '사용자',
-          photoURL: user.photoURL || '',
-          avatarUrl: user.photoURL || '',
-          tenantId,
-          role: role as 'admin' | 'staff' | 'superadmin'
-        };
-        await setDoc(doc(db, 'users', user.uid), newUser);
-        setCurrentUser(newUser);
-        if (tenantId) {
-          dataService.setTenant(tenantId);
+        if (preRegisteredUserDoc) {
+          const oldUid = preRegisteredUserDoc.id;
+          const oldUserData = preRegisteredUserDoc.data();
+          const tenantId = oldUserData.tenantId || null;
+          
+          console.log(`[AuthSelfHealing] Found pre-registered user [${oldUserData.name || oldUserData.userName}] with temporary ID: ${oldUid}. Migrating to real Google UID: ${user.uid}`);
+
+          const newUser: AppUser = {
+            ...oldUserData,
+            uid: user.uid,
+            id: user.uid,
+            email: user.email || oldUserData.email || '',
+            displayName: user.displayName || oldUserData.displayName || oldUserData.userName || oldUserData.name || '사용자',
+            name: oldUserData.name || oldUserData.userName || user.displayName || '사용자',
+            photoURL: user.photoURL || oldUserData.photoURL || '',
+            avatarUrl: user.photoURL || oldUserData.photoURL || '',
+            role: oldUserData.role || 'staff'
+          };
+          
+          // 1. 새 Google UID로 문서 복제 생성
+          await setDoc(doc(db, 'users', user.uid), newUser);
+          
+          // 2. 관리자(admin) 계정이고 테넌트의 기존 ownerId가 임시 ID라면, 테넌트 정보의 소유주를 실시간 수정
+          if (newUser.role === 'admin' && tenantId) {
+            const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
+            if (tenantDoc.exists() && tenantDoc.data().ownerId === oldUid) {
+              await setDoc(doc(db, 'tenants', tenantId), {
+                ownerId: user.uid,
+                updatedAt: new Date().toISOString()
+              }, { merge: true });
+              console.log(`[AuthSelfHealing] Successfully updated tenant [${tenantDoc.data().name}] ownerId to real Google UID: ${user.uid}`);
+            }
+          }
+          
+          // 3. 테넌트 소속 사원 서브컬렉션(staff) 정보가 임시 ID로 매핑되어 있다면 신규 UID로 복제 후 구버전 영구 격리 삭제
+          if (tenantId) {
+            try {
+              const oldStaffDoc = await getDoc(doc(db, `tenants/${tenantId}/staff/${oldUid}`));
+              if (oldStaffDoc.exists()) {
+                const oldStaffData = oldStaffDoc.data();
+                await setDoc(doc(db, `tenants/${tenantId}/staff/${user.uid}`), {
+                  ...oldStaffData,
+                  id: user.uid,
+                  uid: user.uid,
+                  email: user.email || oldStaffData.email || '',
+                  name: newUser.name,
+                  active: true
+                });
+                await deleteDoc(doc(db, `tenants/${tenantId}/staff/${oldUid}`));
+                console.log(`[AuthSelfHealing] Successfully migrated tenant staff subcollection record to real Google UID: ${user.uid}`);
+              }
+            } catch (staffErr) {
+              console.warn("[AuthSelfHealing] Failed migrating tenant staff record:", staffErr);
+            }
+          }
+          
+          // 4. 구버전 임시 문서 최종 파괴 (중복 꼬임 방지)
+          await deleteDoc(doc(db, 'users', oldUid));
+          console.log(`[AuthSelfHealing] Successfully destroyed temporary user document: ${oldUid}`);
+
+          setCurrentUser(newUser);
+          if (tenantId) {
+            dataService.setTenant(tenantId);
+            const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
+            if (tenantDoc.exists()) {
+              setTenantPlan(determineTenantPlan(tenantDoc.data()));
+            }
+          }
+        } else {
+          // 일치하는 임시 등록 정보가 없는 경우: 기존의 초대코드 확인 및 신규 가입 로직 수행
+          let tenantId: string | null = null;
+          let role = 'staff';
+          
+          try {
+            if (user.email) {
+              const inviteDoc = await getDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
+              if (inviteDoc.exists()) {
+                const inviteData = inviteDoc.data();
+                tenantId = inviteData.tenantId || null;
+                role = inviteData.role || 'staff';
+                
+                // 1. Link the staff record with the user's uid in the tenant subcollection
+                if (inviteData.staffId && tenantId) {
+                  await setDoc(doc(db, `tenants/${tenantId}/staff/${inviteData.staffId}`), {
+                    uid: user.uid,
+                    active: true
+                  }, { merge: true });
+                }
+                
+                // 2. Delete the consumed invitation
+                await deleteDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
+              }
+            }
+          } catch (e) {
+            console.warn("Failed checking or linking invitations:", e);
+          }
+
+          // Create profile
+          const newUser: AppUser = {
+            uid: user.uid,
+            id: user.uid,
+            email: user.email || '',
+            displayName: user.displayName || '사용자',
+            name: user.displayName || '사용자',
+            photoURL: user.photoURL || '',
+            avatarUrl: user.photoURL || '',
+            tenantId,
+            role: role as 'admin' | 'staff' | 'superadmin'
+          };
+          await setDoc(doc(db, 'users', user.uid), newUser);
+          setCurrentUser(newUser);
+          if (tenantId) {
+            dataService.setTenant(tenantId);
+          }
         }
       }
     } catch (error) {
