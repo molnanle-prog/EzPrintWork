@@ -13,6 +13,7 @@ interface KanbanCardProps {
   status: string; 
   staffName: string;
   onSelect: (job: Job) => void;
+  onRightClick?: (job: Job) => void;
   onStatusChange: (job: Job, direction: 'next' | 'prev') => void;
   onDropOnCard: (draggedJobId: string, targetJobId: string) => void;
   isMyJob: boolean;
@@ -26,6 +27,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   status, 
   staffName, 
   onSelect, 
+  onRightClick,
   onStatusChange, 
   onDropOnCard,
   isMyJob,
@@ -363,6 +365,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         onDrop={handleDrop}
         className={`bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group ${isDragOver ? 'border-t-4 border-t-blue-500' : ''}`}
         onClick={() => onSelect(job)}
+        onContextMenu={(e) => { e.preventDefault(); onRightClick ? onRightClick(job) : onSelect(job); }}
       >
          <div className="text-emerald-500 cursor-pointer shrink-0" title="완료">
            <CheckCircle2 size={17} className="fill-emerald-100 dark:fill-none" />
@@ -424,6 +427,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
         `}
         onClick={() => onSelect(job)}
+        onContextMenu={(e) => { e.preventDefault(); onRightClick ? onRightClick(job) : onSelect(job); }}
       >
         <style>{`
           .backdrop-blur-premium {
@@ -570,6 +574,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50
       `}
       onClick={() => onSelect(job)}
+      onContextMenu={(e) => { e.preventDefault(); onRightClick ? onRightClick(job) : onSelect(job); }}
     >
       {/* 프리미엄 블러 효과 인라인 스타일 */}
       <style>{`

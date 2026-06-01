@@ -103,6 +103,7 @@ export const getHolidayName = (date: Date): string | null => {
 const INITIAL_PROCESSING_DEFINITIONS = ['유광코팅', '무광코팅', '오시', '미싱', '타공', '귀도리', '접지', '무선제본', '중철제본', '스프링제본', '박가공', '형압', '양면테이프', '도무송', '미싱(절취선)', '넘버링'];
 
 const INITIAL_STATUS_DEFINITIONS: JobStatusDefinition[] = [
+    { key: 'QUOTE', label: '견적' },
     { key: 'RECEIVED', label: '접수' },
     { key: 'DESIGN', label: '디자인' },
     { key: 'PRINTING', label: '인쇄' },
@@ -373,6 +374,10 @@ export class DataService {
                 console.error("Error updating invitation:", e);
             }
         }
+    }
+
+    async updateStaffLastReadMsgId(staffId: string, lastReadMsgId: string) {
+        await this.updateEntity('staff', staffId, { lastReadMsgId });
     }
     async deleteStaff(id: string) { 
         const staff = this.getStaff().find(s => s.id === id);
@@ -743,7 +748,7 @@ export class DataService {
         return (this.data['nasConfig']?.[0] || { isEnabled: false, path: '', status: 'disconnected' }) as NasConfig;
     }
     getAllJobs(): Job[] { return (this.data['jobs'] || []) as Job[]; }
-    getActiveJobs(): Job[] { return this.getAllJobs().filter(j => j.status !== 'DELIVERY'); }
+    getActiveJobs(): Job[] { return this.getAllJobs().filter(j => j.status !== 'DELIVERY' && j.status !== 'CANCELED' && j.status !== 'QUOTE'); }
     getStaff(): Staff[] { return (this.data['staff'] || []) as Staff[]; }
     getClients(): Client[] { return (this.data['clients'] || []) as Client[]; }
     getQuotes(): Quote[] { return (this.data['quotes'] || []) as Quote[]; }
@@ -752,7 +757,27 @@ export class DataService {
     getLeaves(): StaffLeave[] { return (this.data['leaves'] || []) as StaffLeave[]; }
     getPapers(): PaperStock[] { return (this.data['papers'] || []) as PaperStock[]; }
 
-    getStatusDefinitions(): JobStatusDefinition[] { return (this.data['statusDefinitions']?.[0]?.definitions || INITIAL_STATUS_DEFINITIONS) as JobStatusDefinition[]; }
+    getStatusDefinitions(): JobStatusDefinition[] {
+        const definitions = (this.data['statusDefinitions']?.[0]?.definitions || INITIAL_STATUS_DEFINITIONS) as JobStatusDefinition[];
+        const hasQuote = definitions.some(d => d.key === 'QUOTE');
+        if (!hasQuote) {
+            const updated = [{ key: 'QUOTE', label: '견적' }, ...definitions];
+            // Memory update immediately
+            if (this.data['statusDefinitions']?.[0]) {
+                this.data['statusDefinitions'][0].definitions = updated;
+            } else {
+                this.data['statusDefinitions'] = [{ definitions: updated }];
+            }
+            // Background update to Firestore
+            if (this.tenantId) {
+                this.saveStatusDefinitions(updated).catch(err => {
+                    console.error("[DataService] Auto migration for statusDefinitions failed:", err);
+                });
+            }
+            return updated;
+        }
+        return definitions;
+    }
     getProductDefinitions(): JobTypeDefinition[] { return (this.data['productDefinitions']?.[0]?.definitions || INITIAL_PRODUCT_DEFINITIONS) as JobTypeDefinition[]; }
     getProcessingDefinitions(): string[] { return (this.data['processingDefinitions']?.[0]?.definitions || INITIAL_PROCESSING_DEFINITIONS) as string[]; }
     async saveProcessingDefinitions(definitions: string[]) { await this.updateSetting('processingDefinitions', { definitions }); }

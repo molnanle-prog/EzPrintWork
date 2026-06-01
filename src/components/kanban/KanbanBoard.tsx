@@ -28,6 +28,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   });
   
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const { currentUser, tenantPlan } = useAuth();
@@ -48,7 +49,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     const statuses = db.getStatusDefinitions();
     
     // 1. Data-level visibility (from settings)
-    const dbVisibleStatuses = statuses.filter(s => s.isVisible !== false);
+    // QUOTE (견적) 상태는 독자적인 칸반 컬럼으로 나열되지 않으므로 강제 배제시킵니다.
+    const dbVisibleStatuses = statuses.filter(s => s.isVisible !== false && s.key !== 'QUOTE');
     setAllStatusDefinitions(dbVisibleStatuses);
     
     // 2. User-level visibility (from local UI filter)
@@ -332,10 +334,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const getAdStatusKey = () => {
-    if (visibleStatusDefinitions.length === 0) return null;
+    // 접수(RECEIVED) 컬럼과 견적(QUOTE) 컬럼은 하단 보관 상자 충돌을 방지하기 위해 광고 대상에서 안전하게 배제시킵니다.
+    const adEligibleDefs = visibleStatusDefinitions.filter(
+        (status: JobStatusDefinition) => status.key !== 'RECEIVED' && status.key !== 'QUOTE'
+    );
+    if (adEligibleDefs.length === 0) return null;
     
-    // Calculate job counts for each visible column
-    const counts = visibleStatusDefinitions.map((status: JobStatusDefinition) => ({
+    // Calculate job counts for each eligible column
+    const counts = adEligibleDefs.map((status: JobStatusDefinition) => ({
         key: status.key,
         count: getJobsForStatus(status.key).length
     }));
@@ -615,8 +621,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 <KanbanColumn
                     statusDef={statusDef}
                     jobs={getJobsForStatus(statusDef.key)}
+                    quoteJobs={statusDef.key === 'RECEIVED' ? filteredJobs.filter((j: Job) => j.status === 'QUOTE') : undefined}
                     getStaffName={getStaffName}
-                    onSelectJob={setSelectedJob}
+                    onSelectJob={(job) => { setSelectedJob(job); setJobModalViewMode('summary'); }}
+                    onRightClickJob={(job) => { setSelectedJob(job); setJobModalViewMode('edit'); }}
                     onStatusChange={updateJobStatus}
                     onDropJob={handleJobDrop}
                     currentUserId={currentUser?.id}
@@ -634,6 +642,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           key={selectedJob.id}
           job={selectedJob} 
           staff={staff} 
+          initialViewMode={jobModalViewMode}
           onClose={() => setSelectedJob(null)} 
           onUpdate={async (updated) => {
              try {
@@ -672,10 +681,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
               });
             }
           }}
-          className="fixed top-3 right-3 z-[9999] flex items-center gap-2 px-4 py-2.5 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-semibold backdrop-blur-md"
+          className="fixed top-3 right-3 z-[9999] flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-bold backdrop-blur-md"
+          title="일반 화면으로 복원 (모니터링 모드 종료)"
         >
-          <Tv size={14} className="text-purple-400 animate-pulse" />
-          <span>일반 화면으로 복원 (모니터링 끄기)</span>
+          <Tv size={13} className="text-purple-400 animate-pulse" />
+          <span>모니터링 끄기</span>
         </button>
       )}
     </div>

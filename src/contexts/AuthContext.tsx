@@ -268,6 +268,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginCustomSession = (user: AppUser, plan: 'free' | 'pro') => {
+    const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
+    if (keepLoggedIn) {
+      localStorage.setItem('customUser', JSON.stringify(user));
+      localStorage.setItem('customTenantPlan', plan);
+    } else {
+      localStorage.removeItem('customUser');
+      localStorage.removeItem('customTenantPlan');
+    }
     sessionStorage.setItem('customUser', JSON.stringify(user));
     sessionStorage.setItem('customTenantPlan', plan);
     setCurrentUser(user);
@@ -317,6 +325,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
     if (!keepLoggedIn) {
       console.log("[AuthSecurity] Keep-login is not active. Cleaning up local session caches.");
+      localStorage.removeItem('customUser');
+      localStorage.removeItem('customTenantPlan');
       sessionStorage.removeItem('customUser');
       sessionStorage.removeItem('customTenantPlan');
       signOut(auth).catch(() => {});
@@ -357,8 +367,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (user) {
         await fetchUserProfile(user);
       } else {
-        // Fallback: Check if there is a custom session in sessionStorage!
-        const savedCustomUser = sessionStorage.getItem('customUser');
+        // Fallback: Check if there is a custom session in sessionStorage or localStorage!
+        const savedCustomUser = sessionStorage.getItem('customUser') || (keepLoggedIn ? localStorage.getItem('customUser') : null);
         if (savedCustomUser) {
           try {
             const userData = JSON.parse(savedCustomUser) as AppUser;
@@ -366,7 +376,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (userData.tenantId) {
               dataService.setTenant(userData.tenantId);
             }
-            const savedPlan = sessionStorage.getItem('customTenantPlan') as 'free' | 'pro';
+            const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
             setTenantPlan(savedPlan || 'free');
           } catch (e) {
             console.error("Failed to parse custom local user session:", e);

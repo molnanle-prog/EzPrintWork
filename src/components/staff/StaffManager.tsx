@@ -133,11 +133,15 @@ export const StaffManager: React.FC = () => {
               return;
           }
 
+          // 가입/수정 시 아이디와 패스워드 강제 소문자 통일 (대표자 피드백 대소문자 방지)
+          if (staff.loginId) staff.loginId = staff.loginId.trim().toLowerCase();
+          if (staff.password) staff.password = staff.password.trim().toLowerCase();
+
           let uid = staff.uid || '';
 
           // 1. 로그인 크리덴셜 정보가 제공된 경우 Firebase Auth 백그라운드 등록 및 동기화 수행
           if (staff.loginId && staff.password) {
-              const email = staff.loginId.includes('@') ? staff.loginId.trim() : `${staff.loginId.trim()}@ez-hub.kr`;
+              const email = staff.loginId.includes('@') ? staff.loginId : `${staff.loginId}@ez-hub.kr`;
 
               // 보조 Firebase App 인스턴스 초기화 (관리자 세션 영향 차단)
               let secondaryApp;
@@ -183,7 +187,7 @@ export const StaffManager: React.FC = () => {
                   if (oldStaff && oldStaff.password !== staff.password) {
                       try {
                           // 이전 비밀번호로 보조 세션 로그인 후 패스워드 변경 승인
-                          const oldEmail = oldStaff.loginId?.includes('@') ? oldStaff.loginId.trim() : `${oldStaff.loginId?.trim()}@ez-hub.kr`;
+                          const oldEmail = oldStaff.loginId?.includes('@') ? oldStaff.loginId.trim().toLowerCase() : `${oldStaff.loginId?.trim().toLowerCase()}@ez-hub.kr`;
                           const oldPassword = oldStaff.password || '';
 
                           await signInWithEmailAndPassword(secondaryAuth, oldEmail, oldPassword);

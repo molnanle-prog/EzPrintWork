@@ -23,6 +23,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const { currentUser } = useAuth();
   const { showConfirm, showAlert } = useDialog();
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [contactingJob, setContactingJob] = useState<Job | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
 
@@ -175,7 +176,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
                <div 
                  key={job.id} 
                  className={`${isMyJob ? "relative" : ""} cursor-pointer`}
-                 onClick={() => setSelectedJob(job)}
+                 onClick={() => { setSelectedJob(job); setJobModalViewMode('summary'); }}
+                 onContextMenu={(e) => { e.preventDefault(); setSelectedJob(job); setJobModalViewMode('edit'); }}
                  title="클릭하여 상세 정보 보기"
                >
                  {isMyJob && (
@@ -207,6 +209,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
         <JobDetailModal 
           job={selectedJob} 
           staff={staff} 
+          initialViewMode={jobModalViewMode}
           onClose={() => setSelectedJob(null)} 
           onUpdate={handleUpdateJob}
           onNavigateToQuote={onNavigateToQuote}

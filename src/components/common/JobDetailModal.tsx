@@ -69,6 +69,7 @@ interface JobDetailModalProps {
   onUpdate: (job: Job) => void;
   onNavigateToQuote?: (quoteId?: string) => void;
   isNew?: boolean;
+  initialViewMode?: 'summary' | 'edit';
 }
 
 const PRINT_COLORS = ['선택안함', '단면 4도(컬러)', '양면 8도(컬러)', '단면 1도(흑백)', '양면 2도(흑백)', '별색'];
@@ -164,7 +165,7 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
     );
 };
 
-export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onClose, onUpdate, onNavigateToQuote, isNew = false }) => {
+export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onClose, onUpdate, onNavigateToQuote, isNew = false, initialViewMode }) => {
   const initialSubJobs: JobItem[] = job.subJobs && job.subJobs.length > 0 
     ? job.subJobs 
     : [{ id: '1', type: job.type || '책자', specs: job.specs }];
@@ -179,7 +180,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   };
 
   const [editedJob, setEditedJob] = useState<Job>(initialJob);
-  const [viewMode, setViewMode] = useState<'summary' | 'edit'>(isNew ? 'edit' : 'summary');
+  const [viewMode, setViewMode] = useState<'summary' | 'edit'>(initialViewMode || (isNew ? 'edit' : 'summary'));
   const [activeTabIdx, setActiveTabIdx] = useState(0); 
   
   const [processingOptions, setProcessingOptions] = useState<string[]>([]);
@@ -462,7 +463,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   };
 
   const handleDelete = async () => {
-      if (await showConfirm(`'${editedJob.title}' 작업을 정말 삭제하시겠습니까?`)) {
+      if (await showConfirm(`'${editedJob.title}' 작업을 전산에서 완전히 영구 삭제하시겠습니까?\n삭제된 데이터는 검색에서도 제외되며 복구할 수 없습니다.`)) {
           try {
               await db.deleteJob(editedJob.id);
               onClose();
@@ -1277,14 +1278,14 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
           <div className="p-2.5 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 flex-none">
             {!isNew && (
               <div className="mr-auto flex items-center gap-2 transition-all">
-                {/* 1. 작업 삭제 */}
+                {/* 1. 완전 삭제 */}
                 <button 
                   onClick={handleDelete} 
-                  className="px-3 py-1.5 text-red-500 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
-                  title="이 작업을 완전히 전산에서 영구 삭제합니다"
+                  className="px-3 py-1.5 text-red-600 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8 border border-red-100 hover:border-red-200" 
+                  title="이 작업을 전산에서 영구적으로 완전히 삭제하여 검색에서도 제외합니다."
                 >
                   <Trash2 size={16} />
-                  <span className="hidden sm:inline">삭제</span>
+                  <span className="hidden sm:inline">완전 삭제</span>
                 </button>
 
                 <div className="w-px h-4 bg-slate-200 flex-none"></div>

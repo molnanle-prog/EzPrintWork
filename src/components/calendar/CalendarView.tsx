@@ -50,6 +50,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [leaves, setLeaves] = useState<StaffLeave[]>([]);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const { showConfirm } = useDialog();
@@ -114,7 +115,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
       const visibleJobs = jobs.filter(job => {
           const start = new Date(job.createdAt).getTime();
           const end = new Date(job.dueDate).getTime();
-          return end >= viewStartTs && start <= viewEndTs;
+          return end >= viewStartTs && start <= viewEndTs && job.status !== 'CANCELED' && job.status !== 'QUOTE';
       });
 
       visibleJobs.sort((a, b) => {
@@ -367,7 +368,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                         return (
                             <div
                                 key={job.id}
-                                onClick={() => setSelectedJob(job)}
+                                onClick={() => { setSelectedJob(job); setJobModalViewMode('summary'); }}
+                                onContextMenu={(e) => { e.preventDefault(); setSelectedJob(job); setJobModalViewMode('edit'); }}
                                 onMouseEnter={() => setHoveredJobId(job.id)}
                                 onMouseLeave={() => setHoveredJobId(null)}
                                 className={containerClass}
@@ -462,6 +464,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
         <JobDetailModal 
           job={selectedJob} 
           staff={staff} 
+          initialViewMode={jobModalViewMode}
           onClose={() => setSelectedJob(null)} 
           onUpdate={handleUpdateJob}
           onNavigateToQuote={onNavigateToQuote}

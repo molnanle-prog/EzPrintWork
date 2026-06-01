@@ -30,16 +30,43 @@ export const LoginPage: React.FC = () => {
         const saved = localStorage.getItem('savedCompanyName');
         const savedId = localStorage.getItem('savedTenantId');
         const remember = localStorage.getItem('rememberCompany') === 'true';
-        if (remember && saved && savedId) {
+        const keep = localStorage.getItem('keepLoggedIn') === 'true';
+        
+        if ((remember || keep) && saved && savedId) {
             setCompanyName(saved);
             setSelectedTenantId(savedId);
-            setRememberCompany(true);
+            setRememberCompany(remember);
         }
 
         // 자동 로그인 유지 설정 복원
-        const keep = localStorage.getItem('keepLoggedIn') === 'true';
         setKeepLoggedIn(keep);
     }, []);
+
+    // 선택회사저장(rememberCompany) 및 자동로그인유지(keepLoggedIn) 선언적 동기화 훅
+    // 어떠한 조작 순서(검색 후 클릭 또는 클릭 후 검색)에서도 실시간 연동 및 동기화를 보장합니다.
+    const isMounted = React.useRef(false);
+    useEffect(() => {
+        if (!isMounted.current) {
+            isMounted.current = true;
+            return;
+        }
+
+        // 둘 중 하나라도 활성화되어 있고 회사 정보가 입력/선택되어 있으면 저장
+        if (rememberCompany || keepLoggedIn) {
+            if (companyName && selectedTenantId) {
+                localStorage.setItem('savedCompanyName', companyName);
+                localStorage.setItem('savedTenantId', selectedTenantId);
+                localStorage.setItem('rememberCompany', rememberCompany ? 'true' : 'false');
+                localStorage.setItem('keepLoggedIn', keepLoggedIn ? 'true' : 'false');
+            }
+        } else {
+            // 둘 다 꺼져 있으면 회사 정보 제거
+            localStorage.removeItem('savedCompanyName');
+            localStorage.removeItem('savedTenantId');
+            localStorage.setItem('rememberCompany', 'false');
+            localStorage.setItem('keepLoggedIn', 'false');
+        }
+    }, [rememberCompany, keepLoggedIn, selectedTenantId, companyName]);
 
     // B2B Staff Self-Signup States
     const [isStaffSignup, setIsStaffSignup] = useState(false);
@@ -221,39 +248,20 @@ IconFile=https://ez-hub.kr/favicon.ico
         setSelectedTenantId(id);
         setLoginCompanySearchResults([]);
         setHasSearchedLogin(false);
-        
-        if (rememberCompany) {
-            localStorage.setItem('savedCompanyName', name);
-            localStorage.setItem('savedTenantId', id);
-            localStorage.setItem('rememberCompany', 'true');
-        } else {
-            localStorage.removeItem('savedCompanyName');
-            localStorage.removeItem('savedTenantId');
-            localStorage.removeItem('rememberCompany');
-        }
-        
         toast.success(`[${name}] 회사가 선택되었습니다.`);
     };
 
     const handleToggleRememberCompany = (checked: boolean) => {
         setRememberCompany(checked);
-        if (checked) {
-            if (companyName && selectedTenantId) {
-                localStorage.setItem('savedCompanyName', companyName);
-                localStorage.setItem('savedTenantId', selectedTenantId);
-                localStorage.setItem('rememberCompany', 'true');
-            }
-        } else {
-            localStorage.removeItem('savedCompanyName');
-            localStorage.removeItem('savedTenantId');
-            localStorage.removeItem('rememberCompany');
+        if (!checked) {
+            setKeepLoggedIn(false);
         }
     };
 
     const handleToggleKeepLoggedIn = (checked: boolean) => {
         setKeepLoggedIn(checked);
-        localStorage.setItem('keepLoggedIn', checked ? 'true' : 'false');
         if (checked) {
+            setRememberCompany(true);
             toast.info('자동 로그인 상태 유지가 켜졌습니다. 공용 PC인 경우 보안을 위해 꺼주시기 바랍니다.');
         } else {
             toast.success('자동 로그인 상태 유지가 꺼졌습니다. 프로그램 재부팅 시 초기화됩니다.');
@@ -279,13 +287,35 @@ IconFile=https://ez-hub.kr/favicon.ico
             
             // [회사별 독립 직원 인증 체계]
             // 글로벌 'users' 대신 회사별 직원 서브컬렉션 'tenants/{tenantId}/staff'에서 직접 직원을 조회하여 회사별 아이디 중복 문제를 완전히 격리 해결합니다.
-            const userQuery = query(
+            // 대표자 피드백 반영: 아이디와 패스워드 대소문자 전면 무시를 위한 3단계 폴백 쿼리 시도
+            let userQuery = query(
                 collection(db, `tenants/${selectedTenantId}/staff`),
                 where('loginId', '==', loginId.trim()),
                 where('password', '==', password.trim())
             );
 
-            const userSnapshot = await getDocs(userQuery);
+            let userSnapshot = await getDocs(userQuery);
+
+            // 2단계 폴백 (소문자 기준 쿼리)
+            if (userSnapshot.empty) {
+                userQuery = query(
+                    collection(db, `tenants/${selectedTenantId}/staff`),
+                    where('loginId', '==', loginId.trim().toLowerCase()),
+                    where('password', '==', password.trim().toLowerCase())
+                );
+                userSnapshot = await getDocs(userQuery);
+            }
+
+            // 3단계 폴백 (대문자 기준 쿼리)
+            if (userSnapshot.empty) {
+                userQuery = query(
+                    collection(db, `tenants/${selectedTenantId}/staff`),
+                    where('loginId', '==', loginId.trim().toUpperCase()),
+                    where('password', '==', password.trim().toUpperCase())
+                );
+                userSnapshot = await getDocs(userQuery);
+            }
+
             if (userSnapshot.empty) {
                 toast.error('아이디 또는 비밀번호가 올바르지 않거나 선택한 회사와 일치하지 않습니다.');
                 setIsStaffLoggingIn(false);
@@ -294,6 +324,14 @@ IconFile=https://ez-hub.kr/favicon.ico
 
             const userDoc = userSnapshot.docs[0];
             const userData = userDoc.data();
+
+            // Check if deleted or suspended
+            if (userData.isDeleted === true || userData.active === false) {
+                toast.error('삭제되었거나 비활성화된 직원 계정입니다. 관리자에게 문의하세요.');
+                setIsStaffLoggingIn(false);
+                return;
+            }
+
             const tenantId = selectedTenantId; // 서브컬렉션 소속이므로 selectedTenantId가 곧 tenantId가 됩니다.
 
             // Retrieve the tenant's plan info
@@ -320,13 +358,48 @@ IconFile=https://ez-hub.kr/favicon.ico
                 role: 'staff' as const
             };
 
-            // 회사 저장 선택 옵션 최종 확인
-            if (rememberCompany) {
-                localStorage.setItem('savedCompanyName', tenantName);
-                localStorage.setItem('savedTenantId', tenantId);
-                localStorage.setItem('rememberCompany', 'true');
+            // 아이디 및 비밀번호 소문자 자동 마이그레이션 자가 치유 (Self-Healing)
+            const currentLoginIdInDb = userData.loginId || '';
+            const currentPasswordInDb = userData.password || '';
+            const needsIdMigration = currentLoginIdInDb && currentLoginIdInDb !== currentLoginIdInDb.toLowerCase();
+            const needsPwMigration = currentPasswordInDb && currentPasswordInDb !== currentPasswordInDb.toLowerCase();
+
+            if (needsIdMigration || needsPwMigration) {
+                const lowerId = currentLoginIdInDb.toLowerCase();
+                const lowerPw = currentPasswordInDb.toLowerCase();
+                (async () => {
+                    try {
+                        const { doc, updateDoc } = await import('firebase/firestore');
+                        const { db: fsDb } = await import('../services/firebase');
+                        
+                        // tenants/{tenantId}/staff/{userId} 업데이트
+                        const staffDocRef = doc(fsDb, `tenants/${selectedTenantId}/staff`, userDoc.id);
+                        await updateDoc(staffDocRef, { 
+                            loginId: lowerId,
+                            password: lowerPw
+                        });
+                        
+                        // 글로벌 users/{userId} 업데이트
+                        const userDocRef = doc(fsDb, 'users', userDoc.id);
+                        const userSnap = await getDoc(userDocRef);
+                        if (userSnap.exists()) {
+                            await updateDoc(userDocRef, { 
+                                loginId: lowerId,
+                                password: lowerPw
+                            });
+                        }
+                        console.log(`[Self-Healing] Successfully migrated staff ${userDoc.id} loginId/password to lowercase.`);
+                    } catch (migrationErr) {
+                        console.warn("[Self-Healing] Failed to migrate credentials to lowercase:", migrationErr);
+                    }
+                })();
             }
 
+            // 회사 저장 선택 옵션 최종 확인을 상태 업데이트로 일원화
+            setCompanyName(tenantName);
+            setSelectedTenantId(tenantId);
+
+            localStorage.setItem('ezprint_active_tab', 'kanban');
             loginCustomSession(appUser, tenantPlan as 'free' | 'pro');
             toast.success(tenantName ? `[${tenantName}] 직원 로그인에 성공했습니다! 환영합니다.` : '직원 로그인에 성공했습니다! 환영합니다.');
 
@@ -383,15 +456,7 @@ IconFile=https://ez-hub.kr/favicon.ico
             return;
         }
 
-        if (loginId.trim().length < 4) {
-            toast.error('직원 아이디는 4자 이상이어야 합니다.');
-            return;
-        }
 
-        if (password.trim().length < 4) {
-            toast.error('비밀번호는 4자 이상이어야 합니다.');
-            return;
-        }
 
         setIsStaffSigningUp(true);
 
@@ -418,10 +483,12 @@ IconFile=https://ez-hub.kr/favicon.ico
             const tenantData = tenantDoc.data();
 
             // 2. Check if loginId is already taken inside global users for this tenant
+            const normalizedLoginId = loginId.trim().toLowerCase();
+            const normalizedPassword = password.trim().toLowerCase();
             const userCheckQuery = query(
                 collection(db, 'users'),
                 where('tenantId', '==', tenantId),
-                where('loginId', '==', loginId.trim())
+                where('loginId', '==', normalizedLoginId)
             );
             const userCheckSnapshot = await getDocs(userCheckQuery);
             if (!userCheckSnapshot.empty) {
@@ -439,8 +506,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                 uid: newUserId,
                 id: newUserId,
                 tenantId: tenantId,
-                loginId: loginId.trim(),
-                password: password.trim(),
+                loginId: normalizedLoginId,
+                password: normalizedPassword,
                 userName: staffName.trim(),
                 name: staffName.trim(),
                 role: 'staff',
@@ -459,8 +526,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                 avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${staffName.trim()}`,
                 active: true,
                 email: '',
-                loginId: loginId.trim(),
-                password: password.trim(),
+                loginId: normalizedLoginId,
+                password: normalizedPassword,
                 joinDate: new Date().toISOString()
             });
 
@@ -472,8 +539,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                     body: JSON.stringify({
                         action: "signup_staff",
                         companyName: companyName.trim(),
-                        loginId: loginId.trim(),
-                        password: password.trim(),
+                        loginId: normalizedLoginId,
+                        password: normalizedPassword,
                         staffName: staffName.trim(),
                         staffRole: staffRole,
                         contact: ''

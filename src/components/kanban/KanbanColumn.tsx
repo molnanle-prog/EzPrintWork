@@ -9,8 +9,10 @@ import { AdBanner } from '../common/AdBanner';
 interface KanbanColumnProps {
   statusDef: JobStatusDefinition;
   jobs: Job[];
+  quoteJobs?: Job[]; // Added: 견적 대기 작업 목록
   getStaffName: (job?: Job) => string; // Updated signature
   onSelectJob: (job: Job) => void;
+  onRightClickJob?: (job: Job) => void;
   onStatusChange: (job: Job, direction: 'next' | 'prev') => void;
   onDropJob: (jobId: string, statusKey: string, targetJobId?: string) => void;
   currentUserId?: string;
@@ -22,8 +24,10 @@ interface KanbanColumnProps {
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({ 
   statusDef, 
   jobs, 
+  quoteJobs, // Destruct here
   getStaffName, 
   onSelectJob, 
+  onRightClickJob,
   onStatusChange, 
   onDropJob,
   currentUserId,
@@ -35,6 +39,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
 
   const getColorForStatus = (statusKey: string) => {
     switch (statusKey) {
+      case 'QUOTE': return 'bg-indigo-500';
       case 'RECEIVED': return 'bg-red-500';
       case 'DESIGN': return 'bg-orange-500';
       case 'PRINTING': return 'bg-amber-500';
@@ -111,6 +116,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
             status={job.status}
             staffName={getStaffName(job)}
             onSelect={onSelectJob}
+            onRightClick={onRightClickJob}
             onStatusChange={onStatusChange}
             onDropOnCard={handleCardDrop}
             isMyJob={currentUserId ? (job.assignedStaffIds?.includes(currentUserId) || job.assignedStaffId === currentUserId) : false}
@@ -127,6 +133,35 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
           </div>
         )}
       </div>
+
+      {/* 📋 견적 대기 보관함 (접수 컬럼 하단에 반응형 콤팩트 단추로 자동 정렬) */}
+      {statusDef.key === 'RECEIVED' && quoteJobs && quoteJobs.length > 0 && (
+        <div className="p-2 border-t border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/60 flex-none select-none">
+          <div className="flex items-center justify-between mb-1.5 px-1">
+            <span className="text-[10px] lg:text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
+              📋 견적 문의 보관 상자
+            </span>
+            <span className="bg-slate-200 dark:bg-slate-800 text-[10px] px-1.5 py-0.5 rounded-full font-extrabold text-slate-600 dark:text-slate-400">
+              {quoteJobs.length}
+            </span>
+          </div>
+          
+          {/* 최대 3줄 높이로 제한하며 창 크기에 따라 자동으로 최대로 채워 가로 정렬 */}
+          <div className="max-h-[90px] overflow-y-auto custom-scrollbar flex flex-wrap gap-1 pr-0.5">
+            {quoteJobs.map(job => (
+              <button
+                key={job.id}
+                onClick={() => onSelectJob(job)}
+                onContextMenu={(e) => { e.preventDefault(); onRightClickJob ? onRightClickJob(job) : onSelectJob(job); }}
+                className="h-7 px-2.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] md:text-[11px] font-extrabold truncate transition-all active:scale-95 flex items-center justify-center max-w-[85px] shadow-sm select-none"
+                title={`${job.title} | ${job.clientName} | ${job.price ? job.price.toLocaleString() + '원' : '금액 미정'}\n(클릭 또는 우클릭 시 상세 모달 열기)`}
+              >
+                {job.title}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {showAd && (
         <div className="p-3 mt-auto flex-none">

@@ -87,6 +87,7 @@ export interface Staff {
   password?: string; // Plaintext password (stored in private tenant staff collection)
   joinDate: string;
   isDeleted?: boolean; 
+  lastReadMsgId?: string; // Last confirmed message ID in chat widget
 }
 
 export interface JoinRequest {

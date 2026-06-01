@@ -19,10 +19,27 @@ export const ChatWidget: React.FC = () => {
   const [unreadSenders, setUnreadSenders] = useState<Set<string>>(new Set()); // New: Track which senders have unread messages
   const [notificationPopup, setNotificationPopup] = useState<ChatMessage | null>(null);
   
+  const mountTime = useRef(Date.now());
   const { currentUser } = useAuth();
   const { isDarkMode, toggleTheme } = useTheme();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [isTvMode, setIsTvMode] = useState<boolean>(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('ezprint_tv_mode') === 'true';
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    const handleTvModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      setIsTvMode(customEvent.detail.isTvMode);
+    };
+    window.addEventListener('ezprint-tv-mode-change', handleTvModeChange);
+    return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
+  }, []);
 
   useEffect(() => {
     // Create Audio Element
@@ -35,15 +52,43 @@ export const ChatWidget: React.FC = () => {
     const initialMsgs = db.getMessages();
     setMessages(initialMsgs);
 
+    // Check if there are any unread messages from history upon mount
+    if (initialMsgs.length > 0 && currentUser) {
+      // 나에게 수신된 메시지 중 가장 최근 메시지 추출
+      const myReceivedMsgs = initialMsgs.filter(m => m.senderId !== currentUser.id && (!m.receiverId || m.receiverId === currentUser.id));
+      if (myReceivedMsgs.length > 0) {
+        const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
+        const lastConfirmedId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
+        
+        if (lastMsg.id !== lastConfirmedId) {
+          // 아직 읽음 확인을 하지 않은 과거 메시지가 오프라인일 때 유입된 것이므로 로그인 즉시 팝업과 띵동 작동!
+          setHasUnread(true);
+          setNotificationPopup(lastMsg);
+          
+          setTimeout(() => {
+            audioRef.current?.play().catch(e => console.log('Initial audio play bypassed by browser policy', e));
+          }, 1000);
+        }
+      }
+    }
+
     // Polling for new messages (simulate real-time)
     const interval = setInterval(() => {
       const latestMsgs = db.getMessages();
       setMessages(prev => {
-        // Check for new messages
-        if (latestMsgs.length > prev.length) {
-          const lastMsg = latestMsgs[latestMsgs.length - 1];
-          // If message is NOT from me
-          if (lastMsg.senderId !== currentUser?.id) {
+        // 1. 이전 메시지 ID 목록을 Set으로 변환하여 매칭 속도 극대화
+        const prevIds = new Set(prev.map(m => m.id));
+        
+        // 2. 이전에 보지 못했던 완전히 새로운 메시지들만 필터링 (비동기 청크 지연 로드 대응)
+        const newMsgs = latestMsgs.filter(msg => !prevIds.has(msg.id));
+        
+        if (newMsgs.length > 0) {
+          // 나에게 수신된 신규 메시지만 필터링
+          const myNewReceivedMsgs = newMsgs.filter(m => m.senderId !== currentUser?.id && (!m.receiverId || m.receiverId === currentUser?.id));
+          
+          if (myNewReceivedMsgs.length > 0) {
+            const lastMsg = myNewReceivedMsgs[myNewReceivedMsgs.length - 1];
+
             // Determine if the relevant channel is currently open
             // Global open & Global msg OR DM open & DM msg from sender
             const isRelevantChannelOpen = isOpen && (
@@ -52,16 +97,17 @@ export const ChatWidget: React.FC = () => {
             );
 
             if (!isRelevantChannelOpen) {
-                setHasUnread(true);
-                // Trigger Blocking Popup for ALL messages (DM & Global)
-                setNotificationPopup(lastMsg);
-                
-                // Add to Unread Senders Set to blink the list item
-                if (lastMsg.senderId) {
-                    setUnreadSenders(prev => new Set(prev).add(lastMsg.senderId));
-                }
+                 setHasUnread(true);
+                 // 확인하지 않은 신규 메시지이므로 긴급 팝업 노출!
+                 setNotificationPopup(lastMsg);
+                 
+                 // Add to Unread Senders Set to blink the list item
+                 if (lastMsg.senderId) {
+                      setUnreadSenders(prevSet => new Set(prevSet).add(lastMsg.senderId));
+                 }
             }
             
+            // 신규 실시간 메시지가 왔으므로 띵동 소리 재생!
             if (soundEnabled) {
                audioRef.current?.play().catch(e => console.log('Audio play failed', e));
             }
@@ -86,10 +132,22 @@ export const ChatWidget: React.FC = () => {
   }, [activeChannel]);
 
   useEffect(() => {
-    if (isOpen && !notificationPopup) {
+    if (isOpen && currentUser && messages.length > 0) {
+      // 나에게 수신된 메시지 중 가장 최신의 메시지 ID를 확인 처리로 로컬스토리지에 저장
+      const myReceivedMsgs = messages.filter(m => m.senderId !== currentUser.id && (!m.receiverId || m.receiverId === currentUser.id));
+      if (myReceivedMsgs.length > 0) {
+        const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
+        localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, lastMsg.id);
+        
+        // 파이어베이스(Firestore)에도 실시간 동기화 업데이트!
+        db.updateStaffLastReadMsgId(currentUser.id, lastMsg.id).catch(e => {
+            console.error("Failed to sync lastReadMsgId to Firestore:", e);
+        });
+      }
       setHasUnread(false);
+      setNotificationPopup(null);
     }
-  }, [isOpen, notificationPopup]);
+  }, [isOpen, messages, currentUser]);
 
   useEffect(() => {
     scrollToBottom();
@@ -128,6 +186,63 @@ export const ChatWidget: React.FC = () => {
     return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   };
 
+  const isSameDay = (d1Str: string, d2Str: string) => {
+    const d1 = new Date(d1Str);
+    const d2 = new Date(d2Str);
+    return d1.getFullYear() === d2.getFullYear() &&
+           d1.getMonth() === d2.getMonth() &&
+           d1.getDate() === d2.getDate();
+  };
+
+  const formatDateHeader = (isoString: string) => {
+    const date = new Date(isoString);
+    const options: Intl.DateTimeFormatOptions = { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' };
+    return date.toLocaleDateString('ko-KR', options);
+  };
+
+  // 특정 메시지의 안 읽은 인원 수(unread count) 계산 함수
+  const getUnreadCount = (msg: ChatMessage) => {
+    if (msg.senderId !== currentUser?.id) return 0;
+    
+    const msgTime = new Date(msg.timestamp).getTime();
+
+    if (msg.receiverId) {
+      // 1:1 DM 방인 경우: 상대방 한 명이 읽었는지 판별
+      const otherStaff = staff.find(s => s.id === msg.receiverId);
+      if (!otherStaff) return 0;
+      
+      if (!otherStaff.lastReadMsgId) return 1; // 한 번도 대화방을 켜지 않음 -> 안읽음(1)
+      
+      const otherLastReadMsg = messages.find(m => m.id === otherStaff.lastReadMsgId);
+      if (!otherLastReadMsg) return 1;
+      
+      const otherLastReadTime = new Date(otherLastReadMsg.timestamp).getTime();
+      return msgTime > otherLastReadTime ? 1 : 0;
+    } else {
+      // 전체 공지방인 경우: 나를 제외한 전체 사원 중에서 안 읽은 인원수 카운트 (카톡 단톡방 숫자 스타일)
+      const activeStaffMembers = staff.filter(s => s.id !== currentUser.id && s.active && !s.isDeleted);
+      let unreadCount = 0;
+      
+      activeStaffMembers.forEach(s => {
+        if (!s.lastReadMsgId) {
+          unreadCount++;
+          return;
+        }
+        const staffLastReadMsg = messages.find(m => m.id === s.lastReadMsgId);
+        if (!staffLastReadMsg) {
+          unreadCount++;
+          return;
+        }
+        const staffLastReadTime = new Date(staffLastReadMsg.timestamp).getTime();
+        if (msgTime > staffLastReadTime) {
+          unreadCount++;
+        }
+      });
+      
+      return unreadCount;
+    }
+  };
+
   const currentMessages = messages.filter(msg => {
     if (!activeChannel) {
       return !msg.receiverId;
@@ -146,6 +261,13 @@ export const ChatWidget: React.FC = () => {
           }
           
           setIsOpen(true);
+          if (currentUser) {
+              localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, notificationPopup.id);
+              // 파이어베이스에도 실시간 동기화 업데이트!
+              db.updateStaffLastReadMsgId(currentUser.id, notificationPopup.id).catch(e => {
+                  console.error("Failed to sync lastReadMsgId to Firestore on popup click:", e);
+              });
+          }
           setNotificationPopup(null);
           setHasUnread(false);
       }
@@ -153,9 +275,13 @@ export const ChatWidget: React.FC = () => {
 
   if (!currentUser) return null;
 
+  // notificationPopup이 떠 있을 때는 화면 전체를 덮어야 하므로 z-index를 최고 수준(z-[9999])으로 높이고, 
+  // 평소에는 z-50을 유지합니다.
+  const containerZIndex = notificationPopup ? 'z-[9999]' : 'z-50';
+
   return (
     // Adjusted position for mobile (higher bottom to clear nav)
-    <div className="fixed bottom-20 lg:bottom-6 right-4 lg:right-6 z-50 flex flex-col items-end gap-4 pointer-events-none">
+    <div className={`fixed bottom-20 lg:bottom-6 right-4 lg:right-6 ${containerZIndex} flex flex-col items-end gap-4 pointer-events-none`}>
       
       {/* CRITICAL ALERT MODAL */}
       {notificationPopup && !isOpen && (
@@ -213,7 +339,7 @@ export const ChatWidget: React.FC = () => {
       )}
 
       {/* Chat Window */}
-      {isOpen && (
+      {isOpen && !isTvMode && (
         <div className="pointer-events-auto bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-[calc(100vw-2rem)] sm:w-[550px] h-[60vh] sm:h-[600px] flex overflow-hidden animate-in slide-in-from-bottom-5 duration-300 flex-col sm:flex-row text-slate-800 dark:text-slate-100">
           
           {/* Sidebar (Staff List) */}
@@ -248,7 +374,7 @@ export const ChatWidget: React.FC = () => {
 
               <div className="text-xs font-bold text-slate-400 px-2 mt-4 mb-2">직원 목록</div>
               
-              {staff.filter(s => s.id !== currentUser.id).map(s => {
+              {staff.filter(s => s.id !== currentUser.id && !s.isDeleted && s.active).map(s => {
                   const hasMessage = unreadSenders.has(s.id);
                   return (
                       <button 
@@ -344,44 +470,80 @@ export const ChatWidget: React.FC = () => {
                 const isMe = msg.senderId === currentUser.id;
                 const sender = getSenderInfo(msg.senderId);
                 const isCall = msg.type === 'call';
+                
+                // 날짜 구분선 출력 조건 판단 (첫 번째 메시지이거나, 이전 메시지와 날짜가 다를 때)
+                const showDateHeader = idx === 0 || !isSameDay(currentMessages[idx - 1].timestamp, msg.timestamp);
 
                 return (
-                  <div key={msg.id} className={`flex gap-3 ${isMe ? 'flex-row-reverse' : ''} ${isCall ? 'justify-center' : ''}`}>
-                    {isCall ? (
-                      <div className="bg-red-100 border border-red-200 text-red-700 px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 my-2 shadow-sm">
-                        <Bell size={14} className="animate-pulse" />
-                        {sender.name}님이 호출!
-                        <span className="text-[10px] opacity-70 font-normal">{formatTime(msg.timestamp)}</span>
-                      </div>
-                    ) : (
-                      <>
-                        {!isMe && (
-                          <div className="w-8 h-8 shrink-0 flex flex-col items-center">
-                            <img src={sender.avatarUrl} className="w-8 h-8 rounded-full border border-slate-300 bg-white" />
-                          </div>
-                        )}
-
-                        <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[75%]`}>
-                          {!isMe && (
-                            <span className="text-xs text-slate-500 mb-1 ml-1">{sender.name}</span>
-                          )}
-                          <div 
-                            className={`px-3 py-2 rounded-2xl text-sm shadow-sm break-words
-                              ${isMe 
-                                ? 'bg-blue-600 text-white rounded-tr-none' 
-                                : 'bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-600 rounded-tl-none'
-                              }
-                            `}
-                          >
-                            {msg.content}
-                          </div>
-                          <span className="text-[10px] text-slate-400 mt-1 px-1">
-                            {formatTime(msg.timestamp)}
-                          </span>
+                  <React.Fragment key={msg.id}>
+                    {/* 날짜 구분선 헤더 */}
+                    {showDateHeader && (
+                      <div className="flex justify-center my-4">
+                        <div className="bg-slate-200/80 dark:bg-slate-700 text-slate-600 dark:text-slate-300 text-[10px] font-black px-3 py-1 rounded-full shadow-sm">
+                          {formatDateHeader(msg.timestamp)}
                         </div>
-                      </>
+                      </div>
                     )}
-                  </div>
+
+                    <div className={`flex gap-3 ${isMe ? 'flex-row-reverse' : ''} ${isCall ? 'justify-center' : ''}`}>
+                      {isCall ? (
+                        <div className="bg-red-100 border border-red-200 text-red-700 px-4 py-2 rounded-full text-xs font-bold flex items-center gap-2 my-2 shadow-sm">
+                          <Bell size={14} className="animate-pulse" />
+                          {sender.name}님이 호출!
+                          <span className="text-[9px] opacity-70 font-normal">{formatTime(msg.timestamp)}</span>
+                        </div>
+                      ) : (
+                        <>
+                          {!isMe && (
+                            <div className="w-8 h-8 shrink-0 flex flex-col items-center">
+                              <img src={sender.avatarUrl} className="w-8 h-8 rounded-full border border-slate-300 bg-white" />
+                            </div>
+                          )}
+
+                          <div className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                            {!isMe && (
+                              <span className="text-xs text-slate-500 mb-1 ml-1">{sender.name}</span>
+                            )}
+                            
+                            {/* 말풍선과 시간의 가로 배치 (카톡/문자 스타일 + 실시간 안읽은 수 라벨) */}
+                            <div className="flex items-end gap-1.5">
+                              {/* 나인 경우 읽음 여부(숫자)와 시간은 말풍선 왼쪽에 세로로 배치 */}
+                              {isMe && (
+                                <div className="flex flex-col items-end select-none">
+                                  {getUnreadCount(msg) > 0 && (
+                                    <span className="text-[10px] text-yellow-500 font-extrabold leading-none mb-1 animate-pulse">
+                                      {getUnreadCount(msg)}
+                                    </span>
+                                  )}
+                                  <span className="text-[9px] text-slate-400/90 font-bold whitespace-nowrap mb-0.5" title={new Date(msg.timestamp).toLocaleString()}>
+                                    {formatTime(msg.timestamp)}
+                                  </span>
+                                </div>
+                              )}
+
+                              <div 
+                                className={`px-3 py-2 rounded-2xl text-sm shadow-sm break-words max-w-full
+                                  ${isMe 
+                                    ? 'bg-blue-600 text-white rounded-tr-none' 
+                                    : 'bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 border border-slate-200 dark:border-slate-600 rounded-tl-none'
+                                  }
+                                `}
+                              >
+                                {msg.content}
+                              </div>
+
+                              {/* 상대방인 경우 시간은 말풍선 오른쪽에 */}
+                              {!isMe && (
+                                <span className="text-[9px] text-slate-400/90 font-bold whitespace-nowrap mb-0.5 select-none" title={new Date(msg.timestamp).toLocaleString()}>
+                                  {formatTime(msg.timestamp)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </React.Fragment>
                 );
               })}
               <div ref={messagesEndRef} />
@@ -411,36 +573,38 @@ export const ChatWidget: React.FC = () => {
       )}
 
       {/* Floating Action Buttons */}
-      <div className="flex items-center gap-3 pointer-events-auto">
-          <button 
-            onClick={toggleTheme}
-            className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95 border
-              ${isDarkMode 
-                ? 'bg-slate-800 border-slate-600 text-yellow-400 hover:bg-slate-700' 
-                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-              }
-            `}
-            title={isDarkMode ? "라이트 모드로 전환" : "다크 모드로 전환"}
-          >
-            {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
-          </button>
+      {!isTvMode && (
+        <div className="flex items-center gap-3 pointer-events-auto">
+            <button 
+              onClick={toggleTheme}
+              className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95 border
+                ${isDarkMode 
+                  ? 'bg-slate-800 border-slate-600 text-yellow-400 hover:bg-slate-700' 
+                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                }
+              `}
+              title={isDarkMode ? "라이트 모드로 전환" : "다크 모드로 전환"}
+            >
+              {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
 
-          <button 
-            onClick={() => setIsOpen(!isOpen)}
-            className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 relative
-              ${isOpen ? 'bg-slate-700 text-slate-300' : 'bg-blue-600 text-white hover:bg-blue-700'}
-              ${!isOpen && hasUnread ? 'animate-[bounce_1s_infinite]' : ''}
-            `}
-            title={isOpen ? "메신저 닫기" : "사내 메신저 열기"}
-          >
-            {isOpen ? <X size={28} /> : <MessageCircle size={28} />}
-            
-            {/* Unread Badge */}
-            {!isOpen && hasUnread && (
-              <span className="absolute top-0 right-0 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
-            )}
-          </button>
-      </div>
+            <button 
+              onClick={() => setIsOpen(!isOpen)}
+              className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 relative
+                ${isOpen ? 'bg-slate-700 text-slate-300' : 'bg-blue-600 text-white hover:bg-blue-700'}
+                ${!isOpen && hasUnread ? 'animate-[bounce_1s_infinite]' : ''}
+              `}
+              title={isOpen ? "메신저 닫기" : "사내 메신저 열기"}
+            >
+              {isOpen ? <X size={28} /> : <MessageCircle size={28} />}
+              
+              {/* Unread Badge */}
+              {!isOpen && hasUnread && (
+                <span className="absolute top-0 right-0 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
+              )}
+            </button>
+        </div>
+      )}
     </div>
   );
 };

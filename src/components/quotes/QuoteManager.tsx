@@ -103,6 +103,7 @@ export const QuoteManager: React.FC = () => {
               <tr 
                 key={quote.id} 
                 onClick={() => setSelectedQuote(quote)}
+                onContextMenu={(e) => { e.preventDefault(); setSelectedQuote(quote); }}
                 className="hover:bg-blue-50/50 transition-colors group cursor-pointer"
               >
                 <td className="p-4 font-medium text-slate-800">{quote.clientName}</td>
@@ -140,6 +141,7 @@ export const QuoteManager: React.FC = () => {
           <div 
             key={quote.id}
             onClick={() => setSelectedQuote(quote)}
+            onContextMenu={(e) => { e.preventDefault(); setSelectedQuote(quote); }}
             className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm active:scale-[0.98] transition-transform"
           >
             <div className="flex justify-between items-start mb-2">
