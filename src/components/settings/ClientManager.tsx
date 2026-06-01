@@ -25,7 +25,9 @@ export const ClientManager: React.FC = () => {
       email: '',
       address: '',
       note: '',
-      contacts: []
+      contacts: [],
+      sendSmsOnComplete: true,
+      customSmsNumber: ''
   });
 
   const loadClients = () => {
@@ -44,7 +46,9 @@ export const ClientManager: React.FC = () => {
       setEditingId(client.id);
       setFormData({
           ...client,
-          contacts: client.contacts || [{ name: client.contactPerson, phone: client.phone }]
+          contacts: client.contacts || [{ name: client.contactPerson, phone: client.phone }],
+          sendSmsOnComplete: client.sendSmsOnComplete !== false,
+          customSmsNumber: client.customSmsNumber || ''
       });
       setIsModalOpen(true);
   };
@@ -59,7 +63,9 @@ export const ClientManager: React.FC = () => {
           email: '',
           address: '',
           note: '',
-          contacts: [{ name: '', phone: '', department: '담당자' }]
+          contacts: [{ name: '', phone: '', department: '담당자' }],
+          sendSmsOnComplete: true,
+          customSmsNumber: ''
       });
       setIsModalOpen(true);
   };
@@ -84,7 +90,9 @@ export const ClientManager: React.FC = () => {
         email: primaryContact.email,        // Sync Primary
         address: formData.address || '',
         note: formData.note || '',
-        contacts: formData.contacts || []
+        contacts: formData.contacts || [],
+        sendSmsOnComplete: formData.sendSmsOnComplete !== false,
+        customSmsNumber: formData.customSmsNumber || ''
     };
 
     try {
@@ -226,14 +234,28 @@ export const ClientManager: React.FC = () => {
               <div key={client.id} className="border border-slate-200 dark:border-slate-700 rounded-xl p-5 hover:shadow-md transition-all relative group bg-white dark:bg-slate-700">
                   <div className="flex justify-between items-start mb-3">
                       <div>
-                          <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg flex items-center gap-2">
+                          <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg flex items-center gap-2 flex-wrap">
                              {client.name}
+                             <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold select-none border transition-colors ${
+                                 client.sendSmsOnComplete !== false
+                                     ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50'
+                                     : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/50'
+                             }`}>
+                                 {client.sendSmsOnComplete !== false ? '알림 ON' : '알림 OFF'}
+                             </span>
                           </h4>
-                          {client.businessRegistrationNumber && (
-                              <span className="text-[10px] bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-500 font-mono">
-                                  {client.businessRegistrationNumber}
-                              </span>
-                          )}
+                          <div className="flex flex-wrap gap-1 mt-1">
+                              {client.businessRegistrationNumber && (
+                                  <span className="text-[10px] bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-500 font-mono">
+                                      {client.businessRegistrationNumber}
+                                  </span>
+                              )}
+                              {client.sendSmsOnComplete !== false && client.customSmsNumber && (
+                                  <span className="text-[10px] bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-900/50 font-medium" title="알림 수신 전용 연락처">
+                                      수신: {client.customSmsNumber}
+                                  </span>
+                              )}
+                          </div>
                       </div>
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button 
@@ -378,6 +400,104 @@ export const ClientManager: React.FC = () => {
                                 />
                             </div>
                         </div>
+                    </div>
+
+                    {/* SMS / Notification Settings */}
+                    <div className="space-y-4 mb-8 bg-slate-50 dark:bg-slate-900/10 p-4 rounded-xl border border-slate-200 dark:border-slate-700 transition-all">
+                        <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300 border-b dark:border-slate-700 pb-2 mb-3 flex items-center gap-2">
+                            <Smartphone className="text-blue-500" size={16} /> 알림 및 문자 발송 설정
+                        </h4>
+                        
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <span className="text-xs font-bold text-slate-700 dark:text-slate-300 block">완료 알림 문자 수신 여부</span>
+                                <span className="text-[11px] text-slate-400 dark:text-slate-500">작업 완료 시 이 거래처에 알림 문자를 발송합니다.</span>
+                            </div>
+                            <label className="relative inline-flex items-center cursor-pointer">
+                                <input 
+                                    type="checkbox" 
+                                    checked={formData.sendSmsOnComplete !== false} 
+                                    onChange={(e) => setFormData(prev => ({ ...prev, sendSmsOnComplete: e.target.checked }))}
+                                    className="sr-only peer" 
+                                />
+                                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-blue-600"></div>
+                            </label>
+                        </div>
+
+                        {formData.sendSmsOnComplete !== false && (
+                            <div className="space-y-3 pt-3 border-t border-slate-200 dark:border-slate-700 animate-in fade-in duration-200">
+                                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 block">알림 수신 번호 설정</label>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <div className="space-y-1">
+                                        <label className="text-[10px] font-bold text-slate-400">수신처 분류</label>
+                                        <select 
+                                            value={
+                                                !formData.customSmsNumber 
+                                                    ? 'primary' 
+                                                    : formData.contacts?.some(c => c.phone === formData.customSmsNumber) 
+                                                        ? 'contact' 
+                                                        : 'custom'
+                                            }
+                                            onChange={(e) => {
+                                                const type = e.target.value;
+                                                if (type === 'primary') {
+                                                    setFormData(prev => ({ ...prev, customSmsNumber: '' }));
+                                                } else if (type === 'contact') {
+                                                    const firstWithPhone = formData.contacts?.find(c => c.phone) || { phone: '' };
+                                                    setFormData(prev => ({ ...prev, customSmsNumber: firstWithPhone.phone }));
+                                                } else {
+                                                    setFormData(prev => ({ ...prev, customSmsNumber: '010-' }));
+                                                }
+                                            }}
+                                            className={smallInputClass}
+                                        >
+                                            <option value="primary">기본 대표 번호 (첫 번째 담당자)</option>
+                                            {formData.contacts && formData.contacts.length > 0 && (
+                                                <option value="contact">등록된 담당자 중 선택</option>
+                                            )}
+                                            <option value="custom">별도 연락처 직접 입력</option>
+                                        </select>
+                                    </div>
+
+                                    {/* 담당자 중 선택하는 경우 */}
+                                    {formData.sendSmsOnComplete !== false && formData.contacts && formData.contacts.length > 0 && 
+                                     formData.customSmsNumber && 
+                                     formData.contacts.some(c => c.phone === formData.customSmsNumber) && (
+                                        <div className="space-y-1">
+                                            <label className="text-[10px] font-bold text-slate-400">수신할 담당자 선택</label>
+                                            <select 
+                                                value={formData.customSmsNumber}
+                                                onChange={(e) => setFormData(prev => ({ ...prev, customSmsNumber: e.target.value }))}
+                                                className={smallInputClass}
+                                            >
+                                                {formData.contacts.map((c, i) => (
+                                                    <option key={i} value={c.phone} disabled={!c.phone}>
+                                                        {c.name || `담당자 ${i+1}`} ({c.phone || '번호 없음'}) {c.department ? ` - ${c.department}` : ''}
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
+
+                                    {/* 직접 입력하는 경우 */}
+                                    {formData.sendSmsOnComplete !== false && 
+                                     formData.customSmsNumber !== undefined && 
+                                     formData.customSmsNumber !== '' && 
+                                     (!formData.contacts || !formData.contacts.some(c => c.phone === formData.customSmsNumber)) && (
+                                        <div className="space-y-1">
+                                            <label className="text-[10px] font-bold text-slate-400">수신 번호 입력</label>
+                                            <input 
+                                                type="text" 
+                                                value={formData.customSmsNumber} 
+                                                onChange={(e) => setFormData(prev => ({ ...prev, customSmsNumber: formatPhoneNumber(e.target.value) }))}
+                                                placeholder="010-XXXX-XXXX"
+                                                className={smallInputClass}
+                                            />
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Contact Persons */}

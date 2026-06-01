@@ -152,6 +152,8 @@ export interface Client {
   address?: string;
   note?: string;
   contacts: ClientContact[]; 
+  sendSmsOnComplete?: boolean; // 완료 시 알림 문자 발송 여부
+  customSmsNumber?: string;    // 알림 수신 전용 연락처 (비어있으면 기본 연락처 사용)
 }
 
 export interface PaperStock {

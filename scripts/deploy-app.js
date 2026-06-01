@@ -118,15 +118,15 @@ async function main() {
       execSync(`powershell -Command "Compress-Archive -Path '${sourcePath}' -DestinationPath '${targetPath}' -Force"`);
       log('✓ 최신 데스크톱 설치본 Zip 압축 및 링킹 완료!', colors.green);
 
-      // .exe 설치 파일도 downloads 폴더로 복사하여 직접 서빙 지원
+      // Firebase Spark 요금제 제한(실행 파일 업로드 불가)으로 인해 
+      // .exe 설치본 복사는 비활성화하고 .zip 압축본만 서빙합니다.
       const targetExePath = path.join(downloadsDir, 'EzPrintWork-Setup.exe');
       if (fs.existsSync(targetExePath)) {
         try {
           fs.unlinkSync(targetExePath);
+          log('✓ Firebase 업로드 에러 방지를 위해 기존 레거시 .exe를 삭제했습니다.', colors.green);
         } catch (e) {}
       }
-      fs.copyFileSync(sourcePath, targetExePath);
-      log('✓ 최신 데스크톱 설치본 .exe 복사 완료!', colors.green);
     } else {
       throw new Error('release 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.');
     }
