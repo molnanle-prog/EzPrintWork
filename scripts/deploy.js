@@ -51,7 +51,7 @@ function copyFolderSync(from, to) {
 
 async function main() {
   const currentDir = path.resolve(__dirname, '..');
-  const homepageDir = path.resolve(currentDir, '..', '..', 'ez-hub-homepage');
+  const homepageDir = path.resolve(currentDir, '..', 'ez-hub-homepage');
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const distDir = path.join(currentDir, 'dist');
 
