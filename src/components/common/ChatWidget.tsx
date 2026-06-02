@@ -58,9 +58,11 @@ export const ChatWidget: React.FC = () => {
       const myReceivedMsgs = initialMsgs.filter(m => m.senderId !== currentUser.id && (!m.receiverId || m.receiverId === currentUser.id));
       if (myReceivedMsgs.length > 0) {
         const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
+        const currentStaff = db.getStaff().find(s => s.id === currentUser.id);
+        const dbLastReadId = currentStaff?.lastReadMsgId;
         const lastConfirmedId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
         
-        if (lastMsg.id !== lastConfirmedId) {
+        if (lastMsg.id !== lastConfirmedId && lastMsg.id !== dbLastReadId) {
           // 아직 읽음 확인을 하지 않은 과거 메시지가 오프라인일 때 유입된 것이므로 로그인 즉시 팝업과 띵동 작동!
           setHasUnread(true);
           setNotificationPopup(lastMsg);
@@ -74,6 +76,7 @@ export const ChatWidget: React.FC = () => {
 
     // Polling for new messages (simulate real-time)
     const interval = setInterval(() => {
+      setStaff(db.getStaff()); // 실시간 읽음 처리를 위해 직원 정보 폴링
       const latestMsgs = db.getMessages();
       setMessages(prev => {
         // 1. 이전 메시지 ID 목록을 Set으로 변환하여 매칭 속도 극대화
@@ -89,27 +92,36 @@ export const ChatWidget: React.FC = () => {
           if (myNewReceivedMsgs.length > 0) {
             const lastMsg = myNewReceivedMsgs[myNewReceivedMsgs.length - 1];
 
-            // Determine if the relevant channel is currently open
-            // Global open & Global msg OR DM open & DM msg from sender
-            const isRelevantChannelOpen = isOpen && (
-                (activeChannel === null && !lastMsg.receiverId) || 
-                (activeChannel === lastMsg.senderId)
-            );
-
-            if (!isRelevantChannelOpen) {
-                 setHasUnread(true);
-                 // 확인하지 않은 신규 메시지이므로 긴급 팝업 노출!
-                 setNotificationPopup(lastMsg);
-                 
-                 // Add to Unread Senders Set to blink the list item
-                 if (lastMsg.senderId) {
-                      setUnreadSenders(prevSet => new Set(prevSet).add(lastMsg.senderId));
-                 }
-            }
+            // 최초 로드 시 지연되어 들어온 기존 메시지인지 필터링 (DB 및 로컬 스토리지 읽음 기록 비교)
+            const currentStaff = db.getStaff().find(s => s.id === currentUser?.id);
+            const dbLastReadId = currentStaff?.lastReadMsgId;
+            const localLastReadId = currentUser ? localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`) : null;
             
-            // 신규 실시간 메시지가 왔으므로 띵동 소리 재생!
-            if (soundEnabled) {
-               audioRef.current?.play().catch(e => console.log('Audio play failed', e));
+            const isAlreadyRead = (lastMsg.id === dbLastReadId) || (lastMsg.id === localLastReadId);
+
+            if (!isAlreadyRead) {
+                // Determine if the relevant channel is currently open
+                // Global open & Global msg OR DM open & DM msg from sender
+                const isRelevantChannelOpen = isOpen && (
+                    (activeChannel === null && !lastMsg.receiverId) || 
+                    (activeChannel === lastMsg.senderId)
+                );
+
+                if (!isRelevantChannelOpen) {
+                     setHasUnread(true);
+                     // 확인하지 않은 신규 메시지이므로 긴급 팝업 노출!
+                     setNotificationPopup(lastMsg);
+                     
+                     // Add to Unread Senders Set to blink the list item
+                     if (lastMsg.senderId) {
+                          setUnreadSenders(prevSet => new Set(prevSet).add(lastMsg.senderId));
+                     }
+                }
+                
+                // 신규 실시간 메시지가 왔으므로 띵동 소리 재생!
+                if (soundEnabled) {
+                   audioRef.current?.play().catch(e => console.log('Audio play failed', e));
+                }
             }
           }
         }
