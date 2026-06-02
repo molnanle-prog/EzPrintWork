@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, getErrorMessage } from '../../services/dataService';
 import { Job, AdminInstruction, Priority, Staff, JobStatusDefinition } from '../../types';
-import { AlertCircle, Clock, Plus, Loader2 } from 'lucide-react';
+import { AlertCircle, Clock, Plus, Loader2, Tv } from 'lucide-react';
 import { JobStatusItem } from './JobStatusItem';
 import { InstructionPanel } from './InstructionPanel';
 import { useAuth } from '../../contexts/AuthContext';
@@ -26,6 +26,18 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [contactingJob, setContactingJob] = useState<Job | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
+  const [isTvMode, setIsTvMode] = useState<boolean>(() => {
+    return localStorage.getItem('ezprint_tv_mode') === 'true';
+  });
+
+  useEffect(() => {
+    const handleTvModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      setIsTvMode(customEvent.detail.isTvMode);
+    };
+    window.addEventListener('ezprint-tv-mode-change', handleTvModeChange);
+    return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
+  }, []);
 
   const loadData = () => {
     // Performance Optimization: Only load Active Jobs for Dashboard
@@ -129,6 +141,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
         {/* Main Area: Job Status Board */}
       <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
         {/* Header */}
+        {!isTvMode && (
         <div className="p-2 lg:p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850 flex justify-between items-center flex-none">
           <div className="flex items-center gap-4">
             <div>
@@ -149,6 +162,37 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
                   <span>진행: {jobs.filter(j => j.status !== 'DELIVERY').length}</span>
                </div>
              </div>
+
+             <button
+               onClick={() => {
+                 const nextVal = !isTvMode;
+                 setIsTvMode(nextVal);
+                 localStorage.setItem('ezprint_tv_mode', String(nextVal));
+                 window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
+                 
+                 if (nextVal) {
+                   if (document.documentElement.requestFullscreen) {
+                     document.documentElement.requestFullscreen().catch((err) => {
+                       console.log("전체화면 진입 실패:", err);
+                     });
+                   }
+                 } else {
+                   if (document.fullscreenElement && document.exitFullscreen) {
+                     document.exitFullscreen().catch((err) => {
+                       console.log("전체화면 해제 실패:", err);
+                     });
+                   }
+                 }
+               }}
+               className={`hidden md:flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition-all border select-none hover:scale-105 active:scale-95 shadow-md
+                 ${isTvMode 
+                   ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-500/40 hover:bg-purple-700' 
+                   : 'bg-purple-900 dark:bg-purple-950 border-purple-800 dark:border-purple-900 text-white hover:bg-purple-800 dark:hover:bg-purple-900 hover:border-purple-500'}`}
+               title="대형 화면용 모니터링 모드로 전환합니다"
+             >
+               <Tv size={14} className={isTvMode ? "text-white animate-pulse" : "text-purple-300"} />
+               <span>모니터링 모드</span>
+             </button>
              
              <button 
                onClick={() => setIsCreatingJob(true)}
@@ -161,6 +205,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
              </button>
           </div>
         </div>
+        )}
 
         {/* List Content */}
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-slate-50/50 dark:bg-slate-900/50 custom-scrollbar">
@@ -196,6 +241,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
       </div>
 
       {/* Side Panel: Admin Instructions - Hidden on Mobile */}
+      {!isTvMode && (
       <div className="hidden lg:flex w-full lg:w-80 xl:w-96 flex-col gap-6 flex-none pb-24 lg:pb-24 transition-all duration-300">
         <InstructionPanel 
           instructions={instructions} 
@@ -203,6 +249,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
           onDelete={deleteInstruction} 
         />
       </div>
+      )}
     </div>
 
       {selectedJob && (
@@ -231,6 +278,27 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
           job={contactingJob} 
           onClose={() => setContactingJob(null)} 
         />
+      )}
+
+      {isTvMode && (
+        <button
+          onClick={() => {
+            setIsTvMode(false);
+            localStorage.setItem('ezprint_tv_mode', 'false');
+            window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
+            
+            if (document.fullscreenElement && document.exitFullscreen) {
+              document.exitFullscreen().catch((err) => {
+                console.log("전체화면 해제 실패:", err);
+              });
+            }
+          }}
+          className="fixed top-3 right-[10%] md:right-[15%] z-[9999] flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-bold backdrop-blur-md"
+          title="일반 화면으로 복원 (모니터링 모드 종료)"
+        >
+          <Tv size={13} className="text-purple-400 animate-pulse" />
+          <span>모니터링 끄기</span>
+        </button>
       )}
     </div>
   );

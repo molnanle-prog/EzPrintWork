@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { db, getHolidayName } from '../../services/dataService';
 import { Job, Staff, StaffLeave, Priority, JobStatusDefinition, PaymentStatus } from '../../types';
-import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, Calendar as CalendarIcon, CheckCircle2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, Calendar as CalendarIcon, CheckCircle2, Tv } from 'lucide-react';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { LeaveModal } from './LeaveModal';
 import { useDialog } from '../../contexts/DialogContext';
@@ -57,6 +57,18 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const { tenantPlan } = useAuth();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [isTvMode, setIsTvMode] = useState<boolean>(() => {
+    return localStorage.getItem('ezprint_tv_mode') === 'true';
+  });
+
+  useEffect(() => {
+    const handleTvModeChange = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      setIsTvMode(customEvent.detail.isTvMode);
+    };
+    window.addEventListener('ezprint-tv-mode-change', handleTvModeChange);
+    return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
+  }, []);
 
   const loadData = () => {
     // Load ample range to cover overlap
@@ -388,49 +400,89 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   return (
     <>
       <div className="h-full flex flex-col bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
-        <div className="p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between bg-slate-50 dark:bg-slate-850 flex-none">
-          <div>
-            <h2 className="text-xl md:text-2xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-              <CalendarIcon className="text-blue-600 dark:text-blue-400" />
+        {isTvMode ? (
+          <div className="p-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-center bg-slate-50 dark:bg-slate-850 flex-none relative">
+            <h2 className="text-xl md:text-3xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-3">
+              <CalendarIcon className="text-blue-600 dark:text-blue-400" size={28} />
               {currentDate.getFullYear()}년 {currentDate.getMonth() + 1}월
             </h2>
-            <div className="hidden md:flex items-center gap-3 mt-1 text-sm text-slate-500 dark:text-slate-400">
-               <div className="flex items-center gap-1">
-                 <div className="w-2 h-2 rounded-full bg-red-500"></div> <span>일요일</span>
-               </div>
-               <div className="flex items-center gap-1">
-                 <div className="w-2 h-2 rounded-full bg-blue-500"></div> <span>토요일</span>
-               </div>
-               <div className="flex items-center gap-1 ml-2">
-                 <div className="w-3 h-3 rounded bg-purple-100 dark:bg-purple-900 border border-purple-300 dark:border-purple-700"></div> <span>휴가</span>
-               </div>
+          </div>
+        ) : (
+          <div className="p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between bg-slate-50 dark:bg-slate-850 flex-none">
+            <div>
+              <h2 className="text-xl md:text-2xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <CalendarIcon className="text-blue-600 dark:text-blue-400" />
+                {currentDate.getFullYear()}년 {currentDate.getMonth() + 1}월
+              </h2>
+              <div className="hidden md:flex items-center gap-3 mt-1 text-sm text-slate-500 dark:text-slate-400">
+                 <div className="flex items-center gap-1">
+                   <div className="w-2 h-2 rounded-full bg-red-500"></div> <span>일요일</span>
+                 </div>
+                 <div className="flex items-center gap-1">
+                   <div className="w-2 h-2 rounded-full bg-blue-500"></div> <span>토요일</span>
+                 </div>
+                 <div className="flex items-center gap-1 ml-2">
+                   <div className="w-3 h-3 rounded bg-purple-100 dark:bg-purple-900 border border-purple-300 dark:border-purple-700"></div> <span>휴가</span>
+                 </div>
+              </div>
+            </div>
+            
+            <div className="flex gap-1 md:gap-2 items-center">
+              <div className="hidden xl:flex gap-2 text-xs md:text-sm font-medium mr-2">
+                 <div className="flex items-center gap-1.5 px-2 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800">
+                    <AlertCircle size={14} />
+                    <span>긴급: {activeJobsStats.filter(j => j.priority !== Priority.NORMAL).length}</span>
+                 </div>
+                 <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800">
+                    <Clock size={14} />
+                    <span>진행: {activeJobsStats.filter(j => j.status !== 'DELIVERY').length}</span>
+                 </div>
+              </div>
+              
+              <button
+                onClick={() => {
+                  const nextVal = !isTvMode;
+                  setIsTvMode(nextVal);
+                  localStorage.setItem('ezprint_tv_mode', String(nextVal));
+                  window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
+                  
+                  if (nextVal) {
+                    if (document.documentElement.requestFullscreen) {
+                      document.documentElement.requestFullscreen().catch((err) => {
+                        console.log("전체화면 진입 실패:", err);
+                      });
+                    }
+                  } else {
+                    if (document.fullscreenElement && document.exitFullscreen) {
+                      document.exitFullscreen().catch((err) => {
+                        console.log("전체화면 해제 실패:", err);
+                      });
+                    }
+                  }
+                }}
+                className={`hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border select-none hover:scale-105 active:scale-95 shadow-md mr-2
+                  ${isTvMode 
+                    ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-500/40 hover:bg-purple-700' 
+                    : 'bg-purple-900 dark:bg-purple-950 border-purple-800 dark:border-purple-900 text-white hover:bg-purple-800 dark:hover:bg-purple-900 hover:border-purple-500'}`}
+                title="대형 화면용 모니터링 모드로 전환합니다"
+              >
+                <Tv size={14} className={isTvMode ? "text-white animate-pulse" : "text-purple-300"} />
+                <span className="hidden xl:inline">모니터링 모드</span>
+              </button>
+
+              <button onClick={() => setIsCreatingJob(true)} className="mr-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 shadow-sm transition-all hover:scale-105">
+                 <Plus size={16} /><span className="hidden sm:inline">작업 등록</span>
+               </button>
+
+              <button onClick={() => setShowLeaveModal(true)} className="mr-2 px-3 py-1.5 bg-purple-600 text-white text-xs md:text-sm font-bold rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1">
+                  <Palmtree size={16} /><span className="hidden sm:inline">휴가 등록</span>
+              </button>
+              <button onClick={prevMonth} className="p-1.5 md:p-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 shadow-sm"><ChevronLeft size={20} /></button>
+              <button onClick={goToday} className="px-3 py-1.5 md:px-4 md:py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 font-bold shadow-sm">오늘</button>
+              <button onClick={nextMonth} className="p-1.5 md:p-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 shadow-sm"><ChevronRight size={20} /></button>
             </div>
           </div>
-          
-          <div className="flex gap-1 md:gap-2 items-center">
-            <div className="hidden xl:flex gap-2 text-xs md:text-sm font-medium mr-2">
-               <div className="flex items-center gap-1.5 px-2 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800">
-                  <AlertCircle size={14} />
-                  <span>긴급: {activeJobsStats.filter(j => j.priority !== Priority.NORMAL).length}</span>
-               </div>
-               <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800">
-                  <Clock size={14} />
-                  <span>진행: {activeJobsStats.filter(j => j.status !== 'DELIVERY').length}</span>
-               </div>
-            </div>
-
-            <button onClick={() => setIsCreatingJob(true)} className="mr-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 shadow-sm transition-all hover:scale-105">
-               <Plus size={16} /><span className="hidden sm:inline">작업 등록</span>
-             </button>
-
-            <button onClick={() => setShowLeaveModal(true)} className="mr-2 px-3 py-1.5 bg-purple-600 text-white text-xs md:text-sm font-bold rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1">
-                <Palmtree size={16} /><span className="hidden sm:inline">휴가 등록</span>
-            </button>
-            <button onClick={prevMonth} className="p-1.5 md:p-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 shadow-sm"><ChevronLeft size={20} /></button>
-            <button onClick={goToday} className="px-3 py-1.5 md:px-4 md:py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 font-bold shadow-sm">오늘</button>
-            <button onClick={nextMonth} className="p-1.5 md:p-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 shadow-sm"><ChevronRight size={20} /></button>
-          </div>
-        </div>
+        )}
         
         <div className="flex-1 overflow-hidden flex flex-col">
           <div className="grid grid-cols-7 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex-none">
@@ -477,6 +529,27 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
             onSave={() => { setShowLeaveModal(false); loadData(); }}
             staffList={staff}
         />
+      )}
+
+      {isTvMode && (
+        <button
+          onClick={() => {
+            setIsTvMode(false);
+            localStorage.setItem('ezprint_tv_mode', 'false');
+            window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
+            
+            if (document.fullscreenElement && document.exitFullscreen) {
+              document.exitFullscreen().catch((err) => {
+                console.log("전체화면 해제 실패:", err);
+              });
+            }
+          }}
+          className="fixed top-3 right-[10%] md:right-[15%] z-[9999] flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-bold backdrop-blur-md"
+          title="일반 화면으로 복원 (모니터링 모드 종료)"
+        >
+          <Tv size={13} className="text-purple-400 animate-pulse" />
+          <span>모니터링 끄기</span>
+        </button>
       )}
     </>
   );

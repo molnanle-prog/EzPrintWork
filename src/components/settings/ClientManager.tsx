@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash } from 'lucide-react';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
 
@@ -460,7 +460,7 @@ export const ClientManager: React.FC = () => {
                                     </div>
 
                                     {/* 담당자 중 선택하는 경우 */}
-                                    {formData.sendSmsOnComplete !== false && formData.contacts && formData.contacts.length > 0 && 
+                                    {(formData.sendSmsOnComplete as boolean | undefined) !== false && formData.contacts && formData.contacts.length > 0 && 
                                      formData.customSmsNumber && 
                                      formData.contacts.some(c => c.phone === formData.customSmsNumber) && (
                                         <div className="space-y-1">
@@ -480,7 +480,7 @@ export const ClientManager: React.FC = () => {
                                     )}
 
                                     {/* 직접 입력하는 경우 */}
-                                    {formData.sendSmsOnComplete !== false && 
+                                    {(formData.sendSmsOnComplete as boolean | undefined) !== false && 
                                      formData.customSmsNumber !== undefined && 
                                      formData.customSmsNumber !== '' && 
                                      (!formData.contacts || !formData.contacts.some(c => c.phone === formData.customSmsNumber)) && (
