@@ -6,7 +6,7 @@ import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
-const DEV_BYPASS_LOGIN = false;
+const DEV_BYPASS_LOGIN = true;
 
 interface AuthContextType {
   firebaseUser: User | null;
