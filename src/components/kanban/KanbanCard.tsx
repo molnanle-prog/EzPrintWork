@@ -6,6 +6,7 @@ import {
   FolderOpen, Play, CheckCircle, ShieldAlert 
 } from 'lucide-react';
 import { db } from '../../services/dataService';
+import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
 
 interface KanbanCardProps {
@@ -36,6 +37,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   isTvMode = false
 }) => {
   const [isDragOver, setIsDragOver] = useState(false);
+  const { theme } = useTheme();
   const [isHovered, setIsHovered] = useState(false);
 
   // Calculate Days Remaining
@@ -313,39 +315,44 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   };
 
   // --- D-Day별 박스 테두리 색상 4단계 및 배경 스타일 결정 ---
-  let borderAndBgClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
+  let borderAndBgClass = theme === 'trello'
+    ? "bg-white text-[#172b4d] border-transparent shadow-[0_1px_1px_rgba(9,30,66,0.25),0_0_1px_rgba(9,30,66,0.31)]"
+    : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
   
-  if (isMyJob) {
-    borderAndBgClass = "bg-white dark:bg-slate-800 border-blue-400 dark:border-blue-600 ring-2 ring-blue-100 dark:ring-blue-900/40 shadow-blue-100 dark:shadow-none";
-  } 
-  
-  // 완료 상태가 아닐 때 D-Day 단계별 테두리 및 꽉 찬 배경 색상 강제 지정 (4단계 분기)
-  if (!isDone) {
-    if (daysRemaining <= 0) {
-      // 1단계: 당일 이하 (진한 빨간색 가득 채운 박스 + 빨간 링)
-      borderAndBgClass = "bg-red-200 dark:bg-red-950/70 border-red-500 dark:border-red-400 ring-2 ring-red-200 dark:ring-red-900/60 shadow-md";
-    } else if (daysRemaining === 1) {
-      // 2단계: 1일 이하 (진한 주황색 가득 채운 박스 + 주황 링)
-      borderAndBgClass = "bg-orange-200 dark:bg-orange-950/70 border-orange-500 dark:border-orange-400 ring-1 ring-orange-200 dark:ring-orange-950/20 shadow-sm";
-    } else if (daysRemaining <= 3) {
-      // 3단계: 3일 이하 (진한 앰버색 가득 채운 박스)
-      borderAndBgClass = "bg-amber-200 dark:bg-amber-950/50 border-amber-400 dark:border-amber-500 shadow-sm";
-    } else if (daysRemaining <= 7) {
-      // 4단계: 7일 이하 (일주일전 - 연한 파란색 가득 채운 박스)
-      borderAndBgClass = "bg-blue-200 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700 shadow-sm";
-    } else {
-      // 일주일보다 더 남으면 기본 테두리 (isMyJob 상태 유지)
-      if (!isMyJob) {
-        borderAndBgClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
+  if (theme !== 'trello') {
+    if (isMyJob) {
+      borderAndBgClass = "bg-white dark:bg-slate-800 border-blue-400 dark:border-blue-600 ring-2 ring-blue-100 dark:ring-blue-900/40 shadow-blue-100 dark:shadow-none";
+    } 
+    
+    // 완료 상태가 아닐 때 D-Day 단계별 테두리 및 꽉 찬 배경 색상 강제 지정 (4단계 분기)
+    if (!isDone) {
+      if (daysRemaining <= 0) {
+        // 1단계: 당일 이하 (진한 빨간색 가득 채운 박스 + 빨간 링)
+        borderAndBgClass = "bg-red-200 dark:bg-red-950/70 border-red-500 dark:border-red-400 ring-2 ring-red-200 dark:ring-red-900/60 shadow-md";
+      } else if (daysRemaining === 1) {
+        // 2단계: 1일 이하 (진한 주황색 가득 채운 박스 + 주황 링)
+        borderAndBgClass = "bg-orange-200 dark:bg-orange-950/70 border-orange-500 dark:border-orange-400 ring-1 ring-orange-200 dark:ring-orange-950/20 shadow-sm";
+      } else if (daysRemaining <= 3) {
+        // 3단계: 3일 이하 (진한 앰버색 가득 채운 박스)
+        borderAndBgClass = "bg-amber-200 dark:bg-amber-950/50 border-amber-400 dark:border-amber-500 shadow-sm";
+      } else if (daysRemaining <= 7) {
+        // 4단계: 7일 이하 (일주일전 - 연한 파란색 가득 채운 박스)
+        borderAndBgClass = "bg-blue-200 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700 shadow-sm";
+      } else {
+        // 일주일보다 더 남으면 기본 테두리 (isMyJob 상태 유지)
+        if (!isMyJob) {
+          borderAndBgClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
+        }
       }
     }
+  
+    // 우선순위가 VERY_URGENT 인 경우 D-Day보다 우선하는 유동 테두리 효과 및 꽉 찬 배경
+    if (job.priority === Priority.VERY_URGENT && !isDone) {
+      borderAndBgClass = `bg-red-200 dark:bg-red-950/30 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} border-red-600 dark:border-red-500 shadow-md ring-2 ring-red-100 dark:ring-red-950/40`;
+    }
+  
+  
   }
-
-  // 우선순위가 VERY_URGENT 인 경우 D-Day보다 우선하는 유동 테두리 효과 및 꽉 찬 배경
-  if (job.priority === Priority.VERY_URGENT && !isDone) {
-    borderAndBgClass = `bg-red-200 dark:bg-red-950/30 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} border-red-600 dark:border-red-500 shadow-md ring-2 ring-red-100 dark:ring-red-950/40`;
-  }
-
   let cardStyleClass = borderAndBgClass;
 
   if (isDragOver) {
@@ -483,10 +490,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
         {/* 2. Title and Client (Enlarged) */}
         <div className="pointer-events-none flex flex-col gap-0.5">
-          <h4 className="font-medium text-slate-800 dark:text-slate-100 text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1" title={job.title}>
+          <h4 className={`font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1 ${theme === "trello" ? "text-[#172b4d] font-semibold" : "text-slate-800 dark:text-slate-100"}`} title={job.title}>
             {job.title}
           </h4>
-          <p className="text-xs text-slate-500 dark:text-slate-400 font-normal leading-tight">{job.clientName}</p>
+          <p className={`text-xs font-normal leading-tight ${theme === "trello" ? "text-[#5e6c84]" : "text-slate-500 dark:text-slate-400"}`}>{job.clientName}</p>
         </div>
 
         {/* 3. Specs & Giant Quantity Box */}
@@ -649,10 +656,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       
       {/* 2. Main Title and Client */}
       <div className="pointer-events-none flex flex-col gap-0.5">
-        <h4 className="font-medium text-slate-800 dark:text-slate-100 text-[15px] lg:text-[16px] leading-snug truncate" title={job.title}>
+        <h4 className={`font-medium text-[15px] lg:text-[16px] leading-snug truncate ${theme === "trello" ? "text-[#172b4d] font-semibold" : "text-slate-800 dark:text-slate-100"}`} title={job.title}>
           {job.title}
         </h4>
-        <p className="text-xs font-normal text-slate-400 dark:text-slate-400 truncate">{job.clientName}</p>
+        <p className={`text-xs font-normal truncate ${theme === "trello" ? "text-[#5e6c84]" : "text-slate-400 dark:text-slate-400"}`}>{job.clientName}</p>
       </div>
 
       {/* 3. 상세 정보 컨테이너 (스펙 그리드, 품목 배지, 담당자/D-day 푸터 통합 아코디언) */}

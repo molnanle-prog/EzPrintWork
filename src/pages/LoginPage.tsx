@@ -4,10 +4,12 @@ import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
 
 export const LoginPage: React.FC = () => {
     const { loginCustomSession } = useAuth();
+    const { theme } = useTheme();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
     const [joinCode, setJoinCode] = useState('');
@@ -41,6 +43,18 @@ export const LoginPage: React.FC = () => {
         // 자동 로그인 유지 설정 복원
         setKeepLoggedIn(keep);
     }, []);
+
+    useEffect(() => {
+        // 로그인 페이지는 테마 모드와 관계없이 항상 오리지널 다크 스타일로 고정
+        const root = document.documentElement;
+        root.classList.remove('light', 'trello');
+        root.classList.add('dark');
+
+        return () => {
+            root.classList.remove('light', 'dark', 'trello');
+            root.classList.add(theme);
+        };
+    }, [theme]);
 
     // 선택회사저장(rememberCompany) 및 자동로그인유지(keepLoggedIn) 선언적 동기화 훅
     // 어떠한 조작 순서(검색 후 클릭 또는 클릭 후 검색)에서도 실시간 연동 및 동기화를 보장합니다.

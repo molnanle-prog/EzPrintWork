@@ -76,7 +76,7 @@ export const NetworkPathPicker: React.FC<NetworkPathPickerProps> = ({ onClose, o
     setTestStatus('checking');
     
     if (isElectron && window.electron) {
-        const exists = await window.electron.checkPath(path);
+        const exists = await window.electron.exists(path);
         if (exists) {
             setTestStatus('success');
             // Auto connect after short delay if success

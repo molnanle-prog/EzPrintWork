@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog } from '../../types';
-import { db, calculateEstimate, formatPhoneNumber, getErrorMessage } from '../../services/dataService';
+import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
+import { db, calculateEstimate, formatPhoneNumber, getErrorMessage, formatJobNumber } from '../../services/dataService';
 import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, ArrowRightCircle, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, FastForward } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
@@ -182,6 +182,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const [editedJob, setEditedJob] = useState<Job>(initialJob);
   const [viewMode, setViewMode] = useState<'summary' | 'edit'>(initialViewMode || (isNew ? 'edit' : 'summary'));
   const [activeTabIdx, setActiveTabIdx] = useState(0); 
+  const [activeInnerTabIdx, setActiveInnerTabIdx] = useState(0);
+  const [showInnerAddMenu, setShowInnerAddMenu] = useState(false);
   
   const [processingOptions, setProcessingOptions] = useState<string[]>([]);
   const [customInputVal, setCustomInputVal] = useState('');
@@ -256,6 +258,82 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
           specs: { ...newSubJobs[activeTabIdx].specs, ...specUpdates } 
       };
       setEditedJob({ ...editedJob, subJobs: newSubJobs });
+  };
+
+  const getFilteredProcessingOptions = () => {
+      const matchedDef = productDefs.find(d => d.name === currentSubJob.type);
+      if (matchedDef && matchedDef.processings && matchedDef.processings.length > 0) {
+          const definedOptions = matchedDef.processings;
+          const checkedOptions = currentSpecs.processing || [];
+          const combined = [...definedOptions];
+          checkedOptions.forEach(opt => {
+              if (processingOptions.includes(opt) && !combined.includes(opt)) {
+                  combined.push(opt);
+              }
+          });
+          return combined;
+      }
+      return processingOptions;
+  };
+
+  const getInnerPages = () => {
+      return currentSpecs.innerPages && currentSpecs.innerPages.length > 0
+          ? currentSpecs.innerPages
+          : [{
+              id: 'inner-1',
+              paperType: currentSpecs.paperTypeInner || '모조지(백색)',
+              paperWeight: currentSpecs.paperWeightInner || '80g',
+              printColor: currentSpecs.printColorInner || '단면 1도(흑백)',
+              pagesCount: '0',
+              hasDivider: false,
+              dividerColor: '',
+              dividerQuantity: ''
+          }];
+  };
+
+  const updateCurrentInner = (innerIdx: number, updates: Partial<InnerPageSpec>) => {
+      const innerPages = getInnerPages();
+      const updated = innerPages.map((ip, idx) => idx === innerIdx ? { ...ip, ...updates } : ip);
+      updateCurrentSpecs({ innerPages: updated });
+  };
+
+  const handleAddInnerPage = (isDivider: boolean = false) => {
+      const innerPages = getInnerPages();
+      const newInner = isDivider 
+          ? {
+              id: `inner-${Date.now()}`,
+              paperType: '간지',
+              paperWeight: '',
+              printColor: '',
+              pagesCount: '',
+              isDivider: true,
+              dividerColor: '백색',
+              dividerQuantity: '1'
+            }
+          : {
+              id: `inner-${Date.now()}`,
+              paperType: '모조지(백색)',
+              paperWeight: '80g',
+              printColor: '단면 1도(흑백)',
+              pagesCount: '0',
+              isDivider: false,
+              dividerColor: '',
+              dividerQuantity: ''
+            };
+      updateCurrentSpecs({
+          innerPages: [...innerPages, newInner]
+      });
+      setActiveInnerTabIdx(innerPages.length);
+  };
+
+  const handleRemoveInnerPage = (idx: number) => {
+      const innerPages = getInnerPages();
+      if (innerPages.length <= 1) return;
+      const filtered = innerPages.filter((_, i) => i !== idx);
+      updateCurrentSpecs({
+          innerPages: filtered
+      });
+      setActiveInnerTabIdx(prev => Math.max(0, prev - 1));
   };
 
   const handleTypeChange = (newType: string) => {
@@ -573,6 +651,18 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     updateCurrentSpecs({ processing: updated });
   };
 
+  const toggleProcessingCover = (option: string) => {
+    const current = currentSpecs.processingCover || [];
+    const updated = current.includes(option) ? current.filter(item => item !== option) : [...current, option];
+    updateCurrentSpecs({ processingCover: updated });
+  };
+
+  const toggleProcessingInner = (option: string) => {
+    const current = currentSpecs.processingInner || [];
+    const updated = current.includes(option) ? current.filter(item => item !== option) : [...current, option];
+    updateCurrentSpecs({ processingInner: updated });
+  };
+
   const handleCustomInputChange = (newVal: string) => {
       setCustomInputVal(newVal);
       const current = currentSpecs.processing || [];
@@ -724,9 +814,9 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   return (
     <>
       <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-        <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl overflow-hidden flex flex-col max-h-[92vh] h-auto">
+        <div className={`bg-white rounded-xl shadow-2xl w-full overflow-hidden flex flex-col transition-all duration-300 ${viewMode === 'summary' ? 'max-w-6xl h-[65vh] max-h-[65vh]' : 'max-w-6xl h-[85vh] max-h-[85vh]'}`}>
           {viewMode === 'summary' ? (
-            <div className="flex flex-col h-full bg-slate-50">
+            <div className="flex flex-col h-full bg-slate-50 min-h-0">
                 {/* Header */}
                 <div className="py-3 px-5 border-b border-slate-200 flex justify-between items-start bg-white flex-none">
                     <div className="flex items-start gap-4 w-full max-w-3xl">
@@ -745,6 +835,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                 {editedJob.clientPhone && <div className="flex items-center gap-1.5"><Phone size={16} className="text-slate-400" /> <span>{editedJob.clientPhone}</span></div>}
                             </div>
                         </div>
+                    </div>
+                    <div className="flex items-center gap-2 self-center mr-2 ml-auto shrink-0 animate-in fade-in duration-300">
+                        <span className="text-xs font-bold text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded border border-slate-300 font-mono">
+                            작업번호: {formatJobNumber(editedJob)}
+                        </span>
                     </div>
                     <button onClick={onClose} className="p-2 hover:bg-slate-100 rounded-full transition-colors shrink-0"><X size={28} className="text-slate-400 hover:text-slate-600" /></button>
                 </div>
@@ -786,7 +881,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                     <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Layers size={20}/> 제작 사양 상세</h3>
                     <div className="space-y-4">
                         {(editedJob.subJobs || []).map((subJob, idx) => {
-                            const isSubBooklet = subJob.type.includes('책자') || subJob.type.includes('카탈로그') || subJob.type.includes('카달로그');
+                            const isSubBooklet = subJob.type?.includes('책자') || subJob.type?.includes('카탈로그') || subJob.type?.includes('카달로그') || false;
                             return (
                                 <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                                     <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
@@ -807,14 +902,52 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                                         <li><span className="text-slate-400 inline-block w-16">규격:</span> {subJob.specs.size || '-'}</li>
                                                         <li><span className="text-slate-400 inline-block w-16">용지:</span> {subJob.specs.paperType || '-'} {subJob.specs.paperWeight || ''}</li>
                                                         <li><span className="text-slate-400 inline-block w-16">도수:</span> {subJob.specs.printColor || '-'}</li>
+                                                        <li><span className="text-slate-400 inline-block w-16">표지날개:</span> {subJob.specs.hasCoverWing ? <span className="text-red-600 font-bold">날개 표지 있음</span> : '없음'}</li>
                                                     </ul>
                                                 </div>
                                                 <div>
-                                                    <h5 className="text-xs font-bold text-slate-600 mb-2 flex items-center gap-1"><FileText size={14}/> 내지</h5>
-                                                    <ul className="space-y-1.5 text-sm text-slate-700">
-                                                        <li><span className="text-slate-400 inline-block w-16">용지:</span> {subJob.specs.paperTypeInner || '-'} {subJob.specs.paperWeightInner || ''}</li>
-                                                        <li><span className="text-slate-400 inline-block w-16">도수:</span> {subJob.specs.printColorInner || '-'}</li>
-                                                    </ul>
+                                                    <h5 className="text-xs font-bold text-slate-600 mb-2 flex items-center gap-1"><FileText size={14}/> 내지 사양</h5>
+                                                    <div className="space-y-2">
+                                                        {(() => {
+                                                            let innerCounter = 0;
+                                                            let dividerCounter = 0;
+                                                            return (subJob.specs.innerPages && subJob.specs.innerPages.length > 0 
+                                                              ? subJob.specs.innerPages 
+                                                              : [{
+                                                                  id: 'inner-1',
+                                                                  paperType: subJob.specs.paperTypeInner || '-',
+                                                                  paperWeight: subJob.specs.paperWeightInner || '',
+                                                                  printColor: subJob.specs.printColorInner || '-',
+                                                                  pagesCount: '0'
+                                                                }]
+                                                            ).map((ip: any, idx: number) => {
+                                                                if (ip.isDivider) {
+                                                                    dividerCounter++;
+                                                                    return (
+                                                                        <div key={ip.id || idx} className="bg-yellow-50/50 p-2 rounded-lg border border-yellow-200 text-xs">
+                                                                            <p className="font-bold text-amber-700 mb-1">간지 {dividerCounter}</p>
+                                                                            <ul className="space-y-1 text-slate-700">
+                                                                                <li><span className="text-slate-400 inline-block w-14">간지 색상:</span> {ip.dividerColor || '지정안함'}</li>
+                                                                                <li><span className="text-slate-400 inline-block w-14">간지 페이지:</span> {ip.dividerQuantity || '0'}장</li>
+                                                                            </ul>
+                                                                        </div>
+                                                                    );
+                                                                } else {
+                                                                    innerCounter++;
+                                                                    return (
+                                                                        <div key={ip.id || idx} className="bg-slate-50 p-2 rounded-lg border border-slate-200 text-xs">
+                                                                            <p className="font-bold text-blue-700 mb-1">내지 {innerCounter}</p>
+                                                                            <ul className="space-y-1 text-slate-700">
+                                                                                <li><span className="text-slate-400 inline-block w-14">용지:</span> {ip.paperType} {ip.paperWeight}</li>
+                                                                                <li><span className="text-slate-400 inline-block w-14">도수:</span> {ip.printColor}</li>
+                                                                                {ip.pagesCount && ip.pagesCount !== '0' && <li><span className="text-slate-400 inline-block w-14">페이지수:</span> {ip.pagesCount}p</li>}
+                                                                            </ul>
+                                                                        </div>
+                                                                    );
+                                                                }
+                                                            });
+                                                        })()}
+                                                    </div>
                                                 </div>
                                             </div>
                                         ) : (
@@ -825,14 +958,45 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                             </ul>
                                         )}
                                         
-                                        {subJob.specs.processing && subJob.specs.processing.length > 0 && (
-                                            <div className="mb-4">
-                                                <h5 className="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1"><Scissors size={14}/> 후가공</h5>
-                                                <div className="flex flex-wrap gap-1.5">
-                                                    {subJob.specs.processing.map(p => (
-                                                        <span key={p} className="bg-slate-100 text-slate-700 text-xs px-2.5 py-1 rounded border border-slate-200">{p}</span>
-                                                    ))}
-                                                </div>
+                                        {(((subJob.specs?.processing?.length || 0) > 0) || 
+                                          (isSubBooklet && ((subJob.specs?.processingCover?.length || 0) > 0)) || 
+                                          (isSubBooklet && ((subJob.specs?.processingInner?.length || 0) > 0))) && (
+                                            <div className="mb-4 space-y-2">
+                                                <h5 className="text-xs font-bold text-slate-500 flex items-center gap-1"><Scissors size={14}/> 후가공</h5>
+                                                {isSubBooklet ? (
+                                                    <div className="space-y-1 text-xs">
+                                                        {subJob.specs?.processing && subJob.specs.processing.length > 0 && (
+                                                            <div>
+                                                                <span className="text-slate-400 inline-block w-20 font-bold">제본/공통:</span>
+                                                                <span className="inline-flex flex-wrap gap-1">
+                                                                    {subJob.specs.processing.map(p => <span key={p} className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded border border-slate-200">{p}</span>)}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                        {subJob.specs?.processingCover && subJob.specs.processingCover.length > 0 && (
+                                                            <div>
+                                                                <span className="text-blue-500 inline-block w-20 font-bold">표지 후가공:</span>
+                                                                <span className="inline-flex flex-wrap gap-1">
+                                                                    {subJob.specs.processingCover.map(p => <span key={p} className="bg-blue-50 text-blue-700 px-2 py-0.5 rounded border border-blue-200">{p}</span>)}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                        {subJob.specs?.processingInner && subJob.specs.processingInner.length > 0 && (
+                                                            <div>
+                                                                <span className="text-emerald-500 inline-block w-20 font-bold">내지 후가공:</span>
+                                                                <span className="inline-flex flex-wrap gap-1">
+                                                                    {subJob.specs.processingInner.map(p => <span key={p} className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-200">{p}</span>)}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {subJob.specs.processing.map(p => (
+                                                            <span key={p} className="bg-slate-100 text-slate-700 text-xs px-2.5 py-1 rounded border border-slate-200">{p}</span>
+                                                        ))}
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
 
@@ -870,7 +1034,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                 </div>
             </div>
           ) : (
-            <div className="flex flex-col h-full bg-slate-50">
+            <div className="flex flex-col h-full bg-slate-50 min-h-0">
               {/* Header - 패딩 축소 및 레이아웃 정리 */}
               <div className="py-1.5 px-4 border-b border-slate-200 flex justify-between items-start bg-slate-50 flex-none">
                 <div className="flex items-start gap-3 w-full max-w-3xl">
@@ -931,11 +1095,16 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                     </div>
                   </div>
                 </div>
+                <div className="flex items-center gap-2 self-center mr-2 ml-auto shrink-0">
+                    <span className="text-xs font-bold text-slate-500 bg-slate-200/60 px-2 py-0.5 rounded border border-slate-300 font-mono">
+                        작업번호: {formatJobNumber(editedJob)}
+                    </span>
+                </div>
                 <button onClick={onClose} className="p-1.5 hover:bg-slate-200 rounded-full transition-colors shrink-0"><X size={24} className="text-slate-400 hover:text-slate-600" /></button>
               </div>
 
               {/* Main Body - 개별 독립 스크롤을 보장하여 좌우 컬럼 세로 정렬을 완벽하게 동기화 */}
-              <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0 max-h-[72vh] bg-slate-50 lg:items-stretch">
+              <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0 bg-slate-50 lg:items-stretch">
                 {/* Left Column: Sidebar - items-stretch에 의해 우측과 정확히 동일한 높이를 가지도록 self-stretch 설정 */}
                 <div className="w-full lg:w-[45%] bg-slate-50 border-r border-slate-200 flex flex-col lg:self-stretch h-auto shrink-0 min-h-0">
                   
@@ -1171,31 +1340,178 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                             <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500"><svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg></div>
                                         </div>
                                     </div>
+                                    <div className="space-y-0.5 flex flex-col justify-end">
+                                        <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer h-[34px] pb-1 select-none">
+                                            <input 
+                                                type="checkbox" 
+                                                checked={currentSpecs.hasCoverWing || false} 
+                                                onChange={(e) => updateCurrentSpecs({ hasCoverWing: e.target.checked })} 
+                                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-4 h-4" 
+                                            />
+                                            <span className="text-sm font-bold text-slate-700">날개 표지 있음 (표지 날개)</span>
+                                        </label>
+                                    </div>
                                 </div>
                             </div>
 
-                            {/* Inner Section */}
-                            <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 shadow-sm relative">
-                                <h4 className="text-sm font-bold text-slate-700 mb-1.5 flex items-center gap-2">
-                                    <FileText size={16} /> 내지 (Inner Pages)
-                                </h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                    <SpecSelect label="용지 종류" subLabel="내지" value={currentSpecs.paperTypeInner || ''} options={currentDef.paperTypes} onChange={(val: string) => updateCurrentSpecs({ paperTypeInner: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperTypes', val)} icon={<File size={16} />} />
-                                    <SpecSelect label="평량 (두께)" subLabel="내지" value={currentSpecs.paperWeightInner || ''} options={currentDef.paperWeights} onChange={(val: string) => updateCurrentSpecs({ paperWeightInner: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperWeights', val)} icon={<Layers size={16} />} suffix="g" />
-                                    <div className="space-y-0.5">
-                                        <div className="h-5 flex items-center justify-between">
-                                            <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
-                                                <Palette size={16}/> 인쇄 도수 <span className="text-[10px] text-slate-400 font-normal ml-1">(내지)</span>
-                                            </label>
-                                        </div>
+                            {/* Inner Section (Multi-inner-page Tabbed UI) */}
+                            <div className="bg-slate-50 p-2.5 rounded-lg border border-slate-200 shadow-sm relative flex flex-col">
+                                <div className="flex justify-between items-center mb-1.5 border-b border-slate-200 pb-1.5 flex-wrap gap-2">
+                                    <h4 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+                                        <FileText size={16} /> 내지 사양 (Inner Pages)
+                                    </h4>
+                                    <div className="flex items-center gap-1 relative">
+                                        {(() => {
+                                            const innerPages = getInnerPages();
+                                            let innerCount = 0;
+                                            let dividerCount = 0;
+                                            return innerPages.map((ip, idx) => {
+                                                let label = '';
+                                                if (ip.isDivider) {
+                                                    dividerCount++;
+                                                    label = `간지 ${dividerCount}`;
+                                                } else {
+                                                    innerCount++;
+                                                    label = `내지 ${innerCount}`;
+                                                }
+                                                return (
+                                                    <button
+                                                        key={ip.id || idx}
+                                                        type="button"
+                                                        onClick={() => setActiveInnerTabIdx(idx)}
+                                                        className={`px-2.5 py-1 rounded text-xs font-bold border transition-colors flex items-center gap-1 ${activeInnerTabIdx === idx ? 'bg-blue-600 text-white border-blue-600 shadow-sm' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-100'}`}
+                                                    >
+                                                        <span>{label}</span>
+                                                        {innerPages.length > 1 && (
+                                                            <span 
+                                                                onClick={(e) => { e.stopPropagation(); handleRemoveInnerPage(idx); }}
+                                                                className="hover:text-red-300 transition-colors p-0.5 rounded-full hover:bg-black/10"
+                                                            >
+                                                                ✕
+                                                            </span>
+                                                        )}
+                                                    </button>
+                                                );
+                                            });
+                                        })()}
+                                        
+                                        {/* 추가 버튼 및 드롭다운 메뉴 */}
                                         <div className="relative">
-                                            <select value={currentSpecs.printColorInner || '단면 1도(흑백)'} onChange={(e) => updateCurrentSpecs({ printColorInner: e.target.value })} className={`${inputClass} cursor-pointer hover:bg-slate-50 appearance-none`}>
-                                                {PRINT_COLORS.map(o => <option key={o} value={o}>{o}</option>)}
-                                            </select>
-                                            <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500"><svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg></div>
+                                            <button
+                                                type="button"
+                                                onClick={() => setShowInnerAddMenu(!showInnerAddMenu)}
+                                                className="px-2 py-1 text-xs font-bold text-slate-600 bg-white border border-slate-200 rounded hover:bg-blue-50 hover:text-blue-600 hover:border-blue-200 transition-all flex items-center gap-0.5"
+                                            >
+                                                + 추가
+                                            </button>
+                                            {showInnerAddMenu && (
+                                                <>
+                                                    {/* Backdrop to close menu */}
+                                                    <div 
+                                                        className="fixed inset-0 z-30" 
+                                                        onClick={() => setShowInnerAddMenu(false)}
+                                                    />
+                                                    <div className="absolute right-0 mt-1 w-28 bg-white border border-slate-200 rounded-lg shadow-lg py-1 z-40 animate-in fade-in slide-in-from-top-1 duration-150">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                handleAddInnerPage(false);
+                                                                setShowInnerAddMenu(false);
+                                                            }}
+                                                            className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 font-semibold"
+                                                        >
+                                                            내지 추가
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                handleAddInnerPage(true);
+                                                                setShowInnerAddMenu(false);
+                                                            }}
+                                                            className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-100 font-semibold border-t border-slate-100"
+                                                        >
+                                                            간지 추가
+                                                        </button>
+                                                    </div>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
                                 </div>
+
+                                {getInnerPages().map((ip, idx) => {
+                                    if (idx !== activeInnerTabIdx) return null;
+                                    
+                                    const isPageDivider = ip.isDivider;
+                                    
+                                    if (isPageDivider) {
+                                        return (
+                                            <div key={ip.id || idx} className="grid grid-cols-1 md:grid-cols-2 gap-2 animate-in fade-in duration-200 bg-amber-50/30 p-2.5 rounded-lg border border-amber-200/60 mt-1">
+                                                <div className="space-y-0.5">
+                                                    <div className="h-5 flex items-center">
+                                                        <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                                            간지 색상
+                                                        </label>
+                                                    </div>
+                                                    <input 
+                                                        type="text" 
+                                                        value={ip.dividerColor || ''} 
+                                                        onChange={(e) => updateCurrentInner(idx, { dividerColor: e.target.value })} 
+                                                        placeholder="예: 백색, 황색, 청색" 
+                                                        className={inputClass}
+                                                    />
+                                                </div>
+                                                <div className="space-y-0.5">
+                                                    <div className="h-5 flex items-center">
+                                                        <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                                            간지 페이지 (수량)
+                                                        </label>
+                                                    </div>
+                                                    <input 
+                                                        type="text" 
+                                                        value={ip.dividerQuantity || ''} 
+                                                        onChange={(e) => updateCurrentInner(idx, { dividerQuantity: e.target.value })} 
+                                                        placeholder="예: 2장, 4" 
+                                                        className={inputClass}
+                                                    />
+                                                </div>
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <div key={ip.id || idx} className="grid grid-cols-1 md:grid-cols-2 gap-2 animate-in fade-in duration-200">
+                                            <SpecSelect label="용지 종류" subLabel={`내지 ${idx + 1}`} value={ip.paperType} options={currentDef.paperTypes} onChange={(val: string) => updateCurrentInner(idx, { paperType: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperTypes', val)} icon={<File size={16} />} />
+                                            <SpecSelect label="평량 (두께)" subLabel={`내지 ${idx + 1}`} value={ip.paperWeight} options={currentDef.paperWeights} onChange={(val: string) => updateCurrentInner(idx, { paperWeight: val })} onAdd={(val: string) => db.registerProductOption(currentSubJob.type, 'paperWeights', val)} icon={<Layers size={16} />} suffix="g" />
+                                            <div className="space-y-0.5">
+                                                <div className="h-5 flex items-center justify-between">
+                                                    <label className="text-sm font-bold text-slate-700 flex items-center gap-1">
+                                                        <Palette size={16}/> 인쇄 도수 <span className="text-[10px] text-slate-400 font-normal ml-1">(내지 {idx + 1})</span>
+                                                    </label>
+                                                </div>
+                                                <div className="relative">
+                                                    <select value={ip.printColor || '단면 1도(흑백)'} onChange={(e) => updateCurrentInner(idx, { printColor: e.target.value })} className={`${inputClass} cursor-pointer hover:bg-slate-50 appearance-none`}>
+                                                        {PRINT_COLORS.map(o => <option key={o} value={o}>{o}</option>)}
+                                                    </select>
+                                                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-500"><svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg></div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="space-y-0.5">
+                                                <div className="h-5 flex items-center">
+                                                    <label className="text-sm font-bold text-slate-700 flex items-center gap-1">내지 페이지 수</label>
+                                                </div>
+                                                <input 
+                                                    type="text" 
+                                                    value={ip.pagesCount || ''} 
+                                                    onChange={(e) => updateCurrentInner(idx, { pagesCount: e.target.value })} 
+                                                    placeholder="예: 32p 또는 32" 
+                                                    className={inputClass} 
+                                                />
+                                            </div>
+                                        </div>
+                                    );
+                                })}
                             </div>
 
                             {/* Quantity (Common) */}
@@ -1231,36 +1547,81 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         </div>
                     )}
 
-                    <div className="mb-2.5">
-                        <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션</label>
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                        {processingOptions.map((opt) => (<label key={opt} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />{opt}</label>))}
-                        
-                        {/* 기타 (직접입력) 체크박스 배지 수동 추가 */}
-                        <label className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${isCustomChecked ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
-                            <input 
-                                type="checkbox" 
-                                checked={isCustomChecked} 
-                                onChange={handleCustomCheckboxToggle} 
-                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" 
-                            />
-                            기타 (직접입력)
-                        </label>
-                        </div>
-                        
-                        {/* 기타 (직접입력) 활성화 시 스르륵 열리는 입력 인풋창 */}
-                        {isCustomChecked && (
-                            <div className="mt-1.5 animate-in slide-in-from-top-1 duration-200">
-                                <input 
-                                    type="text"
-                                    value={customInputVal}
-                                    onChange={(e) => handleCustomInputChange(e.target.value)}
-                                    placeholder="특수 후가공 사양을 직접 기입하세요 (예: 금박 30x40mm 우측하단)"
-                                    className="w-full px-2.5 py-1.5 h-[34px] bg-slate-50 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-blue-500 focus:bg-white text-sm placeholder-slate-400 font-medium outline-none transition-all"
-                                />
+                    {isBooklet ? (
+                        <div className="mb-2.5 space-y-3">
+                            <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션 (책자 분류)</label>
+                            
+                            {/* 1. 제본/공통 후가공 */}
+                            <div className="p-2.5 bg-slate-50/50 rounded-lg border border-slate-200">
+                                <span className="text-xs font-bold text-slate-500 mb-1.5 block">제본 및 공통 후가공</span>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                                    {getFilteredProcessingOptions().map((opt) => (
+                                        <label key={`common-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                            <input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
+                                            {opt}
+                                        </label>
+                                    ))}
+                                </div>
                             </div>
-                        )}
-                    </div>
+
+                            {/* 2. 표지 후가공 */}
+                            <div className="p-2.5 bg-blue-50/20 rounded-lg border border-blue-100">
+                                <span className="text-xs font-bold text-blue-600 mb-1.5 block">표지 전용 후가공</span>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                                    {getFilteredProcessingOptions().map((opt) => (
+                                        <label key={`cover-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingCover || []).includes(opt) ? 'bg-blue-100 border-blue-300 text-blue-800 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                            <input type="checkbox" checked={(currentSpecs.processingCover || []).includes(opt)} onChange={() => toggleProcessingCover(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
+                                            {opt}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* 3. 내지 후가공 */}
+                            <div className="p-2.5 bg-emerald-50/20 rounded-lg border border-emerald-100">
+                                <span className="text-xs font-bold text-emerald-600 mb-1.5 block">내지 전용 후가공</span>
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                                    {getFilteredProcessingOptions().map((opt) => (
+                                        <label key={`inner-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingInner || []).includes(opt) ? 'bg-emerald-100 border-emerald-300 text-emerald-800 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                            <input type="checkbox" checked={(currentSpecs.processingInner || []).includes(opt)} onChange={() => toggleProcessingInner(opt)} className="rounded border-slate-300 text-emerald-600 focus:ring-blue-500 w-3.5 h-3.5" />
+                                            {opt}
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    ) : (
+                        <div className="mb-2.5">
+                            <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션</label>
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
+                            {getFilteredProcessingOptions().map((opt) => (<label key={opt} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />{opt}</label>))}
+                            
+                            {/* 기타 (직접입력) 체크박스 배지 수동 추가 */}
+                            <label className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${isCustomChecked ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                <input 
+                                    type="checkbox" 
+                                    checked={isCustomChecked} 
+                                    onChange={handleCustomCheckboxToggle} 
+                                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" 
+                                />
+                                기타 (직접입력)
+                            </label>
+                            </div>
+                            
+                            {/* 기타 (직접입력) 활성화 시 스르륵 열리는 입력 인풋창 */}
+                            {isCustomChecked && (
+                                <div className="mt-1.5 animate-in slide-in-from-top-1 duration-200">
+                                    <input 
+                                        type="text"
+                                        value={customInputVal}
+                                        onChange={(e) => handleCustomInputChange(e.target.value)}
+                                        placeholder="특수 후가공 사양을 직접 기입하세요 (예: 금박 30x40mm 우측하단)"
+                                        className="w-full px-2.5 py-1.5 h-[34px] bg-slate-50 border border-slate-300 rounded-lg text-slate-800 focus:ring-2 focus:ring-blue-500 focus:bg-white text-sm placeholder-slate-400 font-medium outline-none transition-all"
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    )}
                     {/* 우측 추가 메모 / 특이사항 본문 복원 - mt-auto를 지정해 우측 컬럼 최하단으로 내림 */}
                     <div className="space-y-0.5 mt-auto pt-2.5">
                         <label className="text-xs font-semibold text-slate-500 flex items-center gap-1"><Tag size={12}/> 추가 메모 / 특이사항</label>

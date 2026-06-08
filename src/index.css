@@ -14,7 +14,7 @@ body {
 
 /* Dark mode body background */
 .dark body {
-  background-color: #0f172a; /* Slate 900 */
+  background-color: #172033; /* 기존 #0f172a에서 아주 미세하게 밝은 딥 그레이-네이비로 보정 */
   color: #f1f5f9;
 }
 
@@ -151,3 +151,25 @@ body {
   mask-composite: exclude;
   pointer-events: none;
 }
+
+/* 화이트 모드(라이트 모드) 눈부심 방지 - 흰색 배경을 미세한 연회색(off-white)으로 톤다운 */
+html:not(.dark) .bg-white {
+  background-color: #fafafa !important;
+}
+html:not(.dark) input,
+html:not(.dark) select,
+html:not(.dark) textarea {
+  background-color: #fafafa !important;
+}
+
+/* Trello Mode Styles */
+html.trello body {
+  background-color: #1d2d44 !important; /* 트렐로 보드 배경 (진한 블루/네이비) */
+  color: #172b4d !important;
+}
+
+/* Trello Scrollbar */
+html.trello ::-webkit-scrollbar-track { background: #1d2d44; }
+html.trello ::-webkit-scrollbar-thumb { background: #5e6c84; }
+html.trello ::-webkit-scrollbar-thumb:hover { background: #42526e; }
+

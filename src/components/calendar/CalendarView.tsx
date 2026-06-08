@@ -8,6 +8,7 @@ import { LeaveModal } from './LeaveModal';
 import { useDialog } from '../../contexts/DialogContext';
 import { AdBanner } from '../common/AdBanner';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
 
 interface CalendarViewProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -55,11 +56,64 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const { showConfirm } = useDialog();
   const { tenantPlan } = useAuth();
+  const { theme } = useTheme();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     return localStorage.getItem('ezprint_tv_mode') === 'true';
   });
+
+  const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
+  const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, jobId: string) => {
+    e.dataTransfer.setData("text/plain", jobId);
+    setDraggedJobId(jobId);
+  };
+
+  const handleDragOver = (e: React.DragEvent, jobId: string) => {
+    e.preventDefault();
+    if (draggedJobId && draggedJobId !== jobId) {
+      setDragOverJobId(jobId);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverJobId(null);
+  };
+
+  const handleDropOnBar = async (e: React.DragEvent, targetJobId: string) => {
+    e.preventDefault();
+    setDragOverJobId(null);
+    const draggedId = e.dataTransfer.getData("text/plain") || draggedJobId;
+    if (!draggedId || draggedId === targetJobId) return;
+
+    const allJobs = db.getAllJobs();
+    const draggedJob = allJobs.find(j => j.id === draggedId);
+    const targetJob = allJobs.find(j => j.id === targetJobId);
+    if (!draggedJob || !targetJob) return;
+
+    const tempOrder = draggedJob.order;
+    draggedJob.order = targetJob.order;
+    targetJob.order = tempOrder;
+
+    if (draggedJob.order === targetJob.order) {
+      draggedJob.order = targetJob.order + 1;
+    }
+
+    let newAllJobs = [...allJobs];
+    const draggedIdx = newAllJobs.findIndex(j => j.id === draggedId);
+    const targetIdx = newAllJobs.findIndex(j => j.id === targetJobId);
+    if (draggedIdx !== -1) newAllJobs[draggedIdx] = draggedJob;
+    if (targetIdx !== -1) newAllJobs[targetIdx] = targetJob;
+
+    try {
+      await db.saveJobs(newAllJobs);
+    } catch (error) {
+      console.error("Failed to swap order in calendar:", error);
+    }
+    setDraggedJobId(null);
+  };
 
   useEffect(() => {
     const handleTvModeChange = (e: Event) => {
@@ -131,12 +185,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
       });
 
       visibleJobs.sort((a, b) => {
+          if (a.order !== b.order) return a.order - b.order;
           const startA = new Date(a.createdAt).getTime();
           const startB = new Date(b.createdAt).getTime();
-          if (startA !== startB) return startA - startB;
-          const durA = new Date(a.dueDate).getTime() - startA;
-          const durB = new Date(b.dueDate).getTime() - startB;
-          return durB - durA;
+          return startA - startB;
       });
 
       const slots: { [date: string]: (Job | null)[] } = {};
@@ -225,8 +277,13 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
         const holidayName = getHolidayName(dateObj);
 
         // Styling
-        let dateColorClass = isCurrentMonth ? 'text-slate-700 dark:text-slate-300' : 'text-slate-300 dark:text-slate-600';
-        let bgColorClass = isCurrentMonth ? 'bg-white dark:bg-slate-800' : 'bg-slate-50/50 dark:bg-slate-900/50';
+        let dateColorClass = isCurrentMonth 
+          ? (theme === 'trello' ? 'text-slate-300' : 'text-slate-700 dark:text-slate-300') 
+          : (theme === 'trello' ? 'text-slate-500' : 'text-slate-300 dark:text-slate-600');
+          
+        let bgColorClass = isCurrentMonth 
+          ? (theme === 'trello' ? 'bg-[#152238]' : 'bg-white dark:bg-slate-800') 
+          : (theme === 'trello' ? 'bg-[#182535]' : 'bg-slate-50/50 dark:bg-slate-900/50');
         
         if (isCurrentMonth) {
             if (dayOfWeek === 0 || holidayName) dateColorClass = 'text-red-500 dark:text-red-400';
@@ -247,9 +304,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
             <div 
                 key={dateKey} 
                 className={`
-                    min-h-[100px] border-b border-r border-slate-100 dark:border-slate-700 flex flex-col transition-all duration-200 relative group/cell
-                    ${isToday ? 'bg-blue-50 dark:bg-blue-900/20' : bgColorClass}
-                    ${isAdCell ? 'p-0 overflow-hidden' : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'}
+                    min-h-[100px] border-b border-r flex flex-col transition-all duration-200 relative group/cell
+                    ${theme === 'trello' ? 'border-[#2c3e56]' : 'border-slate-100 dark:border-slate-700'}
+                    ${isToday ? (theme === 'trello' ? 'bg-[#24364e]' : 'bg-blue-50 dark:bg-blue-900/20') : bgColorClass}
+                    ${isAdCell ? 'p-0 overflow-hidden' : theme === 'trello' ? 'hover:bg-[#1d2d44]' : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'}
                 `}
             >
                 {isAdCell ? (
@@ -384,8 +442,13 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                                 onContextMenu={(e) => { e.preventDefault(); setSelectedJob(job); setJobModalViewMode('edit'); }}
                                 onMouseEnter={() => setHoveredJobId(job.id)}
                                 onMouseLeave={() => setHoveredJobId(null)}
-                                className={containerClass}
+                                className={`${containerClass} ${dragOverJobId === job.id ? 'ring-4 ring-blue-500 scale-[1.05] z-50 brightness-110' : ''}`}
                                 title={`${job.title} (${job.clientName}) - ${new Date(job.dueDate).toLocaleDateString()} 마감`}
+                                draggable
+                                onDragStart={(e) => handleDragStart(e, job.id)}
+                                onDragOver={(e) => handleDragOver(e, job.id)}
+                                onDragLeave={handleDragLeave}
+                                onDrop={(e) => handleDropOnBar(e, job.id)}
                             >
                                 {showLabel && <span className={textClass}>{content}</span>}
                             </div>
@@ -399,22 +462,22 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
 
   return (
     <>
-      <div className="h-full flex flex-col bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
+      <div className={`h-full flex flex-col rounded-xl shadow-sm border overflow-hidden transition-colors ${theme === 'trello' ? 'bg-[#152238] border-[#2c3e56]' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
         {isTvMode ? (
-          <div className="p-3 border-b border-slate-200 dark:border-slate-700 flex items-center justify-center bg-slate-50 dark:bg-slate-850 flex-none relative">
-            <h2 className="text-xl md:text-3xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-3">
+          <div className={`p-3 border-b flex items-center justify-center flex-none relative ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850'}`}>
+            <h2 className={`text-xl md:text-3xl font-bold flex items-center gap-3 ${theme === 'trello' ? 'text-slate-300' : 'text-slate-800 dark:text-slate-100'}`}>
               <CalendarIcon className="text-blue-600 dark:text-blue-400" size={28} />
               {currentDate.getFullYear()}년 {currentDate.getMonth() + 1}월
             </h2>
           </div>
         ) : (
-          <div className="p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between bg-slate-50 dark:bg-slate-850 flex-none">
+          <div className={`p-4 md:p-6 border-b flex items-center justify-between flex-none ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850'}`}>
             <div>
-              <h2 className="text-xl md:text-2xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              <h2 className={`text-xl md:text-2xl font-bold flex items-center gap-2 ${theme === 'trello' ? 'text-slate-300' : 'text-slate-800 dark:text-slate-100'}`}>
                 <CalendarIcon className="text-blue-600 dark:text-blue-400" />
                 {currentDate.getFullYear()}년 {currentDate.getMonth() + 1}월
               </h2>
-              <div className="hidden md:flex items-center gap-3 mt-1 text-sm text-slate-500 dark:text-slate-400">
+              <div className={`hidden md:flex items-center gap-3 mt-1 text-sm ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
                  <div className="flex items-center gap-1">
                    <div className="w-2 h-2 rounded-full bg-red-500"></div> <span>일요일</span>
                  </div>
@@ -429,11 +492,11 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
             
             <div className="flex gap-1 md:gap-2 items-center">
               <div className="hidden xl:flex gap-2 text-xs md:text-sm font-medium mr-2">
-                 <div className="flex items-center gap-1.5 px-2 py-1 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800">
+                 <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-100 dark:border-red-800'}`}>
                     <AlertCircle size={14} />
                     <span>긴급: {activeJobsStats.filter(j => j.priority !== Priority.NORMAL).length}</span>
                  </div>
-                 <div className="flex items-center gap-1.5 px-2 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800">
+                 <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-100 dark:border-blue-800'}`}>
                     <Clock size={14} />
                     <span>진행: {activeJobsStats.filter(j => j.status !== 'DELIVERY').length}</span>
                  </div>
@@ -477,17 +540,17 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
               <button onClick={() => setShowLeaveModal(true)} className="mr-2 px-3 py-1.5 bg-purple-600 text-white text-xs md:text-sm font-bold rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1">
                   <Palmtree size={16} /><span className="hidden sm:inline">휴가 등록</span>
               </button>
-              <button onClick={prevMonth} className="p-1.5 md:p-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 shadow-sm"><ChevronLeft size={20} /></button>
-              <button onClick={goToday} className="px-3 py-1.5 md:px-4 md:py-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 font-bold shadow-sm">오늘</button>
-              <button onClick={nextMonth} className="p-1.5 md:p-2 bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 rounded-lg hover:bg-slate-50 shadow-sm"><ChevronRight size={20} /></button>
+              <button onClick={prevMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronLeft size={20} /></button>
+              <button onClick={goToday} className={`px-3 py-1.5 md:px-4 md:py-2 rounded-lg font-bold shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}>오늘</button>
+              <button onClick={nextMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronRight size={20} /></button>
             </div>
           </div>
         )}
         
         <div className="flex-1 overflow-hidden flex flex-col">
-          <div className="grid grid-cols-7 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex-none">
+          <div className={`grid grid-cols-7 border-b flex-none ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`}>
             {['일', '월', '화', '수', '목', '금', '토'].map((d, i) => (
-              <div key={d} className={`p-2 md:p-3 text-center text-xs md:text-sm font-bold ${i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : 'text-slate-600 dark:text-slate-400'}`}>
+              <div key={d} className={`p-2 md:p-3 text-center text-xs md:text-sm font-bold ${i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : theme === 'trello' ? 'text-slate-400' : 'text-slate-600 dark:text-slate-400'}`}>
                 {d}
               </div>
             ))}

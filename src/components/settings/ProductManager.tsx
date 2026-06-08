@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
 import { JobTypeDefinition } from '../../types';
-import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw } from 'lucide-react';
+import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 
 export const ProductManager: React.FC = () => {
@@ -14,6 +14,7 @@ export const ProductManager: React.FC = () => {
   const [newSize, setNewSize] = useState('');
   const [newPaper, setNewPaper] = useState('');
   const [newWeight, setNewWeight] = useState('');
+  const [allProcessings, setAllProcessings] = useState<string[]>([]);
 
   const { showConfirm, showAlert } = useDialog();
 
@@ -37,6 +38,19 @@ export const ProductManager: React.FC = () => {
 
   const loadData = () => {
       setDefinitions(db.getProductDefinitions());
+      setAllProcessings(db.getProcessingDefinitions());
+  };
+
+  const toggleProcessingOption = (option: string) => {
+      if (!selectedType) return;
+      const currentProcessings = selectedType.processings || [];
+      const updatedProcessings = currentProcessings.includes(option)
+          ? currentProcessings.filter(p => p !== option)
+          : [...currentProcessings, option];
+          
+      const updatedDef = { ...selectedType, processings: updatedProcessings };
+      const newDefs = definitions.map(d => d.name === selectedType.name ? updatedDef : d);
+      db.saveProductDefinitions(newDefs);
   };
 
   // --- Type Management ---
@@ -198,7 +212,7 @@ export const ProductManager: React.FC = () => {
                           <span className="text-sm text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-700 px-2 py-1 rounded">하위 옵션 설정</span>
                       </div>
 
-                      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
                           {/* 1. Sizes */}
                           <div className="space-y-3">
                               <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
@@ -283,6 +297,30 @@ export const ProductManager: React.FC = () => {
                                           </button>
                                       </div>
                                   ))}
+                              </div>
+                          </div>
+
+                          {/* 4. Processings */}
+                          <div className="space-y-3">
+                              <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                                  <Scissors size={16} className="text-blue-500"/> 후가공 설정 (Processings)
+                              </h4>
+                              <p className="text-[10px] text-slate-400">이 품목에 노출시킬 후가공들을 선택해 주세요.</p>
+                              <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                                  {allProcessings.map(opt => {
+                                      const isChecked = (selectedType.processings || []).includes(opt);
+                                      return (
+                                          <label key={opt} className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer text-sm font-medium transition-all ${isChecked ? 'bg-blue-50 dark:bg-slate-750 border-blue-200 dark:border-slate-600 text-blue-700 dark:text-blue-300' : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50'}`}>
+                                              <input 
+                                                  type="checkbox" 
+                                                  checked={isChecked} 
+                                                  onChange={() => toggleProcessingOption(opt)} 
+                                                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" 
+                                              />
+                                              <span>{opt}</span>
+                                          </label>
+                                      );
+                                  })}
                               </div>
                           </div>
                       </div>

@@ -13,6 +13,18 @@ export enum Priority {
 
 export type PaymentStatus = '결제대기' | '일부결제' | '결제완료' | '취소';
 
+export interface InnerPageSpec {
+  id: string;
+  paperType: string;
+  paperWeight: string;
+  printColor: string;
+  pagesCount: string;
+  hasDivider?: boolean;
+  dividerColor?: string;
+  dividerQuantity?: string;
+  isDivider?: boolean;
+}
+
 export interface JobSpecs {
   paperType: string;    // 스노우지, 아트지, 모조지 등 (책자일 경우: 표지)
   paperWeight: string;  // 100g, 150g, 250g 등 (책자일 경우: 표지)
@@ -26,6 +38,10 @@ export interface JobSpecs {
   paperTypeInner?: string;
   paperWeightInner?: string;
   printColorInner?: string;
+  innerPages?: InnerPageSpec[];
+  hasCoverWing?: boolean;
+  processingCover?: string[];
+  processingInner?: string[];
 }
 
 // Sub-item within a job (e.g., Business Card part of a larger order)
@@ -171,6 +187,7 @@ export interface JobTypeDefinition {
   sizes: string[]; 
   paperTypes: string[]; 
   paperWeights: string[]; 
+  processings?: string[]; 
 }
 
 export interface PricingConfig {
@@ -182,6 +199,7 @@ export interface PricingConfig {
 export interface NasConfig {
   isEnabled: boolean;
   path: string; 
+  dbPath?: string;
   status: 'connected' | 'disconnected' | 'error';
 }
 
@@ -245,6 +263,7 @@ export interface IElectronAPI {
   readFile: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string }>;
   checkPath: (path: string) => Promise<boolean>;
   checkFileExists: (path: string) => Promise<boolean>; 
+  exists: (path: string) => Promise<boolean>;
   selectDirectory: () => Promise<string | null>; 
   selectFileOrFolder: () => Promise<string | null>; 
   createDatabaseFile: (content: string) => Promise<string | null>; 
@@ -264,6 +283,7 @@ export interface IElectronAPI {
 
   getAppVersion: () => Promise<string>;
   getUserDataPath: () => Promise<string>;
+  findLegacyDbFiles: () => Promise<{ name: string; path: string; size: string; mtime: string }[]>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;

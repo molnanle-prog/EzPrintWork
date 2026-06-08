@@ -9,6 +9,7 @@ import { db } from '../services/dataService';
 import { Job, Staff } from '../types';
 import { AdBanner } from './common/AdBanner';
 import { useAuth } from '../contexts/AuthContext';
+import { useTheme } from '../contexts/ThemeContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -56,6 +57,7 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
 
 export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => {
   const { tenantPlan } = useAuth();
+  const { theme } = useTheme();
   const [isTvMode, setIsTvMode] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('ezprint_tv_mode') === 'true';
@@ -90,50 +92,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [appVersion, setAppVersion] = useState('2.0.0 (Cloud)');
   const sidebarRef = useRef<HTMLElement>(null);
 
-  useEffect(() => {
-    if (!isSidebarExpanded) return;
 
-    const handleGlobalMouseMove = (e: MouseEvent) => {
-      if (sidebarRef.current) {
-        const rect = sidebarRef.current.getBoundingClientRect();
-        // 10px buffer to prevent jitter or accidental triggers near the border
-        if (
-          e.clientX > rect.right + 10 ||
-          e.clientX < rect.left - 10 ||
-          e.clientY < rect.top - 10 ||
-          e.clientY > rect.bottom + 10
-        ) {
-          setIsSidebarExpanded(false);
-        }
-      }
-    };
-
-    const handleMouseLeaveWindow = () => {
-      setIsSidebarExpanded(false);
-    };
-
-    const handleMouseOutWindow = (e: MouseEvent) => {
-      if (!e.relatedTarget) {
-        setIsSidebarExpanded(false);
-      }
-    };
-
-    const handleBlur = () => {
-      setIsSidebarExpanded(false);
-    };
-
-    window.addEventListener('mousemove', handleGlobalMouseMove);
-    document.addEventListener('mouseleave', handleMouseLeaveWindow);
-    document.addEventListener('mouseout', handleMouseOutWindow);
-    window.addEventListener('blur', handleBlur);
-
-    return () => {
-      window.removeEventListener('mousemove', handleGlobalMouseMove);
-      document.removeEventListener('mouseleave', handleMouseLeaveWindow);
-      document.removeEventListener('mouseout', handleMouseOutWindow);
-      window.removeEventListener('blur', handleBlur);
-    };
-  }, [isSidebarExpanded]);
 
   useEffect(() => {
     const isRunningInElectron = typeof window !== 'undefined' && !!window.electron;
@@ -204,7 +163,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
   const containerClass = isPinned 
     ? "flex flex-col h-screen bg-slate-900/95 border-2 border-blue-500 overflow-hidden transition-all duration-300 shadow-2xl"
-    : "flex flex-col h-screen bg-slate-100 dark:bg-slate-900 overflow-hidden transition-colors duration-200";
+    : `flex flex-col h-screen ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} overflow-hidden transition-colors duration-200`;
 
   const sidebarClass = isPinned
     ? "hidden"
@@ -293,15 +252,17 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
           <aside 
               ref={sidebarRef}
               className={`hidden lg:flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-2xl transition-all duration-300 ease-out shrink-0 z-50 border-r border-slate-800 ${isSidebarExpanded ? 'w-72' : 'w-14'}`}
-              onMouseEnter={() => setIsSidebarExpanded(true)}
-              onMouseLeave={() => setIsSidebarExpanded(false)}
           >
             {/* The actual sidebar content */}
             <div className="flex flex-col h-full overflow-hidden">
                 {/* Logo Section */}
                 <div className="h-24 lg:h-28 flex-none relative overflow-hidden">
                     <div className={`absolute inset-0 p-4 transition-all duration-500 ${isSidebarExpanded ? 'opacity-100 translate-x-0' : 'opacity-0 -translate-x-10 pointer-events-none'}`}>
-                        <div className="bg-slate-800/60 p-4 rounded-2xl border border-slate-700/60 h-full flex flex-col justify-center backdrop-blur-md">
+                        <div 
+                            onClick={() => setIsSidebarExpanded(false)}
+                            className="bg-slate-800/60 p-4 rounded-2xl border border-slate-700/60 h-full flex flex-col justify-center backdrop-blur-md cursor-pointer hover:bg-slate-800 hover:border-slate-600 transition-all"
+                            title="메뉴 접기"
+                        >
                             <h1 className="text-xl font-black text-white tracking-tighter leading-tight">{companyName}</h1>
                             <div className="flex items-center gap-1.5 mt-1.5">
                                 <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse" />
@@ -310,7 +271,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         </div>
                     </div>
                     <div className={`absolute inset-0 flex items-center justify-center transition-all duration-500 ${!isSidebarExpanded ? 'opacity-100 scale-100 rotate-0' : 'opacity-0 scale-50 rotate-90 pointer-events-none'}`}>
-                        <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/20">
+                        <div 
+                            onClick={() => setIsSidebarExpanded(true)}
+                            className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center shadow-lg shadow-blue-600/20 cursor-pointer hover:scale-105 active:scale-95 transition-all"
+                            title="메뉴 펼치기"
+                        >
                             <Printer size={24} className="text-white" />
                         </div>
                     </div>
@@ -415,9 +380,17 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
             {!isPinned && !isTvMode && (
-                <header className="bg-white dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-4 md:px-5 lg:px-7">
+                <header className={`border-b flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-4 md:px-5 lg:px-7 ${
+                  theme === 'trello' 
+                    ? 'bg-[#152238]/90 border-[#22334b]' 
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
+                }`}>
                     <div className="flex items-baseline gap-3">
-                        <h2 className="font-bold text-slate-800 dark:text-slate-100 text-lg md:text-xl">
+                        <h2 className={`font-bold text-lg md:text-xl ${
+                          theme === 'trello' 
+                            ? 'text-white' 
+                            : 'text-slate-800 dark:text-slate-100'
+                        }`}>
                             {activeTab === 'settings' ? '설정' : menuItems.find(m => m.id === activeTab)?.label}
                         </h2>
                     </div>
@@ -440,7 +413,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         )}
                         <button 
                             onClick={() => setShowSearchModal(true)}
-                            className="bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 rounded-full flex items-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors px-6 h-12 shadow-sm"
+                            className={`rounded-full flex items-center gap-3 transition-colors px-6 h-12 shadow-sm ${
+                              theme === 'trello' 
+                                ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' 
+                                : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                            }`}
                         >
                             <Search size={22} />
                             <span className="text-base font-bold">등록 작업 검색</span>
@@ -449,6 +426,29 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 </header>
             )}
             
+            {/* 데이터 폴더 미설정 시 경고 배너 (관리자 대상) */}
+            {isElectron && !db.isDbPathConfigured() && !isPinned && !isTvMode && (
+                <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-amber-600 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
+                    <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
+                            <AlertTriangle size={16} className="text-yellow-300 animate-bounce" />
+                        </div>
+                        <div className="flex flex-col md:flex-row md:items-baseline gap-1 md:gap-3 text-left">
+                            <span className="text-sm font-black tracking-tight">⚠️ 데이터 저장 폴더가 지정되지 않아 임시 읽기 전용 상태입니다.</span>
+                            <span className="text-xs text-amber-100/90 font-medium">자료 유실 및 데이터 합치기 번거로움을 방지하기 위해 저장 폴더를 먼저 지정해 주세요.</span>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button 
+                            onClick={() => onTabChange('settings')}
+                            className="bg-white text-orange-700 hover:bg-orange-50 px-4 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
+                        >
+                            폴더 설정하러 가기
+                        </button>
+                    </div>
+                </div>
+            )}
+
             {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
             {!isElectron && showDownloadBanner && !isPinned && !isTvMode && (
                 <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
@@ -489,7 +489,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 </div>
             )}
             
-            <div className={`flex-1 flex flex-col min-h-0 relative bg-slate-100 dark:bg-slate-900 ${isPinned ? 'p-1' : isTvMode ? 'p-0.5' : 'p-2 md:p-3 lg:p-4'}`}>
+            <div className={`flex-1 flex flex-col min-h-0 relative ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} ${isPinned ? 'p-1' : isTvMode ? 'p-0.5' : 'p-2 md:p-3 lg:p-4'}`}>
                 {children}
             </div>
             

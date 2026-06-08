@@ -6,7 +6,7 @@ import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
-const DEV_BYPASS_LOGIN = true;
+const DEV_BYPASS_LOGIN = false;
 
 interface AuthContextType {
   firebaseUser: User | null;
@@ -91,12 +91,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser(updatedUser);
         
         if (updatedUser.tenantId) {
-          dataService.setTenant(updatedUser.tenantId);
-          // Fetch tenant plan
+          // Fetch tenant doc first to check dbPath, then set tenant to trigger sync
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
-              setTenantPlan(determineTenantPlan(tenantDoc.data()));
+              const tenantData = tenantDoc.data();
+              setTenantPlan(determineTenantPlan(tenantData));
+              
+              // DB path auto-sync
+              if (tenantData && tenantData.dbPath) {
+                  const localDbPath = localStorage.getItem('ezpw_custom_db_path');
+                  if (localDbPath !== tenantData.dbPath) {
+                      if (updatedUser.role !== 'admin' || !localDbPath) {
+                          console.log(`[AuthContext] Auto-syncing DB path for user: ${tenantData.dbPath}`);
+                          localStorage.setItem('ezpw_custom_db_path', tenantData.dbPath);
+                          await dataService.setCustomBasePath(tenantData.dbPath);
+                      }
+                  }
+              }
           }
+          dataService.setTenant(updatedUser.tenantId);
 
           // [SSOT 대표자 직원 동기화 자가 치유]
           // 만약 대표자(admin) 역할이지만 테넌트의 직원 목록(staff) 서브컬렉션에 자신의 정보가 등재되어 있지 않은 경우,
@@ -208,11 +221,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
           setCurrentUser(newUser);
           if (tenantId) {
-            dataService.setTenant(tenantId);
             const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
             if (tenantDoc.exists()) {
-              setTenantPlan(determineTenantPlan(tenantDoc.data()));
+              const tenantData = tenantDoc.data();
+              setTenantPlan(determineTenantPlan(tenantData));
+              
+              // DB path auto-sync
+              if (tenantData && tenantData.dbPath) {
+                  const localDbPath = localStorage.getItem('ezpw_custom_db_path');
+                  if (localDbPath !== tenantData.dbPath) {
+                      if (newUser.role !== 'admin' || !localDbPath) {
+                          console.log(`[AuthContext] Auto-syncing DB path for migrated user: ${tenantData.dbPath}`);
+                          localStorage.setItem('ezpw_custom_db_path', tenantData.dbPath);
+                          await dataService.setCustomBasePath(tenantData.dbPath);
+                      }
+                  }
+              }
             }
+            dataService.setTenant(tenantId);
           }
         } else {
           // 일치하는 임시 등록 정보가 없는 경우: 기존의 초대코드 확인 및 신규 가입 로직 수행
@@ -304,9 +330,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     const unsubscribe = onSnapshot(tenantRef, (docSnap) => {
       if (docSnap.exists()) {
-        const determined = determineTenantPlan(docSnap.data());
+        const tenantData = docSnap.data();
+        const determined = determineTenantPlan(tenantData);
         console.log(`[RealtimePlanSync] Tenant plan updated in real-time (Determined: ${determined})`);
         setTenantPlan(determined);
+
+        // Realtime DB path sync
+        if (tenantData && tenantData.dbPath) {
+            const currentPath = localStorage.getItem('ezpw_custom_db_path');
+            if (currentPath !== tenantData.dbPath) {
+                if (currentUser.role !== 'admin' || !currentPath) {
+                    console.log(`[RealtimePathSync] Automatically updating DB path to: ${tenantData.dbPath}`);
+                    localStorage.setItem('ezpw_custom_db_path', tenantData.dbPath);
+                    dataService.setCustomBasePath(tenantData.dbPath).then(() => {
+                        if (currentPath) {
+                            alert("관리자가 데이터 저장 폴더 설정을 변경하여 프로그램을 재부팅합니다.");
+                            window.location.reload();
+                        }
+                    });
+                }
+            }
+        }
       }
     }, (err) => {
       console.error("[RealtimePlanSync] Real-time subscription failed:", err);
@@ -323,7 +367,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 사용자가 '자동 로그인 유지'를 수동으로 켜지 않았다면, 
     // 로컬 디렉토리 캐시나 쿠키가 남아 있어도 안전을 위해 세션을 무조건 파괴하고 초기 로그인 창으로 진입시킵니다.
     const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
-    if (!keepLoggedIn) {
+    if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
       console.log("[AuthSecurity] Keep-login is not active. Cleaning up local session caches.");
       localStorage.removeItem('customUser');
       localStorage.removeItem('customTenantPlan');

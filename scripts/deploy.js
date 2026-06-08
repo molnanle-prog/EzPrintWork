@@ -17,14 +17,28 @@ function log(message, color = colors.reset) {
 }
 
 function runCommand(command, cwd) {
-  log(`\n> 실행 중: ${command}`, colors.cyan);
+  const nodeExe = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable\\node.exe';
+  const npmCli = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable\\node_modules\\npm\\bin\\npm-cli.js';
+  const npxCli = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable\\node_modules\\npm\\bin\\npx-cli.js';
+
+  let translated = command;
+  if (command.startsWith('npm ')) {
+    translated = `"${nodeExe}" "${npmCli}" ${command.substring(4)}`;
+  } else if (command.startsWith('npx ')) {
+    translated = `"${nodeExe}" "${npxCli}" ${command.substring(4)}`;
+  } else if (command.startsWith('node ')) {
+    translated = `"${nodeExe}" ${command.substring(5)}`;
+  }
+
+  log(`\n> 실행 중: ${translated}`, colors.cyan);
   try {
-    execSync(command, { stdio: 'inherit', cwd });
+    execSync(translated, { stdio: 'inherit', cwd });
   } catch (error) {
-    log(`[에러 발생] 명령어 실행 실패: ${command}`, colors.red);
+    log(`[에러 발생] 명령어 실행 실패: ${translated}`, colors.red);
     process.exit(1);
   }
 }
+
 
 function copyFolderSync(from, to) {
   if (fs.existsSync(to)) {
@@ -51,7 +65,7 @@ function copyFolderSync(from, to) {
 
 async function main() {
   const currentDir = path.resolve(__dirname, '..');
-  const homepageDir = path.resolve(currentDir, '..', '..', 'ez-hub-homepage');
+  const homepageDir = path.resolve(currentDir, '..', 'ez-hub-homepage');
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const distDir = path.join(currentDir, 'dist');
 
@@ -86,12 +100,16 @@ async function main() {
   }
 
   // 3. 홈페이지 통합 컴파일
-  log('\n[3/4] 홈페이지 전체 통합 빌드 컴파일 중...', colors.yellow);
-  runCommand('npm run build', homepageDir);
+  if (fs.existsSync(path.join(homepageDir, 'package.json'))) {
+    log('\n[3/4] 홈페이지 전체 통합 빌드 컴파일 중...', colors.yellow);
+    runCommand('npm run build', homepageDir);
+  } else {
+    log('\n[3/4] 홈페이지 빌드 생략 (package.json 없음)', colors.yellow);
+  }
 
   // 4. 구글 파이어베이스 호스팅 업로드
   log('\n[4/4] 구글 파이어베이스 클라우드로 최종 업로드(배포) 중...', colors.yellow);
-  runCommand('npx firebase-tools deploy --only hosting', homepageDir);
+  runCommand('node C:\\Users\\user\\Desktop\\EZPRIN~1\\EzPrintWork\\node_modules\\firebase-tools\\lib\\bin\\firebase.js deploy --only hosting', homepageDir);
 
   log('\n===================================================', colors.bold + colors.green);
   log('   🎉 [성공] 홈페이지 실시간 업로드가 완료되었습니다!', colors.bold + colors.green);

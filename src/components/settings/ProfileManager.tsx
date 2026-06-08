@@ -11,6 +11,7 @@ export const ProfileManager: React.FC = () => {
   const [staffData, setStaffData] = useState<Staff | null>(null);
   const [formData, setFormData] = useState({
     name: '',
+    email: '',
     phone: '',
     phoneOffice: '',
     phoneCompany: '',
@@ -37,6 +38,7 @@ export const ProfileManager: React.FC = () => {
         setStaffData(matchedStaff);
         setFormData({
           name: matchedStaff.name || currentUser.displayName || currentUser.name || '',
+          email: matchedStaff.email || currentUser.email || '',
           phone: matchedStaff.phone || '',
           phoneOffice: matchedStaff.phoneOffice || '',
           phoneCompany: matchedStaff.phoneCompany || '',
@@ -48,6 +50,7 @@ export const ProfileManager: React.FC = () => {
         setStaffData(null);
         setFormData({
           name: currentUser.displayName || currentUser.name || '',
+          email: currentUser.email || '',
           phone: '',
           phoneOffice: '',
           phoneCompany: '',
@@ -100,7 +103,7 @@ export const ProfileManager: React.FC = () => {
           password: formData.password,
           role: staffData ? staffData.role : '대표자',
           active: true,
-          email: currentUser.email || '',
+          email: formData.email.trim() || currentUser.email || '',
           avatarUrl: staffData?.avatarUrl || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(formData.name.trim())}`,
           joinDate: staffData?.joinDate || new Date().toISOString()
         };
@@ -116,7 +119,8 @@ export const ProfileManager: React.FC = () => {
         await setDoc(doc(firestore, 'users', currentUser.uid), {
           displayName: formData.name.trim(),
           name: formData.name.trim(),
-          contactInfo: formData.phone
+          contactInfo: formData.phone,
+          email: formData.email.trim()
         }, { merge: true });
 
         await refreshUser();
@@ -246,6 +250,23 @@ export const ProfileManager: React.FC = () => {
                   className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                   placeholder="실명을 입력해 주세요"
                 />
+              </div>
+
+              {/* Setting Email */}
+              <div className="space-y-1.5 col-span-1 md:col-span-2">
+                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <Mail size={13} /> 설정 이메일 (화면 노출용 비즈니스 메일)
+                </label>
+                <input
+                  type="email"
+                  value={formData.email}
+                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
+                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                  placeholder="예: contact@company.com"
+                />
+                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">
+                  로그인에 쓰는 이메일과 별도로, 직원 관리 목록 및 메신저 프로필에 표시될 연락처 이메일입니다.
+                </p>
               </div>
 
               {/* Personal Phone */}

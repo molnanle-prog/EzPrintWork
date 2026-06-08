@@ -94,6 +94,29 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
+// --- 폴더 연결 및 권한 검사 헬퍼 함수 ---
+async function checkDirectoryStatusHelper(dirPath) {
+    if (!dirPath) return { success: false, error: '경로가 지정되지 않았습니다.' };
+    try {
+        if (!fs.existsSync(dirPath)) {
+            return { success: false, error: '존재하지 않는 폴더 경로입니다.' };
+        }
+        const stats = fs.statSync(dirPath);
+        if (!stats.isDirectory()) {
+            return { success: false, error: '지정한 경로가 폴더가 아닙니다.' };
+        }
+        
+        // 쓰기 테스트
+        const testFile = path.join(dirPath, `.ezpw_test_${Date.now()}.tmp`);
+        fs.writeFileSync(testFile, 'test', 'utf8');
+        fs.unlinkSync(testFile);
+        
+        return { success: true, message: '정상 작동 (읽기/쓰기 가능)' };
+    } catch (e) {
+        return { success: false, error: `접근 권한이 없거나 오류가 발생했습니다: ${e.message}` };
+    }
+}
+
 // --- 웹 브라우저 연동용 로컬 HTTP 서버 (127.0.0.1:23230) ---
 const http = require('http');
 let localServer;
@@ -102,7 +125,7 @@ function startLocalServer() {
     localServer = http.createServer(async (req, res) => {
         // CORS 헤더 및 Chrome Private Network Access(PNA) 허용 설정
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', '*');
         res.setHeader('Access-Control-Allow-Private-Network', 'true'); // 중요: 크롬 브라우저의 로컬 보안(PNA) 우회 헤더
 
@@ -133,6 +156,77 @@ function startLocalServer() {
                 await shell.openPath(targetPath);
                 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
                 res.end(JSON.stringify({ success: true }));
+            } else if (reqUrl.pathname === '/read-file') {
+                const targetPath = reqUrl.searchParams.get('path');
+                if (!targetPath) {
+                    res.writeHead(400);
+                    res.end('Missing path');
+                    return;
+                }
+                let data = null;
+                if (fs.existsSync(targetPath)) {
+                    data = fs.readFileSync(targetPath, 'utf8');
+                } else if (targetPath.endsWith('.json')) {
+                    // 자가 치유: 확장자 없는 레거시 파일 마이그레이션 (.json으로 로드 시도할 때 확장자 없는 파일이 있으면 마이그레이션)
+                    const noExtPath = targetPath.slice(0, -5);
+                    if (fs.existsSync(noExtPath)) {
+                        console.log(`[Self-Healing HTTP] Migrating extensionless file: ${noExtPath} -> ${targetPath}`);
+                        try {
+                            data = fs.readFileSync(noExtPath, 'utf8');
+                            fs.writeFileSync(targetPath, data, 'utf8');
+                        } catch (err) {
+                            console.error(`[Self-Healing HTTP] Migration failed:`, err);
+                        }
+                    }
+                }
+
+                if (data !== null) {
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ success: true, data }));
+                } else {
+                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ success: false, error: 'ENOENT' }));
+                }
+            } else if (reqUrl.pathname === '/save-file') {
+                let body = '';
+                req.on('data', chunk => {
+                    body += chunk.toString();
+                });
+                req.on('end', () => {
+                    try {
+                        const { path: filePath, content } = JSON.parse(body);
+                        if (!filePath) {
+                            res.writeHead(400);
+                            res.end('Missing path');
+                            return;
+                        }
+                        const dir = path.dirname(filePath);
+                        if (!fs.existsSync(dir)) {
+                            fs.mkdirSync(dir, { recursive: true });
+                        }
+                        fs.writeFileSync(filePath, content, 'utf8');
+                        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ success: true }));
+                    } catch (e) {
+                        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ success: false, error: e.message }));
+                    }
+                });
+                return;
+            } else if (reqUrl.pathname === '/check-directory') {
+                const targetPath = reqUrl.searchParams.get('path');
+                if (!targetPath) {
+                    res.writeHead(400);
+                    res.end('Missing path');
+                    return;
+                }
+                const status = await checkDirectoryStatusHelper(targetPath);
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify(status));
+            } else if (reqUrl.pathname === '/get-documents-path') {
+                const docPath = app.getPath('documents');
+                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+                res.end(JSON.stringify({ path: docPath }));
             } else {
                 res.writeHead(404);
                 res.end('Not Found');
@@ -173,6 +267,36 @@ ipcMain.handle('select-file-or-folder', async () => {
     return canceled ? null : filePaths[0];
 });
 
+// 2.1. 새 데이터베이스 파일 생성
+ipcMain.handle('create-database-file', async (event, content) => {
+    const { canceled, filePath } = await dialog.showSaveDialog({
+        title: '새 데이터베이스 파일 생성',
+        defaultPath: 'pm_db_v2.json',
+        filters: [
+            { name: 'JSON Files', extensions: ['json'] }
+        ]
+    });
+    if (canceled || !filePath) return null;
+    
+    let finalPath = filePath;
+    // .json.json 이중 확장자 결합 방지 보정
+    if (finalPath.toLowerCase().endsWith('.json.json')) {
+        finalPath = finalPath.slice(0, -5);
+    }
+    
+    try {
+        const dir = path.dirname(finalPath);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        fs.writeFileSync(finalPath, content, 'utf8');
+        return finalPath;
+    } catch (e) {
+        console.error("데이터베이스 파일 생성 실패:", e);
+        return null;
+    }
+});
+
 // 3. 경로 열기 (탐색기 실행)
 ipcMain.handle('open-path', async (event, targetPath) => {
     if (!targetPath) return false;
@@ -194,10 +318,10 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
             fs.mkdirSync(dir, { recursive: true });
         }
         fs.writeFileSync(filePath, content, 'utf8');
-        return true;
+        return { success: true };
     } catch (e) {
         console.error("파일 저장 중 오류 발생:", e);
-        return false;
+        return { success: false, error: e.message };
     }
 });
 
@@ -205,17 +329,33 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
 ipcMain.handle('read-file', async (event, filePath) => {
     try {
         if (fs.existsSync(filePath)) {
-            return fs.readFileSync(filePath, 'utf8');
+            const data = fs.readFileSync(filePath, 'utf8');
+            return { success: true, data };
         }
-        return null;
+        // 자가 치유: 확장자 없는 레거시 파일 마이그레이션 (.json 파일 요청 시 확장자 없는 파일 자동 로드 및 복사)
+        if (filePath.endsWith('.json')) {
+            const noExtPath = filePath.slice(0, -5);
+            if (fs.existsSync(noExtPath)) {
+                console.log(`[Self-Healing] Migrating extensionless database file: ${noExtPath} -> ${filePath}`);
+                const data = fs.readFileSync(noExtPath, 'utf8');
+                fs.writeFileSync(filePath, data, 'utf8');
+                return { success: true, data };
+            }
+        }
+        return { success: false, error: 'ENOENT' };
     } catch (e) {
-        return null;
+        return { success: false, error: e.message };
     }
 });
 
 // 6. 파일 존재 여부 확인
 ipcMain.handle('exists', async (event, filePath) => {
     return fs.existsSync(filePath);
+});
+
+// 6.1. 폴더 존재 및 읽기/쓰기 권한 검사
+ipcMain.handle('check-directory-status', async (event, dirPath) => {
+    return await checkDirectoryStatusHelper(dirPath);
 });
 
 // 7. 문서 폴더 경로 가져오기 (백업용)
@@ -226,6 +366,47 @@ ipcMain.handle('get-documents-path', async () => {
         console.error("문서 폴더 경로 획득 중 오류:", e);
         return null;
     }
+});
+
+// 7.1. 구버전 및 백업 레거시 파일 자동 검색
+ipcMain.handle('find-legacy-db-files', async () => {
+    const results = [];
+    try {
+        // 1) AppData Roaming 스캔
+        const appData = app.getPath('appData');
+        const roamingLegacyPath = path.join(appData, 'ezprintwork', 'pm_db_v2.json');
+        if (fs.existsSync(roamingLegacyPath)) {
+            const stats = fs.statSync(roamingLegacyPath);
+            results.push({
+                name: 'pm_db_v2.json (춘천인쇄 로컬 구버전 데이터)',
+                path: roamingLegacyPath,
+                size: `${Math.round(stats.size / 1024)} KB`,
+                mtime: stats.mtime.toISOString().replace('T', ' ').substring(0, 16)
+            });
+        }
+
+        // 2) 내 문서 (Documents) 스캔
+        const docs = app.getPath('documents');
+        const defaultDbFolder = path.join(docs, 'EzPrintWork_DB');
+        if (fs.existsSync(defaultDbFolder)) {
+            const files = fs.readdirSync(defaultDbFolder);
+            for (const file of files) {
+                if (file.endsWith('.json') && file !== 'settings.json') {
+                    const fullPath = path.join(defaultDbFolder, file);
+                    const stats = fs.statSync(fullPath);
+                    results.push({
+                        name: `${file} (기본 내 문서 백업 데이터)`,
+                        path: fullPath,
+                        size: `${Math.round(stats.size / 1024)} KB`,
+                        mtime: stats.mtime.toISOString().replace('T', ' ').substring(0, 16)
+                    });
+                }
+            }
+        }
+    } catch (e) {
+        console.error("레거시 파일 자동 검색 중 오류:", e);
+    }
+    return results;
 });
 
 // 8. 창 제어 (최소화, 최대화, 닫기)

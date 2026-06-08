@@ -22,6 +22,10 @@ export const BackupManager: React.FC = () => {
     const [customBackupPath, setCustomBackupPath] = useState<string | null>(
         typeof window !== 'undefined' ? localStorage.getItem('ezpw_local_backup_path') : null
     );
+    const [showMergeModal, setShowMergeModal] = useState<boolean>(false);
+    const [mergeSummary, setMergeSummary] = useState<any>(null);
+    const [mergedData, setMergedData] = useState<any>(null);
+    const [detectedFiles, setDetectedFiles] = useState<{ name: string; path: string; size: string; mtime: string }[]>([]);
 
     const isElectron = typeof window !== 'undefined' && !!(window as any).electron;
 
@@ -106,7 +110,12 @@ export const BackupManager: React.FC = () => {
 
     useEffect(() => {
         fetchBackups();
-    }, []);
+        if (isElectron && (window as any).electron?.findLegacyDbFiles) {
+            (window as any).electron.findLegacyDbFiles().then((files: any) => {
+                setDetectedFiles(files);
+            }).catch((e: any) => console.error("Failed to scan legacy files:", e));
+        }
+    }, [isElectron]);
 
     const showStatus = (message: string, type: 'info' | 'success' | 'error') => {
         setStatusMessage(message);
@@ -202,34 +211,104 @@ export const BackupManager: React.FC = () => {
         }
     };
 
+    const handleRestoreDetectedFile = async (filePath: string, isMerge: boolean) => {
+        if (!isElectron || !(window as any).electron?.readFile) return;
+        
+        const actionText = isMerge ? "병합(기존 자료 보존하며 합치기)" : "전체 덮어쓰기 복원";
+        const confirm1 = window.confirm(
+            `⚠️ 자동으로 감지된 기존 데이터 파일 [${filePath.split('\\').pop()}]을 통해 ${actionText}을 진행하시겠습니까?`
+        );
+        if (!confirm1) return;
+        
+        showStatus("구버전 데이터 파일을 자동으로 읽어와 병합/복원 준비 중...", "info");
+        try {
+            const result = await (window as any).electron.readFile(filePath);
+            if (!result.success || !result.data) {
+                throw new Error(result.error || "파일 데이터를 읽어올 수 없습니다.");
+            }
+            
+            const json = result.data;
+            if (isMerge) {
+                const preview = db.getMergedPreview(json);
+                if (preview.success) {
+                    setMergeSummary(preview.summary);
+                    setMergedData(preview.mergedData);
+                    setShowMergeModal(true);
+                    showStatus("병합 미리보기가 정상 준비되었습니다.", "success");
+                } else {
+                    showStatus(preview.error || "병합 미리보기를 생성하는 데 실패했습니다.", "error");
+                }
+            } else {
+                const confirmOverwrite = window.confirm(
+                    "🚨 [최종 경고] 정말로 이 구버전 데이터로 전체 복원하시겠습니까?\n현재 시스템의 모든 데이터가 백업 내용으로 대체되어 덮어씌워집니다."
+                );
+                if (!confirmOverwrite) return;
+                
+                showStatus("구버전 데이터로 전체 복원을 진행하는 중...", "info");
+                const success = await db.importData(json);
+                if (success) {
+                    alert("🎉 기존 데이터 전체 복원이 무결하게 완료되었습니다!");
+                    window.location.reload();
+                } else {
+                    showStatus("데이터 가져오기에 실패했습니다. 올바른 형식의 백업 파일인지 확인해주세요.", "error");
+                }
+            }
+        } catch (e: any) {
+            showStatus(`구버전 데이터 처리 실패: ${e.message}`, "error");
+        }
+    };
+
     // Local upload restore
     const handleUploadLocal = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
 
-        const confirmRestore = window.confirm(
-            "⚠️ [경고] 로컬 백업 파일을 업로드하여 복원하시겠습니까?\n" +
-            "업로드 완료 시 현재 데이터가 완전히 덮어씌워지고 화면이 새로고침됩니다."
-        );
-        if (!confirmRestore) return;
-
         const reader = new FileReader();
         reader.onload = async (event) => {
             const json = event.target?.result as string;
-            showStatus("로컬 백업 파일에서 복원하는 중...", "info");
-            try {
-                const success = await db.importData(json);
-                if (success) {
-                    alert("로컬 백업 파일로부터 데이터 복원이 무결하게 완료되었습니다! 시스템을 다시 시작합니다.");
-                    window.location.reload();
+            
+            // 사용자에게 병합 여부를 묻는 선택창
+            const action = window.confirm(
+                "가져오기 방식을 선택해 주세요.\n\n" +
+                "[확인/예] -> 기존 데이터를 보존하면서 합치기 (병합)\n" +
+                "[취소/아니오] -> 기존 데이터를 지우고 덮어쓰기 (전체 복원)"
+            );
+            
+            if (action) {
+                // 병합(합치기) 시나리오
+                const preview = db.getMergedPreview(json);
+                if (preview.success) {
+                    setMergeSummary(preview.summary);
+                    setMergedData(preview.mergedData);
+                    setShowMergeModal(true);
                 } else {
-                    showStatus("데이터 복원에 실패했습니다. 잘못된 백업 JSON 파일입니다.", "error");
+                    showStatus(preview.error || "병합 미리보기를 생성하는 데 실패했습니다.", "error");
                 }
-            } catch (err: any) {
-                showStatus(`복원 실패: ${err.message}`, "error");
+            } else {
+                // 덮어쓰기(전체 복원) 시나리오
+                const confirmOverwrite = window.confirm(
+                    "⚠️ [최종 경고] 정말로 전체 복원하시겠습니까?\n" +
+                    "현재 시스템에 저장된 모든 데이터가 백업 데이터로 대체되어 유실됩니다."
+                );
+                if (!confirmOverwrite) return;
+
+                showStatus("로컬 백업 파일에서 복원하는 중...", "info");
+                try {
+                    const success = await db.importData(json);
+                    if (success) {
+                        alert("데이터 전체 복원이 성공적으로 완료되었습니다! 화면이 새로고침됩니다.");
+                        window.location.reload();
+                    } else {
+                        showStatus("데이터 복원에 실패했습니다. 잘못된 백업 JSON 파일입니다.", "error");
+                    }
+                } catch (err: any) {
+                    showStatus(`복원 실패: ${err.message}`, "error");
+                }
             }
         };
         reader.readAsText(file);
+        // 파일 input 초기화
+        e.target.value = '';
     };
 
     return (
@@ -275,32 +354,54 @@ export const BackupManager: React.FC = () => {
                         </button>
                     </div>
                 </div>
+            </div>
 
-                {/* Sub features overview cards inside banner */}
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6 pt-6 border-t border-slate-700/50">
-                    <div className="flex items-start gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
-                        <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
-                        <div>
-                            <h4 className="text-sm font-bold text-slate-100">100% 무료 클라우드 스토리지</h4>
-                            <p className="text-xs text-slate-400 mt-0.5">Google Cloud의 5GB 스토리지 프리티어를 활용하여 추가 요금 없이 평생 무료로 안전하게 저장됩니다.</p>
+            {/* 📢 컴퓨터 내 구버전/백업 데이터 자동 감지 알림판 */}
+            {isElectron && detectedFiles.length > 0 && (
+                <div className="bg-amber-50 dark:bg-amber-950/20 border-2 border-amber-300 dark:border-amber-900/50 rounded-2xl p-6 shadow-md animate-fade-in flex flex-col gap-4 text-slate-800 dark:text-slate-200">
+                    <div className="flex items-start gap-4">
+                        <div className="w-12 h-12 bg-amber-100 dark:bg-amber-900/50 rounded-2xl flex items-center justify-center text-amber-600 dark:text-amber-300 shrink-0 border border-amber-200/50">
+                            <Database className="w-6 h-6 animate-pulse" />
+                        </div>
+                        <div className="flex-1 space-y-1.5 text-left">
+                            <div className="inline-flex items-center gap-1 bg-amber-100 dark:bg-amber-900/50 text-amber-800 dark:text-amber-300 text-[10px] font-black px-2.5 py-0.5 rounded-md uppercase tracking-wider">
+                                📢 로컬 구버전 데이터 발견됨 (원클릭 자동 연동)
+                            </div>
+                            <h4 className="text-base font-extrabold text-slate-800 dark:text-slate-100">
+                                컴퓨터 내부에서 복구 가능한 이전 데이터 파일이 자동으로 감지되었습니다!
+                            </h4>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                                번거롭게 파일을 직접 찾아서 선택할 필요가 없습니다. 아래 감지된 목록에서 원하시는 복구 방식의 버튼만 클릭하시면 단 1초 만에 데이터가 자동으로 화면에 병합 및 복원됩니다.
+                            </p>
                         </div>
                     </div>
-                    <div className="flex items-start gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
-                        <RefreshCw className="w-5 h-5 text-indigo-400 shrink-0 mt-0.5" />
-                        <div>
-                            <h4 className="text-sm font-bold text-slate-100">하루 1회 완전 자동 실행</h4>
-                            <p className="text-xs text-slate-400 mt-0.5">매일 아침 최초 로그인 시 백업 스케줄러가 백그라운드에서 조용히 실행되어 최신 본을 클라우드에 업로드합니다.</p>
-                        </div>
-                    </div>
-                    <div className="flex items-start gap-3 bg-slate-900/40 p-4 rounded-xl border border-slate-800">
-                        <HardDrive className="w-5 h-5 text-blue-400 shrink-0 mt-0.5" />
-                        <div>
-                            <h4 className="text-sm font-bold text-slate-100">30일 롤링 용량 자동 관리</h4>
-                            <p className="text-xs text-slate-400 mt-0.5">용량 한도를 초과하지 않도록 최근 30개의 백업본만 스마트하게 순환 보관하여 용량이 누적되지 않습니다.</p>
-                        </div>
+                    
+                    <div className="divide-y divide-amber-200/40 dark:divide-amber-900/20 border-t border-amber-200/40 dark:border-amber-900/20 pt-2">
+                        {detectedFiles.map((file) => (
+                            <div key={file.path} className="flex flex-col md:flex-row md:items-center justify-between gap-4 py-3 first:pt-1">
+                                <div className="text-left space-y-1 flex-1 min-w-0">
+                                    <div className="font-bold text-slate-700 dark:text-slate-300 text-sm truncate">{file.name}</div>
+                                    <div className="text-[10px] font-mono text-slate-400 dark:text-slate-500 break-all">경로: {file.path} ({file.size} │ 수정일시: {file.mtime})</div>
+                                </div>
+                                <div className="flex gap-2 shrink-0">
+                                    <button
+                                        onClick={() => handleRestoreDetectedFile(file.path, true)}
+                                        className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-sm hover:shadow-blue-500/10 transition-all active:scale-95"
+                                    >
+                                        이 데이터 자동으로 합치기 (병합)
+                                    </button>
+                                    <button
+                                        onClick={() => handleRestoreDetectedFile(file.path, false)}
+                                        className="bg-amber-600 hover:bg-amber-500 text-white font-bold px-4 py-2 rounded-xl text-xs shadow-sm hover:shadow-amber-500/10 transition-all active:scale-95"
+                                    >
+                                        덮어쓰기 (전체 복원)
+                                    </button>
+                                </div>
+                            </div>
+                        ))}
                     </div>
                 </div>
-            </div>
+            )}
 
             {/* Status Feedback Toast/Banner */}
             {statusMessage && (
@@ -514,30 +615,147 @@ export const BackupManager: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* FAQ & Capacity safety card */}
-                    <div className="bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 space-y-3.5 text-xs transition-colors duration-300">
-                        <h4 className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
-                            <HelpCircle className="w-4 h-4 text-blue-500" />
-                            자주 묻는 질문 & 요금 보증
-                        </h4>
-                        
-                        <div className="space-y-3 leading-relaxed text-slate-600 dark:text-slate-400">
-                            <div>
-                                <span className="font-bold text-slate-800 dark:text-slate-200 block">Q. 정말 돈이 청구되지 않나요?</span>
-                                <span>A. 예, 맞습니다. 당사는 클라우드 백업 시스템 설계 단계부터 **100% 무료 요금(0원)**을 보장하도록 아키텍처를 설계했습니다. JSON 백업은 1회당 수십 KB 수준이며, 30개 한도의 순환 롤링 삭제 정책을 통해 무료 용량(5GB)의 0.3%도 채우지 않습니다.</span>
+                </div>
+            </div>
+            <MergePreviewModal />
+        </div>
+    );
+
+    function MergePreviewModal() {
+        if (!showMergeModal || !mergeSummary) return null;
+
+        const handleConfirmMerge = async () => {
+            if (!mergedData) return;
+            showStatus("병합 데이터를 데이터베이스에 반영하는 중...", "info");
+            try {
+                const success = await db.saveImportedData(mergedData);
+                if (success) {
+                    alert("🎉 기존 데이터 보존 상태에서 데이터 병합이 무결하게 완료되었습니다!");
+                    setShowMergeModal(false);
+                    window.location.reload();
+                } else {
+                    showStatus("데이터 병합 저장에 실패했습니다.", "error");
+                }
+            } catch (err: any) {
+                showStatus(`병합 저장 실패: ${err.message}`, "error");
+            }
+        };
+
+        return (
+            <div className="fixed inset-0 bg-black/70 z-[100] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-200">
+                <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl overflow-hidden border border-slate-200 dark:border-slate-800 flex flex-col h-[70vh] max-h-[70vh] animate-in zoom-in-95 duration-200">
+                    {/* Header */}
+                    <div className="py-4 px-6 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-between items-center flex-none">
+                        <div className="flex items-center gap-2">
+                            <Database className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                            <h3 className="text-lg font-black text-slate-800 dark:text-slate-100">
+                                데이터 병합(Merge) 미리보기 및 검토
+                            </h3>
+                        </div>
+                        <button 
+                            onClick={() => setShowMergeModal(false)}
+                            className="p-1 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-full transition-colors text-xl font-bold"
+                        >
+                            ✕
+                        </button>
+                    </div>
+
+                    {/* Content */}
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar text-sm">
+                        <div className="bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-900/40 rounded-xl p-4 text-blue-800 dark:text-blue-300 leading-relaxed">
+                            💡 <strong>데이터 병합 안내:</strong> 백업 파일 내의 데이터가 현재 데이터베이스에 추가됩니다.
+                            동일한 고유 ID(작업 번호, 고객사명, 직원 이메일 등)를 가진 항목은 <strong>기존 데이터를 우선 보존</strong>(중복 생략) 처리하여 충돌 및 데이터 유실을 방지합니다.
+                        </div>
+
+                        {/* Summary Stats Table */}
+                        <div className="space-y-3">
+                            <h4 className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                                📊 수집 데이터 요약 통계
+                            </h4>
+                            <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                                <table className="w-full border-collapse text-left">
+                                    <thead>
+                                        <tr className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 dark:text-slate-400 text-xs font-bold border-b border-slate-200 dark:border-slate-800">
+                                            <th className="p-3">데이터 분류</th>
+                                            <th className="p-3 text-right">현재 기기</th>
+                                            <th className="p-3 text-right">가져온 본</th>
+                                            <th className="p-3 text-right text-blue-600 dark:text-blue-400">병합 후 합계</th>
+                                            <th className="p-3 text-right text-slate-400">중복 제외</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 dark:divide-slate-800/40 text-slate-700 dark:text-slate-300">
+                                        <tr>
+                                            <td className="p-3 font-semibold">작업 (Jobs)</td>
+                                            <td className="p-3 text-right font-mono">{mergeSummary.jobs.current}건</td>
+                                            <td className="p-3 text-right font-mono">+{mergeSummary.jobs.imported}건</td>
+                                            <td className="p-3 text-right text-blue-600 dark:text-blue-400 font-bold font-mono">{mergeSummary.jobs.merged}건</td>
+                                            <td className="p-3 text-right font-mono text-slate-400">-{mergeSummary.jobs.duplicates}건</td>
+                                        </tr>
+                                        <tr>
+                                            <td className="p-3 font-semibold">거래처 (Clients)</td>
+                                            <td className="p-3 text-right font-mono">{mergeSummary.clients.current}곳</td>
+                                            <td className="p-3 text-right font-mono">+{mergeSummary.clients.imported}곳</td>
+                                            <td className="p-3 text-right text-blue-600 dark:text-blue-400 font-bold font-mono">{mergeSummary.clients.merged}곳</td>
+                                            <td className="p-3 text-right font-mono text-slate-400">-{mergeSummary.clients.duplicates}곳</td>
+                                        </tr>
+                                        <tr>
+                                            <td className="p-3 font-semibold">직원 (Staff)</td>
+                                            <td className="p-3 text-right font-mono">{mergeSummary.staff.current}명</td>
+                                            <td className="p-3 text-right font-mono">+{mergeSummary.staff.imported}명</td>
+                                            <td className="p-3 text-right text-blue-600 dark:text-blue-400 font-bold font-mono">{mergeSummary.staff.merged}명</td>
+                                            <td className="p-3 text-right font-mono text-slate-400">-{mergeSummary.staff.duplicates}명</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
                             </div>
-                            <div>
-                                <span className="font-bold text-slate-800 dark:text-slate-200 block">Q. 자동 백업은 하루에 언제 실행되나요?</span>
-                                <span>A. 하루 한 번, 대표님이나 직원이 브라우저 또는 앱으로 서비스에 최초 접속(로그인)하는 시점에 완벽히 무점검/무자각으로 조용히 실행됩니다.</span>
-                            </div>
-                            <div>
-                                <span className="font-bold text-slate-800 dark:text-slate-200 block">Q. 해킹당해도 복구 가능한가요?</span>
-                                <span>A. 네. 해킹이나 악의적인 편집으로 데이터베이스가 망가졌을 때, 안전한 날짜의 클라우드 백업 목록에서 [복원] 버튼을 한 번만 클릭하면 실시간으로 무결점이 입증된 상태로 즉시 재빌드됩니다.</span>
+                        </div>
+
+                        {/* Product Definitions Settings Comparison */}
+                        <div className="space-y-3">
+                            <h4 className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                                ⚙️ 제품 사양 설정 병합 내역
+                            </h4>
+                            <div className="bg-slate-50 dark:bg-slate-800/40 rounded-xl p-4 border border-slate-200 dark:border-slate-800 space-y-2.5">
+                                <div>
+                                    <span className="text-xs text-slate-400 block font-bold mb-1">현재 등록된 제품군:</span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {mergeSummary.settings.productDefs.map((name: string) => (
+                                            <span key={name} className="px-2 py-0.5 bg-slate-200/60 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded text-xs font-medium border border-slate-300/40">{name}</span>
+                                        ))}
+                                    </div>
+                                </div>
+                                <div className="border-t border-slate-200 dark:border-slate-700/60 pt-2.5">
+                                    <span className="text-xs text-blue-600 dark:text-blue-400 block font-bold mb-1">병합 결과 최종 제품군:</span>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {mergeSummary.settings.mergedProductDefs.map((name: string) => {
+                                            const isNew = !mergeSummary.settings.productDefs.includes(name);
+                                            return (
+                                                <span key={name} className={`px-2 py-0.5 rounded text-xs font-bold border ${isNew ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{name}{isNew && ' [신규]'}</span>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
+
+                    {/* Footer */}
+                    <div className="py-4 px-6 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/40 flex justify-end gap-3 flex-none">
+                        <button 
+                            onClick={() => setShowMergeModal(false)}
+                            className="px-5 py-2.5 bg-white dark:bg-slate-800 hover:bg-slate-100 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl font-bold border border-slate-200 dark:border-slate-700 transition-colors"
+                        >
+                            취소
+                        </button>
+                        <button 
+                            onClick={handleConfirmMerge}
+                            className="px-7 py-2.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all shadow-md shadow-blue-600/10 hover:shadow-blue-500/20"
+                        >
+                            안전하게 병합 및 저장 완료
+                        </button>
+                    </div>
                 </div>
             </div>
-        </div>
-    );
+        );
+    }
 };

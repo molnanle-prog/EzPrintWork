@@ -2,6 +2,7 @@
 import React from 'react';
 import { Job, JobItem } from '../../types';
 import { FileText, Calendar, User, Phone } from 'lucide-react';
+import { formatJobNumber } from '../../services/dataService';
 
 interface JobOrderDocumentProps {
   job: Job;
@@ -18,8 +19,8 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
       ? job.subJobs 
       : [{ id: '1', type: job.type, specs: job.specs }];
 
-  // Pagination Logic: Max 5 items per page
-  const ITEMS_PER_PAGE = 5;
+  // Pagination Logic: Max 3 items per page for vertical safety
+  const ITEMS_PER_PAGE = 3;
   const pages: JobItem[][] = [];
   for (let i = 0; i < allJobItems.length; i += ITEMS_PER_PAGE) {
       pages.push(allJobItems.slice(i, i + ITEMS_PER_PAGE));
@@ -27,36 +28,80 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
 
   return (
     <>
-      <style>{`.export-mode .lift-text { position: relative; top: -8px; display: inline-block; }`}</style>
+      <style>{`
+        /* 화면 미리보기용 기본 스타일 */
+        .printable-document {
+          width: 210mm;
+          margin: 0 auto;
+        }
+        
+        /* 인쇄 시 여백 짤림 방지 및 A4 폭 최적화 */
+        @media print {
+          @page {
+            size: A4;
+            margin: 6mm 8mm 6mm 8mm; /* 상하 6mm, 좌우 8mm 여백을 강제 적용해 기본 프린트 여백에서 짤림 방지 */
+          }
+          body {
+            margin: 0;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          .printable-document {
+            width: 100% !important;
+            max-width: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            box-shadow: none !important;
+            background: transparent !important;
+          }
+          /* 각 A4 페이지 컨테이너 */
+          .page-container {
+            width: 100% !important;
+            height: 280mm !important; /* 마진 제외한 실제 A4 가용 높이 */
+            max-width: 100% !important;
+            max-height: 100% !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            box-sizing: border-box;
+            page-break-after: always;
+            display: flex;
+            flex-direction: column;
+          }
+        }
+        
+        .export-mode .lift-text { 
+          position: relative; 
+          top: -8px; 
+          display: inline-block; 
+        }
+      `}</style>
       <div id={id} className="printable-document">
         {pages.map((pageItems, pageIndex) => {
           // Dynamic Styling Logic based on item count in current page
-          // If items >= 4, switch to "Compact Mode" to fit in one page
           const itemCount = pageItems.length;
-          const isCompact = itemCount >= 4;
+          const isCompact = itemCount >= 3;
 
-          // Dynamic Classes
+          // Dynamic Classes with tight vertical spacing but NO font size reduction
           const styles = {
-              sectionGap: isCompact ? 'mb-2' : 'mb-6',
-              headerMb: isCompact ? 'mb-2 pb-2' : 'mb-6 pb-4',
-              titleText: isCompact ? 'text-xl' : 'text-3xl',
-              subTitleText: isCompact ? 'text-sm' : 'text-lg',
-              infoBoxPadding: isCompact ? 'p-2' : 'p-4',
-              infoLabelText: isCompact ? 'text-sm' : 'text-lg',
-              infoValueText: isCompact ? 'text-xl' : 'text-3xl',
+              sectionGap: isCompact ? 'mb-1.5' : 'mb-3.5',
+              headerMb: isCompact ? 'mb-1.5 pb-1' : 'mb-4 pb-2.5',
+              titleText: 'text-3xl',        // 폰트 크기 고정 (축소 안 함)
+              subTitleText: 'text-lg',      // 폰트 크기 고정
+              infoBoxPadding: isCompact ? 'p-2' : 'p-3',
+              infoLabelText: 'text-lg',     // 폰트 크기 고정
+              infoValueText: 'text-3xl',    // 폰트 크기 고정
               tableHeaderBg: 'bg-slate-100',
-              tableText: isCompact ? 'text-sm' : 'text-lg',
-              tableCellPadding: isCompact ? 'p-1.5' : 'p-2', // Increased padding for 5 items
-              itemHeaderPadding: isCompact ? 'py-1 px-2 text-sm' : 'py-1.5 px-3 text-lg',
-              // Remove margin if using justify-between for filling space
-              itemMargin: isCompact ? '' : 'mb-4', 
-              signatureHeight: isCompact ? 'h-20' : 'h-24'
+              tableText: 'text-lg',         // 폰트 크기 고정
+              tableCellPadding: 'py-1 px-1.5', // 셀 내부 상하 패딩 대폭 압축
+              itemHeaderPadding: 'py-0.5 px-2.5 text-lg', // 헤더 상하 패딩 줄임
+              itemMargin: isCompact ? 'mb-2.5' : 'mb-4', 
+              signatureHeight: isCompact ? 'h-10' : 'h-14' // 서명란 높이 축소
           };
 
           return (
             <div 
               key={pageIndex} 
-              className="bg-white text-black mx-auto flex flex-col relative" 
+              className="page-container bg-white text-black mx-auto flex flex-col relative" 
               style={{ 
                   width: '210mm', 
                   height: '297mm', // Fixed A4 Height
@@ -66,7 +111,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
               }}
             >
               {/* 1. Header */}
-              <div className={`flex justify-between items-center border-b-[4px] border-black flex-none ${styles.headerMb}`}>
+              <div className={`flex justify-between items-center border-b-[3px] border-black flex-none ${styles.headerMb}`}>
                 <div>
                   <h1 className={`font-bold tracking-tight text-black ${isCompact ? 'text-4xl' : 'text-5xl'}`}><span className="lift-text">작업 지시서</span></h1>
                   <p className={`font-bold text-slate-600 mt-1 tracking-widest ${styles.subTitleText}`}>
@@ -74,7 +119,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   </p>
                 </div>
                 <div className="text-right">
-                  <div className={`font-mono font-bold text-black tracking-normal ${isCompact ? 'text-2xl' : 'text-4xl'}`}><span className="lift-text">{job.id}</span></div>
+                  <div className={`font-mono font-bold text-black tracking-normal ${isCompact ? 'text-2xl' : 'text-4xl'}`}><span className="lift-text">{formatJobNumber(job)}</span></div>
                   <div className={`text-slate-600 mt-1 font-bold flex flex-col gap-0.5 text-right leading-tight ${isCompact ? 'text-[11px]' : 'text-[13px]'}`}>
                     <span className="lift-text">접수일: {new Date(job.createdAt).toLocaleDateString('ko-KR').replace(/\.$/, '')}</span>
                     <span className="lift-text">납품일: {new Date(job.dueDate).toLocaleDateString('ko-KR').replace(/\.$/, '')}</span>
@@ -163,28 +208,110 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
 
                                           {/* Case B: Booklet Job (Cover & Inner) */}
                                           {hasInner && (
-                                            <>
-                                                <tr>
-                                                    <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">표지</span></th>
-                                                    <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold align-middle`} colSpan={3}>
-                                                        <span className="lift-text">{item.specs.paperType} {item.specs.paperWeight} / {item.specs.printColor}</span>
-                                                    </td>
-                                                </tr>
-                                                <tr>
-                                                    <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">내지</span></th>
-                                                    <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold align-middle`} colSpan={3}>
-                                                        <span className="lift-text">{item.specs.paperTypeInner} {item.specs.paperWeightInner} / {item.specs.printColorInner}</span>
-                                                    </td>
-                                                </tr>
-                                            </>
+                                            <tr>
+                                                <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">표지</span></th>
+                                                <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold align-middle`} colSpan={3}>
+                                                    <span className="lift-text">
+                                                        {item.specs.paperType} {item.specs.paperWeight} / {item.specs.printColor}
+                                                        {item.specs.hasCoverWing && (
+                                                            <span className="ml-2 bg-red-100 text-red-600 px-1.5 py-0.5 rounded text-xs font-black border border-red-200" style={{ display: 'inline-block', transform: 'translateY(-2px)' }}>
+                                                                ★날개 표지 있음
+                                                            </span>
+                                                        )}
+                                                    </span>
+                                                </td>
+                                            </tr>
                                           )}
+                                          {hasInner && (() => {
+                                              const innerPages = item.specs.innerPages && item.specs.innerPages.length > 0 
+                                                  ? item.specs.innerPages 
+                                                  : [{
+                                                      paperType: item.specs.paperTypeInner || '-',
+                                                      paperWeight: item.specs.paperWeightInner || '',
+                                                      printColor: item.specs.printColorInner || '-',
+                                                      pagesCount: '0'
+                                                    }];
+                                              let innerCount = 0;
+                                              let dividerCount = 0;
+                                              return innerPages.map((ip: any, idx: number) => {
+                                                  if (ip.isDivider) {
+                                                      dividerCount++;
+                                                      return (
+                                                          <tr key={ip.id || idx}>
+                                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}>
+                                                                  <span className="lift-text">간지 {dividerCount}</span>
+                                                              </th>
+                                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold align-middle`} colSpan={3}>
+                                                                  <span className="lift-text">
+                                                                      색상: {ip.dividerColor || '지정안함'} / 수량: {ip.dividerQuantity || '0'}장
+                                                                  </span>
+                                                              </td>
+                                                          </tr>
+                                                      );
+                                                  } else {
+                                                      innerCount++;
+                                                      return (
+                                                          <tr key={ip.id || idx}>
+                                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}>
+                                                                  <span className="lift-text">내지 {innerCount}</span>
+                                                              </th>
+                                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold align-middle`} colSpan={3}>
+                                                                  <span className="lift-text">
+                                                                      {ip.paperType} {ip.paperWeight} / {ip.printColor}
+                                                                      {ip.pagesCount && ip.pagesCount !== '0' && ` (${ip.pagesCount}p)`}
+                                                                  </span>
+                                                              </td>
+                                                          </tr>
+                                                      );
+                                                  }
+                                              });
+                                          })()}
 
-                                          <tr>
-                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">후가공</span></th>
-                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-red-600 align-middle`} colSpan={3}>
-                                                  <span className="lift-text">{item.specs.processing.length > 0 ? item.specs.processing.join(', ') : <span className="text-slate-400">없음</span>}</span>
-                                              </td>
-                                          </tr>
+                                          {hasInner ? (
+                                              <>
+                                                  {item.specs.processing && item.specs.processing.length > 0 && (
+                                                      <tr>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">제본/공통</span></th>
+                                                          <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-slate-700 align-middle`} colSpan={3}>
+                                                              <span className="lift-text">{item.specs.processing.join(', ')}</span>
+                                                          </td>
+                                                      </tr>
+                                                  )}
+                                                  {item.specs.processingCover && item.specs.processingCover.length > 0 && (
+                                                      <tr>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">표지 후가공</span></th>
+                                                          <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-blue-600 align-middle`} colSpan={3}>
+                                                              <span className="lift-text">{item.specs.processingCover.join(', ')}</span>
+                                                          </td>
+                                                      </tr>
+                                                  )}
+                                                  {item.specs.processingInner && item.specs.processingInner.length > 0 && (
+                                                      <tr>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">내지 후가공</span></th>
+                                                          <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-emerald-600 align-middle`} colSpan={3}>
+                                                              <span className="lift-text">{item.specs.processingInner.join(', ')}</span>
+                                                          </td>
+                                                      </tr>
+                                                  )}
+                                                  {(!item.specs.processing || item.specs.processing.length === 0) &&
+                                                   (!item.specs.processingCover || item.specs.processingCover.length === 0) &&
+                                                   (!item.specs.processingInner || item.specs.processingInner.length === 0) && (
+                                                      <tr>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">후가공</span></th>
+                                                          <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-slate-400 align-middle`} colSpan={3}>
+                                                              <span className="lift-text">없음</span>
+                                                          </td>
+                                                      </tr>
+                                                  )}
+                                              </>
+                                          ) : (
+                                              <tr>
+                                                  <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">후가공</span></th>
+                                                  <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-red-600 align-middle`} colSpan={3}>
+                                                      <span className="lift-text">{item.specs.processing && item.specs.processing.length > 0 ? item.specs.processing.join(', ') : <span className="text-slate-400">없음</span>}</span>
+                                                  </td>
+                                              </tr>
+                                          )}
                                           {item.specs.memo && (
                                               <tr>
                                                   <th className={`bg-yellow-50 border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}>

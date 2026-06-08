@@ -7,6 +7,7 @@ import { JobStatusItem } from './JobStatusItem';
 import { InstructionPanel } from './InstructionPanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { ClientContactModal } from '../common/ClientContactModal';
 import { AdBanner } from '../common/AdBanner';
@@ -22,6 +23,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const { currentUser } = useAuth();
   const { showConfirm, showAlert } = useDialog();
+  const { theme } = useTheme();
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [contactingJob, setContactingJob] = useState<Job | null>(null);
@@ -29,6 +31,69 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     return localStorage.getItem('ezprint_tv_mode') === 'true';
   });
+
+  const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
+  const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
+
+  const handleDragStart = (e: React.DragEvent, jobId: string) => {
+    e.dataTransfer.setData("text/plain", jobId);
+    setDraggedJobId(jobId);
+  };
+
+  const handleDragOver = (e: React.DragEvent, jobId: string) => {
+    e.preventDefault();
+    if (draggedJobId && draggedJobId !== jobId) {
+      setDragOverJobId(jobId);
+    }
+  };
+
+  const handleDragLeave = () => {
+    setDragOverJobId(null);
+  };
+
+  const handleDrop = async (e: React.DragEvent, targetJobId: string) => {
+    e.preventDefault();
+    setDragOverJobId(null);
+    const draggedId = e.dataTransfer.getData("text/plain") || draggedJobId;
+    if (!draggedId || draggedId === targetJobId) return;
+
+    const allJobs = db.getAllJobs();
+    const draggedJob = allJobs.find(j => j.id === draggedId);
+    if (!draggedJob) return;
+
+    let activeJobs = db.getActiveJobs().sort((a, b) => {
+      if (a.order !== b.order) return a.order - b.order;
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+    });
+
+    const draggedIndex = activeJobs.findIndex(j => j.id === draggedId);
+    const targetIndex = activeJobs.findIndex(j => j.id === targetJobId);
+
+    if (draggedIndex === -1 || targetIndex === -1) return;
+
+    const newActiveJobs = [...activeJobs];
+    newActiveJobs.splice(draggedIndex, 1);
+    newActiveJobs.splice(targetIndex, 0, draggedJob);
+
+    newActiveJobs.forEach((job, index) => {
+      job.order = index;
+    });
+
+    let newAllJobs = [...allJobs];
+    newActiveJobs.forEach(aj => {
+      const idx = newAllJobs.findIndex(j => j.id === aj.id);
+      if (idx !== -1) {
+        newAllJobs[idx] = aj;
+      }
+    });
+
+    try {
+      await db.saveJobs(newAllJobs);
+    } catch (error) {
+      showAlert(getErrorMessage(error));
+    }
+    setDraggedJobId(null);
+  };
 
   useEffect(() => {
     const handleTvModeChange = (e: Event) => {
@@ -97,16 +162,10 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
     }
   }
 
-  // Helper: Sort jobs strictly by Priority then Due Date
+  // Helper: Sort jobs by Order first, then fallback to Created Date
   const sortedJobs = [...jobs].sort((a, b) => {
-    // 1. Sort by Priority (Very Urgent > Urgent > Normal)
-    const prioScore = { [Priority.VERY_URGENT]: 3, [Priority.URGENT]: 2, [Priority.NORMAL]: 1 };
-    if (prioScore[a.priority] !== prioScore[b.priority]) {
-      return prioScore[b.priority] - prioScore[a.priority]; // Descending score
-    }
-    
-    // 2. Sort by Due Date (Sooner first)
-    return new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime();
+    if (a.order !== b.order) return a.order - b.order;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
 
   // Empty template for new job
@@ -139,13 +198,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
     <div className="flex flex-col h-full overflow-hidden relative">
       <div className="flex flex-col lg:flex-row flex-1 gap-2 lg:gap-3 overflow-hidden">
         {/* Main Area: Job Status Board */}
-      <div className="flex-1 flex flex-col min-w-0 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
+      <div className={`flex-1 flex flex-col min-w-0 rounded-xl shadow-sm border overflow-hidden transition-colors ${theme === 'trello' ? 'bg-[#152238] border-[#2c3e56]' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
         {/* Header */}
         {!isTvMode && (
-        <div className="p-2 lg:p-3 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850 flex justify-between items-center flex-none">
+        <div className={`p-2 lg:p-3 border-b flex justify-between items-center flex-none ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850'}`}>
           <div className="flex items-center gap-4">
             <div>
-              <h2 className="text-base lg:text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+              <h2 className={`text-base lg:text-lg font-bold flex items-center gap-2 ${theme === 'trello' ? 'text-slate-300' : 'text-slate-800 dark:text-slate-100'}`}>
                 <span className="w-2 lg:w-2.5 h-5 lg:h-7 bg-gradient-to-b from-red-500 to-blue-600 rounded-sm"></span>
                 실시간 작업 상황판
               </h2>
@@ -153,11 +212,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
           </div>
           <div className="flex gap-1.5 items-center">
              <div className="hidden sm:flex gap-1.5 text-[11px] lg:text-xs font-bold mr-1">
-               <div className="flex items-center gap-1 px-2 py-0.5 bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 rounded-lg border border-red-100 dark:border-red-800 transition-colors">
+               <div className={`flex items-center gap-1 px-2 py-0.5 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-100 dark:border-red-800'}`}>
                   <AlertCircle size={12} />
                   <span>긴급: {jobs.filter(j => j.priority !== Priority.NORMAL).length}</span>
                </div>
-               <div className="flex items-center gap-1 px-2 py-0.5 bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-lg border border-blue-100 dark:border-blue-800 transition-colors">
+               <div className={`flex items-center gap-1 px-2 py-0.5 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-100 dark:border-blue-800'}`}>
                   <Clock size={12} />
                   <span>진행: {jobs.filter(j => j.status !== 'DELIVERY').length}</span>
                </div>
@@ -208,7 +267,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
         )}
 
         {/* List Content */}
-        <div className="flex-1 overflow-y-auto p-2 space-y-1.5 bg-slate-50/50 dark:bg-slate-900/50 custom-scrollbar">
+        <div className={`flex-1 overflow-y-auto p-2 space-y-1.5 custom-scrollbar ${theme === 'trello' ? 'bg-[#152238]' : 'bg-slate-50/50 dark:bg-slate-900/50'}`}>
           {sortedJobs.length === 0 && (
              <div className="flex flex-col items-center justify-center h-full text-slate-400">
                 <p>현재 진행 중인 작업이 없습니다.</p>
@@ -220,10 +279,15 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
              return (
                <div 
                  key={job.id} 
-                 className={`${isMyJob ? "relative" : ""} cursor-pointer`}
+                 className={`${isMyJob ? "relative" : ""} cursor-pointer transition-all ${dragOverJobId === job.id ? 'border-t-4 border-t-blue-500 scale-[1.01]' : ''}`}
                  onClick={() => { setSelectedJob(job); setJobModalViewMode('summary'); }}
                  onContextMenu={(e) => { e.preventDefault(); setSelectedJob(job); setJobModalViewMode('edit'); }}
                  title="클릭하여 상세 정보 보기"
+                 draggable
+                 onDragStart={(e) => handleDragStart(e, job.id)}
+                 onDragOver={(e) => handleDragOver(e, job.id)}
+                 onDragLeave={handleDragLeave}
+                 onDrop={(e) => handleDrop(e, job.id)}
                >
                  {isMyJob && (
                    <div className="absolute -left-1 top-2 bottom-2 w-1 bg-blue-600 rounded-r-md z-10 shadow-sm"></div>

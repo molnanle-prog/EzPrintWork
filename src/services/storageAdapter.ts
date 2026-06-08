@@ -14,6 +14,7 @@ interface StorageResult<T> {
 
 class StorageAdapter {
     private isElectron: boolean;
+    private hasHelper: boolean = false;
 
     constructor() {
         // window.electron 객체가 존재하면 데스크탑 앱으로 판단
@@ -22,6 +23,19 @@ class StorageAdapter {
             console.log("StorageAdapter: Running in Electron Mode 🖥️");
         } else {
             console.log("StorageAdapter: Running in Web Mode 🌐");
+            this.checkHelper();
+        }
+    }
+
+    private async checkHelper() {
+        try {
+            const res = await fetch('http://127.0.0.1:23230/get-documents-path');
+            if (res.ok) {
+                this.hasHelper = true;
+                console.log("StorageAdapter: Local helper server detected! 🚀");
+            }
+        } catch (e) {
+            this.hasHelper = false;
         }
     }
 
@@ -38,6 +52,24 @@ class StorageAdapter {
             } catch (e: any) {
                 console.error(`[Electron] Failed to save ${key}:`, e);
                 return { success: false, error: e.message };
+            }
+        } else if (this.hasHelper) {
+            // Web with Helper: 헬퍼 서버를 통해 로컬 파일로 저장
+            try {
+                const res = await fetch('http://127.0.0.1:23230/save-file', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path: key, content: jsonString })
+                });
+                if (!res.ok) throw new Error("Helper server response not ok");
+                const result = await res.json();
+                if (!result.success) throw new Error(result.error);
+                return { success: true };
+            } catch (e: any) {
+                console.error(`[Helper] Failed to save ${key}:`, e);
+                // Fallback to localStorage
+                localStorage.setItem(key, jsonString);
+                return { success: true };
             }
         } else {
             // Web: LocalStorage 저장
@@ -68,6 +100,29 @@ class StorageAdapter {
                 return { success: true, data: parsed };
             } catch (e: any) {
                 return { success: false, error: e.message };
+            }
+        } else if (this.hasHelper) {
+            // Web with Helper: 헬퍼 서버를 통해 로컬 파일 읽기
+            try {
+                const res = await fetch(`http://127.0.0.1:23230/read-file?path=${encodeURIComponent(key)}`);
+                if (!res.ok) throw new Error("Helper server response not ok");
+                const result = await res.json();
+                if (!result.success || !result.data) {
+                    return { success: false, error: result.error || 'No data' };
+                }
+                const parsed = JSON.parse(result.data) as T;
+                return { success: true, data: parsed };
+            } catch (e: any) {
+                console.error(`[Helper] Failed to load ${key}:`, e);
+                // Fallback to localStorage
+                try {
+                    const item = localStorage.getItem(key);
+                    if (!item) return { success: false, error: 'Not found' };
+                    const parsed = JSON.parse(item) as T;
+                    return { success: true, data: parsed };
+                } catch (err: any) {
+                    return { success: false, error: err.message };
+                }
             }
         } else {
             // Web: LocalStorage 읽기

@@ -5,6 +5,7 @@ import { Job, Staff, Priority, JobStatusDefinition, JobHistoryLog } from '../../
 import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanColumn } from './KanbanColumn';
 import { useAuth } from '../../contexts/AuthContext';
+import { useTheme } from '../../contexts/ThemeContext';
 import { useDialog } from '../../contexts/DialogContext';
 import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv } from 'lucide-react';
 import { toast } from 'sonner';
@@ -33,6 +34,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const { currentUser, tenantPlan } = useAuth();
+  const { theme } = useTheme();
   const { showAlert, showConfirm } = useDialog();
 
   // 스마트 실시간 필터 상태
@@ -262,7 +264,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
   const handleCreateJob = async (newJob: Job) => {
     try {
-        await db.addJob(newJob);
+        const allJobs = db.getAllJobs();
+        const columnJobs = allJobs.filter(j => j.status === newJob.status);
+        const maxOrder = columnJobs.reduce((max, j) => (j.order > max ? j.order : max), 0);
+        
+        const jobWithOrder = {
+            ...newJob,
+            order: maxOrder + 1
+        };
+
+        await db.addJob(jobWithOrder);
         setIsCreatingJob(false);
     } catch (error) {
         showAlert(getErrorMessage(error));
@@ -393,7 +404,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const newJobTemplate = { ...emptyJob, status: defaultStatus };
 
   return (
-    <div className="flex flex-col h-full bg-slate-50 dark:bg-slate-900/40">
+    <div className={`flex flex-col h-full ${theme === "trello" ? "bg-[#1d2d44]" : "bg-slate-50 dark:bg-slate-900/40"}`}>
       <style>{`
         input[type="date"]::-webkit-calendar-picker-indicator {
           background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%231e293b' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'%3E%3C/rect%3E%3Cline x1='16' y1='2' x2='16' y2='6'%3E%3C/line%3E%3Cline x1='8' y1='2' x2='8' y2='6'%3E%3C/line%3E%3Cline x1='3' y1='10' x2='21' y2='10'%3E%3C/line%3E%3C/svg%3E");
@@ -409,7 +420,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
       {/* Header Controls */}
       {!isTvMode && (
-        <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between p-3.5 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/90 shadow-sm shrink-0">
+        <div className={`flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between p-3.5 border-b shadow-sm shrink-0 ${theme === "trello" ? "bg-[#152238]/90 border-[#22334b] text-white shadow-md" : "bg-white dark:bg-slate-900/90 border-slate-200 dark:border-slate-800"}`}>
         <div className="flex flex-wrap gap-2 items-center flex-1 min-w-0">
           {/* Real-time search bar */}
           <div className="relative flex items-center w-full sm:w-48 md:w-56 lg:w-64 transition-all duration-300 focus-within:sm:w-56 focus-within:md:w-64 focus-within:lg:w-72">

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { MessageCircle, X, Send, User, Bell, Users, Volume2, VolumeX, ArrowLeft, Moon, Sun, MessageSquare, AlertTriangle } from 'lucide-react';
+import { MessageCircle, X, Send, User, Bell, Users, Volume2, VolumeX, ArrowLeft, Moon, Sun, MessageSquare, AlertTriangle, Palette, Trello } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { ChatMessage, Staff } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
@@ -21,7 +21,7 @@ export const ChatWidget: React.FC = () => {
   
   const mountTime = useRef(Date.now());
   const { currentUser } = useAuth();
-  const { isDarkMode, toggleTheme } = useTheme();
+  const { theme, toggleTheme } = useTheme();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
@@ -45,6 +45,8 @@ export const ChatWidget: React.FC = () => {
     // Create Audio Element
     audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
   }, []);
+
+
 
   useEffect(() => {
     // Initial Load
@@ -590,14 +592,22 @@ export const ChatWidget: React.FC = () => {
             <button 
               onClick={toggleTheme}
               className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95 border
-                ${isDarkMode 
-                  ? 'bg-slate-800 border-slate-600 text-yellow-400 hover:bg-slate-700' 
-                  : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                ${theme === 'dark' 
+                  ? 'bg-slate-800 border-slate-700 text-yellow-400 hover:bg-slate-700' 
+                  : theme === 'trello'
+                    ? 'bg-[#0079bf] border-[#0067a3] text-white hover:bg-[#0067a3]'
+                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                 }
               `}
-              title={isDarkMode ? "라이트 모드로 전환" : "다크 모드로 전환"}
+              title={
+                theme === 'light' 
+                  ? "다크 모드로 전환" 
+                  : theme === 'dark' 
+                    ? "트렐로 모드로 전환" 
+                    : "라이트 모드로 전환"
+              }
             >
-              {isDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+              {theme === 'light' ? <Moon size={18} /> : theme === 'dark' ? <Trello size={18} /> : <Sun size={18} />}
             </button>
 
             <button 

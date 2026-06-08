@@ -1,51 +1,46 @@
-
 import React, { createContext, useContext, useState, useEffect } from 'react';
 
+export type Theme = 'light' | 'dark' | 'trello';
+
 interface ThemeContextType {
-  isDarkMode: boolean;
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
+  isDarkMode: boolean;
 }
 
 const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 export const ThemeProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Default state is now true (Dark) to match the logic below ensuring initial render matches
-  const [isDarkMode, setIsDarkMode] = useState(true);
+  const [theme, setThemeState] = useState<Theme>('dark');
+
+  const applyTheme = (newTheme: Theme) => {
+    const root = document.documentElement;
+    root.classList.remove('light', 'dark', 'trello');
+    root.classList.add(newTheme);
+    localStorage.setItem('pm_theme', newTheme);
+    setThemeState(newTheme);
+  };
 
   useEffect(() => {
-    // Check local storage
-    const savedTheme = localStorage.getItem('pm_theme');
-    
-    // Logic: Default to Dark unless 'light' is explicitly saved
-    // If savedTheme is null (first visit), this block goes to else -> Dark Mode
-    if (savedTheme === 'light') {
-      setIsDarkMode(false);
-      document.documentElement.classList.remove('dark');
+    const savedTheme = localStorage.getItem('pm_theme') as Theme | null;
+    if (savedTheme === 'light' || savedTheme === 'dark' || savedTheme === 'trello') {
+      applyTheme(savedTheme);
     } else {
-      // Default to Dark
-      setIsDarkMode(true);
-      document.documentElement.classList.add('dark');
-      // If it was null, we could optionally save 'dark' here, but leaving it null allows us to change defaults later if needed.
-      // However, for consistency, we assume 'dark' is the default state.
+      applyTheme('dark'); // Default to dark
     }
   }, []);
 
   const toggleTheme = () => {
-    setIsDarkMode((prev) => {
-      const newMode = !prev;
-      if (newMode) {
-        document.documentElement.classList.add('dark');
-        localStorage.setItem('pm_theme', 'dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-        localStorage.setItem('pm_theme', 'light');
-      }
-      return newMode;
-    });
+    let nextTheme: Theme = 'light';
+    if (theme === 'light') nextTheme = 'dark';
+    else if (theme === 'dark') nextTheme = 'trello';
+    else if (theme === 'trello') nextTheme = 'light';
+    applyTheme(nextTheme);
   };
 
   return (
-    <ThemeContext.Provider value={{ isDarkMode, toggleTheme }}>
+    <ThemeContext.Provider value={{ theme, setTheme: applyTheme, toggleTheme, isDarkMode: theme === 'dark' }}>
       {children}
     </ThemeContext.Provider>
   );

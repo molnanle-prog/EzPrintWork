@@ -2,6 +2,7 @@
 import React from 'react';
 import { Job, Priority, Staff, JobStatusDefinition } from '../../types';
 import { CheckCircle2, User, Calendar, AlertTriangle, Phone, MessageCircle, Layers, Users } from 'lucide-react';
+import { useTheme } from '../../contexts/ThemeContext';
 
 interface JobStatusItemProps {
   job: Job;
@@ -11,6 +12,8 @@ interface JobStatusItemProps {
 }
 
 export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, statusDefinitions, onContact }) => {
+  const { theme } = useTheme();
+  
   const getStatusStepIndex = (statusKey: string) => {
     return statusDefinitions.findIndex(def => def.key === statusKey);
   };
@@ -40,28 +43,34 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
   // Determine Container Styles
-  let containerStyles = "bg-white dark:bg-slate-700 border rounded-xl p-2 md:p-2.5 transition-all hover:shadow-lg shadow-sm group";
+  let containerStyles = "border rounded-xl p-2 md:p-2.5 transition-all hover:shadow-lg shadow-sm group";
   let priorityBadgeStyles = "bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300";
   let dateTextStyles = "";
 
-  if (job.priority === Priority.VERY_URGENT) {
-    containerStyles += " bg-red-50 dark:bg-red-900/20 flowing-border-red-sm shadow-sm";
-    priorityBadgeStyles = "bg-red-600 text-white shadow-sm";
-  } else if (job.priority === Priority.URGENT) {
-    containerStyles += " bg-red-50/50 dark:bg-red-900/10 flowing-border-orange-sm shadow-sm";
-    priorityBadgeStyles = "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800";
+  if (theme === 'trello') {
+    containerStyles += " bg-[#1d2d44] border-[#2c3e56] text-slate-200 hover:border-[#384c66]";
+    priorityBadgeStyles = "bg-[#2c3e56] text-slate-300 border-[#384c66]";
   } else {
-    if (daysRemaining < 0 && !isDone) {
-       containerStyles += " bg-slate-50 dark:bg-slate-800 flowing-border-red-sm shadow-sm";
-       dateTextStyles = "text-slate-800 dark:text-slate-200 font-extrabold";
-    } else if (daysRemaining <= 1 && !isDone) {
-       containerStyles += " bg-orange-50/50 dark:bg-orange-900/10 flowing-border-orange-sm shadow-sm";
-       dateTextStyles = "text-red-600 dark:text-red-400 font-bold";
-    } else if (daysRemaining <= 3) {
-       containerStyles += " bg-white dark:bg-slate-700 border-slate-400 dark:border-slate-500 border transition-all hover:shadow-lg shadow-sm";
-       dateTextStyles = "text-orange-600 dark:text-orange-400 font-bold";
+    containerStyles += " bg-white dark:bg-slate-700";
+    if (job.priority === Priority.VERY_URGENT) {
+      containerStyles += " bg-red-50 dark:bg-red-900/20 flowing-border-red-sm shadow-sm";
+      priorityBadgeStyles = "bg-red-600 text-white shadow-sm";
+    } else if (job.priority === Priority.URGENT) {
+      containerStyles += " bg-red-50/50 dark:bg-red-900/10 flowing-border-orange-sm shadow-sm";
+      priorityBadgeStyles = "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800";
     } else {
-       containerStyles += " bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 border transition-all hover:shadow-lg shadow-sm";
+      if (daysRemaining < 0 && !isDone) {
+         containerStyles += " bg-slate-50 dark:bg-slate-800 flowing-border-red-sm shadow-sm";
+         dateTextStyles = "text-slate-800 dark:text-slate-200 font-extrabold";
+      } else if (daysRemaining <= 1 && !isDone) {
+         containerStyles += " bg-orange-50/50 dark:bg-orange-900/10 flowing-border-orange-sm shadow-sm";
+         dateTextStyles = "text-red-600 dark:text-red-400 font-bold";
+      } else if (daysRemaining <= 3) {
+         containerStyles += " border-slate-400 dark:border-slate-500 border transition-all hover:shadow-lg shadow-sm";
+         dateTextStyles = "text-orange-600 dark:text-orange-400 font-bold";
+      } else {
+         containerStyles += " border-slate-200 dark:border-slate-600 border transition-all hover:shadow-lg shadow-sm";
+      }
     }
   }
 
@@ -95,7 +104,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
                         <Layers size={10} /> +{subJobCount}
                     </span>
                 ) : (
-                    <span className="text-[10px] text-slate-500 dark:text-slate-300 font-medium bg-slate-100 dark:bg-slate-600 px-1 py-0.5 rounded border border-slate-200 dark:border-slate-500 whitespace-nowrap">
+                    <span className={`text-[10px] font-medium px-1 py-0.5 rounded border whitespace-nowrap ${theme === 'trello' ? 'text-slate-300 bg-[#2c3e56]/50 border-[#384c66]' : 'text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-600 border-slate-200 dark:border-slate-500'}`}>
                         {job.type}
                     </span>
                 )}
@@ -103,16 +112,16 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
 
               {/* Title & Client */}
               <div className="flex items-baseline gap-1.5 min-w-0">
-                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate leading-tight" title={job.title}>
+                  <h3 className={`text-sm font-bold truncate leading-tight ${theme === 'trello' ? 'text-slate-100' : 'text-slate-800 dark:text-slate-100'}`} title={job.title}>
                     {job.title}
                   </h3>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate hidden sm:inline">- {job.clientName}</span>
-                  <span className="text-[11px] text-slate-500 dark:text-slate-400 truncate sm:hidden block">{job.clientName}</span>
+                  <span className={`text-[11px] truncate hidden sm:inline ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>- {job.clientName}</span>
+                  <span className={`text-[11px] truncate sm:hidden block ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>{job.clientName}</span>
               </div>
            </div>
 
            {/* Right Group: Staff, Contact, Date */}
-           <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400 shrink-0 ml-auto sm:ml-0 bg-slate-50/50 dark:bg-slate-800/50 rounded-lg py-0.5 px-1.5">
+           <div className={`flex items-center gap-2 text-[11px] shrink-0 ml-auto sm:ml-0 rounded-lg py-0.5 px-1.5 ${theme === 'trello' ? 'text-slate-300 bg-[#152238]/60' : 'text-slate-500 dark:text-slate-400 bg-slate-50/50 dark:bg-slate-800/50'}`}>
               {/* Staff - Modified to show ALL staff */}
               <div className="flex items-center gap-1.5" title="담당자">
                 {assignedStaff.length > 0 ? (
@@ -121,7 +130,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
                             <React.Fragment key={s.id}>
                                 <div className="flex items-center gap-1">
                                     <img src={s.avatarUrl} className="w-4 h-4 rounded-full border border-slate-200" alt="" />
-                                    <span className="font-medium text-slate-600 dark:text-slate-300">{s.name}</span>
+                                    <span className={`font-medium ${theme === 'trello' ? 'text-slate-200' : 'text-slate-600 dark:text-slate-300'}`}>{s.name}</span>
                                 </div>
                                 {idx < assignedStaff.length - 1 && <span className="text-slate-300">,</span>}
                             </React.Fragment>

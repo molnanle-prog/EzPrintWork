@@ -9,7 +9,9 @@ contextBridge.exposeInMainWorld('electron', {
     saveFile: (path, content) => ipcRenderer.invoke('save-file', { path, content }),
     readFile: (path) => ipcRenderer.invoke('read-file', path),
     exists: (path) => ipcRenderer.invoke('exists', path),
+    checkDirectoryStatus: (path) => ipcRenderer.invoke('check-directory-status', path),
     getDocumentsPath: () => ipcRenderer.invoke('get-documents-path'),
+    findLegacyDbFiles: () => ipcRenderer.invoke('find-legacy-db-files'),
     minimize: () => ipcRenderer.send('window-minimize'),
     maximize: () => ipcRenderer.send('window-maximize'),
     close: () => ipcRenderer.send('window-close')
