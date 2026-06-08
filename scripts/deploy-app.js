@@ -2,10 +2,6 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-// Ensure portable node is in PATH so spawned npm scripts can find 'node'
-const portableNodeDir = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable';
-process.env.PATH = `${portableNodeDir};${process.env.PATH}`;
-
 // 색상 출력을 위한 헬퍼
 const colors = {
   reset: '\x1b[0m',
@@ -21,27 +17,11 @@ function log(message, color = colors.reset) {
 }
 
 function runCommand(command, cwd) {
-  const nodeExe = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable\\node.exe';
-  const npmCli = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable\\node_modules\\npm\\bin\\npm-cli.js';
-  const npxCli = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable\\node_modules\\npm\\bin\\npx-cli.js';
-
-  let translated = command;
-  if (command.startsWith('npm ')) {
-    translated = `"${nodeExe}" "${npmCli}" ${command.substring(4)}`;
-  } else if (command.startsWith('npx ')) {
-    translated = `"${nodeExe}" "${npxCli}" ${command.substring(4)}`;
-  } else if (command.startsWith('node ')) {
-    translated = `"${nodeExe}" ${command.substring(5)}`;
-  }
-
-  log(`\n> 실행 중: ${translated}`, colors.cyan);
+  log(`\n> 실행 중: ${command}`, colors.cyan);
   try {
-    const output = execSync(translated, { stdio: 'pipe', cwd });
-    console.log(output.toString());
+    execSync(command, { stdio: 'inherit', cwd });
   } catch (error) {
-    log(`[에러 발생] 명령어 실행 실패: ${translated}`, colors.red);
-    if (error.stdout) console.log(error.stdout.toString());
-    if (error.stderr) console.error(error.stderr.toString());
+    log(`[에러 발생] 명령어 실행 실패: ${command}`, colors.red);
     process.exit(1);
   }
 }
@@ -170,7 +150,7 @@ async function main() {
 
   // 5. 구글 파이어베이스 호스팅 업로드
   log('\n[5/5] 구글 파이어베이스 클라우드로 최종 업로드(배포) 중...', colors.yellow);
-  runCommand('node C:\\Users\\user\\Desktop\\EZPRIN~1\\EzPrintWork\\node_modules\\firebase-tools\\lib\\bin\\firebase.js deploy --only hosting', homepageDir);
+  runCommand('npx -y firebase-tools deploy --only hosting', homepageDir);
 
   log('\n===================================================', colors.bold + colors.green);
   log('   🎉 [성공] 앱 다운로드 링킹 및 실시간 홈페이지 업로드 완료!', colors.bold + colors.green);

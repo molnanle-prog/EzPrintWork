@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw } from 'lucide-react';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
 import { CompletedJobSearchModal } from './kanban/CompletedJobSearchModal';
@@ -33,12 +33,17 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
         case 'synced':
             icon = <CheckCircle2 size={14} />;
             color = 'text-emerald-400';
-            title = '클라우드 동기화 완료';
+            title = '데이터베이스 연결됨';
+            break;
+        case 'connecting':
+            icon = <Loader2 size={14} className="animate-spin" />;
+            color = 'text-blue-400';
+            title = '네트워크 연결 중...';
             break;
         case 'disconnected':
         default:
             icon = <CloudOff size={14} />;
-            color = 'text-slate-400';
+            color = 'text-rose-400';
             title = '서버 연결 끊김';
             break;
     }
@@ -51,6 +56,81 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
         <div className={`flex items-center gap-2 px-3.5 py-2 text-sm rounded-lg bg-slate-800 ${color}`} title={title}>
             {icon}
             <span className="font-bold">{title}</span>
+        </div>
+    );
+};
+
+const ReconnectOverlay: React.FC = () => {
+    const [status, setStatus] = useState(db.getSyncStatus());
+    const [isRetrying, setIsRetrying] = useState(false);
+    const isConfigured = db.isDbPathConfigured();
+
+    useEffect(() => {
+        const unsubscribe = db.subscribe(() => {
+            setStatus(db.getSyncStatus());
+        });
+        return () => unsubscribe();
+    }, []);
+
+    const handleRetry = async () => {
+        setIsRetrying(true);
+        try {
+            await db.init();
+            await db.setTenant('dev-tenant-id');
+        } catch (e) {
+            console.error("Manual retry failed:", e);
+        } finally {
+            setTimeout(() => setIsRetrying(false), 1000);
+        }
+    };
+
+    if (!isConfigured || status !== 'disconnected') return null;
+
+    return (
+        <div className="fixed inset-0 bg-slate-900/80 z-[9999] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
+            <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border border-slate-200 dark:border-slate-700 text-center space-y-6">
+                <div className="flex justify-center">
+                    <div className="relative">
+                        <div className="w-16 h-16 bg-rose-100 dark:bg-rose-950/30 rounded-full flex items-center justify-center text-rose-600 dark:text-rose-400 border border-rose-200/50">
+                            <CloudOff size={32} className="animate-bounce" style={{ animationDuration: '2.5s' }} />
+                        </div>
+                        <div className="absolute top-0 right-0 w-4 h-4 bg-yellow-500 rounded-full border-2 border-white dark:border-slate-800 animate-ping" />
+                    </div>
+                </div>
+                <div className="space-y-2">
+                    <h3 className="text-xl font-black text-slate-800 dark:text-slate-100">
+                        네트워크(NAS) 연결이 끊겼습니다
+                    </h3>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
+                        설정된 공유 폴더(NAS) 경로에 접근할 수 없습니다.<br/>
+                        네트워크 케이블이나 NAS의 전원 상태를 확인해 주세요.<br/>
+                        연결이 복구되면 프로그램이 자동으로 재개됩니다.
+                    </p>
+                </div>
+                <div className="flex flex-col gap-2 pt-2">
+                    <div className="flex items-center justify-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 py-2.5 rounded-lg border border-blue-100 dark:border-blue-900/40">
+                        <Loader2 size={14} className="animate-spin" />
+                        5초 간격으로 자동 재연결을 시도하고 있습니다...
+                    </div>
+                    <button
+                        onClick={handleRetry}
+                        disabled={isRetrying}
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800/50 text-white py-2.5 rounded-xl font-bold shadow-md text-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                    >
+                        {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                        즉시 재연결 시도
+                    </button>
+                    <button
+                        onClick={() => {
+                            localStorage.removeItem('ezpw_custom_db_path');
+                            window.location.reload();
+                        }}
+                        className="w-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 py-2.5 rounded-xl font-bold text-xs transition-all active:scale-95"
+                    >
+                        기본 저장 폴더로 리셋 (내 문서 경로로 초기화)
+                    </button>
+                </div>
+            </div>
         </div>
     );
 };
@@ -539,6 +619,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             />
         </div>
       )}
+      <ReconnectOverlay />
     </div>
   );
 };

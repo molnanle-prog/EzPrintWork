@@ -180,7 +180,9 @@ export class DataService {
     };
     
     private listeners: (() => void)[] = [];
-    private syncStatus: 'synced' | 'disconnected' | 'error' = 'disconnected';
+    private syncStatus: 'synced' | 'connecting' | 'disconnected' = 'disconnected';
+    private reconnectTimer: any = null;
+    private lastLoadedMtime: Record<string, number> = {};
     private isReady = false;
 
     getSyncStatus() { return this.syncStatus; }
@@ -315,7 +317,28 @@ export class DataService {
 
     private async startSyncing() {
         if (!this.tenantId) return;
-        this.syncStatus = 'synced';
+        
+        const isCustom = this.isDbPathConfigured();
+        if (isCustom) {
+            this.syncStatus = 'connecting';
+            this.notify();
+
+            const check = await this.checkDirectoryStatus(this.basePath);
+            if (!check.success) {
+                console.warn(`[DataService] Custom DB path is inaccessible: ${this.basePath}. Retrying...`);
+                this.syncStatus = 'disconnected';
+                this.notify();
+                this.scheduleReconnect();
+                return;
+            }
+        } else {
+            this.syncStatus = 'synced';
+        }
+
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
         
         const collections = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'settings'];
         
@@ -323,6 +346,9 @@ export class DataService {
             const res = await storage.load<any[]>(this.getFilePath(col));
             if (res.success && res.data) {
                 this.data[col] = res.data;
+                if (res.mtime) {
+                    this.lastLoadedMtime[col] = res.mtime;
+                }
             }
         }
 
@@ -473,7 +499,109 @@ export class DataService {
             return;
         }
 
-        await storage.save(this.getFilePath(colName), this.data[colName]);
+        const isCustom = this.isDbPathConfigured();
+        if (isCustom) {
+            const check = await this.checkDirectoryStatus(this.basePath);
+            if (!check.success) {
+                console.error(`[DataService] Failed to save ${colName}: Directory inaccessible. Start reconnecting...`);
+                this.syncStatus = 'disconnected';
+                this.notify();
+                this.scheduleReconnect();
+                toast.error("네트워크(NAS) 연결이 끊겼습니다. 저장 작업이 보류되고 재연결을 시도합니다.");
+                return;
+            }
+        }
+
+        const filePath = this.getFilePath(colName);
+
+        // [동시 편집 충돌 방지 및 실시간 병합 장치]
+        if (typeof window !== 'undefined') {
+            let diskStats: { success: boolean; mtime?: number } = { success: false };
+            let diskData: any[] = [];
+
+            if ((window as any).electron) {
+                const exists = await (window as any).electron.exists(filePath);
+                if (exists) {
+                    const readRes = await (window as any).electron.readFile(filePath);
+                    if (readRes.success) {
+                        diskStats = { success: true, mtime: readRes.mtime };
+                        try {
+                            diskData = JSON.parse(readRes.data);
+                        } catch (e) {}
+                    }
+                }
+            } else {
+                try {
+                    const res = await fetch(`http://127.0.0.1:23230/read-file?path=${encodeURIComponent(filePath)}`);
+                    if (res.ok) {
+                        const readRes = await res.json();
+                        if (readRes.success) {
+                            diskStats = { success: true, mtime: readRes.mtime };
+                            diskData = JSON.parse(readRes.data);
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            const lastMtime = this.lastLoadedMtime[colName];
+            if (diskStats.success && diskStats.mtime && lastMtime && diskStats.mtime > lastMtime) {
+                console.warn(`[DataCollision] Conflict detected for '${colName}'. Merging disk & local data...`);
+                
+                if (colName === 'settings') {
+                    const localSettings = this.data[colName][0] || {};
+                    const diskSettings = diskData[0] || {};
+                    this.data[colName] = [{ ...diskSettings, ...localSettings }];
+                } else {
+                    const mergedMap = new Map();
+                    // 1. 디스크에 저장된 최신 데이터를 먼저 채웁니다 (다른 사람의 신규/수정 내역 보존)
+                    diskData.forEach(item => {
+                        if (item && item.id) mergedMap.set(item.id, item);
+                    });
+                    // 2. 내 로컬 메모리의 변경 사항을 덮어씌웁니다 (나의 신규/수정 내역 반영)
+                    this.data[colName].forEach(item => {
+                        if (item && item.id) {
+                            const diskItem = mergedMap.get(item.id);
+                            if (diskItem) {
+                                // 두 사용자가 동일 항목을 수정한 경우, updatedAt 시간 비교
+                                const diskTime = diskItem.updatedAt ? new Date(diskItem.updatedAt).getTime() : 0;
+                                const localTime = item.updatedAt ? new Date(item.updatedAt).getTime() : 0;
+                                if (localTime >= diskTime) {
+                                    mergedMap.set(item.id, { ...diskItem, ...item });
+                                } else {
+                                    mergedMap.set(item.id, { ...item, ...diskItem });
+                                }
+                            } else {
+                                mergedMap.set(item.id, item);
+                            }
+                        }
+                    });
+                    this.data[colName] = Array.from(mergedMap.values());
+                }
+                toast.info(`다른 사용자가 수정한 데이터가 발견되어 안전하게 병합 저장되었습니다 (${colName})`);
+            }
+        }
+
+        const saveRes = await storage.save(filePath, this.data[colName]);
+        
+        // 저장 성공 시 새로운 mtime을 반영
+        if (saveRes.success && typeof window !== 'undefined') {
+            if ((window as any).electron) {
+                const readRes = await (window as any).electron.readFile(filePath);
+                if (readRes.success && readRes.mtime) {
+                    this.lastLoadedMtime[colName] = readRes.mtime;
+                }
+            } else {
+                try {
+                    const res = await fetch(`http://127.0.0.1:23230/read-file?path=${encodeURIComponent(filePath)}`);
+                    if (res.ok) {
+                        const readRes = await res.json();
+                        if (readRes.success && readRes.mtime) {
+                            this.lastLoadedMtime[colName] = readRes.mtime;
+                        }
+                    }
+                } catch (e) {}
+            }
+        }
     }
 
     subscribe(listener: () => void) {
@@ -482,6 +610,15 @@ export class DataService {
     }
 
     private notify() { this.listeners.forEach(l => l()); }
+
+    private scheduleReconnect() {
+        if (this.reconnectTimer) return;
+        this.reconnectTimer = setTimeout(async () => {
+            this.reconnectTimer = null;
+            console.log("[DataService] Attempting to reconnect database...");
+            await this.startSyncing();
+        }, 5000);
+    }
 
     // --- SaaS Methods ---
     async createTenant(name: string, ownerUid: string, businessNumber?: string, joinCode?: string): Promise<string> {

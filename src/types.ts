@@ -260,7 +260,7 @@ export interface AuthData {
 // --- Electron Bridge ---
 export interface IElectronAPI {
   saveFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
-  readFile: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string }>;
+  readFile: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string; mtime?: number }>;
   checkPath: (path: string) => Promise<boolean>;
   checkFileExists: (path: string) => Promise<boolean>; 
   exists: (path: string) => Promise<boolean>;

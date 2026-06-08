@@ -94,6 +94,32 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
+// --- 드라이브 문자 -> 원격 UNC 경로 자동 변환 헬퍼 함수 ---
+function resolveUncPath(localPath) {
+    if (!localPath) return localPath;
+    const match = localPath.match(/^([A-Za-z]):\\(.*)/);
+    if (!match) return localPath;
+    
+    const drive = match[1].toUpperCase() + ':';
+    const relativePath = match[2];
+    
+    try {
+        const { execSync } = require('child_process');
+        const output = execSync(`net use ${drive}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
+        const remoteMatch = output.match(/(?:Remote name|원격 이름)\s+([^\r\n]+)/i);
+        if (remoteMatch) {
+            const uncBase = remoteMatch[1].trim();
+            // Windows 경로 백슬래시 슬래시 구분선 안전 결합
+            const joined = path.join(uncBase, relativePath);
+            console.log(`[UNC Resolver] Resolved ${localPath} -> ${joined}`);
+            return joined;
+        }
+    } catch (e) {
+        // Fail silent, return original
+    }
+    return localPath;
+}
+
 // --- 폴더 연결 및 권한 검사 헬퍼 함수 ---
 async function checkDirectoryStatusHelper(dirPath) {
     if (!dirPath) return { success: false, error: '경로가 지정되지 않았습니다.' };
@@ -144,8 +170,9 @@ function startLocalServer() {
                     properties: ['openFile', 'openDirectory']
                 });
                 const selectedPath = canceled ? '' : filePaths[0];
+                const resolved = resolveUncPath(selectedPath);
                 res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                res.end(JSON.stringify({ path: selectedPath }));
+                res.end(JSON.stringify({ path: resolved }));
             } else if (reqUrl.pathname === '/open') {
                 const targetPath = reqUrl.searchParams.get('path');
                 if (!targetPath) {
@@ -164,16 +191,21 @@ function startLocalServer() {
                     return;
                 }
                 let data = null;
+                let mtime = null;
                 if (fs.existsSync(targetPath)) {
+                    const stats = fs.statSync(targetPath);
                     data = fs.readFileSync(targetPath, 'utf8');
+                    mtime = stats.mtimeMs;
                 } else if (targetPath.endsWith('.json')) {
                     // 자가 치유: 확장자 없는 레거시 파일 마이그레이션 (.json으로 로드 시도할 때 확장자 없는 파일이 있으면 마이그레이션)
                     const noExtPath = targetPath.slice(0, -5);
                     if (fs.existsSync(noExtPath)) {
                         console.log(`[Self-Healing HTTP] Migrating extensionless file: ${noExtPath} -> ${targetPath}`);
                         try {
+                            const stats = fs.statSync(noExtPath);
                             data = fs.readFileSync(noExtPath, 'utf8');
                             fs.writeFileSync(targetPath, data, 'utf8');
+                            mtime = stats.mtimeMs;
                         } catch (err) {
                             console.error(`[Self-Healing HTTP] Migration failed:`, err);
                         }
@@ -182,7 +214,7 @@ function startLocalServer() {
 
                 if (data !== null) {
                     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ success: true, data }));
+                    res.end(JSON.stringify({ success: true, data, mtime }));
                 } else {
                     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
                     res.end(JSON.stringify({ success: false, error: 'ENOENT' }));
@@ -256,7 +288,7 @@ ipcMain.handle('select-directory', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
         properties: ['openDirectory']
     });
-    return canceled ? null : filePaths[0];
+    return canceled ? null : resolveUncPath(filePaths[0]);
 });
 
 // 2. 파일 또는 폴더 선택 (작업 등록용)
@@ -278,7 +310,7 @@ ipcMain.handle('create-database-file', async (event, content) => {
     });
     if (canceled || !filePath) return null;
     
-    let finalPath = filePath;
+    let finalPath = resolveUncPath(filePath);
     // .json.json 이중 확장자 결합 방지 보정
     if (finalPath.toLowerCase().endsWith('.json.json')) {
         finalPath = finalPath.slice(0, -5);
@@ -329,17 +361,19 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
 ipcMain.handle('read-file', async (event, filePath) => {
     try {
         if (fs.existsSync(filePath)) {
+            const stats = fs.statSync(filePath);
             const data = fs.readFileSync(filePath, 'utf8');
-            return { success: true, data };
+            return { success: true, data, mtime: stats.mtimeMs };
         }
         // 자가 치유: 확장자 없는 레거시 파일 마이그레이션 (.json 파일 요청 시 확장자 없는 파일 자동 로드 및 복사)
         if (filePath.endsWith('.json')) {
             const noExtPath = filePath.slice(0, -5);
             if (fs.existsSync(noExtPath)) {
                 console.log(`[Self-Healing] Migrating extensionless database file: ${noExtPath} -> ${filePath}`);
+                const stats = fs.statSync(noExtPath);
                 const data = fs.readFileSync(noExtPath, 'utf8');
                 fs.writeFileSync(filePath, data, 'utf8');
-                return { success: true, data };
+                return { success: true, data, mtime: stats.mtimeMs };
             }
         }
         return { success: false, error: 'ENOENT' };

@@ -10,6 +10,7 @@ interface StorageResult<T> {
     success: boolean;
     data?: T;
     error?: string;
+    mtime?: number;
 }
 
 class StorageAdapter {
@@ -97,7 +98,7 @@ class StorageAdapter {
                     return { success: false, error: result.error || 'No data' };
                 }
                 const parsed = JSON.parse(result.data) as T;
-                return { success: true, data: parsed };
+                return { success: true, data: parsed, mtime: result.mtime };
             } catch (e: any) {
                 return { success: false, error: e.message };
             }
@@ -111,7 +112,7 @@ class StorageAdapter {
                     return { success: false, error: result.error || 'No data' };
                 }
                 const parsed = JSON.parse(result.data) as T;
-                return { success: true, data: parsed };
+                return { success: true, data: parsed, mtime: result.mtime };
             } catch (e: any) {
                 console.error(`[Helper] Failed to load ${key}:`, e);
                 // Fallback to localStorage
