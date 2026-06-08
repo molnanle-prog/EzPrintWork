@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, getErrorMessage } from '../../services/dataService';
 import { Staff, JoinRequest } from '../../types';
-import { User, Phone, Check, X, Shield, Trash2, Edit2, Smartphone, Briefcase, Building2, Hash, Mail, Calendar, UserPlus, Clock } from 'lucide-react';
+import { User, Phone, Check, X, Shield, Trash2, Edit2, Smartphone, Briefcase, Building2, Hash, Mail, Calendar, UserPlus, Clock, Lock } from 'lucide-react';
 import { StaffModal } from './StaffModal';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
@@ -34,6 +34,9 @@ export const StaffManager: React.FC = () => {
   const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
   const [editingStaff, setEditingStaff] = useState<Staff | null>(null);
   const { showConfirm, showAlert } = useDialog();
+  const [deletingAdminStaff, setDeletingAdminStaff] = useState<Staff | null>(null);
+  const [adminPasswordInput, setAdminPasswordInput] = useState('');
+  const [passwordError, setPasswordError] = useState('');
 
   const isAtLimit = tenantPlan === 'free' && staffList.length >= 3;
 
@@ -81,33 +84,88 @@ export const StaffManager: React.FC = () => {
   };
 
   const handleDelete = async (id: string, name: string) => {
-    if (await showConfirm(`'${name}' 직원을 정말 삭제하시겠습니까?\n\n삭제하더라도 과거 작업 내역의 담당자 기록은 유지됩니다.`)) {
-      try {
-          const staff = staffList.find(s => s.id === id);
-          await db.deleteStaff(id);
+    const staff = staffList.find(s => s.id === id);
+    if (!staff) return;
 
-          // 구글 시트 직원 삭제 웹훅 전송
-          if (staff) {
-              try {
-                  const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-                  const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
-                  await fetch(GAS_WEBHOOK_URL, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                      body: JSON.stringify({
-                          action: "delete_staff",
-                          companyName,
-                          loginId: pureId,
-                          staffName: staff.name
-                      })
-                  });
-              } catch (err) {
-                  console.error("Google Sheets Sync Error (delete_staff):", err);
-              }
-          }
-      } catch (error) {
-          showAlert(getErrorMessage(error));
+    const isAdminRole = staff.role === 'admin' || staff.role === '대표자' || staff.role === '관리자';
+
+    if (isAdminRole) {
+      // 관리자 계정 삭제 시 비밀번호 확인 모달 표시
+      setDeletingAdminStaff(staff);
+      setAdminPasswordInput('');
+      setPasswordError('');
+    } else {
+      // 일반 사원 삭제 확인창
+      if (await showConfirm(`'${name}' 직원을 정말 삭제하시겠습니까?\n\n삭제하더라도 과거 작업 내역의 담당자 기록은 유지됩니다.`)) {
+        try {
+            await db.deleteStaff(id);
+
+            // 구글 시트 직원 삭제 웹훅 전송
+            try {
+                const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+                const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+                await fetch(GAS_WEBHOOK_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                    body: JSON.stringify({
+                        action: "delete_staff",
+                        companyName,
+                        loginId: pureId,
+                        staffName: staff.name
+                    })
+                });
+            } catch (err) {
+                console.error("Google Sheets Sync Error (delete_staff):", err);
+            }
+        } catch (error) {
+            showAlert(getErrorMessage(error));
+        }
       }
+    }
+  };
+
+  const handleConfirmDeleteAdmin = async () => {
+    if (!deletingAdminStaff) return;
+
+    const correctPassword = deletingAdminStaff.password || '';
+    if (!correctPassword) {
+      setPasswordError('해당 관리자 계정의 비밀번호가 설정되어 있지 않습니다.');
+      return;
+    }
+
+    if (adminPasswordInput.trim().toLowerCase() !== correctPassword.trim().toLowerCase()) {
+      setPasswordError('비밀번호가 일치하지 않습니다.');
+      return;
+    }
+
+    try {
+      const id = deletingAdminStaff.id;
+      const name = deletingAdminStaff.name;
+      await db.deleteStaff(id);
+
+      // 구글 시트 직원 삭제 웹훅 전송
+      try {
+          const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+          const pureId = deletingAdminStaff.loginId?.includes('@') ? deletingAdminStaff.loginId.split('@')[0] : (deletingAdminStaff.loginId || '');
+          await fetch(GAS_WEBHOOK_URL, {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+              body: JSON.stringify({
+                  action: "delete_staff",
+                  companyName,
+                  loginId: pureId,
+                  staffName: name
+              })
+          });
+      } catch (err) {
+          console.error("Google Sheets Sync Error (delete_staff):", err);
+      }
+
+      setDeletingAdminStaff(null);
+      setAdminPasswordInput('');
+      setPasswordError('');
+    } catch (error) {
+      showAlert(getErrorMessage(error));
     }
   };
 
@@ -477,14 +535,12 @@ export const StaffManager: React.FC = () => {
                 </div>
 
                 <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-700 flex gap-2">
-                {/* 본인 계정 또는 대표자 계정(ADMIN)인 경우 비활성화 및 삭제 제어 원천 잠금 */}
+                {/* 본인 계정인 경우 비활성화 및 삭제 제어 원천 잠금 */}
                 {staff.id === currentUser?.uid || 
                  staff.uid === currentUser?.uid || 
-                 (staff.email && currentUser?.email && staff.email.toLowerCase() === currentUser.email.toLowerCase()) ||
-                 staff.role === 'admin' || 
-                 staff.role === '대표자' ? (
+                 (staff.email && currentUser?.email && staff.email.toLowerCase() === currentUser.email.toLowerCase()) ? (
                     <div className="flex-1 py-2 px-3 bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 rounded-lg text-xs font-black flex items-center justify-center gap-1.5 border border-blue-100 dark:border-blue-900 w-full">
-                        <Shield size={14} /> {staff.id === currentUser?.uid || staff.uid === currentUser?.uid || (staff.email && currentUser?.email && staff.email.toLowerCase() === currentUser.email.toLowerCase()) ? '본인 계정 (보호 상태)' : '대표자 계정 (보호 상태)'}
+                        <Shield size={14} /> 본인 계정 (보호 상태)
                     </div>
                 ) : (
                     <>
@@ -555,6 +611,58 @@ export const StaffManager: React.FC = () => {
             isOpen={isUpgradeModalOpen}
             onClose={() => setIsUpgradeModalOpen(false)}
         />
+
+        {deletingAdminStaff && (
+            <div className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+                <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-xl w-full max-w-sm overflow-hidden border border-slate-200 dark:border-slate-700 p-6 text-center animate-in zoom-in-95 duration-200">
+                    <div className="w-12 h-12 bg-red-100 dark:bg-red-950/20 text-red-600 dark:text-red-400 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <Lock size={24} />
+                    </div>
+                    <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-2">관리자 계정 삭제 비밀번호 확인</h3>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
+                        '{deletingAdminStaff.name}' 관리자 계정을 삭제하려면<br/>
+                        해당 관리자의 비밀번호를 입력해 주세요.
+                    </p>
+                    <input
+                        type="password"
+                        value={adminPasswordInput}
+                        onChange={(e) => {
+                            setAdminPasswordInput(e.target.value);
+                            setPasswordError('');
+                        }}
+                        placeholder="비밀번호 입력"
+                        className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-center font-bold tracking-widest focus:ring-2 focus:ring-blue-500 focus:bg-white dark:focus:bg-slate-800 transition-all outline-none text-slate-900 dark:text-slate-100 mb-2"
+                        onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                                handleConfirmDeleteAdmin();
+                            }
+                        }}
+                        autoFocus
+                    />
+                    {passwordError && (
+                        <p className="text-red-500 text-xs font-bold mb-4">{passwordError}</p>
+                    )}
+                    <div className="flex gap-3">
+                        <button
+                            onClick={() => {
+                                setDeletingAdminStaff(null);
+                                setAdminPasswordInput('');
+                                setPasswordError('');
+                            }}
+                            className="flex-1 py-3 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 rounded-xl font-bold transition-colors"
+                        >
+                            취소
+                        </button>
+                        <button
+                            onClick={handleConfirmDeleteAdmin}
+                            className="flex-1 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold transition-colors"
+                        >
+                            확인
+                        </button>
+                    </div>
+                </div>
+            </div>
+        )}
     </>
   );
 };

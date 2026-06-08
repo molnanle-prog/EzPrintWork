@@ -51,6 +51,12 @@ public/downloads/*.zip
 *.log
 *.log*
 build_error.txt
+build_error_utf8.txt
+build_output.txt
+build_output_utf8.txt
+diff_utf8.txt
+firebase.exe
 search_temp.js
 search_temp2.js
+
 

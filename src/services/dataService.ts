@@ -325,6 +325,17 @@ export class DataService {
                 this.data[col] = res.data;
             }
         }
+
+        // 춘천인쇄 데이터 접근 시 임의 관리자(dev-admin) 계정 자동 삭제
+        const hasChuncheon = this.data['staff']?.some((s: any) => s.companyName === '춘천인쇄');
+        if (hasChuncheon) {
+            const originalLength = this.data['staff'] ? this.data['staff'].length : 0;
+            this.data['staff'] = (this.data['staff'] || []).filter((s: any) => s.id !== 'dev-admin');
+            if (this.data['staff'].length !== originalLength) {
+                console.log("[DataService] Chuncheon Print database accessed: Automatically deleted 'dev-admin' account.");
+                await this.saveCollection('staff');
+            }
+        }
         
         const settings = this.data['settings']?.[0];
         if (settings) {

@@ -2,6 +2,10 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// Ensure portable node is in PATH so spawned npm scripts can find 'node'
+const portableNodeDir = 'C:\\Users\\user\\Desktop\\EZPRIN~1\\node_portable';
+process.env.PATH = `${portableNodeDir};${process.env.PATH}`;
+
 // 색상 출력을 위한 헬퍼
 const colors = {
   reset: '\x1b[0m',
@@ -32,9 +36,12 @@ function runCommand(command, cwd) {
 
   log(`\n> 실행 중: ${translated}`, colors.cyan);
   try {
-    execSync(translated, { stdio: 'inherit', cwd });
+    const output = execSync(translated, { stdio: 'pipe', cwd });
+    console.log(output.toString());
   } catch (error) {
     log(`[에러 발생] 명령어 실행 실패: ${translated}`, colors.red);
+    if (error.stdout) console.log(error.stdout.toString());
+    if (error.stderr) console.error(error.stderr.toString());
     process.exit(1);
   }
 }
