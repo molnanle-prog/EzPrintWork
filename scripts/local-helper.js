@@ -10,8 +10,8 @@ function resolveUncPath(uncPath) {
 }
 
 function selectDirectory() {
-    // PowerShell을 사용한 윈도우 네이티브 폴더 선택창 호출
-    const cmd = `powershell -Command "[System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms') | Out-Null; $g = New-Object System.Windows.Forms.FolderBrowserDialog; $g.ShowNewFolderButton = $true; if ($g.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $g.SelectedPath } else { '' }"`;
+    // Shell.Application COM 개체를 이용해 스레드 모델(STA) 제약 없이 안정적으로 폴더 선택창 호출
+    const cmd = `powershell -Command "$app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, '저장할 폴더를 선택해 주세요.', 0, 17); if ($folder) { $folder.Self.Path } else { '' }"`;
     try {
         const result = execSync(cmd).toString().trim();
         return result;
