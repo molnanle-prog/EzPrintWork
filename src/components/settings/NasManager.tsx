@@ -332,7 +332,7 @@ export const NasManager: React.FC = () => {
                           </div>
                       </div>
                       <a 
-                          href="/downloads/EzPrintWork-Setup.zip" 
+                          href="/downloads/EzPrintWork-Helper.zip" 
                           download
                           className="shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black shadow-md shadow-amber-500/10 transition-all active:scale-95 whitespace-nowrap"
                       >

@@ -751,8 +751,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                                 <button 
                                     onClick={() => {
                                         const link = document.createElement('a');
-                                        link.href = '/downloads/EzPrintWork-Setup.zip';
-                                        link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                        link.href = '/downloads/EzPrintWork-Helper.zip';
+                                        link.setAttribute('download', 'EzPrintWork-Helper.zip');
                                         document.body.appendChild(link);
                                         link.click();
                                         document.body.removeChild(link);
@@ -761,8 +761,8 @@ IconFile=https://ez-hub.kr/favicon.ico
                                 >
                                     <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
                                     <div className="flex flex-col items-start leading-tight text-left">
-                                        <span className="text-[14px] font-black">PC 전용 앱 다운로드 (.zip)</span>
-                                        <span className="text-[10px] text-blue-200/85 font-medium tracking-tight">Squircle 아이콘 & 프레임리스 (압축 해제 후 즉시 사용)</span>
+                                        <span className="text-[14px] font-black">초경량 연동 도우미 다운로드 (.zip)</span>
+                                        <span className="text-[10px] text-blue-200/85 font-medium tracking-tight">웹형 로컬 공유 폴더(NAS) 동기화용 헬퍼 앱 (약 20MB)</span>
                                     </div>
                                 </button>
                             </div>

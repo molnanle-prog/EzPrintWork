@@ -438,8 +438,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Setup.zip';
-                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                link.href = '/downloads/EzPrintWork-Helper.zip';
+                                link.setAttribute('download', 'EzPrintWork-Helper.zip');
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);
@@ -557,8 +557,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Setup.zip';
-                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                link.href = '/downloads/EzPrintWork-Helper.zip';
+                                link.setAttribute('download', 'EzPrintWork-Helper.zip');
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);
@@ -587,8 +587,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Setup.zip';
-                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                link.href = '/downloads/EzPrintWork-Helper.zip';
+                                link.setAttribute('download', 'EzPrintWork-Helper.zip');
                                 document.body.appendChild(link);
                                 link.click();
                                 document.body.removeChild(link);
