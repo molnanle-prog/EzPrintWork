@@ -64,8 +64,8 @@ export const NasManager: React.FC = () => {
       try {
           let finalPath = typeof inputPath === 'string' ? inputPath : config.path;
           
-          if (isElectron && !finalPath) {
-              const selectedPath = await window.electron.selectDirectory();
+          if (!finalPath && (isElectron || hasHelper)) {
+              const selectedPath = await db.selectDirectory();
               if (selectedPath) finalPath = selectedPath;
           }
 
@@ -94,8 +94,8 @@ export const NasManager: React.FC = () => {
       try {
           let finalPath = typeof inputPath === 'string' ? inputPath : config.dbPath || '';
           
-          if (isElectron && !finalPath) {
-              const selectedPath = await window.electron.selectDirectory();
+          if (!finalPath && (isElectron || hasHelper)) {
+              const selectedPath = await db.selectDirectory();
               if (selectedPath) finalPath = selectedPath;
           }
 
@@ -141,6 +141,32 @@ export const NasManager: React.FC = () => {
                   for (const [col, data] of Object.entries(collections)) {
                       const filePath = `${newBasePath}${col}.json`;
                       const result = await window.electron.saveFile(filePath, JSON.stringify(data, null, 2));
+                      if (!result.success) {
+                          throw new Error(`파일 이전 실패 (${col}.json): ${result.error}`);
+                      }
+                  }
+              } else if (hasHelper) {
+                  const collections = {
+                      'jobs': allJobs,
+                      'staff': allStaff,
+                      'clients': allClients,
+                      'quotes': allQuotes,
+                      'instructions': allInstructions,
+                      'messages': allMessages,
+                      'leaves': allLeaves,
+                      'papers': allPapers,
+                      'settings': [currentSettings]
+                  };
+                  
+                  for (const [col, data] of Object.entries(collections)) {
+                      const filePath = `${newBasePath}${col}.json`;
+                      const res = await fetch('http://127.0.0.1:23230/save-file', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ path: filePath, content: JSON.stringify(data, null, 2) })
+                      });
+                      if (!res.ok) throw new Error(`${col}.json 헬퍼 마이그레이션 실패`);
+                      const result = await res.json();
                       if (!result.success) {
                           throw new Error(`파일 이전 실패 (${col}.json): ${result.error}`);
                       }
@@ -354,10 +380,22 @@ export const NasManager: React.FC = () => {
                           className="flex-1 bg-transparent border-none focus:ring-0 text-sm font-mono text-slate-700 dark:text-slate-300 placeholder:text-slate-300 outline-none"
                           placeholder="인쇄 원본 파일 등이 보관될 NAS 또는 로컬 공유 폴더 경로"
                       />
+                      {isAdmin && (isElectron || hasHelper) && (
+                          <button 
+                              onClick={async () => {
+                                  const selected = await db.selectDirectory();
+                                  if (selected) setConfig(prev => ({ ...prev, path: selected }));
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors shrink-0"
+                              title="폴더 선택"
+                          >
+                              <FolderOpen size={16} />
+                          </button>
+                      )}
                       {isAdmin && (
                           <button 
                               onClick={() => handleSetupSharedFolder(config.path)}
-                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all whitespace-nowrap active:scale-95"
+                              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-all whitespace-nowrap active:scale-95 shrink-0"
                           >
                               저장
                           </button>
@@ -397,10 +435,22 @@ export const NasManager: React.FC = () => {
                           className="flex-1 bg-transparent border-none focus:ring-0 text-sm font-mono text-slate-700 dark:text-slate-300 placeholder:text-slate-300 outline-none"
                           placeholder="데이터베이스 파일(jobs.json 등)이 보관될 폴더 경로"
                       />
+                      {isAdmin && (isElectron || hasHelper) && (
+                          <button 
+                              onClick={async () => {
+                                  const selected = await db.selectDirectory();
+                                  if (selected) setConfig(prev => ({ ...prev, dbPath: selected }));
+                              }}
+                              className="p-1.5 text-slate-400 hover:text-indigo-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors shrink-0"
+                              title="폴더 선택"
+                          >
+                              <FolderOpen size={16} />
+                          </button>
+                      )}
                       {isAdmin && (
                           <button 
                               onClick={() => handleSetupDatabaseFolder(config.dbPath)}
-                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-750 text-white rounded-lg text-xs font-bold transition-all whitespace-nowrap active:scale-95"
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-750 text-white rounded-lg text-xs font-bold transition-all whitespace-nowrap active:scale-95 shrink-0"
                           >
                               저장 및 이전
                           </button>
@@ -432,7 +482,7 @@ export const NasManager: React.FC = () => {
           {isAdmin && (
               <div className="flex flex-wrap justify-between gap-4 pt-3 border-t border-slate-100 dark:border-slate-700">
                   <div className="flex gap-4">
-                      {isElectron && (
+                      {(isElectron || hasHelper) && (
                           <>
                               <button 
                                   onClick={() => handleSetupSharedFolder()}
