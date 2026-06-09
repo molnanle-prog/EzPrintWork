@@ -84,6 +84,8 @@ const ReconnectOverlay: React.FC = () => {
         }
     };
 
+    const isElectron = typeof window !== 'undefined' && !!(window as any).electron;
+    if (!isElectron) return null; // 웹 브라우저 환경에서는 전체 화면 차단 오버레이를 띄우지 않습니다.
     if (!isConfigured || status !== 'disconnected') return null;
 
     return (
