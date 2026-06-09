@@ -19,9 +19,12 @@ function log(message, color = colors.reset) {
 function runCommand(command, cwd) {
   log(`\n> 실행 중: ${command}`, colors.cyan);
   try {
-    execSync(command, { stdio: 'inherit', cwd });
+    const output = execSync(command, { stdio: 'pipe', cwd });
+    console.log(output.toString());
   } catch (error) {
     log(`[에러 발생] 명령어 실행 실패: ${command}`, colors.red);
+    if (error.stdout) console.log(error.stdout.toString());
+    if (error.stderr) console.error(error.stderr.toString());
     process.exit(1);
   }
 }
@@ -50,8 +53,9 @@ function copyFolderSync(from, to) {
 }
 
 async function main() {
+  const os = require('os');
   const currentDir = path.resolve(__dirname, '..');
-  const homepageDir = path.resolve(currentDir, '..', 'ez-hub-homepage');
+  const homepageDir = path.join(os.homedir(), 'Desktop', 'ez-hub-homepage');
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const downloadsDir = path.join(homepageDir, 'public', 'downloads');
   const distDir = path.join(currentDir, 'dist');
@@ -81,8 +85,12 @@ async function main() {
   log('* 이 작업은 다소 시간이 소요될 수 있습니다 (약 30초~1분)...', colors.cyan);
   runCommand('npx electron-builder', currentDir);
 
+  // 2-1. 초경량 연동 도우미 단독 실행파일 빌드
+  log('\n[2-1/5] 웹형 접속자 전용 초경량 연동 도우미 (.exe) 컴파일 중...', colors.yellow);
+  runCommand('npx -y pkg scripts/local-helper.js --targets node18-win-x64 --output release/EzPrintWork-Helper.exe', currentDir);
+
   // 3. 빌드된 설치 파일 감지 및 리네임하여 홈페이지 다운로드 폴더로 이식
-  log('\n[3/5] 빌드된 설치 파일을 홈페이지 다운로드 디렉토리로 연동 중...', colors.yellow);
+  log('\n[3/5] 빌드된 설치 파일 및 헬퍼를 홈페이지 다운로드 디렉토리로 연동 중...', colors.yellow);
   try {
     if (!fs.existsSync(downloadsDir)) {
       fs.mkdirSync(downloadsDir, { recursive: true });
@@ -118,7 +126,7 @@ async function main() {
     }
 
     const files = fs.readdirSync(releaseDir);
-    const setupFile = files.find(f => f.endsWith('.exe') && f.includes('EzPrintWork'));
+    const setupFile = files.find(f => f.endsWith('.exe') && f.includes('EzPrintWork') && !f.includes('Helper'));
 
     if (setupFile) {
       const sourcePath = path.join(releaseDir, setupFile);
@@ -159,6 +167,33 @@ async function main() {
       }
     } else {
       throw new Error('release 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.');
+    }
+
+    // 초경량 연동 도우미(Helper) 압축 이식 처리
+    const helperFile = files.find(f => f.endsWith('.exe') && f.includes('EzPrintWork-Helper'));
+    if (helperFile) {
+      const sourceHelperPath = path.join(releaseDir, helperFile);
+      const targetHelperPath = path.join(downloadsDir, 'EzPrintWork-Helper.zip');
+      
+      log(`* 감지된 헬퍼 파일: ${helperFile}`, colors.cyan);
+      
+      if (fs.existsSync(targetHelperPath)) {
+        try {
+          fs.unlinkSync(targetHelperPath);
+        } catch (e) {}
+      }
+      
+      log('* 초경량 연동 도우미를 초고속 Zip 파일로 압축 중...', colors.cyan);
+      execSync(`powershell -Command "Compress-Archive -Path '${sourceHelperPath}' -DestinationPath '${targetHelperPath}' -Force"`);
+      log('✓ 초경량 연동 도우미 Zip 압축 및 링킹 완료!', colors.green);
+      
+      // 혹시 복사되었을 수 있는 exe는 삭제 처리
+      const targetHelperExe = path.join(downloadsDir, 'EzPrintWork-Helper.exe');
+      if (fs.existsSync(targetHelperExe)) {
+        try {
+          fs.unlinkSync(targetHelperExe);
+        } catch (e) {}
+      }
     }
 
     // 웹앱용 리액트 소스도 이식

@@ -187,6 +187,18 @@ export class DataService {
 
     getSyncStatus() { return this.syncStatus; }
 
+    getIsElectron(): boolean {
+        return storage.getIsElectron();
+    }
+
+    getHasHelper(): boolean {
+        return storage.getHasHelper();
+    }
+
+    async refreshHelperStatus(): Promise<boolean> {
+        return await storage.refreshHelperStatus();
+    }
+
     isDbPathConfigured(): boolean {
         if (typeof window === 'undefined') return false;
         const isElectron = typeof window !== 'undefined' && !!(window as any).electron;
@@ -209,6 +221,25 @@ export class DataService {
             }
         }
         return { success: false, error: '데스크톱 앱 도우미 또는 로컬 서버 연결이 비활성화 상태입니다.' };
+    }
+
+    async selectDirectory(): Promise<string> {
+        if (typeof window !== 'undefined') {
+            const isElectron = typeof window !== 'undefined' && !!(window as any).electron;
+            if (isElectron && typeof (window as any).electron.selectDirectory === 'function') {
+                return await (window as any).electron.selectDirectory();
+            }
+            try {
+                const res = await fetch('http://127.0.0.1:23230/select');
+                if (res.ok) {
+                    const data = await res.json();
+                    return data.path || '';
+                }
+            } catch (e) {
+                console.error("Helper selectDirectory error:", e);
+            }
+        }
+        return '';
     }
 
     async initializeDefaultDataFiles(targetPath: string): Promise<boolean> {

@@ -28,6 +28,20 @@ class StorageAdapter {
         }
     }
 
+    getIsElectron(): boolean {
+        return this.isElectron;
+    }
+
+    getHasHelper(): boolean {
+        return this.hasHelper;
+    }
+
+    async refreshHelperStatus(): Promise<boolean> {
+        if (this.isElectron) return true;
+        await this.checkHelper();
+        return this.hasHelper;
+    }
+
     private async checkHelper() {
         try {
             const res = await fetch('http://127.0.0.1:23230/get-documents-path');
