@@ -187,6 +187,18 @@ export class DataService {
 
     getSyncStatus() { return this.syncStatus; }
 
+    getIsElectron(): boolean {
+        return storage.getIsElectron();
+    }
+
+    getHasHelper(): boolean {
+        return storage.getHasHelper();
+    }
+
+    async refreshHelperStatus(): Promise<boolean> {
+        return await storage.refreshHelperStatus();
+    }
+
     isDbPathConfigured(): boolean {
         if (typeof window === 'undefined') return false;
         const isElectron = typeof window !== 'undefined' && !!(window as any).electron;

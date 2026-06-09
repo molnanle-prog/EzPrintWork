@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
 import { NasConfig } from '../../types';
-import { Globe, CheckCircle, FolderOpen, RefreshCw, AlertTriangle, Laptop, Settings2 } from 'lucide-react';
+import { Globe, CheckCircle, FolderOpen, RefreshCw, AlertTriangle, Laptop, Settings2, Download } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const NasManager: React.FC = () => {
@@ -14,6 +14,7 @@ export const NasManager: React.FC = () => {
   const isElectron = typeof window !== 'undefined' && 
                     !!window.electron && 
                     typeof window.electron.selectDirectory === 'function';
+  const [hasHelper, setHasHelper] = useState(db.getHasHelper());
 
   // 연결 상태 검사 상태
   const [dbPathStatus, setDbPathStatus] = useState<{ checked: boolean; success: boolean; error?: string }>({ checked: false, success: false });
@@ -41,10 +42,13 @@ export const NasManager: React.FC = () => {
   };
 
   useEffect(() => {
-    const loadConfig = () => {
+    const loadConfig = async () => {
         const currentConfig = db.getNasConfig();
         setConfig(currentConfig);
         checkPathsStatus(currentConfig.dbPath, currentConfig.path);
+
+        const helperActive = await db.refreshHelperStatus();
+        setHasHelper(helperActive);
     };
     loadConfig();
     
@@ -278,10 +282,18 @@ export const NasManager: React.FC = () => {
             </h3>
           </div>
           <div className={`px-4 py-1.5 rounded-full text-xs font-bold border flex items-center gap-2
-            ${isElectron ? 'bg-indigo-50 border-indigo-200 text-indigo-600' : 'bg-emerald-50 border-emerald-200 text-emerald-600'}`}
+            ${isElectron 
+              ? 'bg-indigo-50 border-indigo-200 text-indigo-600' 
+              : hasHelper 
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-600' 
+                : 'bg-amber-50 border-amber-200 text-amber-600'}`}
           >
             {isElectron ? <Laptop size={14}/> : <Globe size={14}/>}
-            {isElectron ? '데스크탑 전용 도우미' : '웹 브라우저 모드'}
+            {isElectron 
+              ? '데스크탑 전용 도우미' 
+              : hasHelper 
+                ? '웹 브라우저 모드 (도우미 작동중)' 
+                : '웹 브라우저 모드 (도우미 미연결)'}
           </div>
       </div>
 
@@ -305,6 +317,31 @@ export const NasManager: React.FC = () => {
           </div>
          
           <div className="space-y-6">
+              {!isElectron && !hasHelper && (
+                  <div className="bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-2xl p-5 flex flex-col md:flex-row items-start md:items-center justify-between gap-4 animate-in slide-in-from-top duration-300">
+                      <div className="flex gap-3">
+                          <AlertTriangle className="text-amber-500 shrink-0 mt-0.5" size={20} />
+                          <div>
+                              <h5 className="text-sm font-bold text-amber-800 dark:text-amber-400">
+                                  로컬 연동 도우미(헬퍼) 프로그램이 구동되지 않고 있습니다.
+                              </h5>
+                              <p className="text-xs text-amber-600 dark:text-amber-500 mt-1 leading-relaxed">
+                                  사무실 내부 NAS 공유 폴더나 로컬 데이터베이스에 접근하려면 도우미 프로그램 설치 및 실행이 필수적입니다.
+                                  아래 다운로드 버튼을 눌러 설치 후 바탕화면 바로가기로 실행해 주세요.
+                              </p>
+                          </div>
+                      </div>
+                      <a 
+                          href="/downloads/EzPrintWork-Setup.zip" 
+                          download
+                          className="shrink-0 flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-black shadow-md shadow-amber-500/10 transition-all active:scale-95 whitespace-nowrap"
+                      >
+                          <Download size={14} />
+                          도우미 설치파일 다운로드
+                      </a>
+                  </div>
+              )}
+
               {/* Storage Path Config */}
               <div className="space-y-2">
                   <label className="text-xs font-black text-slate-500 dark:text-slate-400 block pl-1">작업 파일 보관 폴더 (Storage Path)</label>

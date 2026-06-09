@@ -19,9 +19,12 @@ function log(message, color = colors.reset) {
 function runCommand(command, cwd) {
   log(`\n> 실행 중: ${command}`, colors.cyan);
   try {
-    execSync(command, { stdio: 'inherit', cwd });
+    const output = execSync(command, { stdio: 'pipe', cwd });
+    console.log(output.toString());
   } catch (error) {
     log(`[에러 발생] 명령어 실행 실패: ${command}`, colors.red);
+    if (error.stdout) console.log(error.stdout.toString());
+    if (error.stderr) console.error(error.stderr.toString());
     process.exit(1);
   }
 }
@@ -50,8 +53,9 @@ function copyFolderSync(from, to) {
 }
 
 async function main() {
+  const os = require('os');
   const currentDir = path.resolve(__dirname, '..');
-  const homepageDir = path.resolve(currentDir, '..', 'ez-hub-homepage');
+  const homepageDir = path.join(os.homedir(), 'Desktop', 'ez-hub-homepage');
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const downloadsDir = path.join(homepageDir, 'public', 'downloads');
   const distDir = path.join(currentDir, 'dist');
