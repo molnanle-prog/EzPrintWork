@@ -90,10 +90,10 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         window.location.href = `ezpw://open?path=${encodeURIComponent(value)}`;
         
         setTimeout(() => {
-            if (confirm("⚠️ 폴더가 열리지 않나요?\n\n이 기능은 'EzPrintWork 데스크톱 전용 앱'이 실행 중이어야 작동합니다.\n이미 앱을 설치하셨다면 바탕화면의 앱을 먼저 실행해 주시고, 아직 설치하지 않으셨다면 다운로드하여 설치하시겠습니까?")) {
+            if (confirm("⚠️ 폴더가 열리지 않나요?\n\n이 기능은 'EzPrintWork 웹 브라우저 연동 도우미' 또는 '데스크톱 앱'이 실행 중이어야 작동합니다.\n\n경량 도우미 프로그램(EzPrintWork-Helper.exe)을 즉시 다운로드하여 실행하시겠습니까?")) {
                 const link = document.createElement('a');
-                link.href = 'https://github.com/molnanle-prog/EzPrintWork/releases/download/v1.2.0/EzPrintWork.Setup.1.2.0.exe';
-                link.setAttribute('download', 'EzPrintWork.Setup.1.2.0.exe');
+                link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+                link.setAttribute('download', 'EzPrintWork-Helper.exe');
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -118,10 +118,10 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         }
 
         // 데스크톱 앱이 실행 중이 아니거나 미설치 상태일 때 명확한 기능 구분 설명 및 다운로드 안내
-        if (confirm("⚠️ '파일 탐색기(돋보기) 연동' 기능은 데스크톱 전용 앱이 실행 중이어야 사용 가능합니다.\n\n이미 앱을 설치하셨다면 바탕화면의 'EzPrintWork' 앱을 실행한 후 다시 시도해 주세요.\n\n아직 앱이 설치되지 않았다면 지금 설치 프로그램을 다운로드하시겠습니까?")) {
+        if (confirm("⚠️ '파일 탐색기(돋보기) 연동' 기능은 'EzPrintWork 웹 브라우저 연동 도우미' 또는 '데스크톱 앱'이 실행 중이어야 사용 가능합니다.\n\n경량 도우미 프로그램(EzPrintWork-Helper.exe)을 즉시 다운로드하여 실행하시겠습니까?")) {
             const link = document.createElement('a');
-            link.href = 'https://github.com/molnanle-prog/EzPrintWork/releases/download/v1.2.0/EzPrintWork.Setup.1.2.0.exe';
-            link.setAttribute('download', 'EzPrintWork.Setup.1.2.0.exe');
+            link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+            link.setAttribute('download', 'EzPrintWork-Helper.exe');
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);

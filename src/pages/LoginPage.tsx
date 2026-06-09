@@ -748,23 +748,43 @@ IconFile=https://ez-hub.kr/favicon.ico
                                     </button>
                                 </div>
 
-                                <button 
-                                    onClick={() => {
-                                        const link = document.createElement('a');
-                                        link.href = '/downloads/EzPrintWork-Setup.zip';
-                                        link.setAttribute('download', 'EzPrintWork-Setup.zip');
-                                        document.body.appendChild(link);
-                                        link.click();
-                                        document.body.removeChild(link);
-                                    }}
-                                    className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
-                                >
-                                    <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
-                                    <div className="flex flex-col items-start leading-tight text-left">
-                                        <span className="text-[14px] font-black">PC 전용 앱 다운로드 (.zip)</span>
-                                        <span className="text-[10px] text-blue-200/85 font-medium tracking-tight">Squircle 아이콘 & 프레임리스 (압축 해제 후 즉시 사용)</span>
-                                    </div>
-                                </button>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <button 
+                                        onClick={() => {
+                                            const link = document.createElement('a');
+                                            link.href = '/downloads/EzPrintWork-Setup.zip';
+                                            link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                            document.body.appendChild(link);
+                                            link.click();
+                                            document.body.removeChild(link);
+                                        }}
+                                        className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
+                                    >
+                                        <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
+                                        <div className="flex flex-col items-start leading-tight text-left">
+                                            <span className="text-[13px] font-black">PC 전용 앱 (.zip)</span>
+                                            <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">설치 없이 폴더 열기 & 사용 가능</span>
+                                        </div>
+                                    </button>
+
+                                    <button 
+                                        onClick={() => {
+                                            const link = document.createElement('a');
+                                            link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+                                            link.setAttribute('download', 'EzPrintWork-Helper.exe');
+                                            document.body.appendChild(link);
+                                            link.click();
+                                            document.body.removeChild(link);
+                                        }}
+                                        className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-md text-sm group"
+                                    >
+                                        <ArrowDownToLine size={18} className="text-emerald-400 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
+                                        <div className="flex flex-col items-start leading-tight text-left">
+                                            <span className="text-[13px] font-black">경량 연동 도우미 (.exe)</span>
+                                            <span className="text-[9px] text-slate-400 font-medium tracking-tight">웹 브라우저에서 NAS 폴더 연동</span>
+                                        </div>
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Divider */}
