@@ -159,6 +159,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   }, []);
   const [companyName, setCompanyName] = useState('EzPrintWork');
   const [isElectron, setIsElectron] = useState(false);
+  const [hasHelper, setHasHelper] = useState(false);
   const [showDownloadBanner, setShowDownloadBanner] = useState(() => {
     if (typeof window !== 'undefined') {
       return !localStorage.getItem('hide-desktop-banner') && !localStorage.getItem('desktop-app-installed');
@@ -181,6 +182,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     if (isRunningInElectron) {
       localStorage.setItem('desktop-app-installed', 'true');
       setShowDownloadBanner(false);
+      setHasHelper(true);
       return;
     }
 
@@ -190,18 +192,21 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 1000); // 1초 타임아웃
         
-        const response = await fetch('http://127.0.0.1:23230/select', { 
+        const response = await fetch('http://127.0.0.1:23230/get-documents-path', { 
           method: 'GET', 
           signal: controller.signal 
         });
         clearTimeout(timeoutId);
         
-        if (response.status === 200 || response.status === 400 || response.ok) {
+        if (response.ok) {
+          setHasHelper(true);
           localStorage.setItem('desktop-app-installed', 'true');
           setShowDownloadBanner(false);
+        } else {
+          setHasHelper(false);
         }
       } catch (error) {
-        // 백그라운드 무소음 예외 처리
+        setHasHelper(false);
       }
     };
 
@@ -524,6 +529,36 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             className="bg-white text-orange-700 hover:bg-orange-50 px-4 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
                         >
                             폴더 설정하러 가기
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* 웹 브라우저 환경에서 실제 로컬 헬퍼가 오프라인일 때의 경고 배너 */}
+            {!isElectron && !hasHelper && !isPinned && !isTvMode && (
+                <div className="bg-amber-500 text-slate-950 px-4 py-2.5 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
+                    <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-lg bg-slate-950/20 flex items-center justify-center shrink-0">
+                            <AlertTriangle size={16} className="text-slate-950 animate-bounce" />
+                        </div>
+                        <div className="flex flex-col md:flex-row md:items-baseline gap-1 md:gap-3 text-left">
+                            <span className="text-sm font-extrabold tracking-tight">⚠️ 로컬 연동 도우미(헬퍼) 프로그램이 작동하고 있지 않습니다!</span>
+                            <span className="text-xs text-slate-900 font-medium">회사 로컬 폴더(NAS) 연동을 사용하시려면 도우미 설치파일을 다운로드해 실행해 주세요.</span>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <button 
+                            onClick={() => {
+                                const link = document.createElement('a');
+                                link.href = '/downloads/EzPrintWork-Setup.zip';
+                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                document.body.appendChild(link);
+                                link.click();
+                                document.body.removeChild(link);
+                            }}
+                            className="bg-slate-950 text-white hover:bg-slate-900 px-4 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
+                        >
+                            도우미 다운로드
                         </button>
                     </div>
                 </div>
