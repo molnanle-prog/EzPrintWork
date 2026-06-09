@@ -10,8 +10,8 @@ function resolveUncPath(uncPath) {
 }
 
 function selectDirectory() {
-    // Shell.Application COM 개체를 이용해 스레드 모델(STA) 제약 없이 안정적으로 폴더 선택창 호출
-    const cmd = `powershell -Command "$app = New-Object -ComObject Shell.Application; $folder = $app.BrowseForFolder(0, '저장할 폴더를 선택해 주세요.', 0, 17); if ($folder) { $folder.Self.Path } else { '' }"`;
+    // System.Windows.Forms.FolderBrowserDialog를 TopMost 폼을 부모로 하여 화면 최상위에 강제 노출
+    const cmd = `powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $dialog = New-Object System.Windows.Forms.FolderBrowserDialog; $dialog.Description = '저장할 폴더를 선택해 주세요.'; $dialog.ShowNewFolderButton = $true; $form = New-Object System.Windows.Forms.Form; $form.TopMost = $true; $res = $dialog.ShowDialog($form); if ($res -eq [System.Windows.Forms.DialogResult]::OK) { $dialog.SelectedPath } else { '' }"`;
     try {
         const result = execSync(cmd).toString().trim();
         return result;
