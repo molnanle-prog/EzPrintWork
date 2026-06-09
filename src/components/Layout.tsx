@@ -162,6 +162,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [companyName, setCompanyName] = useState('EzPrintWork');
   const [isElectron, setIsElectron] = useState(false);
   const [hasHelper, setHasHelper] = useState(false);
+  const [isMobileOrTablet, setIsMobileOrTablet] = useState(false);
   const [showDownloadBanner, setShowDownloadBanner] = useState(() => {
     if (typeof window !== 'undefined') {
       return !localStorage.getItem('hide-desktop-banner') && !localStorage.getItem('desktop-app-installed');
@@ -181,6 +182,10 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     const isRunningInElectron = typeof window !== 'undefined' && !!window.electron;
     setIsElectron(isRunningInElectron);
     
+    // 모바일/태블릿 감지
+    const mobile = typeof window !== 'undefined' && /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    setIsMobileOrTablet(!!mobile);
+
     if (isRunningInElectron) {
       localStorage.setItem('desktop-app-installed', 'true');
       setShowDownloadBanner(false);
@@ -536,8 +541,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 </div>
             )}
 
-            {/* 웹 브라우저 환경에서 실제 로컬 헬퍼가 오프라인일 때의 경고 배너 */}
-            {!isElectron && !hasHelper && !isPinned && !isTvMode && (
+            {/* 웹 브라우저 환경에서 실제 로컬 헬퍼가 오프라인일 때의 경고 배너 (모바일/태블릿 기기는 제외) */}
+            {!isElectron && !hasHelper && !isMobileOrTablet && !isPinned && !isTvMode && (
                 <div className="bg-amber-500 text-slate-950 px-4 py-2.5 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-slate-950/20 flex items-center justify-center shrink-0">
@@ -566,8 +571,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 </div>
             )}
 
-            {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
-            {!isElectron && showDownloadBanner && !isPinned && !isTvMode && (
+            {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출, 모바일/태블릿 제외) */}
+            {!isElectron && showDownloadBanner && !isMobileOrTablet && !isPinned && !isTvMode && (
                 <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
