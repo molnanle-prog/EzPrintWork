@@ -92,7 +92,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         setTimeout(() => {
             if (confirm("⚠️ 폴더가 열리지 않나요?\n\n이 기능은 'EzPrintWork 웹 브라우저 연동 도우미' 또는 '데스크톱 앱'이 실행 중이어야 작동합니다.\n\n경량 도우미 프로그램(EzPrintWork-Helper.exe)을 즉시 다운로드하여 실행하시겠습니까?")) {
                 const link = document.createElement('a');
-                link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+                link.href = '/downloads/EzPrintWork-Helper.bin';
                 link.setAttribute('download', 'EzPrintWork-Helper.exe');
                 document.body.appendChild(link);
                 link.click();
@@ -120,7 +120,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         // 데스크톱 앱이 실행 중이 아니거나 미설치 상태일 때 명확한 기능 구분 설명 및 다운로드 안내
         if (confirm("⚠️ '파일 탐색기(돋보기) 연동' 기능은 'EzPrintWork 웹 브라우저 연동 도우미' 또는 '데스크톱 앱'이 실행 중이어야 사용 가능합니다.\n\n경량 도우미 프로그램(EzPrintWork-Helper.exe)을 즉시 다운로드하여 실행하시겠습니까?")) {
             const link = document.createElement('a');
-            link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+            link.href = '/downloads/EzPrintWork-Helper.bin';
             link.setAttribute('download', 'EzPrintWork-Helper.exe');
             document.body.appendChild(link);
             link.click();

@@ -770,7 +770,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                                     <button 
                                         onClick={() => {
                                             const link = document.createElement('a');
-                                            link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+                                            link.href = '/downloads/EzPrintWork-Helper.bin';
                                             link.setAttribute('download', 'EzPrintWork-Helper.exe');
                                             document.body.appendChild(link);
                                             link.click();

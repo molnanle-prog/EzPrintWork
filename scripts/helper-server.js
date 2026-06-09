@@ -5,7 +5,31 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, exec } = require('child_process');
+
+// --- 백그라운드 상주 모드 (콘솔 창 숨김 및 윈도우 토스트 알림) ---
+const shouldHide = !process.argv.includes('--show') && !process.argv.includes('--debug');
+
+if (shouldHide) {
+    try {
+        // 윈도우 알림(Toast) 메시지 출력
+        const toastCmd = `
+            Add-Type -AssemblyName System.Windows.Forms;
+            $tb = New-Object System.Windows.Forms.NotifyIcon;
+            $tb.Icon = [System.Drawing.SystemIcons]::Information;
+            $tb.BalloonTipTitle = 'EzPrintWork 브라우저 연동 도우미';
+            $tb.BalloonTipText = '도우미가 백그라운드(상주) 모드로 실행되었습니다. 웹 화면과 자동으로 연동됩니다.';
+            $tb.Visible = $true;
+            $tb.ShowBalloonTip(3000);
+            Start-Sleep -s 4;
+            $tb.Dispose();
+        `;
+        const cleanToast = toastCmd.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ');
+        exec(`powershell -Command "${cleanToast}"`);
+    } catch (e) {
+        console.error('Failed to show startup notification:', e.message);
+    }
+}
 
 console.log('==================================================');
 console.log('   🛠️  EzPrintWork 웹 브라우저 연동 도우미 구동 중');
@@ -200,6 +224,34 @@ const server = http.createServer(async (req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
             res.end(JSON.stringify({ path: docPath }));
         }
+
+        // 7. 도우미 종료
+        else if (reqUrl.pathname === '/exit') {
+            console.log('[API] /exit 호출 (도우미 프로그램 종료)');
+            res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+            res.end(JSON.stringify({ success: true, message: '도우미가 성공적으로 종료되었습니다.' }));
+            
+            // 윈도우 알림(Toast) 메시지 출력 (종료됨 알림)
+            try {
+                const exitToastCmd = `
+                    Add-Type -AssemblyName System.Windows.Forms;
+                    $tb = New-Object System.Windows.Forms.NotifyIcon;
+                    $tb.Icon = [System.Drawing.SystemIcons]::Information;
+                    $tb.BalloonTipTitle = 'EzPrintWork 브라우저 연동 도우미';
+                    $tb.BalloonTipText = '도우미 프로그램이 정상적으로 종료되었습니다.';
+                    $tb.Visible = $true;
+                    $tb.ShowBalloonTip(3000);
+                    Start-Sleep -s 3;
+                    $tb.Dispose();
+                `;
+                const cleanExitToast = exitToastCmd.replace(/\r?\n/g, ' ').replace(/\s+/g, ' ');
+                exec(`powershell -Command "${cleanExitToast}"`);
+            } catch (e) {}
+
+            setTimeout(() => {
+                process.exit(0);
+            }, 1000);
+        }
         
         // 그 외 에러 처리
         else {
@@ -218,5 +270,9 @@ const PORT = 23230;
 server.listen(PORT, '127.0.0.1', () => {
     console.log(`\n🎉 로컬 도우미 서버가 정상 가동되었습니다!`);
     console.log(`👉 연동 주소: http://127.0.0.1:${PORT}`);
-    console.log(`💡 이 창을 켜둔 상태에서 브라우저의 EzPrintWork를 사용하시면 됩니다.\n`);
+    if (shouldHide) {
+        console.log(`💡 백그라운드 모드로 작동 중입니다. 종료하려면 웹 브라우저나 시스템 작업 관리자에서 종료하십시오.\n`);
+    } else {
+        console.log(`💡 이 창을 켜둔 상태에서 브라우저의 EzPrintWork를 사용하시면 됩니다.\n`);
+    }
 });

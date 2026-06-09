@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
 import { NasConfig } from '../../types';
-import { Globe, CheckCircle, FolderOpen, RefreshCw, AlertTriangle, Laptop, Settings2 } from 'lucide-react';
+import { Globe, CheckCircle, FolderOpen, RefreshCw, AlertTriangle, Laptop, Settings2, Power, Download } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const NasManager: React.FC = () => {
@@ -18,6 +18,52 @@ export const NasManager: React.FC = () => {
   // 연결 상태 검사 상태
   const [dbPathStatus, setDbPathStatus] = useState<{ checked: boolean; success: boolean; error?: string }>({ checked: false, success: false });
   const [storagePathStatus, setStoragePathStatus] = useState<{ checked: boolean; success: boolean; error?: string }>({ checked: false, success: false });
+
+  // 로컬 연동 도우미 관련 상태 및 헬퍼 함수
+  const [isHelperRunning, setIsHelperRunning] = useState(false);
+
+  const checkHelperStatus = async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1000);
+      const res = await fetch('http://127.0.0.1:23230/get-documents-path', { signal: controller.signal });
+      clearTimeout(timeoutId);
+      setIsHelperRunning(res.ok || res.status === 200);
+    } catch (e) {
+      setIsHelperRunning(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!isElectron) {
+      checkHelperStatus();
+      const interval = setInterval(checkHelperStatus, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [isElectron]);
+
+  const handleDownloadHelper = () => {
+    const link = document.createElement('a');
+    link.href = '/downloads/EzPrintWork-Helper.bin';
+    link.setAttribute('download', 'EzPrintWork-Helper.exe');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleExitHelper = async () => {
+    if (confirm('브라우저 연동 도우미 프로그램을 종료하시겠습니까?')) {
+      try {
+        const res = await fetch('http://127.0.0.1:23230/exit');
+        if (res.ok) {
+          alert('도우미 프로그램 종료 요청이 전송되었습니다.');
+          setIsHelperRunning(false);
+        }
+      } catch (e) {
+        alert('도우미 종료 중 오류가 발생했거나 이미 종료되었습니다.');
+      }
+    }
+  };
 
   const checkPathsStatus = async (dbPathVal?: string, storagePathVal?: string) => {
       const dbToCheck = dbPathVal !== undefined ? dbPathVal : config.dbPath || '';
@@ -421,6 +467,74 @@ export const NasManager: React.FC = () => {
               </div>
           )}
       </div>
+
+      {!isElectron && (
+        <div className="bg-white dark:bg-slate-800 rounded-[1.5rem] shadow-sm border border-slate-200 dark:border-slate-700 p-6 space-y-6">
+            <div className="flex flex-col md:flex-row items-center gap-6 pb-6 border-b border-slate-100 dark:border-slate-700">
+                <div className={`w-20 h-20 rounded-[1.5rem] flex items-center justify-center shrink-0 shadow-inner
+                    ${isHelperRunning ? 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-600' : 'bg-slate-100 dark:bg-slate-900/30 text-slate-400'}`}
+                >
+                    <Laptop size={40} />
+                </div>
+                <div className="flex-1 text-center md:text-left">
+                    <div className={`inline-flex items-center gap-2 px-3 py-1 text-[10px] font-black rounded-lg uppercase tracking-widest
+                        ${isHelperRunning ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}
+                    >
+                        {isHelperRunning ? '도우미 가동 중' : '도우미 미가동'}
+                    </div>
+                    <h4 className="text-2xl font-black text-slate-800 dark:text-slate-100 mt-1">
+                        브라우저 연동 도우미 관리
+                    </h4>
+                    <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                        웹 브라우저 버전에서 로컬 폴더(NAS 등) 데이터를 연동하기 위한 백그라운드 프로그램입니다.
+                    </p>
+                </div>
+            </div>
+
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div className="text-sm text-slate-600 dark:text-slate-400">
+                    {isHelperRunning ? (
+                        <span className="flex items-center gap-2 text-emerald-500 font-bold">
+                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            로컬 연동 포트(23230)에 정상 연결되었습니다. 백그라운드에서 동작 중입니다.
+                        </span>
+                    ) : (
+                        <span className="flex items-center gap-2 text-amber-500 font-bold">
+                            <span className="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+                            도우미 프로그램이 실행되지 않았습니다. 폴더 접근을 위해 먼저 다운로드 후 실행해주세요.
+                        </span>
+                    )}
+                </div>
+                <div className="flex gap-3">
+                    {isHelperRunning ? (
+                        <button
+                            onClick={handleExitHelper}
+                            className="flex items-center gap-2 px-4 py-2 bg-rose-50 hover:bg-rose-100 text-rose-600 border border-rose-200 rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95"
+                        >
+                            <Power size={14} /> 도우미 프로그램 종료
+                        </button>
+                    ) : (
+                        <button
+                            onClick={handleDownloadHelper}
+                            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all whitespace-nowrap active:scale-95 shadow-md shadow-blue-600/10"
+                        >
+                            <Download size={14} /> 도우미 다운로드 (Helper.exe)
+                        </button>
+                    )}
+                </div>
+            </div>
+            
+            {!isHelperRunning && (
+                <div className="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl border border-slate-100 dark:border-slate-800 text-xs text-slate-500 dark:text-slate-400 space-y-1">
+                    <p className="font-bold text-slate-700 dark:text-slate-300">💡 백그라운드(상주) 모드 실행 안내</p>
+                    <p>• 다운로드 받은 <span className="font-mono font-bold">EzPrintWork-Helper.exe</span> 파일을 더블클릭하여 실행하십시오.</p>
+                    <p>• 실행 시 터미널(검은색 창) 없이 **백그라운드에서 즉시 숨겨진 상태(상주)**로 동작합니다.</p>
+                    <p>• 실행 여부는 윈도우 우측 하단 작업 표시줄의 **알림(Toast)** 메시지로 친절히 안내됩니다.</p>
+                    <p>• 프로그램 종료를 원하실 때는 본 페이지에서 **[도우미 프로그램 종료]** 버튼을 클릭하시면 안전하게 자동 종료됩니다.</p>
+                </div>
+            )}
+        </div>
+      )}
     </div>
   );
 };

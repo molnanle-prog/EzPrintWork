@@ -92,33 +92,27 @@ async function main() {
     log('\n* 경량 브라우저 연동 도우미 (.exe) 컴파일 중...', colors.cyan);
     runCommand('npx -y pkg scripts/helper-server.js --targets node18-win-x64 --output release/EzPrintWork-Helper.exe', currentDir);
     
+    log('\n* 브라우저 연동 도우미 PE 서브시스템을 GUI(백그라운드) 모드로 패치 중...', colors.cyan);
+    runCommand('node scripts/make-gui.js', currentDir);
+    
     const helperSourcePath = path.join(releaseDir, 'EzPrintWork-Helper.exe');
-    const helperTargetPath = path.join(downloadsDir, 'EzPrintWork-Helper.exe');
+    const helperTargetPath = path.join(downloadsDir, 'EzPrintWork-Helper.bin');
     if (fs.existsSync(helperSourcePath)) {
       if (fs.existsSync(helperTargetPath)) {
         try {
           fs.unlinkSync(helperTargetPath);
         } catch (e) {}
       }
-      fs.copyFileSync(helperSourcePath, helperTargetPath);
-      log('✓ 경량 브라우저 연동 도우미 (.exe) 이식 완료!', colors.green);
-
-      // GitHub로 도우미 실행파일 업로드 및 동기화 (Firebase Hosting 차단 우회용)
-      log('\n* GitHub 저장소로 경량 도우미 (.exe) 동기화 중...', colors.cyan);
-      try {
-        execSync('git add -f public/downloads/EzPrintWork-Helper.exe', { cwd: homepageDir });
-        const gitStatus = execSync('git status --porcelain public/downloads/EzPrintWork-Helper.exe', { encoding: 'utf8', cwd: homepageDir }).trim();
-        if (gitStatus) {
-          execSync('git commit -m "chore: update EzPrintWork-Helper.exe binary"', { cwd: homepageDir });
-          log('* Git 커밋 완료', colors.green);
-          execSync('git push origin main', { cwd: homepageDir });
-          log('✓ GitHub로 최신 도우미 프로그램 업로드 완료!', colors.green);
-        } else {
-          log('* 변경된 도우미 프로그램이 없습니다. Git 푸시를 생략합니다.', colors.yellow);
-        }
-      } catch (gitErr) {
-        log(`* 경고: GitHub 업로드 중 오류가 발생했으나 계속 진행합니다: ${gitErr.message}`, colors.yellow);
+      // Clean up legacy .exe from downloads to avoid any deploy failures
+      const legacyHelperExe = path.join(downloadsDir, 'EzPrintWork-Helper.exe');
+      if (fs.existsSync(legacyHelperExe)) {
+        try {
+          fs.unlinkSync(legacyHelperExe);
+        } catch (e) {}
       }
+
+      fs.copyFileSync(helperSourcePath, helperTargetPath);
+      log('✓ 경량 브라우저 연동 도우미 (.bin) 이식 완료!', colors.green);
     } else {
       throw new Error('release 폴더에서 EzPrintWork-Helper.exe 컴파일 결과를 찾을 수 없습니다.');
     }

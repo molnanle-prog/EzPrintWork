@@ -190,7 +190,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 1000); // 1초 타임아웃
         
-        const response = await fetch('http://127.0.0.1:23230/select', { 
+        const response = await fetch('http://127.0.0.1:23230/get-documents-path', { 
           method: 'GET', 
           signal: controller.signal 
         });
@@ -442,7 +442,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             <button 
                                 onClick={() => {
                                     const link = document.createElement('a');
-                                    link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+                                    link.href = '/downloads/EzPrintWork-Helper.bin';
                                     link.setAttribute('download', 'EzPrintWork-Helper.exe');
                                     document.body.appendChild(link);
                                     link.click();
@@ -562,7 +562,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
-                                link.href = 'https://github.com/molnanle-prog/ez-hub-homepage/raw/main/public/downloads/EzPrintWork-Helper.exe';
+                                link.href = '/downloads/EzPrintWork-Helper.bin';
                                 link.setAttribute('download', 'EzPrintWork-Helper.exe');
                                 document.body.appendChild(link);
                                 link.click();
