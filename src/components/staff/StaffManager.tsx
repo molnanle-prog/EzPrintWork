@@ -53,6 +53,56 @@ export const StaffManager: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  const toggleRole = async (staff: Staff) => {
+    if (staff.id === currentUser?.uid || staff.uid === currentUser?.uid) {
+      showAlert('본인의 권한은 변경할 수 없습니다.');
+      return;
+    }
+
+    const nextRole = staff.role === 'admin' ? 'staff' : 'admin';
+    const nextRoleLabel = nextRole === 'admin' ? '관리자' : '일반 직원';
+
+    const confirm = await showConfirm(
+      `'${staff.name}' 직원을 정말 ${nextRoleLabel}(으)로 변경하시겠습니까?`
+    );
+    if (!confirm) return;
+
+    try {
+      const updatedStaff = { ...staff, role: nextRole };
+      await db.updateStaff(updatedStaff);
+
+      if (staff.uid) {
+        await setDoc(doc(firestore, 'users', staff.uid), {
+          role: nextRole
+        }, { merge: true });
+      }
+
+      try {
+        const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+        const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+        await fetch(GAS_WEBHOOK_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify({
+                action: "update_staff",
+                companyName,
+                loginId: pureId,
+                password: staff.password || '',
+                staffName: staff.name,
+                staffRole: nextRoleLabel,
+                contact: getStaffContact(staff)
+            })
+        });
+      } catch (err) {
+        console.error("Google Sheets Sync Error (update_staff role):", err);
+      }
+
+      showAlert(`'${staff.name}' 직원이 ${nextRoleLabel}(으)로 성공적으로 변경되었습니다.`);
+    } catch (error: any) {
+      showAlert('권한 변경 중 오류가 발생했습니다: ' + (error.message || getErrorMessage(error)));
+    }
+  };
+
   const toggleActive = async (id: string) => {
     const staff = staffList.find(s => s.id === id);
     if (!staff) return;
@@ -533,6 +583,24 @@ export const StaffManager: React.FC = () => {
                         </div>
                     )}
                 </div>
+
+                {currentUser?.role === 'admin' && 
+                 staff.id !== currentUser?.uid && 
+                 staff.uid !== currentUser?.uid && 
+                 !(staff.email && currentUser?.email && staff.email.toLowerCase() === currentUser.email.toLowerCase()) && (
+                    <div className="mt-4 mb-2">
+                        <button
+                            onClick={() => toggleRole(staff)}
+                            className={`w-full py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border shadow-sm active:scale-95
+                            ${staff.role === 'admin'
+                                ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/20 dark:border-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-950/40'
+                                : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/20 dark:border-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-950/40'}`}
+                        >
+                            <Shield size={14} />
+                            {staff.role === 'admin' ? '일반 사원으로 강등' : '관리자(Admin)로 지정'}
+                        </button>
+                    </div>
+                )}
 
                 <div className="mt-6 pt-4 border-t border-slate-100 dark:border-slate-700 flex gap-2">
                 {/* 본인 계정인 경우 비활성화 및 삭제 제어 원천 잠금 */}

@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
+import { db } from '../../services/dataService';
 import { StaffManager } from '../staff/StaffManager';
 import { PaperManager } from './PaperManager';
 import { ClientManager } from './ClientManager';
@@ -19,9 +20,9 @@ export const SettingsView: React.FC = () => {
   const { currentUser } = useAuth();
   const isAdmin = currentUser?.role === 'admin' || currentUser?.email === 'molnanle@gmail.com';
   
-  // Default to 'nas' for regular users, 'staff' for admin
+  // Default to 'profile' for regular users, 'staff' for admin
   const [activeSubTab, setActiveSubTab] = useState(isAdmin ? 'staff' : 'profile');
-
+ 
   useEffect(() => {
     // If a regular user tries to access a restricted tab, redirect to Profile
     if (!isAdmin && activeSubTab !== 'profile' && activeSubTab !== 'nas') {
@@ -75,20 +76,24 @@ export const SettingsView: React.FC = () => {
                 {isAdmin && <span className="text-xs bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded ml-auto">ROOT</span>}
              </div>
              <nav className="p-2 space-y-1 flex lg:block overflow-x-auto lg:overflow-visible">
-                {visibleMenuItems.map(item => (
-                    <button
-                        key={item.id}
-                        onClick={() => setActiveSubTab(item.id)}
-                        className={`flex-none lg:w-full flex items-center space-x-2 lg:space-x-3 px-3 py-3 rounded-lg text-sm font-bold transition-colors whitespace-nowrap ${
-                            activeSubTab === item.id 
-                            ? 'bg-blue-50 dark:bg-slate-700 text-blue-700 dark:text-blue-300' 
-                            : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-200'
-                        }`}
-                    >
-                        <item.icon size={18} />
-                        <span>{item.label}</span>
-                    </button>
-                ))}
+                 {visibleMenuItems.map(item => {
+                     return (
+                         <button
+                             key={item.id}
+                             onClick={() => {
+                                 setActiveSubTab(item.id);
+                             }}
+                             className={`flex-none lg:w-full flex items-center space-x-2 lg:space-x-3 px-3 py-3 rounded-lg text-sm font-bold transition-colors whitespace-nowrap ${
+                                 activeSubTab === item.id 
+                                 ? 'bg-blue-50 dark:bg-slate-700 text-blue-700 dark:text-blue-300' 
+                                 : 'text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700 hover:text-slate-900 dark:hover:text-slate-200'
+                             }`}
+                         >
+                             <item.icon size={18} />
+                             <span>{item.label}</span>
+                         </button>
+                     );
+                 })}
              </nav>
              
              {!isAdmin && (

@@ -353,7 +353,8 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
         return { success: true };
     } catch (e) {
         console.error("파일 저장 중 오류 발생:", e);
-        return { success: false, error: e.message };
+        const errMsg = e instanceof Error ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+        return { success: false, error: errMsg || '알 수 없는 파일 저장 오류' };
     }
 });
 

@@ -198,7 +198,8 @@ const server = http.createServer(async (req, res) => {
                     res.end(JSON.stringify({ success: true }));
                 } catch (e) {
                     res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ success: false, error: e.message }));
+                    const errMsg = e instanceof Error ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+                    res.end(JSON.stringify({ success: false, error: errMsg || '알 수 없는 로컬 저장 오류' }));
                 }
             });
             return;

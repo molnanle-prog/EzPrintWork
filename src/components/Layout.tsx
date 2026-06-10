@@ -10,6 +10,7 @@ import { Job, Staff } from '../types';
 import { AdBanner } from './common/AdBanner';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
+import { toast } from 'sonner';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -84,7 +85,8 @@ const ReconnectOverlay: React.FC = () => {
         }
     };
 
-    if (!isConfigured || status !== 'disconnected') return null;
+    const isRunningInElectron = typeof window !== 'undefined' && !!(window as any).electron;
+    if (!isRunningInElectron || !isConfigured || status !== 'disconnected') return null;
 
     return (
         <div className="fixed inset-0 bg-slate-900/80 z-[9999] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
@@ -207,6 +209,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
     checkLocalHelper();
   }, []);
+
+  // 데이터 폴더 미설정 시 설정으로 튕겨내는 가딩을 제거하여 클라우드 SaaS 모드로 즉시 기동되도록 완화
+  useEffect(() => {
+    // 탭 이동 차단 로직 제거 완료
+  }, [activeTab]);
 
   useEffect(() => {
     const handleOpenUpgrade = () => setShowUpgradeModal(true);
@@ -363,30 +370,34 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 
                 {/* Menu Section */}
                 <nav className="flex-1 space-y-1.5 py-4 px-2 overflow-x-hidden">
-                {menuItems.map((item) => (
-                    <button
-                        key={item.id}
-                        onClick={() => onTabChange(item.id)}
-                        className={`group flex items-center w-full px-3 py-3 rounded-xl transition-all relative ${
-                            activeTab === item.id 
-                                ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/20' 
-                                : 'hover:bg-slate-800 hover:text-white text-slate-400'
-                        } ${!isSidebarExpanded ? 'justify-center' : 'gap-4'}`}
-                        title={!isSidebarExpanded ? item.label : ''}
-                    >
-                        <div className={`transition-transform duration-300 ${activeTab === item.id ? 'scale-110' : 'group-hover:scale-110'}`}>
-                            <item.icon size={22} className={activeTab === item.id ? 'text-white' : 'text-slate-400 group-hover:text-blue-400'} />
-                        </div>
-                        {isSidebarExpanded && (
-                            <span className="text-[15px] font-bold whitespace-nowrap overflow-hidden text-ellipsis animate-in fade-in slide-in-from-left-2 duration-300">
-                                {item.label}
-                            </span>
-                        )}
-                        {activeTab === item.id && !isSidebarExpanded && (
-                            <div className="absolute left-0 w-1 h-6 bg-blue-500 rounded-r-full" />
-                        )}
-                    </button>
-                ))}
+                {menuItems.map((item) => {
+                    return (
+                        <button
+                            key={item.id}
+                            onClick={() => {
+                                onTabChange(item.id);
+                            }}
+                            className={`group flex items-center w-full px-3 py-3 rounded-xl transition-all relative ${
+                                activeTab === item.id 
+                                    ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/20' 
+                                    : 'hover:bg-slate-800 hover:text-white text-slate-400'
+                            } ${!isSidebarExpanded ? 'justify-center' : 'gap-4'}`}
+                            title={!isSidebarExpanded ? item.label : ''}
+                        >
+                            <div className={`transition-transform duration-300 ${activeTab === item.id ? 'scale-110' : 'group-hover:scale-110'}`}>
+                                <item.icon size={22} className={activeTab === item.id ? 'text-white' : 'text-slate-400 group-hover:text-blue-400'} />
+                            </div>
+                            {isSidebarExpanded && (
+                                <span className="text-[15px] font-bold whitespace-nowrap overflow-hidden text-ellipsis animate-in fade-in slide-in-from-left-2 duration-300">
+                                    {item.label}
+                                </span>
+                            )}
+                            {activeTab === item.id && !isSidebarExpanded && (
+                                <div className="absolute left-0 w-1 h-6 bg-blue-500 rounded-r-full" />
+                            )}
+                        </button>
+                    );
+                })}
                 </nav>
 
                 {/* Bottom Section */}
@@ -509,11 +520,13 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             </button>
                         )}
                         <button 
-                            onClick={() => setShowSearchModal(true)}
+                            onClick={() => {
+                                setShowSearchModal(true);
+                            }}
                             className={`rounded-full flex items-center gap-3 transition-colors px-6 h-12 shadow-sm ${
-                              theme === 'trello' 
-                                ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' 
-                                : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
+                                theme === 'trello' 
+                                    ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' 
+                                    : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
                             }`}
                         >
                             <Search size={22} />

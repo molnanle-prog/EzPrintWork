@@ -5,6 +5,12 @@ import {
 } from '../types';
 import { storage } from './storageAdapter';
 import { toast } from 'sonner';
+import { 
+    collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch,
+    query, where, getDocs, getDocFromCache, getDocFromServer
+} from 'firebase/firestore';
+import { db as firestore, auth } from './firebase';
+
 
 // --- Utility Functions (From Original) ---
 export const formatPhoneNumber = (value: string) => {
@@ -184,6 +190,7 @@ export class DataService {
     private reconnectTimer: any = null;
     private lastLoadedMtime: Record<string, number> = {};
     private isReady = false;
+    private unsubscribeList: (() => void)[] = [];
 
     getSyncStatus() { return this.syncStatus; }
 
@@ -338,7 +345,6 @@ export class DataService {
     }
 
     private getFilePath(colName: string) {
-        // 경로 구분자(/ 또는 \)가 포함되어 있다면 로컬 디스크/네트워크 경로로 판단하여 웹 헬퍼 환경에서도 항상 .json 확장자를 결합합니다.
         const isDirectoryPath = this.basePath.includes('/') || this.basePath.includes('\\');
         if (typeof window !== 'undefined' && ((window as any).electron || isDirectoryPath)) {
             return `${this.basePath}${colName}.json`;
@@ -348,6 +354,10 @@ export class DataService {
 
     private async startSyncing() {
         if (!this.tenantId) return;
+
+        // 기존 리스너 정리
+        this.unsubscribeList.forEach(unsub => unsub());
+        this.unsubscribeList = [];
         
         const isCustom = this.isDbPathConfigured();
         if (isCustom) {
@@ -360,7 +370,12 @@ export class DataService {
                 this.syncStatus = 'disconnected';
                 this.notify();
                 this.scheduleReconnect();
-                return;
+                
+                // 일렉트론(데스크톱 앱) 환경일 때만 동기화를 전면 중단. 웹(브라우저) 환경에서는 localStorage fallback 데이터를 읽어오도록 허용
+                const isRunningInElectron = typeof window !== 'undefined' && !!(window as any).electron;
+                if (isRunningInElectron) {
+                    return;
+                }
             }
         } else {
             this.syncStatus = 'synced';
@@ -373,6 +388,7 @@ export class DataService {
         
         const collections = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'settings'];
         
+        // 로컬 캐시/스토리지를 오프라인 대비용으로 먼저 로드
         for (const col of collections) {
             const res = await storage.load<any[]>(this.getFilePath(col));
             if (res.success && res.data) {
@@ -383,149 +399,207 @@ export class DataService {
             }
         }
 
-        // 춘천인쇄 데이터 접근 시 임의 관리자(dev-admin) 계정 자동 삭제
-        const hasChuncheon = this.data['staff']?.some((s: any) => s.companyName === '춘천인쇄');
-        if (hasChuncheon) {
-            const originalLength = this.data['staff'] ? this.data['staff'].length : 0;
-            this.data['staff'] = (this.data['staff'] || []).filter((s: any) => s.id !== 'dev-admin');
-            if (this.data['staff'].length !== originalLength) {
-                console.log("[DataService] Chuncheon Print database accessed: Automatically deleted 'dev-admin' account.");
-                await this.saveCollection('staff');
-            }
-        }
-        
-        const settings = this.data['settings']?.[0];
-        if (settings) {
-            let currentDefs = settings.productDefinitions?.definitions || [];
-            const hasBooklet = currentDefs.some((d: any) => d.name === '책자' || d.name === '무선제본책자');
-            
-            if (currentDefs.length <= 1 || !hasBooklet) {
-                console.log("[DataMigration] Upgrading to rich initial product & processing definitions (including Booklet)...");
-                settings.productDefinitions = { definitions: INITIAL_PRODUCT_DEFINITIONS };
-                settings.processingDefinitions = { definitions: INITIAL_PROCESSING_DEFINITIONS };
-                this.data['settings'] = [settings];
-                await this.saveCollection('settings');
-            } else {
-                let needsUpdate = false;
-                const migratedDefs = currentDefs.map((def: any) => {
-                    let changed = false;
-                    if (def.name === '무선제본책자') {
-                        def.name = '책자';
-                        def.processings = ['유광코팅', '무광코팅', '오시', '접지', '무선제본', '중철제본', '스프링제본', '금박', '은박', '에폭시'];
-                        changed = true;
-                    }
-                    if (!def.processings || def.processings.length === 0) {
-                        const matchingInitial = INITIAL_PRODUCT_DEFINITIONS.find(id => id.name === def.name);
-                        if (matchingInitial) {
-                            def.processings = matchingInitial.processings;
-                            changed = true;
-                        }
-                    }
-                    if (changed) needsUpdate = true;
-                    return def;
+        this.syncStatus = 'connecting';
+        this.notify();
+
+        let loadedCount = 0;
+        collections.forEach(colName => {
+            const colRef = collection(firestore, 'tenants', this.tenantId!, colName);
+            const unsub = onSnapshot(colRef, async (snapshot) => {
+                const list: any[] = [];
+                snapshot.forEach(docSnap => {
+                    list.push({ ...docSnap.data(), id: docSnap.id });
                 });
-                
-                if (needsUpdate) {
-                    console.log("[DataMigration] Adding default processings mapping to existing product definitions...");
-                    settings.productDefinitions = { definitions: migratedDefs };
-                    this.data['settings'] = [settings];
-                    await this.saveCollection('settings');
-                }
-            }
-        }
 
-        // jobs 컬렉션 마이그레이션
-        let jobsNeedsUpdate = false;
-        const currentJobs = this.data['jobs'] || [];
-        const migratedJobs = currentJobs.map((job: any) => {
-            let jobChanged = false;
-            if (job.type === '무선제본책자') {
-                job.type = '책자';
-                jobChanged = true;
-            }
-            
-            const migrateSpecs = (specs: any) => {
-                if (!specs) return false;
-                let changed = false;
-                if (!specs.innerPages) {
-                    specs.innerPages = [{
-                        id: 'inner-1',
-                        paperType: specs.paperTypeInner || '모조지(백색)',
-                        paperWeight: specs.paperWeightInner || '80g',
-                        printColor: specs.printColorInner || '단면 1도(흑백)',
-                        pagesCount: '0',
-                        hasDivider: false,
-                        dividerColor: '',
-                        dividerQuantity: ''
-                    }];
-                    changed = true;
+                if (colName === 'settings') {
+                    if (list.length === 0) {
+                        const defaultSettings = this.data['settings']?.[0] || {
+                            productDefinitions: { definitions: INITIAL_PRODUCT_DEFINITIONS },
+                            statusDefinitions: { definitions: INITIAL_STATUS_DEFINITIONS },
+                            processingDefinitions: { definitions: INITIAL_PROCESSING_DEFINITIONS },
+                            pricing: { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 },
+                            companyInfo: { name: 'EzPrintWork' },
+                            roles: { roles: ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"] },
+                            nasConfig: { isEnabled: false, path: '' }
+                        };
+                        const docId = 'main';
+                        await setDoc(doc(firestore, 'tenants', this.tenantId!, 'settings', docId), defaultSettings);
+                        return;
+                    }
+                    this.data['settings'] = list;
+                } else {
+                    this.data[colName] = list;
                 }
-                if (!specs.processingCover) {
-                    const coverKeywords = ['코팅', '박', '형압', '에폭시', '하드커버'];
-                    const commonKeywords = ['제본'];
-                    const currentProcessing = specs.processing || [];
-                    
-                    const coverProc: string[] = [];
-                    const innerProc: string[] = [];
-                    const commonProc: string[] = [];
 
-                    currentProcessing.forEach((p: string) => {
-                        if (coverKeywords.some(kw => p.includes(kw))) {
-                            coverProc.push(p);
-                        } else if (commonKeywords.some(kw => p.includes(kw))) {
-                            commonProc.push(p);
-                        } else {
-                            innerProc.push(p);
+                // 춘천인쇄 데이터 접근 시 임의 관리자(dev-admin) 계정 자동 삭제
+                if (colName === 'staff') {
+                    const hasChuncheon = this.data['staff']?.some((s: any) => s.companyName === '춘천인쇄');
+                    if (hasChuncheon) {
+                        const originalLength = this.data['staff'].length;
+                        this.data['staff'] = this.data['staff'].filter((s: any) => s.id !== 'dev-admin');
+                        if (this.data['staff'].length !== originalLength) {
+                            console.log("[DataService] Chuncheon Print database accessed: Automatically deleted 'dev-admin' account.");
+                            try {
+                                await deleteDoc(doc(firestore, 'tenants', this.tenantId!, 'staff', 'dev-admin'));
+                            } catch (e) {
+                                console.error("Failed to delete dev-admin from Firestore:", e);
+                            }
                         }
+                    }
+                }
+
+                // 데이터 정비: settings 마이그레이션
+                if (colName === 'settings') {
+                    const settings = this.data['settings']?.[0];
+                    if (settings) {
+                        let currentDefs = settings.productDefinitions?.definitions || [];
+                        const hasBooklet = currentDefs.some((d: any) => d.name === '책자' || d.name === '무선제본책자');
+                        
+                        if (currentDefs.length <= 1 || !hasBooklet) {
+                            console.log("[DataMigration] Upgrading settings definitions...");
+                            settings.productDefinitions = { definitions: INITIAL_PRODUCT_DEFINITIONS };
+                            settings.processingDefinitions = { definitions: INITIAL_PROCESSING_DEFINITIONS };
+                            this.data['settings'] = [settings];
+                            await setDoc(doc(firestore, 'tenants', this.tenantId!, 'settings', 'main'), settings);
+                        } else {
+                            let needsUpdate = false;
+                            const migratedDefs = currentDefs.map((def: any) => {
+                                let changed = false;
+                                if (def.name === '무선제본책자') {
+                                    def.name = '책자';
+                                    def.processings = ['유광코팅', '무광코팅', '오시', '접지', '무선제본', '중철제본', '스프링제본', '금박', '은박', '에폭시'];
+                                    changed = true;
+                                }
+                                if (!def.processings || def.processings.length === 0) {
+                                    const matchingInitial = INITIAL_PRODUCT_DEFINITIONS.find(id => id.name === def.name);
+                                    if (matchingInitial) {
+                                        def.processings = matchingInitial.processings;
+                                        changed = true;
+                                    }
+                                }
+                                if (changed) needsUpdate = true;
+                                return def;
+                            });
+                            
+                            if (needsUpdate) {
+                                settings.productDefinitions = { definitions: migratedDefs };
+                                this.data['settings'] = [settings];
+                                await setDoc(doc(firestore, 'tenants', this.tenantId!, 'settings', 'main'), settings);
+                            }
+                        }
+                    }
+                }
+
+                // 데이터 정비: jobs 마이그레이션
+                if (colName === 'jobs') {
+                    let jobsNeedsUpdate = false;
+                    const currentJobs = this.data['jobs'] || [];
+                    const migratedJobs = currentJobs.map((job: any) => {
+                        let jobChanged = false;
+                        if (job.type === '무선제본책자') {
+                            job.type = '책자';
+                            jobChanged = true;
+                        }
+                        
+                        const migrateSpecs = (specs: any) => {
+                            if (!specs) return false;
+                            let changed = false;
+                            if (!specs.innerPages) {
+                                specs.innerPages = [{
+                                    id: 'inner-1',
+                                    paperType: specs.paperTypeInner || '모조지(백색)',
+                                    paperWeight: specs.paperWeightInner || '80g',
+                                    printColor: specs.printColorInner || '단면 1도(흑백)',
+                                    pagesCount: '0',
+                                    hasDivider: false,
+                                    dividerColor: '',
+                                    dividerQuantity: ''
+                                }];
+                                changed = true;
+                            }
+                            if (!specs.processingCover) {
+                                const coverKeywords = ['코팅', '박', '형압', '에폭시', '하드커버'];
+                                const commonKeywords = ['제본'];
+                                const currentProcessing = specs.processing || [];
+                                
+                                const coverProc: string[] = [];
+                                const innerProc: string[] = [];
+                                const commonProc: string[] = [];
+
+                                currentProcessing.forEach((p: string) => {
+                                    if (coverKeywords.some(kw => p.includes(kw))) {
+                                        coverProc.push(p);
+                                    } else if (commonKeywords.some(kw => p.includes(kw))) {
+                                        commonProc.push(p);
+                                    } else {
+                                        innerProc.push(p);
+                                    }
+                                });
+
+                                specs.processingCover = coverProc;
+                                specs.processingInner = innerProc;
+                                specs.processing = commonProc;
+                                changed = true;
+                            }
+                            return changed;
+                        };
+
+                        if (job.specs && migrateSpecs(job.specs)) jobChanged = true;
+
+                        if (job.subJobs && job.subJobs.length > 0) {
+                            job.subJobs = job.subJobs.map((sj: any) => {
+                                if (sj.type === '무선제본책자') {
+                                    sj.type = '책자';
+                                    jobChanged = true;
+                                }
+                                if (sj.specs && migrateSpecs(sj.specs)) jobChanged = true;
+                                return sj;
+                            });
+                        }
+                        
+                        if (jobChanged) jobsNeedsUpdate = true;
+                        return job;
                     });
 
-                    specs.processingCover = coverProc;
-                    specs.processingInner = innerProc;
-                    specs.processing = commonProc;
-                    changed = true;
+                    if (jobsNeedsUpdate) {
+                        this.data['jobs'] = migratedJobs;
+                        // 마이그레이션이 필요한 Job들을 Firestore에 업로드
+                        const promises = migratedJobs.map(job => {
+                            return setDoc(doc(firestore, 'tenants', this.tenantId!, 'jobs', job.id), job);
+                        });
+                        await Promise.all(promises);
+                    }
                 }
-                return changed;
-            };
 
-            if (job.specs) {
-                if (migrateSpecs(job.specs)) jobChanged = true;
-            }
+                // 로컬 저장장치(파일/localStorage)에만 캐싱 (양방향 무한루프 방지)
+                await this.saveCollectionLocalOnly(colName);
+                
+                loadedCount++;
+                if (loadedCount >= collections.length) {
+                    this.syncStatus = 'synced';
+                    // 백그라운드 자동 백업 실행
+                    this.runDailyAutoBackup().catch(err => console.error("Auto backup error:", err));
+                    this.updateTenantActivity().catch(() => {});
+                }
+                this.notify();
+            }, (error) => {
+                console.error(`[Firestore Sync Error] onSnapshot failed for ${colName}:`, error);
+                this.syncStatus = 'disconnected';
+                this.notify();
+            });
 
-            if (job.subJobs && job.subJobs.length > 0) {
-                job.subJobs = job.subJobs.map((sj: any) => {
-                    if (sj.type === '무선제본책자') {
-                        sj.type = '책자';
-                        jobChanged = true;
-                    }
-                    if (sj.specs) {
-                        if (migrateSpecs(sj.specs)) jobChanged = true;
-                    }
-                    return sj;
-                });
-            }
-            
-            if (jobChanged) {
-                jobsNeedsUpdate = true;
-            }
-            return job;
+            this.unsubscribeList.push(unsub);
         });
-
-        if (jobsNeedsUpdate) {
-            console.log("[DataMigration] Upgrading jobs from '무선제본책자' to '책자' and migrating inner pages...");
-            this.data['jobs'] = migratedJobs;
-            await this.saveCollection('jobs');
-        }
 
         this.isReady = true;
         this.notify();
     }
 
-    private async saveCollection(colName: string) {
+    private async saveCollectionLocalOnly(colName: string) {
         if (!this.isReady) return;
         
         // 데이터 폴더 미설정 시 Electron 환경에서 파일 저장 차단
         if (typeof window !== 'undefined' && (window as any).electron && !localStorage.getItem('ezpw_custom_db_path')) {
-            toast.error("데이터 저장 폴더가 지정되지 않아 읽기 전용 상태입니다. 설정을 완료해 주세요.");
             console.warn(`[DataService] Blocked save for '${colName}' because ezpw_custom_db_path is not configured.`);
             return;
         }
@@ -538,7 +612,6 @@ export class DataService {
                 this.syncStatus = 'disconnected';
                 this.notify();
                 this.scheduleReconnect();
-                toast.error("네트워크(NAS) 연결이 끊겼습니다. 저장 작업이 보류되고 재연결을 시도합니다.");
                 return;
             }
         }
@@ -635,6 +708,30 @@ export class DataService {
         }
     }
 
+    private async saveCollection(colName: string) {
+        await this.saveCollectionLocalOnly(colName);
+        
+        if (this.tenantId) {
+            try {
+                if (colName === 'settings') {
+                    const settings = this.data['settings']?.[0];
+                    if (settings) {
+                        await setDoc(doc(firestore, 'tenants', this.tenantId, 'settings', 'main'), settings, { merge: true });
+                    }
+                } else {
+                    const list = this.data[colName] || [];
+                    const promises = list.map(async (item: any) => {
+                        const docId = item.id || this.generateId();
+                        return setDoc(doc(firestore, 'tenants', this.tenantId!, colName, docId), item, { merge: true });
+                    });
+                    await Promise.all(promises);
+                }
+            } catch (e) {
+                console.error(`[Firestore saveCollection Error] Failed to upload ${colName}:`, e);
+            }
+        }
+    }
+
     subscribe(listener: () => void) {
         this.listeners.push(listener);
         return () => { this.listeners = this.listeners.filter(l => l !== listener); };
@@ -662,38 +759,110 @@ export class DataService {
         return Date.now().toString(36) + Math.random().toString(36).substring(2);
     }
 
+    async updateTenantActivity() {
+        if (!this.tenantId) return;
+        try {
+            const companyName = this.getCompanyInfo().name || 'EzPrintWork';
+            const jobsCount = this.data['jobs']?.length || 0;
+            const staffCount = this.data['staff']?.filter(s => s.active && !s.isDeleted).length || 0;
+            const clientsCount = this.data['clients']?.length || 0;
+            
+            const tenantDocRef = doc(firestore, 'tenants', this.tenantId);
+            await setDoc(tenantDocRef, {
+                companyName,
+                lastActiveAt: new Date().toISOString(),
+                stats: {
+                    jobsCount,
+                    staffCount,
+                    clientsCount
+                }
+            }, { merge: true });
+        } catch (e) {
+            console.error("[LicenseMonitor] Failed to update tenant activity:", e);
+        }
+    }
+
     private async addEntity(col: string, entity: any) {
         const id = entity.id || this.generateId();
         const newEntity = { ...entity, id, createdAt: entity.createdAt || new Date().toISOString() };
-        this.data[col] = [...(this.data[col] || []), newEntity];
-        await this.saveCollection(col);
+        
+        this.data[col] = [...(this.data[col] || []).filter(e => e.id !== id), newEntity];
         this.notify();
+        
+        if (this.tenantId) {
+            try {
+                if (col === 'messages' && !newEntity.senderId && auth.currentUser) {
+                    newEntity.senderId = auth.currentUser.uid;
+                }
+                const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
+                await setDoc(docRef, newEntity);
+            } catch (e) {
+                console.error(`[Firestore addEntity Error] Failed to upload ${col}/${id}:`, e);
+            }
+        }
+        
+        await this.saveCollectionLocalOnly(col);
+        this.updateTenantActivity().catch(() => {});
     }
 
     private async updateEntity(col: string, id: string, entity: any) {
         const list = this.data[col] || [];
         const index = list.findIndex(e => e.id === id);
         if (index > -1) {
-            list[index] = { ...list[index], ...entity };
+            const updated = { ...list[index], ...entity, updatedAt: new Date().toISOString() };
+            list[index] = updated;
             this.data[col] = [...list];
-            await this.saveCollection(col);
             this.notify();
+            
+            if (this.tenantId) {
+                try {
+                    const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
+                    await setDoc(docRef, updated, { merge: true });
+                } catch (e) {
+                    console.error(`[Firestore updateEntity Error] Failed to update ${col}/${id}:`, e);
+                }
+            }
+            
+            await this.saveCollectionLocalOnly(col);
+            this.updateTenantActivity().catch(() => {});
         }
     }
 
     private async deleteEntity(col: string, id: string) {
         const list = this.data[col] || [];
         this.data[col] = list.filter(e => e.id !== id);
-        await this.saveCollection(col);
         this.notify();
+        
+        if (this.tenantId) {
+            try {
+                const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
+                await deleteDoc(docRef);
+            } catch (e) {
+                console.error(`[Firestore deleteEntity Error] Failed to delete ${col}/${id}:`, e);
+            }
+        }
+        
+        await this.saveCollectionLocalOnly(col);
+        this.updateTenantActivity().catch(() => {});
     }
 
     private async updateSetting(name: string, data: any) {
-        const settings = this.data['settings'][0] || {};
+        const settings = this.data['settings']?.[0] || {};
         settings[name] = data;
         this.data['settings'] = [settings];
-        await this.saveCollection('settings');
         this.notify();
+        
+        if (this.tenantId) {
+            try {
+                const docRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+                await setDoc(docRef, settings, { merge: true });
+            } catch (e) {
+                console.error(`[Firestore updateSetting Error] Failed to update settings:`, e);
+            }
+        }
+        
+        await this.saveCollectionLocalOnly('settings');
+        this.updateTenantActivity().catch(() => {});
     }
 
     // --- Public Business Methods ---
@@ -785,12 +954,33 @@ export class DataService {
             if (!backup || typeof backup !== 'object') return false;
             
             const collections = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'settings'];
+            
+            // 1. 메모리에 백업 데이터 적재
             for (const col of collections) {
                 if (backup[col] && Array.isArray(backup[col])) {
                     this.data[col] = backup[col];
-                    await this.saveCollection(col);
                 }
             }
+
+            // 2. Firestore에 전체 업로드
+            if (this.tenantId) {
+                for (const col of collections) {
+                    if (backup[col] && Array.isArray(backup[col])) {
+                        const promises = backup[col].map(async (item: any) => {
+                            const docId = col === 'settings' ? 'main' : (item.id || this.generateId());
+                            const docRef = doc(firestore, 'tenants', this.tenantId!, col, docId);
+                            return setDoc(docRef, item);
+                        });
+                        await Promise.all(promises);
+                    }
+                }
+            }
+
+            // 3. 로컬 파일에도 모두 저장
+            for (const col of collections) {
+                await this.saveCollectionLocalOnly(col);
+            }
+            
             this.notify();
             return true;
         } catch (e) {
@@ -864,20 +1054,165 @@ export class DataService {
     }
 
     async listCloudBackups(): Promise<any[]> {
-        // Local database does not have cloud backup in this version, return empty list or mock list
-        return [];
+        if (!this.tenantId) return [];
+        try {
+            const backupsCol = collection(firestore, 'tenants', this.tenantId, 'backups');
+            const snapshot = await getDocs(backupsCol);
+            const list: any[] = [];
+            snapshot.forEach(docSnap => {
+                const data = docSnap.data();
+                list.push({
+                    name: docSnap.id,
+                    date: data.date || docSnap.id,
+                    size: data.size || 'Unknown'
+                });
+            });
+            list.sort((a, b) => b.name.localeCompare(a.name));
+            return list;
+        } catch (e) {
+            console.error("Failed to list cloud backups:", e);
+            return [];
+        }
     }
 
     async runDailyAutoBackup(force?: boolean): Promise<boolean> {
-        return true;
+        if (!this.isReady) return false;
+        
+        const todayStr = new Date().toISOString().split('T')[0];
+        const lastBackupDate = localStorage.getItem('ezpw_last_daily_backup_date');
+        
+        if (!force && lastBackupDate === todayStr) {
+            return true;
+        }
+
+        const backupData = JSON.stringify(this.data, null, 2);
+        const fileName = `ezprint_backup_${todayStr}.json`;
+        const sep = navigator.platform.toLowerCase().includes('win') ? '\\' : '/';
+
+        try {
+            const isElectron = typeof window !== 'undefined' && !!(window as any).electron;
+            const hasHelper = storage.getHasHelper();
+
+            if (isElectron && (window as any).electron) {
+                const docs = await (window as any).electron.getDocumentsPath();
+                const backupPath = `${docs}${sep}EzPrintWork_Backup${sep}${fileName}`;
+                const result = await (window as any).electron.saveFile(backupPath, backupData);
+                if (result.success) {
+                    localStorage.setItem('ezpw_last_daily_backup_date', todayStr);
+                    console.log(`[AutoBackup] Daily backup created: ${backupPath}`);
+                }
+            } else if (hasHelper) {
+                try {
+                    const resPath = await fetch('http://127.0.0.1:23230/get-documents-path');
+                    if (resPath.ok) {
+                        const pathData = await resPath.json();
+                        if (pathData.path) {
+                            const backupPath = `${pathData.path}${sep}EzPrintWork_Backup${sep}${fileName}`;
+                            const resSave = await fetch('http://127.0.0.1:23230/save-file', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ path: backupPath, content: backupData })
+                            });
+                            if (resSave.ok) {
+                                const saveRes = await resSave.json();
+                                if (saveRes.success) {
+                                    localStorage.setItem('ezpw_last_daily_backup_date', todayStr);
+                                    console.log(`[AutoBackup] Daily backup created via Helper: ${backupPath}`);
+                                }
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("[AutoBackup] Helper auto backup failed:", e);
+                }
+            }
+            
+            // Web Storage Fallback
+            localStorage.setItem(`ezpw_backup_${todayStr}`, backupData);
+            const keys = Object.keys(localStorage);
+            const backupKeys = keys.filter(k => k.startsWith('ezpw_backup_'));
+            if (backupKeys.length > 7) {
+                backupKeys.sort();
+                while (backupKeys.length > 7) {
+                    const toRemove = backupKeys.shift();
+                    if (toRemove) localStorage.removeItem(toRemove);
+                }
+            }
+            localStorage.setItem('ezpw_last_daily_backup_date', todayStr);
+
+            // Cloud Upload (if < 1MB)
+            if (this.tenantId && backupData.length < 1000000) {
+                try {
+                    const docId = `backup_${todayStr}_${Date.now().toString(36)}`;
+                    const sizeStr = `${Math.round(backupData.length / 1024)} KB`;
+                    const backupDocRef = doc(firestore, 'tenants', this.tenantId, 'backups', docId);
+                    await setDoc(backupDocRef, {
+                        name: docId,
+                        date: new Date().toLocaleString(),
+                        size: sizeStr,
+                        payload: backupData
+                    });
+                    
+                    // Cleanup old cloud backups (> 5)
+                    const backupsCol = collection(firestore, 'tenants', this.tenantId, 'backups');
+                    const snapshot = await getDocs(backupsCol);
+                    const list: { id: string; time: number }[] = [];
+                    snapshot.forEach(docSnap => {
+                        const parts = docSnap.id.split('_');
+                        if (parts.length >= 3) {
+                            const time = parseInt(parts[2], 36);
+                            if (!isNaN(time)) list.push({ id: docSnap.id, time });
+                        }
+                    });
+                    if (list.length > 5) {
+                        list.sort((a, b) => a.time - b.time);
+                        while (list.length > 5) {
+                            const toDel = list.shift();
+                            if (toDel) {
+                                await deleteDoc(doc(firestore, 'tenants', this.tenantId, 'backups', toDel.id));
+                            }
+                        }
+                    }
+                } catch (err) {
+                    console.error("[AutoBackup] Cloud backup failed:", err);
+                }
+            }
+
+            return true;
+        } catch (e) {
+            console.error("[AutoBackup] Daily backup failed:", e);
+            return false;
+        }
     }
 
     async restoreFromCloudBackup(name: string): Promise<boolean> {
-        return true;
+        if (!this.tenantId) return false;
+        try {
+            const docRef = doc(firestore, 'tenants', this.tenantId, 'backups', name);
+            const docSnap = await getDocFromCache(docRef).catch(() => getDocFromServer(docRef));
+            if (!docSnap.exists()) return false;
+            
+            const data = docSnap.data();
+            if (data && data.payload) {
+                return await this.importData(data.payload);
+            }
+            return false;
+        } catch (e) {
+            console.error("Failed to restore cloud backup:", e);
+            return false;
+        }
     }
 
     async deleteCloudBackup(name: string): Promise<boolean> {
-        return true;
+        if (!this.tenantId) return false;
+        try {
+            const docRef = doc(firestore, 'tenants', this.tenantId, 'backups', name);
+            await deleteDoc(docRef);
+            return true;
+        } catch (e) {
+            console.error("Failed to delete cloud backup:", e);
+            return false;
+        }
     }
 
     async getActionLogs(): Promise<{ success: boolean; data: any[]; error?: string }> {
@@ -1046,12 +1381,33 @@ export class DataService {
     async saveImportedData(mergedData: any): Promise<boolean> {
         try {
             const collections = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'settings'];
+            
+            // 1. 메모리에 병합 데이터 반영
             for (const col of collections) {
                 if (mergedData[col] && Array.isArray(mergedData[col])) {
                     this.data[col] = mergedData[col];
-                    await this.saveCollection(col);
                 }
             }
+
+            // 2. Firestore에 일괄 업로드
+            if (this.tenantId) {
+                for (const col of collections) {
+                    if (mergedData[col] && Array.isArray(mergedData[col])) {
+                        const promises = mergedData[col].map(async (item: any) => {
+                            const docId = col === 'settings' ? 'main' : (item.id || this.generateId());
+                            const docRef = doc(firestore, 'tenants', this.tenantId!, col, docId);
+                            return setDoc(docRef, item);
+                        });
+                        await Promise.all(promises);
+                    }
+                }
+            }
+
+            // 3. 로컬 디스크에 저장
+            for (const col of collections) {
+                await this.saveCollectionLocalOnly(col);
+            }
+
             this.notify();
             return true;
         } catch (e) {

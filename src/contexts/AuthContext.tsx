@@ -97,14 +97,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const tenantData = tenantDoc.data();
               setTenantPlan(determineTenantPlan(tenantData));
               
-              // DB path auto-sync
-              if (tenantData && tenantData.dbPath) {
-                  const localDbPath = localStorage.getItem('ezpw_custom_db_path');
-                  if (localDbPath !== tenantData.dbPath) {
-                      if (updatedUser.role !== 'admin' || !localDbPath) {
-                          console.log(`[AuthContext] Auto-syncing DB path for user: ${tenantData.dbPath}`);
-                          localStorage.setItem('ezpw_custom_db_path', tenantData.dbPath);
-                          await dataService.setCustomBasePath(tenantData.dbPath);
+              // DB path auto-sync (업체별 경로 강제 동기화 보강)
+              if (tenantData) {
+                  const localDbPath = localStorage.getItem('ezpw_custom_db_path') || '';
+                  const remoteDbPath = tenantData.dbPath || '';
+                  if (localDbPath !== remoteDbPath) {
+                      console.log(`[AuthContext] Auto-syncing DB path to: ${remoteDbPath}`);
+                      if (remoteDbPath) {
+                          localStorage.setItem('ezpw_custom_db_path', remoteDbPath);
+                          await dataService.setCustomBasePath(remoteDbPath);
+                      } else {
+                          localStorage.removeItem('ezpw_custom_db_path');
                       }
                   }
               }
@@ -226,14 +229,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const tenantData = tenantDoc.data();
               setTenantPlan(determineTenantPlan(tenantData));
               
-              // DB path auto-sync
-              if (tenantData && tenantData.dbPath) {
-                  const localDbPath = localStorage.getItem('ezpw_custom_db_path');
-                  if (localDbPath !== tenantData.dbPath) {
-                      if (newUser.role !== 'admin' || !localDbPath) {
-                          console.log(`[AuthContext] Auto-syncing DB path for migrated user: ${tenantData.dbPath}`);
-                          localStorage.setItem('ezpw_custom_db_path', tenantData.dbPath);
-                          await dataService.setCustomBasePath(tenantData.dbPath);
+              // DB path auto-sync (업체별 경로 강제 동기화 보강)
+              if (tenantData) {
+                  const localDbPath = localStorage.getItem('ezpw_custom_db_path') || '';
+                  const remoteDbPath = tenantData.dbPath || '';
+                  if (localDbPath !== remoteDbPath) {
+                      console.log(`[AuthContext] Auto-syncing DB path to: ${remoteDbPath}`);
+                      if (remoteDbPath) {
+                          localStorage.setItem('ezpw_custom_db_path', remoteDbPath);
+                          await dataService.setCustomBasePath(remoteDbPath);
+                      } else {
+                          localStorage.removeItem('ezpw_custom_db_path');
                       }
                   }
               }
@@ -335,18 +341,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         console.log(`[RealtimePlanSync] Tenant plan updated in real-time (Determined: ${determined})`);
         setTenantPlan(determined);
 
-        // Realtime DB path sync
-        if (tenantData && tenantData.dbPath) {
-            const currentPath = localStorage.getItem('ezpw_custom_db_path');
-            if (currentPath !== tenantData.dbPath) {
-                if (currentUser.role !== 'admin' || !currentPath) {
-                    console.log(`[RealtimePathSync] Automatically updating DB path to: ${tenantData.dbPath}`);
-                    localStorage.setItem('ezpw_custom_db_path', tenantData.dbPath);
-                    dataService.setCustomBasePath(tenantData.dbPath).then(() => {
+        // Realtime DB path sync (업체별 경로 강제 동기화 보강)
+        if (tenantData) {
+            const currentPath = localStorage.getItem('ezpw_custom_db_path') || '';
+            const remoteDbPath = tenantData.dbPath || '';
+            if (currentPath !== remoteDbPath) {
+                console.log(`[RealtimePathSync] Automatically updating DB path to: ${remoteDbPath}`);
+                if (remoteDbPath) {
+                    localStorage.setItem('ezpw_custom_db_path', remoteDbPath);
+                    dataService.setCustomBasePath(remoteDbPath).then(() => {
                         if (currentPath) {
                             alert("관리자가 데이터 저장 폴더 설정을 변경하여 프로그램을 재부팅합니다.");
                             window.location.reload();
                         }
+                    });
+                } else {
+                    localStorage.removeItem('ezpw_custom_db_path');
+                    dataService.saveNasConfig({ isEnabled: false, path: '', dbPath: '', status: 'disconnected' }).then(() => {
+                        window.location.reload();
                     });
                 }
             }
@@ -439,8 +451,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     localStorage.removeItem('customUser');
     localStorage.removeItem('customTenantPlan');
+    localStorage.removeItem('ezpw_custom_db_path');
     sessionStorage.removeItem('customUser');
     sessionStorage.removeItem('customTenantPlan');
+    try {
+        await dataService.saveNasConfig({
+            isEnabled: false,
+            path: '',
+            dbPath: '',
+            status: 'disconnected'
+        });
+    } catch (e) {}
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);
