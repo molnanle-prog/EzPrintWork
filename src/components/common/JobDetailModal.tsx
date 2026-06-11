@@ -6,7 +6,6 @@ import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
 import { useDialog } from '../../contexts/DialogContext';
-import { NetworkPathPicker } from '../settings/NetworkPathPicker';
 import { LocalPathInput } from './LocalPathInput';
 import { useAuth } from '../../contexts/AuthContext';
 

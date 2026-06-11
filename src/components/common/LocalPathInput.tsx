@@ -9,6 +9,18 @@ interface LocalPathInputProps {
   label?: string;
 }
 
+const promptDesktopAppDownload = () => {
+  if (!confirm("⚠️ 이 기능은 EzPrintWork 데스크톱 앱이 설치·실행 중이어야 사용할 수 있습니다.\n\nPC 전용 앱(EzPrintWork-Setup.zip)을 다운로드하시겠습니까?")) {
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = '/downloads/EzPrintWork-Setup.zip';
+  link.setAttribute('download', 'EzPrintWork-Setup.zip');
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+};
+
 export const LocalPathInput: React.FC<LocalPathInputProps> = ({ 
   value, 
   onChange, 
@@ -18,33 +30,6 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
   const [pathCopied, setPathCopied] = useState(false);
   const { showAlert } = useDialog();
 
-  const tryLocalHelper = async (action: 'select' | 'open', path?: string): Promise<{ success: boolean; data?: any }> => {
-    try {
-      const url = action === 'select' 
-        ? 'http://127.0.0.1:23230/select'
-        : `http://127.0.0.1:23230/open?path=${encodeURIComponent(path || '')}`;
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 2000); // 2초 타임아웃
-      
-      const response = await fetch(url, { 
-        method: 'GET', 
-        signal: controller.signal 
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        const data = await response.json();
-        localStorage.setItem('desktop-app-installed', 'true');
-        return { success: true, data };
-      }
-      return { success: false };
-    } catch (error) {
-      return { success: false };
-    }
-  };
-
   const handleOpenPath = async () => {
     if (!value) {
       showAlert("열 수 있는 경로가 없습니다.");
@@ -53,51 +38,28 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
 
     const isElectron = typeof window !== 'undefined' && !!window.electron;
     
-    // 1. 태블릿 및 모바일 기기 (아이패드, 갤럭시탭 등) 대응
     const isMobileOrTablet = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     if (isMobileOrTablet) {
-        // Windows 경로(\\NAS\Data\...)를 태블릿용 SMB 경로(smb://NAS/Data/...)로 변환
-        let smbPath = value.replace(/\\/g, '/'); // 모든 역슬래시(\)를 슬래시(/)로 변경
+        let smbPath = value.replace(/\\/g, '/');
         if (smbPath.startsWith('//')) {
-            smbPath = 'smb:' + smbPath; // smb://NAS/... 형태로 완성
+            smbPath = 'smb:' + smbPath;
         } else if (/^[A-Za-z]:/.test(smbPath)) {
-            // 로컬 드라이브(C:/, D:/ 등)인 경우 알림
-            showAlert("태블릿에서는 PC 로컬 드라이브(C:, D:)에 직접 접근할 수 없습니다. NAS 네트워크 경로(\\NAS\...)를 사용해 주세요.");
+            showAlert("태블릿에서는 PC 로컬 드라이브(C:, D:)에 직접 접근할 수 없습니다. NAS 네트워크 경로(\\NAS\\...)를 사용해 주세요.");
             return;
         } else {
             smbPath = 'smb://' + smbPath;
         }
 
-        // 태블릿의 기본 '파일' 앱 또는 NAS 뷰어 앱 실행
         window.location.href = smbPath;
         return;
     }
 
-    // 2. PC 데스크톱 앱 환경
     if (isElectron && typeof window.electron.openPath === 'function') {
-        // 데스크톱 앱: 즉시 탐색기 실행
         window.electron.openPath(value);
-    } 
-    // 3. PC 웹 브라우저 환경 (크롬/엣지)
-    else {
-        // 1차로 로컬 백그라운드 헬퍼(Electron) 연동 시도
-        const helperResult = await tryLocalHelper('open', value);
-        if (helperResult.success) {
-            return;
-        }
-
-        // 2차: 등록된 프로토콜(ezpw://) 호출 (설치되어 있으면 자동으로 앱을 부팅하고 폴더를 열어줌)
+    } else {
         window.location.href = `ezpw://open?path=${encodeURIComponent(value)}`;
-        
         setTimeout(() => {
-            if (confirm("⚠️ 폴더가 열리지 않나요?\n\n이 기능은 'EzPrintWork 웹 브라우저 연동 도우미' 또는 '데스크톱 앱'이 실행 중이어야 작동합니다.\n\n경량 도우미 프로그램(EzPrintWork-Helper.exe)을 즉시 다운로드하여 실행하시겠습니까?")) {
-                const link = document.createElement('a');
-                link.href = '/downloads/EzPrintWork-Helper.bin';
-                link.setAttribute('download', 'EzPrintWork-Helper.exe');
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            }
+            promptDesktopAppDownload();
         }, 2000);
     }
   };
@@ -110,22 +72,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
             onChange(path);
         }
     } else {
-        // 웹 브라우저: 로컬 백그라운드 헬퍼(Electron)에 연동 시도
-        const helperResult = await tryLocalHelper('select');
-        if (helperResult.success && helperResult.data?.path) {
-            onChange(helperResult.data.path);
-            return;
-        }
-
-        // 데스크톱 앱이 실행 중이 아니거나 미설치 상태일 때 명확한 기능 구분 설명 및 다운로드 안내
-        if (confirm("⚠️ '파일 탐색기(돋보기) 연동' 기능은 'EzPrintWork 웹 브라우저 연동 도우미' 또는 '데스크톱 앱'이 실행 중이어야 사용 가능합니다.\n\n경량 도우미 프로그램(EzPrintWork-Helper.exe)을 즉시 다운로드하여 실행하시겠습니까?")) {
-            const link = document.createElement('a');
-            link.href = '/downloads/EzPrintWork-Helper.bin';
-            link.setAttribute('download', 'EzPrintWork-Helper.exe');
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
-        }
+        promptDesktopAppDownload();
     }
   };
 

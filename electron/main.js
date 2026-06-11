@@ -84,7 +84,6 @@ if (!gotTheLock) {
 
     app.whenReady().then(() => {
         createWindow();
-        startLocalServer();
         // 앱이 프로토콜 호출로 처음 켜졌을 때 처리
         handleProtocolUrl(process.argv);
     });
@@ -120,8 +119,8 @@ function resolveUncPath(localPath) {
     return localPath;
 }
 
-// --- 폴더 연결 및 권한 검사 헬퍼 함수 ---
-async function checkDirectoryStatusHelper(dirPath) {
+// --- 폴더 연결 및 권한 검사 ---
+async function checkDirectoryStatus(dirPath) {
     if (!dirPath) return { success: false, error: '경로가 지정되지 않았습니다.' };
     try {
         if (!fs.existsSync(dirPath)) {
@@ -143,145 +142,7 @@ async function checkDirectoryStatusHelper(dirPath) {
     }
 }
 
-// --- 웹 브라우저 연동용 로컬 HTTP 서버 (127.0.0.1:23230) ---
-const http = require('http');
-let localServer;
-
-function startLocalServer() {
-    localServer = http.createServer(async (req, res) => {
-        // CORS 헤더 및 Chrome Private Network Access(PNA) 허용 설정
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-        res.setHeader('Access-Control-Allow-Headers', '*');
-        res.setHeader('Access-Control-Allow-Private-Network', 'true'); // 중요: 크롬 브라우저의 로컬 보안(PNA) 우회 헤더
-
-        if (req.method === 'OPTIONS') {
-            res.writeHead(200);
-            res.end();
-            return;
-        }
-
-        try {
-            // URL 파싱
-            const reqUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-
-            if (reqUrl.pathname === '/select') {
-                const { canceled, filePaths } = await dialog.showOpenDialog({
-                    properties: ['openFile', 'openDirectory']
-                });
-                const selectedPath = canceled ? '' : filePaths[0];
-                const resolved = resolveUncPath(selectedPath);
-                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                res.end(JSON.stringify({ path: resolved }));
-            } else if (reqUrl.pathname === '/open') {
-                const targetPath = reqUrl.searchParams.get('path');
-                if (!targetPath) {
-                    res.writeHead(400);
-                    res.end('Missing path');
-                    return;
-                }
-                await shell.openPath(targetPath);
-                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                res.end(JSON.stringify({ success: true }));
-            } else if (reqUrl.pathname === '/read-file') {
-                const targetPath = reqUrl.searchParams.get('path');
-                if (!targetPath) {
-                    res.writeHead(400);
-                    res.end('Missing path');
-                    return;
-                }
-                let data = null;
-                let mtime = null;
-                if (fs.existsSync(targetPath)) {
-                    const stats = fs.statSync(targetPath);
-                    data = fs.readFileSync(targetPath, 'utf8');
-                    mtime = stats.mtimeMs;
-                } else if (targetPath.endsWith('.json')) {
-                    // 자가 치유: 확장자 없는 레거시 파일 마이그레이션 (.json으로 로드 시도할 때 확장자 없는 파일이 있으면 마이그레이션)
-                    const noExtPath = targetPath.slice(0, -5);
-                    if (fs.existsSync(noExtPath)) {
-                        console.log(`[Self-Healing HTTP] Migrating extensionless file: ${noExtPath} -> ${targetPath}`);
-                        try {
-                            const stats = fs.statSync(noExtPath);
-                            data = fs.readFileSync(noExtPath, 'utf8');
-                            fs.writeFileSync(targetPath, data, 'utf8');
-                            mtime = stats.mtimeMs;
-                        } catch (err) {
-                            console.error(`[Self-Healing HTTP] Migration failed:`, err);
-                        }
-                    }
-                }
-
-                if (data !== null) {
-                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ success: true, data, mtime }));
-                } else {
-                    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ success: false, error: 'ENOENT' }));
-                }
-            } else if (reqUrl.pathname === '/save-file') {
-                let body = '';
-                req.on('data', chunk => {
-                    body += chunk.toString();
-                });
-                req.on('end', () => {
-                    try {
-                        const { path: filePath, content } = JSON.parse(body);
-                        if (!filePath) {
-                            res.writeHead(400);
-                            res.end('Missing path');
-                            return;
-                        }
-                        const dir = path.dirname(filePath);
-                        if (!fs.existsSync(dir)) {
-                            fs.mkdirSync(dir, { recursive: true });
-                        }
-                        fs.writeFileSync(filePath, content, 'utf8');
-                        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                        res.end(JSON.stringify({ success: true }));
-                    } catch (e) {
-                        res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-                        res.end(JSON.stringify({ success: false, error: e.message }));
-                    }
-                });
-                return;
-            } else if (reqUrl.pathname === '/check-directory') {
-                const targetPath = reqUrl.searchParams.get('path');
-                if (!targetPath) {
-                    res.writeHead(400);
-                    res.end('Missing path');
-                    return;
-                }
-                const status = await checkDirectoryStatusHelper(targetPath);
-                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                res.end(JSON.stringify(status));
-            } else if (reqUrl.pathname === '/get-documents-path') {
-                const docPath = app.getPath('documents');
-                res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-                res.end(JSON.stringify({ path: docPath }));
-            } else {
-                res.writeHead(404);
-                res.end('Not Found');
-            }
-        } catch (error) {
-            console.error("로컬 서버 오류:", error);
-            res.writeHead(500, { 'Content-Type': 'application/json; charset=utf-8' });
-            res.end(JSON.stringify({ error: error.message }));
-        }
-    });
-
-    localServer.listen(23230, '127.0.0.1', () => {
-        console.log('Local helper server running on http://127.0.0.1:23230');
-    });
-}
-
-app.on('will-quit', () => {
-    if (localServer) {
-        localServer.close();
-    }
-});
-
-// --- IPC 핸들러 (실제 시스템 기능) ---
+// --- IPC 핸들러 (데스크톱 앱 전용) ---
 
 // 1. 폴더 선택창 열기 (NAS 설정용)
 ipcMain.handle('select-directory', async () => {
@@ -390,7 +251,7 @@ ipcMain.handle('exists', async (event, filePath) => {
 
 // 6.1. 폴더 존재 및 읽기/쓰기 권한 검사
 ipcMain.handle('check-directory-status', async (event, dirPath) => {
-    return await checkDirectoryStatusHelper(dirPath);
+    return await checkDirectoryStatus(dirPath);
 });
 
 // 7. 문서 폴더 경로 가져오기 (백업용)

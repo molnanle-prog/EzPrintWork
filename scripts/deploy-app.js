@@ -52,18 +52,32 @@ function copyFolderSync(from, to) {
   });
 }
 
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
 async function main() {
-  const os = require('os');
+  const { resolveHomepageDir } = require('./resolve-homepage-dir');
   const currentDir = path.resolve(__dirname, '..');
-  const homepageDir = path.join(os.homedir(), 'Desktop', 'ez-hub-homepage');
+  const homepageDir = resolveHomepageDir();
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const downloadsDir = path.join(homepageDir, 'public', 'downloads');
   const distDir = path.join(currentDir, 'dist');
   const releaseDir = path.join(currentDir, 'release');
+  const deployExeDirect = process.env.DEPLOY_SETUP_EXE === '1';
+  const MIN_SETUP_BYTES = 15 * 1024 * 1024;
 
   log('===================================================', colors.bold + colors.green);
   log('   🚀 EzPrintWork 앱 링킹 & 원클릭 통합 배포 가동', colors.bold + colors.green);
   log('===================================================', colors.bold + colors.green);
+  log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
+  if (deployExeDirect) {
+    log('* .exe 직접 배포 모드 (Firebase Blaze 요금제 필요)', colors.yellow);
+  } else {
+    log('* .zip 배포 모드 (Spark 무료 요금제 호환 — 압축 해제 후 설치)', colors.cyan);
+  }
 
   // 0. 파일 점유 에러 예방을 위해 powershell 강제 삭제 구동
   if (fs.existsSync(distDir)) {
@@ -85,119 +99,82 @@ async function main() {
   log('* 이 작업은 다소 시간이 소요될 수 있습니다 (약 30초~1분)...', colors.cyan);
   runCommand('npx electron-builder', currentDir);
 
-  // 2-1. 초경량 연동 도우미 단독 실행파일 빌드
-  log('\n[2-1/5] 웹형 접속자 전용 초경량 연동 도우미 (.exe) 컴파일 중...', colors.yellow);
-  runCommand('npx -y pkg scripts/local-helper.js --targets node18-win-x64 --output release/EzPrintWork-Helper.exe', currentDir);
-
   // 3. 빌드된 설치 파일 감지 및 리네임하여 홈페이지 다운로드 폴더로 이식
-  log('\n[3/5] 빌드된 설치 파일 및 헬퍼를 홈페이지 다운로드 디렉토리로 연동 중...', colors.yellow);
+  log('\n[3/5] 빌드된 설치 파일을 홈페이지 다운로드 디렉토리로 연동 중...', colors.yellow);
   try {
     if (!fs.existsSync(downloadsDir)) {
       fs.mkdirSync(downloadsDir, { recursive: true });
     }
 
-    // 경량 도우미 프로그램 컴파일 및 이식
-    log('\n* 경량 브라우저 연동 도우미 (.exe) 컴파일 중...', colors.cyan);
-    runCommand('npx -y pkg scripts/helper-server.js --targets node18-win-x64 --output release/EzPrintWork-Helper.exe', currentDir);
-    
-    log('\n* 브라우저 연동 도우미 PE 서브시스템을 GUI(백그라운드) 모드로 패치 중...', colors.cyan);
-    runCommand('node scripts/make-gui.js', currentDir);
-    
-    const helperSourcePath = path.join(releaseDir, 'EzPrintWork-Helper.exe');
-    const helperTargetPath = path.join(downloadsDir, 'EzPrintWork-Helper.bin');
-    if (fs.existsSync(helperSourcePath)) {
-      if (fs.existsSync(helperTargetPath)) {
-        try {
-          fs.unlinkSync(helperTargetPath);
-        } catch (e) {}
-      }
-      // Clean up legacy .exe from downloads to avoid any deploy failures
-      const legacyHelperExe = path.join(downloadsDir, 'EzPrintWork-Helper.exe');
-      if (fs.existsSync(legacyHelperExe)) {
-        try {
-          fs.unlinkSync(legacyHelperExe);
-        } catch (e) {}
-      }
-
-      fs.copyFileSync(helperSourcePath, helperTargetPath);
-      log('✓ 경량 브라우저 연동 도우미 (.bin) 이식 완료!', colors.green);
-    } else {
-      throw new Error('release 폴더에서 EzPrintWork-Helper.exe 컴파일 결과를 찾을 수 없습니다.');
-    }
-
     const files = fs.readdirSync(releaseDir);
     const setupCandidates = files
-      .filter(f => f.endsWith('.exe') && f.includes('EzPrintWork') && !f.includes('Helper'))
+      .filter(f => f.endsWith('.exe') && f.includes('Setup'))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(releaseDir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     const setupFile = setupCandidates[0]?.name;
 
     if (setupFile) {
       const sourcePath = path.join(releaseDir, setupFile);
-      const targetPath = path.join(downloadsDir, 'EzPrintWork-Setup.zip');
-      
-      log(`* 감지된 원본 파일: ${setupFile}`, colors.cyan);
-      log(`* 최종 압축 파일명: EzPrintWork-Setup.zip`, colors.cyan);
-      
-      // 혹시 남아있을 수 있는 이전 .exe 파일 제거 (Firebase 업로드 에러 사전 차단)
-      const legacyExe = path.join(downloadsDir, 'EzPrintWork-Setup.exe');
-      if (fs.existsSync(legacyExe)) {
-        try {
-          fs.unlinkSync(legacyExe);
-          log('✓ 기존 레거시 .exe 설치 파일 안전하게 제거 완료', colors.green);
-        } catch (e) {
-          log(`* 경고: 레거시 .exe 제거 중 예외 발생: ${e.message}`, colors.yellow);
-        }
-      }
-      
-      if (fs.existsSync(targetPath)) {
-        try {
-          fs.unlinkSync(targetPath);
-        } catch (e) {}
-      }
-      // PowerShell을 사용하여 초고속 압축
-      log('* 데스크톱 앱을 초고속 Zip 파일로 압축 중...', colors.cyan);
-      execSync(`powershell -Command "Compress-Archive -Path '${sourcePath}' -DestinationPath '${targetPath}' -Force"`);
-      log('✓ 최신 데스크톱 설치본 Zip 압축 및 링킹 완료!', colors.green);
-
-      // Firebase Spark 요금제 제한(실행 파일 업로드 불가)으로 인해 
-      // .exe 설치본 복사는 비활성화하고 .zip 압축본만 서빙합니다.
+      const targetZipPath = path.join(downloadsDir, 'EzPrintWork-Setup.zip');
       const targetExePath = path.join(downloadsDir, 'EzPrintWork-Setup.exe');
-      if (fs.existsSync(targetExePath)) {
-        try {
-          fs.unlinkSync(targetExePath);
-          log('✓ Firebase 업로드 에러 방지를 위해 기존 레거시 .exe를 삭제했습니다.', colors.green);
-        } catch (e) {}
+      const sourceStat = fs.statSync(sourcePath);
+
+      log(`* 감지된 원본 파일: ${setupFile}`, colors.cyan);
+      log(`* 설치 파일 용량: ${formatBytes(sourceStat.size)}`, colors.cyan);
+
+      if (sourceStat.size < MIN_SETUP_BYTES) {
+        throw new Error(
+          `설치 파일 용량이 비정상적으로 작습니다 (${formatBytes(sourceStat.size)}). electron-builder 빌드를 다시 확인해 주세요.`
+        );
       }
+
+      if (fs.existsSync(targetZipPath)) fs.unlinkSync(targetZipPath);
+      if (fs.existsSync(targetExePath)) fs.unlinkSync(targetExePath);
+
+      log('* 데스크톱 설치 파일을 Zip으로 압축 중...', colors.cyan);
+      execSync(`powershell -Command "Compress-Archive -Path '${sourcePath}' -DestinationPath '${targetZipPath}' -Force"`);
+
+      const zipStat = fs.statSync(targetZipPath);
+      log(`* Zip 용량: ${formatBytes(zipStat.size)} (원본 ${formatBytes(sourceStat.size)})`, colors.cyan);
+
+      if (zipStat.size < sourceStat.size * 0.4) {
+        throw new Error('Zip 압축 결과 용량 검증 실패 — 손상된 파일일 수 있습니다.');
+      }
+      log('✓ EzPrintWork-Setup.zip 생성 완료', colors.green);
+
+      let downloadUrl = '/downloads/EzPrintWork-Setup.zip';
+      let downloadType = 'zip';
+
+      if (deployExeDirect) {
+        fs.copyFileSync(sourcePath, targetExePath);
+        const exeStat = fs.statSync(targetExePath);
+        if (exeStat.size !== sourceStat.size) {
+          throw new Error('.exe 복사 후 용량이 일치하지 않습니다.');
+        }
+        downloadUrl = '/downloads/EzPrintWork-Setup.exe';
+        downloadType = 'exe';
+        log(`✓ EzPrintWork-Setup.exe 직접 배포 (${formatBytes(exeStat.size)})`, colors.green);
+      } else {
+        log('* Spark 요금제 호환: .exe는 zip 안에 포함됩니다. 압축 해제 후 설치 프로그램을 실행하세요.', colors.cyan);
+      }
+
+      fs.writeFileSync(
+        path.join(downloadsDir, 'download-manifest.json'),
+        JSON.stringify({
+          version: require(path.join(currentDir, 'package.json')).version,
+          setupFile: deployExeDirect ? 'EzPrintWork-Setup.exe' : 'EzPrintWork-Setup.zip',
+          setupBytes: deployExeDirect ? fs.statSync(targetExePath).size : zipStat.size,
+          exeBytes: sourceStat.size,
+          downloadUrl,
+          downloadType,
+          updatedAt: new Date().toISOString(),
+          installHint: deployExeDirect
+            ? '다운로드 후 바로 설치 프로그램을 실행하세요.'
+            : 'zip을 압축 해제한 뒤 EzPrintWork-Setup.exe를 실행하세요.',
+        }, null, 2)
+      );
     } else {
       throw new Error('release 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.');
-    }
-
-    // 초경량 연동 도우미(Helper) 압축 이식 처리
-    const helperFile = files.find(f => f.endsWith('.exe') && f.includes('EzPrintWork-Helper'));
-    if (helperFile) {
-      const sourceHelperPath = path.join(releaseDir, helperFile);
-      const targetHelperPath = path.join(downloadsDir, 'EzPrintWork-Helper.zip');
-      
-      log(`* 감지된 헬퍼 파일: ${helperFile}`, colors.cyan);
-      
-      if (fs.existsSync(targetHelperPath)) {
-        try {
-          fs.unlinkSync(targetHelperPath);
-        } catch (e) {}
-      }
-      
-      log('* 초경량 연동 도우미를 초고속 Zip 파일로 압축 중...', colors.cyan);
-      execSync(`powershell -Command "Compress-Archive -Path '${sourceHelperPath}' -DestinationPath '${targetHelperPath}' -Force"`);
-      log('✓ 초경량 연동 도우미 Zip 압축 및 링킹 완료!', colors.green);
-      
-      // 혹시 복사되었을 수 있는 exe는 삭제 처리
-      const targetHelperExe = path.join(downloadsDir, 'EzPrintWork-Helper.exe');
-      if (fs.existsSync(targetHelperExe)) {
-        try {
-          fs.unlinkSync(targetHelperExe);
-        } catch (e) {}
-      }
     }
 
     // 웹앱용 리액트 소스도 이식
@@ -216,10 +193,10 @@ async function main() {
     log('\n[4/5] 홈페이지 빌드 생략 (package.json 없음)', colors.yellow);
   }
 
-  // 4.5. Hosting 저장 한도 방지 — 오래된 릴리스 정리 (최신 3개만 유지)
+  // 4.5. Hosting 저장 한도 방지 — 오래된 릴리스 정리 (최신 3개만 유지, 실패해도 배포 계속)
   log('\n[4.5/5] Firebase Hosting 오래된 배포본 정리 중...', colors.yellow);
   try {
-    runCommand('node scripts/cleanup_hosting_releases.mjs gen-lang-client-0746903005 3', currentDir);
+    execSync('node scripts/cleanup_hosting_releases.mjs gen-lang-client-0746903005 3', { stdio: 'inherit', cwd: currentDir });
   } catch (e) {
     log('* 경고: Hosting 릴리스 정리 실패 — 배포는 계속 시도합니다.', colors.yellow);
   }

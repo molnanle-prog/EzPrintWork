@@ -70,6 +70,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
     const targetIndex = activeJobs.findIndex(j => j.id === targetJobId);
 
     if (draggedIndex === -1 || targetIndex === -1) return;
+    if (draggedIndex === targetIndex) return;
 
     const newActiveJobs = [...activeJobs];
     newActiveJobs.splice(draggedIndex, 1);
@@ -79,18 +80,19 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
       job.order = index;
     });
 
-    let newAllJobs = [...allJobs];
-    newActiveJobs.forEach(aj => {
-      const idx = newAllJobs.findIndex(j => j.id === aj.id);
-      if (idx !== -1) {
-        newAllJobs[idx] = aj;
-      }
+    const jobsToSave = newActiveJobs.filter((job, index) => {
+      const prev = activeJobs.find(j => j.id === job.id);
+      return prev && prev.order !== index;
     });
 
+    setJobs(newActiveJobs);
+    db.applyLocalJobUpdates(jobsToSave);
+
     try {
-      await db.saveJobs(newAllJobs);
+      await db.saveJobsPartial(jobsToSave);
     } catch (error) {
       showAlert(getErrorMessage(error));
+      loadData();
     }
     setDraggedJobId(null);
   };

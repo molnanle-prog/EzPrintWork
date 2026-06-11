@@ -1,14 +1,27 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { db, getErrorMessage } from '../../services/dataService';
 import { Job, Staff, Priority, JobStatusDefinition, JobHistoryLog } from '../../types';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanColumn } from './KanbanColumn';
+import { KanbanCard } from './KanbanCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useDialog } from '../../contexts/DialogContext';
 import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv } from 'lucide-react';
 import { toast } from 'sonner';
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  DragStartEvent,
+  DragEndEvent,
+  MeasuringStrategy,
+} from '@dnd-kit/core';
+import { kanbanCollisionDetection, resolveKanbanDropTarget, computeKanbanInsertIndex, getDragPointerY } from './kanbanCollisionDetection';
 
 interface KanbanBoardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -44,6 +57,24 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [filterUrgentOnly, setFilterUrgentOnly] = useState(false);
   const [filterCanceled, setFilterCanceled] = useState(false);
   const [selectedStaffFilter, setSelectedStaffFilter] = useState<string>('all');
+  const [activeDragJobId, setActiveDragJobId] = useState<string | null>(null);
+  const justDraggedRef = useRef(false);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } })
+  );
+
+  useEffect(() => {
+    const hintKey = 'ezprint_kanban_touch_hint';
+    if (!localStorage.getItem(hintKey) && 'ontouchstart' in window) {
+      toast.info(
+        '카드를 0.25초 길게 누른 뒤 끌어서 옆 단계로 이동할 수 있습니다. 짧게 탭하면 상세 정보가 열립니다.',
+        { duration: 6000 }
+      );
+      localStorage.setItem(hintKey, '1');
+    }
+  }, []);
 
   // Optimized Data Loading
   const loadBoardData = () => {
@@ -139,7 +170,38 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     }
   };
 
-  const handleJobDrop = async (draggedJobId: string, newStatusKey: string, targetJobId?: string) => {
+  const collectChangedJobs = (
+    allJobs: Job[],
+    columnJobs: Job[],
+    draggedJobId: string,
+    previousStatus: string,
+    newStatusKey: string
+  ): Job[] => {
+    const changed = new Map<string, Job>();
+
+    for (const job of columnJobs) {
+      const previous = allJobs.find(j => j.id === job.id);
+      if (!previous || previous.order !== job.order || previous.status !== job.status) {
+        changed.set(job.id, job);
+      }
+    }
+
+    if (previousStatus !== newStatusKey) {
+      const sourceColumnJobs = allJobs
+        .filter(j => j.status === previousStatus && j.id !== draggedJobId)
+        .sort((a, b) => a.order - b.order);
+
+      sourceColumnJobs.forEach((job, index) => {
+        if (job.order !== index) {
+          changed.set(job.id, { ...job, order: index });
+        }
+      });
+    }
+
+    return Array.from(changed.values());
+  };
+
+  const handleJobDrop = async (draggedJobId: string, newStatusKey: string, insertIndex?: number) => {
     const allJobs = db.getAllJobs(); 
     const draggedJob = allJobs.find(j => j.id === draggedJobId);
     if (!draggedJob || !currentUser) return;
@@ -169,18 +231,37 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     if (newStatusKey === 'DELIVERY' && draggedJob.status !== 'DELIVERY') {
         updatedJob.completedAt = new Date().toISOString();
         updatedJob.progress = 100;
-        
-        // --- 완료 알림 문자 발송 및 이력 자동 기록 트리거 ---
+    } else if (newStatusKey !== 'DELIVERY' && draggedJob.status === 'DELIVERY') {
+        updatedJob.completedAt = undefined;
+        updatedJob.progress = getProgressForStatus(newStatusKey);
+    } else {
+        updatedJob.progress = getProgressForStatus(newStatusKey);
+    }
+
+    const columnJobs = newAllJobs
+        .filter((j: Job) => j.status === newStatusKey)
+        .sort((a: Job, b: Job) => a.order - b.order);
+
+    const clampedIndex = insertIndex !== undefined
+        ? Math.max(0, Math.min(insertIndex, columnJobs.length))
+        : columnJobs.length;
+    columnJobs.splice(clampedIndex, 0, updatedJob);
+
+    columnJobs.forEach((job: Job, index: number) => {
+        job.order = index;
+    });
+
+    let jobsToSave = collectChangedJobs(allJobs, columnJobs, draggedJobId, draggedJob.status, newStatusKey);
+    db.applyLocalJobUpdates(jobsToSave);
+
+    if (newStatusKey === 'DELIVERY' && draggedJob.status !== 'DELIVERY') {
         const smsConfig = db.getSmsConfig();
         if (smsConfig && smsConfig.sendOnComplete) {
-            // 1. 거래처 개별 문자 발송 설정 연동
             const clientInfo = db.getClients().find(c => c.name === draggedJob.clientName);
             
             if (clientInfo && clientInfo.sendSmsOnComplete === false) {
-                // 알림 문자 발송 거부 거래처인 경우 조용히 발송 스킵하고 토스트 알림
                 toast.info(`'${draggedJob.clientName}' 거래처는 알림 문자 수신 거부 상태이므로 발송을 건너뜁니다.`);
             } else {
-                // 발송 수신처 번호 지정 (수신 전용 번호가 있으면 그것을 우선 사용, 없으면 작업 연락처 사용)
                 const targetPhone = (clientInfo && clientInfo.customSmsNumber) 
                     ? clientInfo.customSmsNumber 
                     : draggedJob.clientPhone;
@@ -192,7 +273,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                     const rawTemplate = smsConfig.completedMessageTemplate || 
                       `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 찾으러 내방해 주시기 바랍니다. 감사합니다.`;
                     
-                    // 수신처 번호를 교체한 임시 작업 객체로 템플릿 변환
                     const jobForSms = { ...draggedJob, clientPhone: targetPhone };
                     const previewMsg = replaceTemplateVariables(rawTemplate, jobForSms, companyName);
                     
@@ -223,44 +303,89 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 }
             }
         }
-    } else if (newStatusKey !== 'DELIVERY' && draggedJob.status === 'DELIVERY') {
-        updatedJob.completedAt = undefined;
-        updatedJob.progress = getProgressForStatus(newStatusKey);
-    } else {
-        updatedJob.progress = getProgressForStatus(newStatusKey);
-    }
 
-    const columnJobs = newAllJobs
-        .filter((j: Job) => j.status === newStatusKey)
-        .sort((a: Job, b: Job) => a.order - b.order);
-
-    if (targetJobId) {
-        const targetIndex = columnJobs.findIndex((j: Job) => j.id === targetJobId);
-        if (targetIndex !== -1) {
-            columnJobs.splice(targetIndex, 0, updatedJob);
-        } else {
-            columnJobs.push(updatedJob);
+        if (newHistory.length !== updatedJob.history.length) {
+            updatedJob.history = newHistory;
+            const draggedIndex = columnJobs.findIndex(j => j.id === draggedJobId);
+            if (draggedIndex !== -1) {
+                columnJobs[draggedIndex] = { ...columnJobs[draggedIndex], history: newHistory };
+            }
+            jobsToSave = collectChangedJobs(allJobs, columnJobs, draggedJobId, draggedJob.status, newStatusKey);
         }
-    } else {
-        columnJobs.push(updatedJob);
     }
-
-    columnJobs.forEach((job: Job, index: number) => {
-        job.order = index;
-    });
-
-    newAllJobs = newAllJobs.filter((j: Job) => j.status !== newStatusKey);
-    newAllJobs = [...newAllJobs, ...columnJobs];
 
     try {
-        await db.saveJobs(newAllJobs);
+        await db.saveJobsPartial(jobsToSave);
     } catch (error) {
         showAlert(getErrorMessage(error));
-        // On error, the subscription will reload the old state from DB, 
-        // but we might want to force a refresh if the optimism failed.
         loadBoardData();
     }
   };
+
+  const handleDragStart = (event: DragStartEvent) => {
+    setActiveDragJobId(event.active.id as string);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    setActiveDragJobId(null);
+    justDraggedRef.current = true;
+    setTimeout(() => {
+      justDraggedRef.current = false;
+    }, 300);
+
+    const { active, over } = event;
+    if (!over) return;
+
+    const draggedJobId = active.id as string;
+    const overId = over.id as string;
+
+    if (overId === draggedJobId) return;
+
+    const visibleKeys = visibleStatusDefinitions.map((s) => s.key);
+    const dropTarget = resolveKanbanDropTarget(overId, db.getAllJobs(), visibleKeys);
+    if (!dropTarget) return;
+
+    const { newStatusKey } = dropTarget;
+    const draggedJob = db.getAllJobs().find((j) => j.id === draggedJobId);
+    if (!draggedJob) return;
+
+    const pointerY = getDragPointerY(event);
+    if (pointerY === null) return;
+
+    const columnJobIds = filteredJobs
+      .filter((j) => j.status === newStatusKey)
+      .sort((a, b) => a.order - b.order)
+      .map((j) => j.id);
+
+    const insertIndex = computeKanbanInsertIndex(
+      pointerY,
+      newStatusKey,
+      columnJobIds,
+      draggedJobId
+    );
+
+    if (draggedJob.status === newStatusKey) {
+      const idsWithoutDragged = columnJobIds.filter((id) => id !== draggedJobId);
+      const oldIndex = idsWithoutDragged.length === 0
+        ? 0
+        : columnJobIds.slice(0, columnJobIds.indexOf(draggedJobId)).filter((id) => id !== draggedJobId).length;
+      if (insertIndex === oldIndex) return;
+    }
+
+    handleJobDrop(draggedJobId, newStatusKey, insertIndex);
+  };
+
+  const handleSelectJob = useCallback((job: Job) => {
+    if (justDraggedRef.current) return;
+    setSelectedJob(job);
+    setJobModalViewMode('summary');
+  }, []);
+
+  const handleRightClickJob = useCallback((job: Job) => {
+    if (justDraggedRef.current) return;
+    setSelectedJob(job);
+    setJobModalViewMode('edit');
+  }, []);
 
   const handleCreateJob = async (newJob: Job) => {
     try {
@@ -618,10 +743,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       </div>
       )}
 
+      <DndContext
+        sensors={sensors}
+        collisionDetection={kanbanCollisionDetection}
+        measuring={{ droppable: { strategy: MeasuringStrategy.WhileDragging } }}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+      >
       <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0">
-        {/* Responsive Width logic: 
-            Columns will grow and shrink to fit the screen. 
-            Horizontal scroll only appears when absolutely necessary (on very small screens). */}
         <div 
             className="flex gap-1.5 h-full py-1.5 px-0 w-full"
         >
@@ -635,10 +764,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                     jobs={getJobsForStatus(statusDef.key)}
                     quoteJobs={statusDef.key === 'RECEIVED' ? filteredJobs.filter((j: Job) => j.status === 'QUOTE') : undefined}
                     getStaffName={getStaffName}
-                    onSelectJob={(job) => { setSelectedJob(job); setJobModalViewMode('summary'); }}
-                    onRightClickJob={(job) => { setSelectedJob(job); setJobModalViewMode('edit'); }}
+                    onSelectJob={handleSelectJob}
+                    onRightClickJob={handleRightClickJob}
                     onStatusChange={updateJobStatus}
-                    onDropJob={handleJobDrop}
                     currentUserId={currentUser?.id}
                     isCompact={statusDef.key === 'DELIVERY' || visibleStatusDefinitions.length > 5}
                     showAd={tenantPlan === 'free' && statusDef.key === adStatusKey}
@@ -648,6 +776,30 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           ))}
         </div>
       </div>
+
+      <DragOverlay dropAnimation={null}>
+        {activeDragJobId ? (() => {
+          const dragJob = filteredJobs.find(j => j.id === activeDragJobId);
+          if (!dragJob) return null;
+          return (
+            <div className="opacity-90 rotate-2 scale-105 shadow-2xl pointer-events-none w-[280px]">
+              <KanbanCard
+                job={dragJob}
+                status={dragJob.status}
+                staffName={getStaffName(dragJob)}
+                onSelect={() => {}}
+                onStatusChange={() => {}}
+                isMyJob={currentUser ? (dragJob.assignedStaffIds?.includes(currentUser.id) || dragJob.assignedStaffId === currentUser.id) : false}
+                isCompact={dragJob.status === 'DELIVERY' || visibleStatusDefinitions.length > 5}
+                currentUserId={currentUser?.id}
+                isTvMode={isTvMode}
+                isDragOverlay
+              />
+            </div>
+          );
+        })() : null}
+      </DragOverlay>
+      </DndContext>
 
       {selectedJob && (
         <JobDetailModal 

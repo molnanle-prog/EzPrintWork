@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
@@ -162,6 +162,12 @@ IconFile=https://ez-hub.kr/favicon.ico
             const { setPersistence, browserSessionPersistence } = await import('firebase/auth');
             await setPersistence(auth, browserSessionPersistence);
 
+            const preferRedirect = !isElectron && ('ontouchstart' in window || /iPad|iPhone|iPod|Android/i.test(navigator.userAgent));
+            if (preferRedirect) {
+                await signInWithRedirect(auth, provider);
+                return;
+            }
+
             const result = await signInWithPopup(auth, provider);
             const user = result.user;
             window.removeEventListener('focus', onFocus);
@@ -221,6 +227,16 @@ IconFile=https://ez-hub.kr/favicon.ico
             console.error(error);
             if (error.code === 'auth/popup-closed-by-user' || error.code === 'auth/cancelled-popup-request') {
                 toast.error('구글 로그인 창이 닫혔습니다.');
+            } else if (
+                error.code === 'auth/popup-blocked' ||
+                error.code === 'auth/operation-not-supported-in-this-environment'
+            ) {
+                try {
+                    await signInWithRedirect(auth, provider);
+                    return;
+                } catch (redirectError: any) {
+                    toast.error('로그인 중 오류가 발생했습니다: ' + redirectError.message);
+                }
             } else {
                 toast.error('로그인 중 오류가 발생했습니다: ' + error.message);
             }

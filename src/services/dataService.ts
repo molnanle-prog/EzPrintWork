@@ -589,25 +589,41 @@ export class DataService {
         this.updateTenantActivity().catch(() => {});
     }
 
-    private async updateEntity(col: string, id: string, entity: any) {
+    private patchLocalEntity(col: string, id: string, entity: any): any | null {
         const list = this.data[col] || [];
         const index = list.findIndex(e => e.id === id);
-        if (index > -1) {
-            const updated = { ...list[index], ...entity, updatedAt: new Date().toISOString() };
-            list[index] = updated;
-            this.data[col] = [...list];
-            this.notify();
-            
-            if (this.tenantId) {
-                try {
-                    const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
-                    await setDoc(docRef, updated, { merge: true });
-                } catch (e) {
-                    console.error(`[Firestore updateEntity Error] Failed to update ${col}/${id}:`, e);
-                }
+        if (index === -1) return null;
+
+        const updated = { ...list[index], ...entity, updatedAt: new Date().toISOString() };
+        list[index] = updated;
+        this.data[col] = [...list];
+        return updated;
+    }
+
+    private async persistEntity(col: string, id: string, updated: any) {
+        if (this.tenantId) {
+            try {
+                const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
+                await setDoc(docRef, updated, { merge: true });
+            } catch (e) {
+                console.error(`[Firestore updateEntity Error] Failed to update ${col}/${id}:`, e);
+                throw e;
             }
-            
-            this.updateTenantActivity().catch(() => {});
+        }
+
+        this.updateTenantActivity().catch(() => {});
+    }
+
+    private async updateEntity(col: string, id: string, entity: any) {
+        const updated = this.patchLocalEntity(col, id, entity);
+        if (!updated) return;
+
+        this.notify();
+
+        try {
+            await this.persistEntity(col, id, updated);
+        } catch {
+            // persistEntity already logged the error
         }
     }
 
@@ -658,6 +674,36 @@ export class DataService {
                 await this.updateEntity('jobs', id, data);
             }
         }
+    }
+
+    applyLocalJobUpdates(jobs: Job[]) {
+        let changed = false;
+        for (const job of jobs) {
+            if (!job.id) continue;
+            const { id, ...data } = job;
+            const updated = this.patchLocalEntity('jobs', id, data);
+            if (updated) changed = true;
+        }
+        if (changed) this.notify();
+    }
+
+    async saveJobsPartial(jobs: Job[]) {
+        const updates: { id: string; updated: Job }[] = [];
+
+        for (const job of jobs) {
+            if (!job.id) continue;
+            const { id, ...data } = job;
+            const updated = this.patchLocalEntity('jobs', id, data);
+            if (updated) updates.push({ id, updated });
+        }
+
+        if (updates.length === 0) return;
+
+        this.notify();
+
+        await Promise.all(
+            updates.map(({ id, updated }) => this.persistEntity('jobs', id, updated))
+        );
     }
 
     async addStaff(staff: Staff) { await this.addEntity('staff', staff); }

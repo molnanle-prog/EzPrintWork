@@ -8,6 +8,8 @@ import {
 import { db } from '../../services/dataService';
 import { useTheme } from '../../contexts/ThemeContext';
 import { toast } from 'sonner';
+import { useSortable } from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 interface KanbanCardProps {
   job: Job;
@@ -16,11 +18,11 @@ interface KanbanCardProps {
   onSelect: (job: Job) => void;
   onRightClick?: (job: Job) => void;
   onStatusChange: (job: Job, direction: 'next' | 'prev') => void;
-  onDropOnCard: (draggedJobId: string, targetJobId: string) => void;
   isMyJob: boolean;
   isCompact?: boolean;
-  currentUserId?: string; // Linear-style 단축키 배정을 위한 현재 사용자 ID
+  currentUserId?: string;
   isTvMode?: boolean;
+  isDragOverlay?: boolean;
 }
 
 export const KanbanCard: React.FC<KanbanCardProps> = ({ 
@@ -30,15 +32,45 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   onSelect, 
   onRightClick,
   onStatusChange, 
-  onDropOnCard,
   isMyJob,
   isCompact = false,
   currentUserId,
-  isTvMode = false
+  isTvMode = false,
+  isDragOverlay = false
 }) => {
-  const [isDragOver, setIsDragOver] = useState(false);
   const { theme } = useTheme();
   const [isHovered, setIsHovered] = useState(false);
+
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: job.id, disabled: isDragOverlay });
+
+  const sortableStyle: React.CSSProperties = isDragOverlay
+    ? {}
+    : {
+        transform: CSS.Transform.toString(transform),
+        transition,
+        opacity: isDragging ? 0.35 : 1,
+        touchAction: 'manipulation',
+      };
+
+  const sortableProps = isDragOverlay ? {} : { ...attributes, ...listeners };
+
+  const handleCardClick = () => {
+    if (isDragOverlay) return;
+    onSelect(job);
+  };
+
+  const handleCardContextMenu = (e: React.MouseEvent) => {
+    if (isDragOverlay) return;
+    e.preventDefault();
+    onRightClick ? onRightClick(job) : onSelect(job);
+  };
 
   // Calculate Days Remaining
   const now = new Date();
@@ -272,31 +304,6 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     }
   };
 
-  const handleDragStart = (e: React.DragEvent) => {
-    e.dataTransfer.setData("jobId", job.id);
-    e.dataTransfer.effectAllowed = "move";
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); 
-    if (!isDragOver) setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation(); 
-    setIsDragOver(false);
-    const draggedJobId = e.dataTransfer.getData("jobId");
-    if (draggedJobId && draggedJobId !== job.id) {
-        onDropOnCard(draggedJobId, job.id);
-    }
-  };
-
   const getPriorityColor = (priority: Priority) => {
     switch (priority) {
       case Priority.VERY_URGENT: return 'bg-red-600 text-white border-red-700 shadow-red-500/30';
@@ -355,24 +362,19 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   }
   let cardStyleClass = borderAndBgClass;
 
-  if (isDragOver) {
-      cardStyleClass = "bg-blue-50/90 dark:bg-blue-900/30 border-2 border-blue-500 shadow-2xl scale-[1.03] z-40 rotate-1";
-  }
-
   // ----------------------------------------------------------------------
   // COMPACT VIEW (완료/배송 단계 한 줄 축약형)
   // ----------------------------------------------------------------------
   if (isCompact) {
     return (
       <div 
-        draggable
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        className={`bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group ${isDragOver ? 'border-t-4 border-t-blue-500' : ''}`}
-        onClick={() => onSelect(job)}
-        onContextMenu={(e) => { e.preventDefault(); onRightClick ? onRightClick(job) : onSelect(job); }}
+        ref={setNodeRef}
+        data-job-id={job.id}
+        style={sortableStyle}
+        {...sortableProps}
+        className={`bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group`}
+        onClick={handleCardClick}
+        onContextMenu={handleCardContextMenu}
       >
          <div className="text-emerald-500 cursor-pointer shrink-0" title="완료">
            <CheckCircle2 size={17} className="fill-emerald-100 dark:fill-none" />
@@ -423,18 +425,17 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
     return (
       <div 
-        draggable
-        onDragStart={handleDragStart}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
+        ref={setNodeRef}
+        data-job-id={job.id}
+        style={sortableStyle}
+        {...sortableProps}
         className={`
           py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium
           ${cardStyleClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
         `}
-        onClick={() => onSelect(job)}
-        onContextMenu={(e) => { e.preventDefault(); onRightClick ? onRightClick(job) : onSelect(job); }}
+        onClick={handleCardClick}
+        onContextMenu={handleCardContextMenu}
       >
         <style>{`
           .backdrop-blur-premium {
@@ -568,11 +569,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
   return (
     <div 
-      draggable
-      onDragStart={handleDragStart}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
+      ref={setNodeRef}
+      data-job-id={job.id}
+      style={sortableStyle}
+      {...sortableProps}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={`
@@ -580,8 +580,8 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         ${cardStyleClass}
         active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50
       `}
-      onClick={() => onSelect(job)}
-      onContextMenu={(e) => { e.preventDefault(); onRightClick ? onRightClick(job) : onSelect(job); }}
+      onClick={handleCardClick}
+      onContextMenu={handleCardContextMenu}
     >
       {/* 프리미엄 블러 효과 인라인 스타일 */}
       <style>{`

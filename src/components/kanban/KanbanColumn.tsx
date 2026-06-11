@@ -1,21 +1,22 @@
 
-import React, { useState } from 'react';
+import React from 'react';
 import { Job, JobStatusDefinition } from '../../types';
 import { KanbanCard } from './KanbanCard';
-import { db } from '../../services/dataService'; 
 import { useTheme } from '../../contexts/ThemeContext';
-import { Sparkles } from 'lucide-react';
 import { AdBanner } from '../common/AdBanner';
+import { useDroppable } from '@dnd-kit/core';
+import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+
+export const COLUMN_DROPPABLE_PREFIX = 'column:';
 
 interface KanbanColumnProps {
   statusDef: JobStatusDefinition;
   jobs: Job[];
-  quoteJobs?: Job[]; // Added: 견적 대기 작업 목록
-  getStaffName: (job?: Job) => string; // Updated signature
+  quoteJobs?: Job[];
+  getStaffName: (job?: Job) => string;
   onSelectJob: (job: Job) => void;
   onRightClickJob?: (job: Job) => void;
   onStatusChange: (job: Job, direction: 'next' | 'prev') => void;
-  onDropJob: (jobId: string, statusKey: string, targetJobId?: string) => void;
   currentUserId?: string;
   isCompact?: boolean;
   showAd?: boolean;
@@ -25,19 +26,19 @@ interface KanbanColumnProps {
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({ 
   statusDef, 
   jobs, 
-  quoteJobs, // Destruct here
+  quoteJobs,
   getStaffName, 
   onSelectJob, 
   onRightClickJob,
   onStatusChange, 
-  onDropJob,
   currentUserId,
   isCompact = false,
   showAd = false,
   isTvMode = false
 }) => {
-  const [isDragOver, setIsDragOver] = useState(false);
   const { theme } = useTheme();
+  const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
+  const { setNodeRef, isOver } = useDroppable({ id: droppableId });
 
   const getColorForStatus = (statusKey: string) => {
     switch (statusKey) {
@@ -51,51 +52,23 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
     }
   };
 
-  // Sort logic: Primary sort is 'order' to allow manual reordering.
-  // Secondary sort (fallback) is Date.
   const sortedJobs = [...jobs].sort((a, b) => {
-    // If orders are different, use order
     if (a.order !== b.order) return a.order - b.order;
-    // Fallback: 접수일시 순 정렬
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault(); // Necessary to allow dropping
-    if (!isDragOver) setIsDragOver(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragOver(false);
-  };
-
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragOver(false);
-    const jobId = e.dataTransfer.getData("jobId");
-    // If we drop on the column directly (not on a card), targetJobId is undefined
-    if (jobId) {
-      onDropJob(jobId, statusDef.key, undefined);
-    }
-  };
-
-  const handleCardDrop = (draggedJobId: string, targetJobId: string) => {
-      onDropJob(draggedJobId, statusDef.key, targetJobId);
-  }
+  const jobIds = sortedJobs.map(job => job.id);
 
   return (
     <div 
       className={`flex-1 flex flex-col h-full rounded-xl border transition-colors duration-200
         ${theme === 'trello'
-          ? (isDragOver ? 'bg-[#24364e] border-[#384c66] shadow-sm' : 'bg-[#1d2d44] border-[#2c3e56] shadow-none')
-          : (isDragOver 
+          ? (isOver ? 'bg-[#24364e] border-[#384c66] shadow-sm' : 'bg-[#1d2d44] border-[#2c3e56] shadow-none')
+          : (isOver 
               ? 'bg-blue-100/80 dark:bg-blue-900/50 border-blue-400 ring-2 ring-blue-300 ring-inset' 
               : 'bg-slate-100/80 dark:bg-slate-800/80 border-slate-200/60 dark:border-slate-700')
         }
       `}
-      onDragOver={handleDragOver}
-      onDragLeave={handleDragLeave}
-      onDrop={handleDrop}
     >
       <div className={`p-1.5 lg:p-2 flex items-center justify-between rounded-t-xl sticky top-0 z-10 ${theme === "trello" ? "bg-transparent border-b border-transparent" : "bg-white/50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 backdrop-blur-sm"}`}>
         <h3 className={`font-medium flex items-center gap-2 ${theme === "trello" ? "text-slate-300 font-bold" : "text-slate-700 dark:text-slate-200"} ${isTvMode ? 'text-[19px] lg:text-[22px] font-medium' : 'text-[15px] lg:text-[17px]'}`}>
@@ -107,38 +80,45 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         </span>
       </div>
       
-      <div className="p-1 lg:p-1.5 flex-1 overflow-y-auto space-y-1.5 custom-scrollbar">
-        {jobs.length === 0 && isCompact && (
-          <div className="text-center text-slate-400 text-xs py-4">
-            해당 날짜의 완료 내역이 없습니다.
-          </div>
-        )}
-        {sortedJobs.map((job) => (
-          <KanbanCard 
-            key={job.id}
-            job={job}
-            status={job.status}
-            staffName={getStaffName(job)}
-            onSelect={onSelectJob}
-            onRightClick={onRightClickJob}
-            onStatusChange={onStatusChange}
-            onDropOnCard={handleCardDrop}
-            isMyJob={currentUserId ? (job.assignedStaffIds?.includes(currentUserId) || job.assignedStaffId === currentUserId) : false}
-            isCompact={isCompact}
-            currentUserId={currentUserId}
-            isTvMode={isTvMode}
-          />
-        ))}
+      <div
+        ref={setNodeRef}
+        data-kanban-column={statusDef.key}
+        className={`flex-1 min-h-0 flex flex-col ${isOver ? 'ring-2 ring-inset ring-blue-400/60 rounded-b-xl' : ''}`}
+      >
+        <SortableContext items={jobIds} strategy={verticalListSortingStrategy}>
+          <div className="p-1 lg:p-1.5 flex-1 overflow-y-auto flex flex-col gap-1.5 custom-scrollbar min-h-[160px]">
+            {jobs.length === 0 && isCompact && (
+              <div className="text-center text-slate-400 text-xs py-4">
+                해당 날짜의 완료 내역이 없습니다.
+              </div>
+            )}
+            {sortedJobs.map((job) => (
+              <KanbanCard 
+                key={job.id}
+                job={job}
+                status={job.status}
+                staffName={getStaffName(job)}
+                onSelect={onSelectJob}
+                onRightClick={onRightClickJob}
+                onStatusChange={onStatusChange}
+                isMyJob={currentUserId ? (job.assignedStaffIds?.includes(currentUserId) || job.assignedStaffId === currentUserId) : false}
+                isCompact={isCompact}
+                currentUserId={currentUserId}
+                isTvMode={isTvMode}
+              />
+            ))}
 
-        {/* Placeholder for dragging feedback if needed */}
-        {isDragOver && (
-          <div className="h-16 rounded-lg border-2 border-dashed border-blue-300 bg-blue-50/50 flex items-center justify-center pointer-events-none">
-            <span className="text-blue-400 text-sm font-bold">맨 뒤로 이동</span>
+            <div className="flex-1 min-h-[72px] shrink-0 rounded-lg border border-dashed border-transparent pointer-events-none" aria-hidden />
+
+            {isOver && (
+              <div className="h-12 shrink-0 rounded-lg border-2 border-dashed border-blue-400 bg-blue-50/40 dark:bg-blue-900/20 flex items-center justify-center pointer-events-none">
+                <span className="text-blue-500 dark:text-blue-300 text-xs font-bold">이 위치로 이동</span>
+              </div>
+            )}
           </div>
-        )}
+        </SortableContext>
       </div>
 
-      {/* 📋 견적 대기 보관함 (접수 컬럼 하단에 반응형 콤팩트 단추로 자동 정렬) */}
       {statusDef.key === 'RECEIVED' && quoteJobs && quoteJobs.length > 0 && (
         <div className={`p-2 border-t flex-none select-none ${
           theme === 'trello' 
@@ -158,7 +138,6 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
             </span>
           </div>
           
-          {/* 최대 3줄 높이로 제한하며 창 크기에 따라 자동으로 최대로 채워 가로 정렬 */}
           <div className="max-h-[90px] overflow-y-auto custom-scrollbar flex flex-wrap gap-1 pr-0.5">
             {quoteJobs.map(job => (
               <button

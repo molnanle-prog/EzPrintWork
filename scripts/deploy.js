@@ -54,15 +54,16 @@ function copyFolderSync(from, to) {
 }
 
 async function main() {
-  const os = require('os');
+  const { resolveHomepageDir } = require('./resolve-homepage-dir');
   const currentDir = path.resolve(__dirname, '..');
-  const homepageDir = path.join(os.homedir(), 'Desktop', 'ez-hub-homepage');
+  const homepageDir = resolveHomepageDir();
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const distDir = path.join(currentDir, 'dist');
 
   log('===================================================', colors.bold + colors.green);
   log('   🚀 EzPrintWork 원클릭 자동 연동 배포 시스템 가동', colors.bold + colors.green);
   log('===================================================', colors.bold + colors.green);
+  log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
 
   // 0. 파일 점유 에러 예방을 위해 powershell 강제 삭제 구동
   if (fs.existsSync(distDir)) {

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, db } from '../services/firebase';
-import { onAuthStateChanged, User, signOut } from 'firebase/auth';
+import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
@@ -373,6 +373,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
 
     console.log("AuthProvider - Initializing...");
+    getRedirectResult(auth).catch((err) => {
+      console.error('Google redirect sign-in failed:', err);
+    });
+
     const unsubscribe = onAuthStateChanged(auth, async (user) => {
       console.log("Auth State Changed:", user ? user.uid : "null");
       setFirebaseUser(user);

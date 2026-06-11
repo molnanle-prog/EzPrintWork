@@ -400,21 +400,6 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                                 <ArrowDownToLine size={22} className="text-blue-500 hover:scale-110 transition-transform" />
                                 {isSidebarExpanded && <span className="text-[15px] font-bold text-slate-300">데스크톱 앱 (.zip)</span>}
                             </button>
-                            <button 
-                                onClick={() => {
-                                    const link = document.createElement('a');
-                                    link.href = '/downloads/EzPrintWork-Helper.bin';
-                                    link.setAttribute('download', 'EzPrintWork-Helper.exe');
-                                    document.body.appendChild(link);
-                                    link.click();
-                                    document.body.removeChild(link);
-                                }} 
-                                className={`flex items-center w-full px-3 py-2 rounded-xl transition-all text-slate-500 hover:text-white hover:bg-slate-800 ${!isSidebarExpanded ? 'justify-center' : 'gap-4'}`}
-                                title={!isSidebarExpanded ? '경량 연동 도우미 다운로드 (.exe)' : ''}
-                            >
-                                <ArrowDownToLine size={22} className="text-emerald-500 hover:scale-110 transition-transform" />
-                                {isSidebarExpanded && <span className="text-[15px] font-bold text-slate-300">경량 도우미 (.exe)</span>}
-                            </button>
                         </div>
                     )}
 
@@ -494,24 +479,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             <Zap size={16} className="fill-white text-yellow-300 animate-pulse" />
                         </div>
                         <div className="flex flex-col md:flex-row md:items-baseline gap-1 md:gap-3 text-left">
-                            <span className="text-sm font-black tracking-tight">EzPrintWork 데스크톱 전용 앱 또는 경량 도우미로 100% 성능을 누리세요!</span>
+                            <span className="text-sm font-black tracking-tight">EzPrintWork 데스크톱 전용 앱으로 100% 성능을 누리세요!</span>
                             <span className="text-xs text-blue-100/90 font-medium">바탕화면 바로가기, 파일 탐색기(돋보기) 자동 연동 등 모든 로컬 연동이 가능해집니다.</span>
                         </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                        <button 
-                            onClick={() => {
-                                const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Helper.bin';
-                                link.setAttribute('download', 'EzPrintWork-Helper.exe');
-                                document.body.appendChild(link);
-                                link.click();
-                                document.body.removeChild(link);
-                            }}
-                            className="bg-emerald-600 hover:bg-emerald-500 text-white px-3.5 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
-                        >
-                            경량 도우미 (.exe)
-                        </button>
                         <button 
                             onClick={() => {
                                 const link = document.createElement('a');
