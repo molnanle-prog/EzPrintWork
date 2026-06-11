@@ -1,26 +1,39 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
+import { Loader2 } from 'lucide-react';
 
 export const TenantGuard: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { currentUser, isAuthenticated, loading } = useAuth();
+  const { currentUser, isAuthenticated, loading, firebaseUser } = useAuth();
   const location = useLocation();
 
   if (loading) {
-    return null; // AuthContext에서 이미 로딩 화면을 보여주고 있으므로 null 반환
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-slate-950">
+        <Loader2 className="animate-spin text-blue-500" size={32} />
+      </div>
+    );
   }
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
 
-  // tenantId가 없고 현재 페이지가 온보딩이 아니면 온보딩으로 이동
-  if (currentUser && !currentUser.tenantId && location.pathname !== '/onboarding') {
+  // 프로필 로드 중 (Firebase 로그인됐지만 currentUser 아직 없음)
+  if (firebaseUser && !currentUser) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-slate-950">
+        <Loader2 className="animate-spin text-blue-500" size={32} />
+      </div>
+    );
+  }
+
+  // tenantId 없으면 온보딩으로
+  if (!currentUser?.tenantId && location.pathname !== '/onboarding') {
     return <Navigate to="/onboarding" replace />;
   }
 
-  // tenantId가 있는데 온보딩 페이지에 있으려고 하면 메인으로 이동
-  if (currentUser && currentUser.tenantId && location.pathname === '/onboarding') {
+  if (currentUser?.tenantId && location.pathname === '/onboarding') {
     return <Navigate to="/" replace />;
   }
 

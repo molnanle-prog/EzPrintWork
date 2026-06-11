@@ -1234,7 +1234,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                           </div>
                         </div>
 
-                        {/* NAS Path - 2열 차지 */}
+                        {/* 작업 원본 파일 경로 (로컬 PC) */}
                         <div className="col-span-1 sm:col-span-2">
                           <LocalPathInput 
                             value={editedJob.filePath || ''} 

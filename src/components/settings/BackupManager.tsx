@@ -128,16 +128,18 @@ export const BackupManager: React.FC = () => {
         }
     };
 
-    // Manual cloud backup trigger
-    const handleCreateManualCloudBackup = async () => {
+    const handleCreateLocalBackup = async () => {
         if (isCreating) return;
+        if (!isElectron) {
+            handleDownloadLocal();
+            return;
+        }
         setIsCreating(true);
-        showStatus("새로운 클라우드 백업 스냅샷을 생성하는 중...", "info");
+        showStatus("이 PC에 백업 파일을 저장하는 중...", "info");
         try {
-            const success = await db.runDailyAutoBackup(true); // force = true
+            const success = await db.runDailyAutoBackup(true);
             if (success) {
-                showStatus("클라우드 안전 백업이 성공적으로 완료되었습니다! (30일 롤링 보관)", "success");
-                await fetchBackups();
+                showStatus("PC 로컬 백업이 완료되었습니다. (Documents/EzPrintWork_Backups)", "success");
             } else {
                 showStatus("백업 생성 중 오류가 발생했습니다.", "error");
             }
@@ -325,32 +327,32 @@ export const BackupManager: React.FC = () => {
                                 <Cloud className="w-8 h-8 text-blue-400 animate-pulse" />
                             </div>
                             <div>
-                                <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-400/20 rounded-full text-xs font-semibold tracking-wide uppercase">
-                                    Enterprise Safety
+                                <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-400/20 rounded-full text-xs font-semibold tracking-wide uppercase">
+                                    Local Safety
                                 </span>
                                 <h2 className="text-2xl md:text-3xl font-black tracking-tight mt-0.5">
-                                    클라우드 자동 백업 및 복구 센터
+                                    데이터 백업 및 복구 센터
                                 </h2>
                             </div>
                         </div>
                         <p className="text-slate-300 text-sm max-w-2xl leading-relaxed">
-                            Firestore 실시간 분산 데이터베이스의 완벽한 안전 지대입니다. 
-                            어떠한 해킹 위협, 오작동, 물리적 기기 유실이 발생하더라도 1분 이내에 기업 전체 데이터베이스를 완벽 복구할 수 있습니다.
+                            업무 데이터는 Firestore에 <strong>변경된 항목만</strong> 저장됩니다.
+                            백업은 관리자 PC 로컬 폴더 또는 JSON 다운로드로 보관하세요. (Firestore 통짜 백업은 사용하지 않습니다)
                         </p>
                     </div>
 
                     <div className="flex flex-wrap gap-3">
                         <button 
-                            onClick={handleCreateManualCloudBackup}
+                            onClick={handleCreateLocalBackup}
                             disabled={isCreating}
-                            className="bg-blue-600 hover:bg-blue-500 text-white font-bold px-5 py-3 rounded-xl shadow-lg hover:shadow-blue-500/20 flex items-center gap-2 border border-blue-400/20 transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold px-5 py-3 rounded-xl shadow-lg hover:shadow-emerald-500/20 flex items-center gap-2 border border-emerald-400/20 transition-all duration-300 hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
                         >
                             {isCreating ? (
                                 <RefreshCw className="w-5 h-5 animate-spin" />
                             ) : (
-                                <ShieldCheck className="w-5 h-5 text-blue-200" />
+                                <ShieldCheck className="w-5 h-5 text-emerald-200" />
                             )}
-                            즉시 클라우드 백업 생성
+                            {isElectron ? '지금 PC에 백업 저장' : 'JSON 백업 다운로드'}
                         </button>
                     </div>
                 </div>
@@ -431,7 +433,7 @@ export const BackupManager: React.FC = () => {
                         <div className="flex items-center gap-2">
                             <Database className="w-5 h-5 text-blue-600 dark:text-blue-400" />
                             <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">
-                                안전한 클라우드 백업 히스토리
+                                이전 클라우드 백업 (정리용)
                             </h3>
                         </div>
                         <button 
@@ -448,16 +450,16 @@ export const BackupManager: React.FC = () => {
                         <div className="flex flex-col items-center justify-center py-20 gap-4">
                             <RefreshCw className="w-10 h-10 text-blue-500 animate-spin" />
                             <p className="text-sm text-slate-500 dark:text-slate-400 font-medium">
-                                클라우드 스토리지 보안 백업을 탐색 중입니다...
+                                이전 백업 목록을 불러오는 중...
                             </p>
                         </div>
                     ) : backups.length === 0 ? (
                         <div className="flex flex-col items-center justify-center py-16 gap-3 text-center border-2 border-dashed border-slate-200 dark:border-slate-800 rounded-xl">
                             <Cloud className="w-12 h-12 text-slate-300 dark:text-slate-600" />
                             <div>
-                                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300">보관된 백업 스냅샷이 없습니다.</h4>
+                                <h4 className="text-sm font-bold text-slate-700 dark:text-slate-300">이전 클라우드 백업이 없습니다.</h4>
                                 <p className="text-xs text-slate-400 mt-1 max-w-xs mx-auto">
-                                    상단의 [즉시 클라우드 백업 생성] 버튼을 눌러 첫 번째 안전 스냅샷을 생성하세요.
+                                    새 백업은 PC 로컬 또는 JSON 다운로드로 저장됩니다.
                                 </p>
                             </div>
                         </div>
@@ -525,8 +527,8 @@ export const BackupManager: React.FC = () => {
                                     <CheckCircle2 className="w-4 h-4 text-emerald-500" /> PC 로컬 세이프가드 가동 중
                                 </h4>
                                 <p className="text-xs text-emerald-700 dark:text-emerald-400/80 mb-3 leading-relaxed">
-                                    대표님 PC(관리자 앱)의 지정된 폴더에 매일 1회 자동으로 전체 데이터 백업 파일이 저장됩니다. 
-                                    클라우드 스토리지의 30일 보관 기간과 달리, <strong>이 컴퓨터의 백업은 삭제 기한 없이 영구적(평생)으로 보관</strong>되므로 안전을 100% 보증합니다.
+                                    관리자 PC의 지정 폴더에 매일 1회 JSON 백업이 저장됩니다.
+                                    Firestore에는 백업을 올리지 않아 <strong>무료 한도를 절약</strong>하고, 이 PC의 백업은 직접 관리하시면 됩니다.
                                 </p>
                                 
                                 <div className="space-y-2 mb-4">

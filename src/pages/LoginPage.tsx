@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
 import { GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X } from 'lucide-react';
@@ -6,8 +7,10 @@ import { toast } from 'sonner';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
+import { db } from '../services/dataService';
 
 export const LoginPage: React.FC = () => {
+    const navigate = useNavigate();
     const { loginCustomSession } = useAuth();
     const { theme } = useTheme();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -165,6 +168,7 @@ IconFile=https://ez-hub.kr/favicon.ico
             if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
+            navigate('/', { replace: true });
 
             // 구글 시트 대표자 로그인 웹훅 비동기 전송
             if (user) {
@@ -237,18 +241,8 @@ IconFile=https://ez-hub.kr/favicon.ico
         setIsSearchingLoginCompany(true);
         setHasSearchedLogin(true);
         try {
-            const { collection, getDocs, query } = await import('firebase/firestore');
-            const { db } = await import('../services/firebase');
-            
-            const q = query(collection(db, 'tenants'));
-            const snap = await getDocs(q);
-            const term = companyName.trim().toLowerCase();
-            
-            const matches = snap.docs
-                .map(doc => ({ id: doc.id, name: (doc.data().name || '') as string }))
-                .filter(t => t.name.toLowerCase().includes(term));
-                
-            setLoginCompanySearchResults(matches);
+            const results = await db.searchTenants(companyName.trim());
+            setLoginCompanySearchResults(results.map(t => ({ id: t.id, name: t.name })));
         } catch (error: any) {
             console.error("Search login company error:", error);
             toast.error('회사 검색 중 오류가 발생했습니다.');
@@ -588,18 +582,8 @@ IconFile=https://ez-hub.kr/favicon.ico
         setIsSearchingCompany(true);
         setHasSearched(true);
         try {
-            const { collection, getDocs, query } = await import('firebase/firestore');
-            const { db } = await import('../services/firebase');
-            
-            const q = query(collection(db, 'tenants'));
-            const snap = await getDocs(q);
-            const term = companyName.trim().toLowerCase();
-            
-            const matches = snap.docs
-                .map(doc => ({ id: doc.id, name: (doc.data().name || '') as string }))
-                .filter(t => t.name.toLowerCase().includes(term));
-                
-            setSearchResults(matches);
+            const results = await db.searchTenants(companyName.trim());
+            setSearchResults(results.map(t => ({ id: t.id, name: t.name })));
         } catch (error: any) {
             console.error("Search company error:", error);
             toast.error('회사 검색 중 오류가 발생했습니다.');
@@ -748,43 +732,23 @@ IconFile=https://ez-hub.kr/favicon.ico
                                     </button>
                                 </div>
 
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <button 
-                                        onClick={() => {
-                                            const link = document.createElement('a');
-                                            link.href = '/downloads/EzPrintWork-Setup.zip';
-                                            link.setAttribute('download', 'EzPrintWork-Setup.zip');
-                                            document.body.appendChild(link);
-                                            link.click();
-                                            document.body.removeChild(link);
-                                        }}
-                                        className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
-                                    >
-                                        <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
-                                        <div className="flex flex-col items-start leading-tight text-left">
-                                            <span className="text-[13px] font-black">PC 전용 앱 (.zip)</span>
-                                            <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">설치 없이 폴더 열기 & 사용 가능</span>
-                                        </div>
-                                    </button>
-
-                                    <button 
-                                        onClick={() => {
-                                            const link = document.createElement('a');
-                                            link.href = '/downloads/EzPrintWork-Helper.bin';
-                                            link.setAttribute('download', 'EzPrintWork-Helper.exe');
-                                            document.body.appendChild(link);
-                                            link.click();
-                                            document.body.removeChild(link);
-                                        }}
-                                        className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-md text-sm group"
-                                    >
-                                        <ArrowDownToLine size={18} className="text-emerald-400 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
-                                        <div className="flex flex-col items-start leading-tight text-left">
-                                            <span className="text-[13px] font-black">경량 연동 도우미 (.exe)</span>
-                                            <span className="text-[9px] text-slate-400 font-medium tracking-tight">웹 브라우저에서 NAS 폴더 연동</span>
-                                        </div>
-                                    </button>
-                                </div>
+                                <button 
+                                    onClick={() => {
+                                        const link = document.createElement('a');
+                                        link.href = '/downloads/EzPrintWork-Setup.zip';
+                                        link.setAttribute('download', 'EzPrintWork-Setup.zip');
+                                        document.body.appendChild(link);
+                                        link.click();
+                                        document.body.removeChild(link);
+                                    }}
+                                    className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
+                                >
+                                    <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
+                                    <div className="flex flex-col items-start leading-tight text-left">
+                                        <span className="text-[13px] font-black">PC 전용 앱 (.zip)</span>
+                                        <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">관리자 PC 로컬 백업 지원</span>
+                                    </div>
+                                </button>
                             </div>
 
                             {/* Divider */}

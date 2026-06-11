@@ -308,7 +308,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         const matchesTitle = job.title.toLowerCase().includes(query);
         const matchesClient = job.clientName.toLowerCase().includes(query);
         const matchesType = job.type.toLowerCase().includes(query);
-        const matchesSpecPaper = job.specs.paperType?.toLowerCase().includes(query) || false;
+        const matchesSpecPaper = job.specs?.paperType?.toLowerCase().includes(query) || false;
         
         if (!matchesTitle && !matchesClient && !matchesType && !matchesSpecPaper) {
           return false;

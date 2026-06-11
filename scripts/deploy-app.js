@@ -126,7 +126,11 @@ async function main() {
     }
 
     const files = fs.readdirSync(releaseDir);
-    const setupFile = files.find(f => f.endsWith('.exe') && f.includes('EzPrintWork') && !f.includes('Helper'));
+    const setupCandidates = files
+      .filter(f => f.endsWith('.exe') && f.includes('EzPrintWork') && !f.includes('Helper'))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(releaseDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    const setupFile = setupCandidates[0]?.name;
 
     if (setupFile) {
       const sourcePath = path.join(releaseDir, setupFile);
@@ -210,6 +214,14 @@ async function main() {
     runCommand('npm run build', homepageDir);
   } else {
     log('\n[4/5] 홈페이지 빌드 생략 (package.json 없음)', colors.yellow);
+  }
+
+  // 4.5. Hosting 저장 한도 방지 — 오래된 릴리스 정리 (최신 3개만 유지)
+  log('\n[4.5/5] Firebase Hosting 오래된 배포본 정리 중...', colors.yellow);
+  try {
+    runCommand('node scripts/cleanup_hosting_releases.mjs gen-lang-client-0746903005 3', currentDir);
+  } catch (e) {
+    log('* 경고: Hosting 릴리스 정리 실패 — 배포는 계속 시도합니다.', colors.yellow);
   }
 
   // 5. 구글 파이어베이스 호스팅 업로드

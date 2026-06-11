@@ -64,7 +64,6 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
 const ReconnectOverlay: React.FC = () => {
     const [status, setStatus] = useState(db.getSyncStatus());
     const [isRetrying, setIsRetrying] = useState(false);
-    const isConfigured = db.isDbPathConfigured();
 
     useEffect(() => {
         const unsubscribe = db.subscribe(() => {
@@ -73,65 +72,38 @@ const ReconnectOverlay: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
-    const handleRetry = async () => {
+    const handleRetry = () => {
         setIsRetrying(true);
-        try {
-            await db.init();
-            await db.setTenant('dev-tenant-id');
-        } catch (e) {
-            console.error("Manual retry failed:", e);
-        } finally {
-            setTimeout(() => setIsRetrying(false), 1000);
-        }
+        window.location.reload();
     };
 
-    const isRunningInElectron = typeof window !== 'undefined' && !!(window as any).electron;
-    if (!isRunningInElectron || !isConfigured || status !== 'disconnected') return null;
+    if (status !== 'disconnected') return null;
 
     return (
         <div className="fixed inset-0 bg-slate-900/80 z-[9999] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
             <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border border-slate-200 dark:border-slate-700 text-center space-y-6">
                 <div className="flex justify-center">
-                    <div className="relative">
-                        <div className="w-16 h-16 bg-rose-100 dark:bg-rose-950/30 rounded-full flex items-center justify-center text-rose-600 dark:text-rose-400 border border-rose-200/50">
-                            <CloudOff size={32} className="animate-bounce" style={{ animationDuration: '2.5s' }} />
-                        </div>
-                        <div className="absolute top-0 right-0 w-4 h-4 bg-yellow-500 rounded-full border-2 border-white dark:border-slate-800 animate-ping" />
+                    <div className="w-16 h-16 bg-rose-100 dark:bg-rose-950/30 rounded-full flex items-center justify-center text-rose-600 dark:text-rose-400 border border-rose-200/50">
+                        <CloudOff size={32} />
                     </div>
                 </div>
                 <div className="space-y-2">
                     <h3 className="text-xl font-black text-slate-800 dark:text-slate-100">
-                        네트워크(NAS) 연결이 끊겼습니다
+                        클라우드 연결이 끊겼습니다
                     </h3>
                     <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-                        설정된 공유 폴더(NAS) 경로에 접근할 수 없습니다.<br/>
-                        네트워크 케이블이나 NAS의 전원 상태를 확인해 주세요.<br/>
-                        연결이 복구되면 프로그램이 자동으로 재개됩니다.
+                        Firestore 서버와의 연결이 일시적으로 끊어졌습니다.<br/>
+                        인터넷 연결을 확인해 주세요. 복구되면 자동으로 재동기화됩니다.
                     </p>
                 </div>
-                <div className="flex flex-col gap-2 pt-2">
-                    <div className="flex items-center justify-center gap-2 text-xs font-bold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 py-2.5 rounded-lg border border-blue-100 dark:border-blue-900/40">
-                        <Loader2 size={14} className="animate-spin" />
-                        5초 간격으로 자동 재연결을 시도하고 있습니다...
-                    </div>
-                    <button
-                        onClick={handleRetry}
-                        disabled={isRetrying}
-                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800/50 text-white py-2.5 rounded-xl font-bold shadow-md text-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
-                    >
-                        {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                        즉시 재연결 시도
-                    </button>
-                    <button
-                        onClick={() => {
-                            localStorage.removeItem('ezpw_custom_db_path');
-                            window.location.reload();
-                        }}
-                        className="w-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 py-2.5 rounded-xl font-bold text-xs transition-all active:scale-95"
-                    >
-                        기본 저장 폴더로 리셋 (내 문서 경로로 초기화)
-                    </button>
-                </div>
+                <button
+                    onClick={handleRetry}
+                    disabled={isRetrying}
+                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800/50 text-white py-2.5 rounded-xl font-bold shadow-md text-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                >
+                    {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                    새로고침하여 재연결
+                </button>
             </div>
         </div>
     );
@@ -186,28 +158,6 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
       return;
     }
 
-    // 웹 브라우저: 로컬 헬퍼 서버가 실행 중인지 조용히 백그라운드 체크 진행
-    const checkLocalHelper = async () => {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1000); // 1초 타임아웃
-        
-        const response = await fetch('http://127.0.0.1:23230/get-documents-path', { 
-          method: 'GET', 
-          signal: controller.signal 
-        });
-        clearTimeout(timeoutId);
-        
-        if (response.status === 200 || response.status === 400 || response.ok) {
-          localStorage.setItem('desktop-app-installed', 'true');
-          setShowDownloadBanner(false);
-        }
-      } catch (error) {
-        // 백그라운드 무소음 예외 처리
-      }
-    };
-
-    checkLocalHelper();
   }, []);
 
   // 데이터 폴더 미설정 시 설정으로 튕겨내는 가딩을 제거하여 클라우드 SaaS 모드로 즉시 기동되도록 완화
@@ -536,29 +486,6 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 </header>
             )}
             
-            {/* 데이터 폴더 미설정 시 경고 배너 (관리자 대상) */}
-            {isElectron && !db.isDbPathConfigured() && !isPinned && !isTvMode && (
-                <div className="bg-gradient-to-r from-amber-500 via-orange-600 to-amber-600 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
-                    <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
-                            <AlertTriangle size={16} className="text-yellow-300 animate-bounce" />
-                        </div>
-                        <div className="flex flex-col md:flex-row md:items-baseline gap-1 md:gap-3 text-left">
-                            <span className="text-sm font-black tracking-tight">⚠️ 데이터 저장 폴더가 지정되지 않아 임시 읽기 전용 상태입니다.</span>
-                            <span className="text-xs text-amber-100/90 font-medium">자료 유실 및 데이터 합치기 번거로움을 방지하기 위해 저장 폴더를 먼저 지정해 주세요.</span>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                        <button 
-                            onClick={() => onTabChange('settings')}
-                            className="bg-white text-orange-700 hover:bg-orange-50 px-4 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
-                        >
-                            폴더 설정하러 가기
-                        </button>
-                    </div>
-                </div>
-            )}
-
             {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
             {!isElectron && showDownloadBanner && !isPinned && !isTvMode && (
                 <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">

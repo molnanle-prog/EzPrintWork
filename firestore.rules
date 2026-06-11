@@ -13,34 +13,105 @@ service cloud.firestore {
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
 
-    // Master Gate Helpers
-    // Users are mapped to a tenant in their profile
     function getProfile() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
-    
+
     function isMember(tenantId) {
       return isVerified() && getProfile().tenantId == tenantId;
     }
-    
+
     function isSuperAdmin() {
-      return isSignedIn() && 
-             request.auth.token.email == 'molnanle@gmail.com' && 
+      return isSignedIn() &&
+             request.auth.token.email == 'molnanle@gmail.com' &&
              request.auth.token.email_verified == true;
     }
-    
+
     function isAdmin(tenantId) {
       return isSuperAdmin() || (isMember(tenantId) && getProfile().role == 'admin');
     }
 
+    // --- Public / pre-auth helpers (staff login & signup, company search) ---
+    function isReasonableListQuery() {
+      return !('limit' in request.query) || request.query.limit <= 50;
+    }
+
+    function isTenantNameJoinCodeQuery() {
+      return request.query.filters.size() == 2
+        && request.query.filters[0].field.path == ['name']
+        && request.query.filters[0].op == '=='
+        && request.query.filters[1].field.path == ['joinCode']
+        && request.query.filters[1].op == '==';
+    }
+
+    function isStaffLoginQuery() {
+      return request.query.filters.size() >= 2
+        && request.query.filters[0].field.path == ['loginId']
+        && request.query.filters[0].op == '=='
+        && request.query.filters[1].field.path == ['password']
+        && request.query.filters[1].op == '=='
+        && isReasonableListQuery();
+    }
+
+    function isStaffDuplicateCheckQuery() {
+      return request.query.filters.size() == 2
+        && request.query.filters[0].field.path == ['tenantId']
+        && request.query.filters[0].op == '=='
+        && request.query.filters[1].field.path == ['loginId']
+        && request.query.filters[1].op == '=='
+        && isReasonableListQuery();
+    }
+
+    function isStaffSelfSignupUser(data) {
+      return data.role == 'staff'
+        && data.tenantId is string
+        && isValidId(data.tenantId)
+        && data.loginId is string
+        && data.loginId.size() >= 4
+        && data.loginId.size() <= 64
+        && data.email is string
+        && data.keys().hasAll(['email', 'tenantId', 'role', 'loginId']);
+    }
+
+    function isStaffSelfSignupStaff(data) {
+      return data.name is string
+        && data.name.size() >= 1
+        && data.name.size() <= 50
+        && data.loginId is string
+        && data.loginId.size() >= 4
+        && data.active == true
+        && data.keys().hasAll(['name', 'loginId', 'active']);
+    }
+
+    function isStaffCredentialMigration(data) {
+      return data.loginId is string
+        && data.password is string
+        && data.loginId == data.loginId.lower()
+        && data.password == data.password.lower();
+    }
+
+    function privilegeEscalation(data) {
+      return ('tenantId' in data && 'tenantId' in existing() && data.tenantId != existing().tenantId)
+        || ('role' in data && 'role' in existing() && data.role != existing().role);
+    }
+
+    function isAdminUpdatingMember(data) {
+      return isSignedIn()
+        && 'tenantId' in data
+        && isAdmin(data.tenantId)
+        && data.role in ['admin', 'staff'];
+    }
+
     // 2. User Profiles
     match /users/{userId} {
-      allow list: if isSuperAdmin();
+      allow list: if isSuperAdmin() || isStaffDuplicateCheckQuery();
       allow get: if isSuperAdmin() || (isSignedIn() && request.auth.uid == userId);
-      allow create: if isSignedIn() && request.auth.uid == userId && isValidUser(incoming());
-      allow update: if (isSuperAdmin() || (isSignedIn() && request.auth.uid == userId)) && 
-                      isValidUser(incoming());
-      
+      allow create: if (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()))
+        || (!isSignedIn() && isStaffSelfSignupUser(incoming()));
+      allow update: if isSuperAdmin()
+        || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && !privilegeEscalation(incoming()))
+        || isAdminUpdatingMember(incoming());
+
       function isValidUser(data) {
         return data.email is string && data.email.size() <= 256 &&
                (!('tenantId' in data) || data.tenantId == null || isValidId(data.tenantId)) &&
@@ -51,19 +122,21 @@ service cloud.firestore {
 
     // 3. Tenants
     match /tenants/{tenantId} {
-      allow list: if isSuperAdmin();
-      allow get: if isSuperAdmin() || isMember(tenantId);
+      // Company search (login/signup/onboarding) — name+joinCode query or signed-in discovery
+      allow list: if isSuperAdmin()
+        || (isSignedIn() && isReasonableListQuery())
+        || (!isSignedIn() && isReasonableListQuery())
+        || (!isSignedIn() && isTenantNameJoinCodeQuery());
+      allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn();
       allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
       allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
-      
+
       function isValidTenant(data) {
         return data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
                (!('plan' in data) || data.plan in ['free', 'pro']) &&
                data.keys().hasAll(['name', 'ownerId']);
       }
 
-      // 4. Sub-Resources
-      
       // JOBS
       match /jobs/{jobId} {
         allow list: if isMember(tenantId);
@@ -72,7 +145,7 @@ service cloud.firestore {
         allow update: if isMember(tenantId) && isValidId(jobId) && isValidJob(incoming());
         allow delete: if isAdmin(tenantId);
       }
-      
+
       function isValidJob(data) {
         return data.title is string && data.title.size() <= 200 &&
                data.status is string && data.status.size() <= 50 &&
@@ -82,14 +155,40 @@ service cloud.firestore {
 
       // STAFF
       match /staff/{staffId} {
-        allow read: if isMember(tenantId);
-        allow write: if isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming());
+        allow list: if isMember(tenantId) || isStaffLoginQuery();
+        allow get: if isMember(tenantId) || isAdmin(tenantId) || isStaffLoginQuery();
+        allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
+          || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()));
+        allow update: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
+          || (!isSignedIn() && isStaffCredentialMigration(incoming()));
+        allow delete: if isAdmin(tenantId);
       }
-      
+
       function isValidStaff(data) {
         return data.name is string && data.name.size() <= 50 &&
                (!('phone' in data) || data.phone is string) &&
                data.keys().hasAll(['name']);
+      }
+
+      // JOIN REQUESTS (Google user → company join flow)
+      match /joinRequests/{requestId} {
+        allow list, get: if isAdmin(tenantId);
+        allow create: if isVerified()
+          && isValidId(requestId)
+          && isValidJoinRequest(incoming())
+          && incoming().userId == request.auth.uid
+          && incoming().status == 'pending';
+        allow update: if isAdmin(tenantId) && isValidId(requestId);
+        allow delete: if isAdmin(tenantId);
+      }
+
+      function isValidJoinRequest(data) {
+        return data.userId is string
+          && data.userEmail is string
+          && data.userName is string
+          && data.userName.size() <= 50
+          && data.status in ['pending', 'approved', 'rejected']
+          && data.keys().hasAll(['userId', 'userEmail', 'userName', 'status']);
       }
 
       // CLIENTS
@@ -97,7 +196,7 @@ service cloud.firestore {
         allow read: if isMember(tenantId);
         allow write: if isMember(tenantId) && isValidId(clientId) && isValidClient(incoming());
       }
-      
+
       function isValidClient(data) {
         return data.name is string && data.name.size() <= 100 &&
                data.keys().hasAll(['name']);
@@ -108,7 +207,7 @@ service cloud.firestore {
         allow read: if isMember(tenantId);
         allow write: if isMember(tenantId) && isValidId(quoteId) && isValidQuote(incoming());
       }
-      
+
       function isValidQuote(data) {
         return data.clientName is string && data.clientName.size() <= 100 &&
                data.totalAmount is number &&
@@ -121,7 +220,7 @@ service cloud.firestore {
         allow create: if isAdmin(tenantId) && isValidId(instId) && isValidInstruction(incoming());
         allow delete: if isAdmin(tenantId);
       }
-      
+
       function isValidInstruction(data) {
         return data.content is string && data.content.size() <= 1000 &&
                data.keys().hasAll(['content']);
@@ -132,7 +231,7 @@ service cloud.firestore {
         allow list: if isMember(tenantId);
         allow create: if isMember(tenantId) && isValidId(msgId) && isValidMessage(incoming());
       }
-      
+
       function isValidMessage(data) {
         return data.content is string && data.content.size() <= 5000 &&
                data.senderId == request.auth.uid &&
@@ -144,7 +243,7 @@ service cloud.firestore {
         allow read: if isMember(tenantId);
         allow write: if isMember(tenantId) && isValidId(leaveId) && isValidLeave(incoming());
       }
-      
+
       function isValidLeave(data) {
         return data.staffName is string && data.startDate is string &&
                data.keys().hasAll(['staffName', 'startDate']);
@@ -155,7 +254,7 @@ service cloud.firestore {
         allow read: if isMember(tenantId);
         allow write: if isAdmin(tenantId) && isValidId(paperId) && isValidPaper(incoming());
       }
-      
+
       function isValidPaper(data) {
         return data.name is string && data.name.size() <= 100 &&
                data.keys().hasAll(['name']);
@@ -166,9 +265,14 @@ service cloud.firestore {
         allow read: if isMember(tenantId);
         allow write: if isAdmin(tenantId) && isValidId(settingId);
       }
+
+      // BACKUPS
+      match /backups/{backupId} {
+        allow read, write: if isAdmin(tenantId) && isValidId(backupId);
+      }
     }
 
-    // 5. Invitations (Pre-invites for instant employee onboarding)
+    // 5. Invitations
     match /invitations/{email} {
       allow get: if isSignedIn() && request.auth.token.email.lower() == email.lower();
       allow create, update: if isSignedIn() && isAdmin(incoming().tenantId);

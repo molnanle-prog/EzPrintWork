@@ -6,14 +6,13 @@ import { PaperManager } from './PaperManager';
 import { ClientManager } from './ClientManager';
 import { PriceManager } from './PriceManager';
 import { BackupManager } from './BackupManager';
-import { NasManager } from './NasManager';
 import { ProductManager } from './ProductManager';
 import { CompanyInfoManager } from './CompanyInfoManager';
 import { StatusManager } from './StatusManager'; 
 import { SmsManager } from './SmsManager'; // Added
 import { ProfileManager } from './ProfileManager';
 import { ProcessingManager } from './ProcessingManager';
-import { Users, ScrollText, Building2, Calculator, Database, Shield, Server, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors } from 'lucide-react';
+import { Users, ScrollText, Building2, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const SettingsView: React.FC = () => {
@@ -25,7 +24,7 @@ export const SettingsView: React.FC = () => {
  
   useEffect(() => {
     // If a regular user tries to access a restricted tab, redirect to Profile
-    if (!isAdmin && activeSubTab !== 'profile' && activeSubTab !== 'nas') {
+    if (!isAdmin && activeSubTab !== 'profile') {
         setActiveSubTab('profile');
     }
   }, [isAdmin, activeSubTab]);
@@ -42,7 +41,6 @@ export const SettingsView: React.FC = () => {
         case 'client': return isAdmin ? <ClientManager /> : null;
         case 'price': return isAdmin ? <PriceManager /> : null;
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
-        case 'nas': return <NasManager />;
         case 'backup': return isAdmin ? <BackupManager /> : null;
         default: return isAdmin ? <StaffManager /> : <ProfileManager />;
     }
@@ -59,7 +57,6 @@ export const SettingsView: React.FC = () => {
     { id: 'client', label: '거래처', icon: Building2, adminOnly: true },
     { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true },
     { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true }, // Added
-    { id: 'nas', label: '서버/NAS', icon: Server, adminOnly: false },
     { id: 'backup', label: '백업/복원', icon: Database, adminOnly: true },
   ];
 

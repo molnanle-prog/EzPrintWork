@@ -91,26 +91,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser(updatedUser);
         
         if (updatedUser.tenantId) {
-          // Fetch tenant doc first to check dbPath, then set tenant to trigger sync
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
-              const tenantData = tenantDoc.data();
-              setTenantPlan(determineTenantPlan(tenantData));
-              
-              // DB path auto-sync (업체별 경로 강제 동기화 보강)
-              if (tenantData) {
-                  const localDbPath = localStorage.getItem('ezpw_custom_db_path') || '';
-                  const remoteDbPath = tenantData.dbPath || '';
-                  if (localDbPath !== remoteDbPath) {
-                      console.log(`[AuthContext] Auto-syncing DB path to: ${remoteDbPath}`);
-                      if (remoteDbPath) {
-                          localStorage.setItem('ezpw_custom_db_path', remoteDbPath);
-                          await dataService.setCustomBasePath(remoteDbPath);
-                      } else {
-                          localStorage.removeItem('ezpw_custom_db_path');
-                      }
-                  }
-              }
+              setTenantPlan(determineTenantPlan(tenantDoc.data()));
           }
           dataService.setTenant(updatedUser.tenantId);
 
@@ -226,23 +209,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (tenantId) {
             const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
             if (tenantDoc.exists()) {
-              const tenantData = tenantDoc.data();
-              setTenantPlan(determineTenantPlan(tenantData));
-              
-              // DB path auto-sync (업체별 경로 강제 동기화 보강)
-              if (tenantData) {
-                  const localDbPath = localStorage.getItem('ezpw_custom_db_path') || '';
-                  const remoteDbPath = tenantData.dbPath || '';
-                  if (localDbPath !== remoteDbPath) {
-                      console.log(`[AuthContext] Auto-syncing DB path to: ${remoteDbPath}`);
-                      if (remoteDbPath) {
-                          localStorage.setItem('ezpw_custom_db_path', remoteDbPath);
-                          await dataService.setCustomBasePath(remoteDbPath);
-                      } else {
-                          localStorage.removeItem('ezpw_custom_db_path');
-                      }
-                  }
-              }
+              setTenantPlan(determineTenantPlan(tenantDoc.data()));
             }
             dataService.setTenant(tenantId);
           }
@@ -296,6 +263,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (error) {
       console.error("Error fetching user profile:", error);
+      // 프로필 조회 실패 시에도 흰 화면 방지 — Firebase 기본 정보로 폴백
+      setCurrentUser({
+        uid: user.uid,
+        id: user.uid,
+        email: user.email || '',
+        displayName: user.displayName || '사용자',
+        name: user.displayName || '사용자',
+        photoURL: user.photoURL || '',
+        avatarUrl: user.photoURL || '',
+        tenantId: null,
+        role: 'staff',
+      });
     }
   };
 
@@ -340,29 +319,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const determined = determineTenantPlan(tenantData);
         console.log(`[RealtimePlanSync] Tenant plan updated in real-time (Determined: ${determined})`);
         setTenantPlan(determined);
-
-        // Realtime DB path sync (업체별 경로 강제 동기화 보강)
-        if (tenantData) {
-            const currentPath = localStorage.getItem('ezpw_custom_db_path') || '';
-            const remoteDbPath = tenantData.dbPath || '';
-            if (currentPath !== remoteDbPath) {
-                console.log(`[RealtimePathSync] Automatically updating DB path to: ${remoteDbPath}`);
-                if (remoteDbPath) {
-                    localStorage.setItem('ezpw_custom_db_path', remoteDbPath);
-                    dataService.setCustomBasePath(remoteDbPath).then(() => {
-                        if (currentPath) {
-                            alert("관리자가 데이터 저장 폴더 설정을 변경하여 프로그램을 재부팅합니다.");
-                            window.location.reload();
-                        }
-                    });
-                } else {
-                    localStorage.removeItem('ezpw_custom_db_path');
-                    dataService.saveNasConfig({ isEnabled: false, path: '', dbPath: '', status: 'disconnected' }).then(() => {
-                        window.location.reload();
-                    });
-                }
-            }
-        }
       }
     }, (err) => {
       console.error("[RealtimePlanSync] Real-time subscription failed:", err);
@@ -380,12 +336,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 로컬 디렉토리 캐시나 쿠키가 남아 있어도 안전을 위해 세션을 무조건 파괴하고 초기 로그인 창으로 진입시킵니다.
     const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
     if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
-      console.log("[AuthSecurity] Keep-login is not active. Cleaning up local session caches.");
+      console.log("[AuthSecurity] Keep-login is not active. Cleaning up custom staff session caches.");
       localStorage.removeItem('customUser');
       localStorage.removeItem('customTenantPlan');
       sessionStorage.removeItem('customUser');
       sessionStorage.removeItem('customTenantPlan');
-      signOut(auth).catch(() => {});
+      // Google(Firebase) 세션은 유지 — 앱 기동 시 무조건 signOut 하면 로그인 직후 흰 화면/로그아웃 레이스 발생
     }
 
     if (DEV_BYPASS_LOGIN) {
@@ -451,17 +407,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     localStorage.removeItem('customUser');
     localStorage.removeItem('customTenantPlan');
-    localStorage.removeItem('ezpw_custom_db_path');
     sessionStorage.removeItem('customUser');
     sessionStorage.removeItem('customTenantPlan');
-    try {
-        await dataService.saveNasConfig({
-            isEnabled: false,
-            path: '',
-            dbPath: '',
-            status: 'disconnected'
-        });
-    } catch (e) {}
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);
@@ -492,4 +439,4 @@ export const useAuth = () => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
-};
+};
