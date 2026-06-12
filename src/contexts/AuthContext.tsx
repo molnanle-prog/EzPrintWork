@@ -4,7 +4,7 @@ import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/a
 import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
-import { getMaxStaffForPlan } from '../utils/planLimits';
+import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -21,38 +21,23 @@ interface AuthContextType {
   tenantPlanCode: string;
   /** 현재 요금제 최대 직원 수 (대표 포함) */
   maxStaff: number;
+  /** tenants.paymentStatus (FREE=선물 | AD=광고형 | PAID=유료) */
+  tenantPaymentStatus: string;
   updatePlan: (plan: 'free' | 'pro') => void;
   loginCustomSession: (user: AppUser, plan: 'free' | 'pro', planCode?: string, paymentStatus?: string) => void;
 }
 
 // [결제 만료 및 미결제 실시간 자동 판별 엔진]
-// plan이 유료(pro, u3, u5 등)라 하더라도 만료일이 지났거나 paymentStatus가 PAID/FREE가 아니라면 즉각 'free' 광고형으로 강제 변환합니다.
+// gift(FREE)=무료 선물·광고없음, paid(PAID)=유료·광고없음, ad(AD/UNPAID)=광고형·광고표시
 export const determineTenantPlan = (tenantData: any): 'free' | 'pro' => {
   if (!tenantData) return 'free';
-
-  const plan = tenantData.plan || 'free';
-  const paymentStatus = tenantData.paymentStatus || 'UNPAID';
-  const licenseExpiresAt = tenantData.licenseExpiresAt || null;
-
-  // 1. 유료 플랜 타입 대조 (u3~u10 등 인원별 플랜 포함)
-  const isPaidPlanType =
-    ['pro', 'pro_plus', 'service'].includes(plan) || /^u\d+$/.test(plan);
-  if (!isPaidPlanType) return 'free';
-
-  // 2. 결제 미완료 시 즉각 광고형 모드 자동 변환 (UNPAID 등)
-  if (paymentStatus !== 'PAID' && paymentStatus !== 'FREE') {
-    return 'free';
-  }
-
-  // 3. 선불 요금제 만료일 경과 시 즉각 광고형 모드 자동 변환
-  if (licenseExpiresAt) {
-    const expireDate = new Date(licenseExpiresAt);
-    if (!isNaN(expireDate.getTime()) && expireDate < new Date()) {
-      return 'free';
-    }
-  }
-
-  return 'pro';
+  return isProPlan(
+    tenantData.plan,
+    tenantData.paymentStatus,
+    tenantData.licenseExpiresAt
+  )
+    ? 'pro'
+    : 'free';
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -63,12 +48,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [tenantPlan, setTenantPlan] = useState<'free' | 'pro'>('free');
   const [tenantPlanCode, setTenantPlanCode] = useState<string>('free');
   const [maxStaff, setMaxStaff] = useState<number>(1);
+  const [tenantPaymentStatus, setTenantPaymentStatus] = useState<string>('UNPAID');
   const [loading, setLoading] = useState(true);
 
   const applyTenantSnapshot = (tenantData: any) => {
     setTenantPlan(determineTenantPlan(tenantData));
     const code = String(tenantData?.plan || 'free');
     setTenantPlanCode(code);
+    setTenantPaymentStatus(String(tenantData?.paymentStatus || 'UNPAID').toUpperCase());
     setMaxStaff(getMaxStaffForPlan(code, tenantData?.paymentStatus));
   };
 
@@ -462,6 +449,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       tenantPlan,
       tenantPlanCode,
       maxStaff,
+      tenantPaymentStatus,
       updatePlan: (plan: 'free' | 'pro') => setTenantPlan(plan),
       loading, 
       logout, 

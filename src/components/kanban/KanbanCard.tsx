@@ -306,18 +306,18 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
   const getPriorityColor = (priority: Priority) => {
     switch (priority) {
-      case Priority.VERY_URGENT: return 'bg-red-600 text-white border-red-700 shadow-red-500/30';
-      case Priority.URGENT: return 'bg-amber-500 text-white border-amber-600 shadow-amber-500/20';
-      default: return 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600';
+      case Priority.VERY_URGENT: return 'kanban-badge bg-red-600 text-white border-red-700 shadow-red-500/30';
+      case Priority.URGENT: return 'kanban-badge bg-amber-500 text-white border-amber-600 shadow-amber-500/20';
+      default: return 'kanban-badge kanban-badge-priority-default bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-600';
     }
   };
 
   const getPaymentColor = (status: PaymentStatus) => {
     switch (status) {
-      case '결제대기': return 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800';
-      case '일부결제': return 'bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
-      case '결제완료': return 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800';
-      default: return 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600';
+      case '결제대기': return 'kanban-badge kanban-badge-pay-wait bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800';
+      case '일부결제': return 'kanban-badge kanban-badge-pay-partial bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
+      case '결제완료': return 'kanban-badge kanban-badge-pay-done bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800';
+      default: return 'kanban-badge kanban-badge-pay-default bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600';
     }
   };
 
@@ -372,7 +372,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group`}
+        className={`kanban-card bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group`}
         onClick={handleCardClick}
         onContextMenu={handleCardContextMenu}
       >
@@ -380,8 +380,8 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
            <CheckCircle2 size={17} className="fill-emerald-100 dark:fill-none" />
          </div>
          <div className="flex-1 min-w-0 flex items-center gap-2">
-            <span className="font-semibold text-slate-800 dark:text-slate-200 text-sm truncate">{job.title}</span>
-            <span className="text-xs text-slate-400 truncate hidden xl:inline">- {job.clientName}</span>
+            <span className="kanban-card-title font-semibold text-slate-800 dark:text-slate-200 text-sm truncate">{job.title}</span>
+            <span className="kanban-card-subtitle text-xs truncate hidden xl:inline">- {job.clientName}</span>
             {isMultiJob && (
                 <span className="text-[9px] bg-slate-600 dark:bg-slate-600 text-white px-1.5 py-0.5 rounded-md flex items-center gap-0.5 font-semibold shrink-0">
                     <Layers size={9} /> {subJobCount}
@@ -430,7 +430,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         style={sortableStyle}
         {...sortableProps}
         className={`
-          py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium
+          kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium
           ${cardStyleClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
         `}
@@ -460,12 +460,12 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
              {/* Smart File Badge */}
              {job.filePath ? (
-               <span className="text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-medium shadow-sm">
+               <span className="kanban-badge kanban-badge-file-ok text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-medium shadow-sm">
                  <FileText size={12} />
                  <span>파일</span>
                </span>
              ) : (
-               <span className="text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm">
+               <span className="kanban-badge kanban-badge-file-missing text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm">
                  <ShieldAlert size={12} />
                  <span>파일없음</span>
                </span>
@@ -477,10 +477,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                  key={sub.id || idx}
                  onClick={(e) => handleToggleSubJob(e, idx)}
                  className={`
-                   text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                   kanban-badge text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
                    ${sub.completed 
-                     ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
-                     : 'bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
+                     ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
+                     : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
                  title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
                >
                  {sub.type}
@@ -491,10 +491,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
         {/* 2. Title and Client (Enlarged) */}
         <div className="pointer-events-none flex flex-col gap-0.5">
-          <h4 className={`font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1 ${theme === "trello" ? "text-[#172b4d] font-semibold" : "text-slate-800 dark:text-slate-100"}`} title={job.title}>
+          <h4 className="kanban-card-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1 text-slate-800 dark:text-slate-100" title={job.title}>
             {job.title}
           </h4>
-          <p className={`text-xs font-normal leading-tight ${theme === "trello" ? "text-[#5e6c84]" : "text-slate-500 dark:text-slate-400"}`}>{job.clientName}</p>
+          <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400">{job.clientName}</p>
         </div>
 
         {/* 3. Specs & Giant Quantity Box */}
@@ -576,7 +576,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={`
-        p-3 rounded-xl shadow-sm border transition-all duration-300 cursor-grab active:cursor-grabbing group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium
+        kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 cursor-grab active:cursor-grabbing group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium
         ${cardStyleClass}
         active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50
       `}
@@ -617,12 +617,12 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
 
            {/* 원본 파일 유/무 표시 스마트 배지 */}
            {job.filePath ? (
-             <span className="text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-normal shadow-sm" title={`원본 파일 등록됨\n${job.filePath}`}>
+             <span className="kanban-badge kanban-badge-file-ok text-[10px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-normal shadow-sm" title={`원본 파일 등록됨\n${job.filePath}`}>
                <FileText size={11} />
                <span>파일</span>
              </span>
            ) : (
-             <span className="text-[10px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm" title="인쇄용 원본 파일 경로가 지정되지 않았습니다!">
+             <span className="kanban-badge kanban-badge-file-missing text-[10px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm" title="인쇄용 원본 파일 경로가 지정되지 않았습니다!">
                <ShieldAlert size={11} />
                <span>파일없음</span>
              </span>
@@ -634,10 +634,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                key={sub.id || idx}
                onClick={(e) => handleToggleSubJob(e, idx)}
                className={`
-                 text-[10px] px-2 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                 kanban-badge text-[10px] px-2 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
                  ${sub.completed 
-                   ? 'bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
-                   : 'bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
+                   ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
+                   : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
                title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
              >
                {sub.type}
@@ -646,7 +646,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         </div>
         
         {/* Grip Icon & More menu */}
-        <div className="flex gap-1 text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
+        <div className="flex gap-1 kanban-card-icon-muted text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
           <GripHorizontal size={16} className="cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity hover:text-slate-500" />
           <button className="hover:text-slate-600 dark:hover:text-slate-400 transition-colors p-0.5 flex items-center justify-center" title="추가 메뉴">
             <MoreVertical size={16} />
@@ -656,10 +656,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       
       {/* 2. Main Title and Client */}
       <div className="pointer-events-none flex flex-col gap-0.5">
-        <h4 className={`font-medium text-[15px] lg:text-[16px] leading-snug truncate ${theme === "trello" ? "text-[#172b4d] font-semibold" : "text-slate-800 dark:text-slate-100"}`} title={job.title}>
+        <h4 className="kanban-card-title font-medium text-[15px] lg:text-[16px] leading-snug truncate text-slate-800 dark:text-slate-100" title={job.title}>
           {job.title}
         </h4>
-        <p className={`text-xs font-normal truncate ${theme === "trello" ? "text-[#5e6c84]" : "text-slate-400 dark:text-slate-400"}`}>{job.clientName}</p>
+        <p className="kanban-card-subtitle text-xs truncate text-slate-500 dark:text-slate-400">{job.clientName}</p>
       </div>
 
       {/* 3. 상세 정보 컨테이너 (스펙 그리드, 품목 배지, 담당자/D-day 푸터 통합 아코디언) */}
@@ -699,7 +699,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
                {isMultiStaff ? <Users size={12} /> : <User size={12} />}
             </div>
-            <span className={`text-[10px] font-normal truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
+            <span className={`kanban-card-meta text-[10px] font-normal truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
                 {staffName}
             </span>
           </div>

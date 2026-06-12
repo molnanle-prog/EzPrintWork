@@ -11,6 +11,8 @@ export const OnboardingPage: React.FC = () => {
   const [companyName, setCompanyName] = useState('');
   const [businessNumber, setBusinessNumber] = useState('');
   const [joinCode, setJoinCode] = useState('');
+  const [initialStaffCount, setInitialStaffCount] = useState(3);
+  const AD_MAX = 3;
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -33,7 +35,7 @@ export const OnboardingPage: React.FC = () => {
 
     setIsCreating(true);
     try {
-      await db.createTenant(companyName.trim(), firebaseUser.uid, businessNumber.trim(), joinCode.trim());
+      await db.createTenant(companyName.trim(), firebaseUser.uid, businessNumber.trim(), joinCode.trim(), initialStaffCount);
       
       // 구글 시트 대표 가입 웹훅 비동기 전송
       try {
@@ -191,6 +193,30 @@ export const OnboardingPage: React.FC = () => {
                   placeholder="예: 123-45-67890 (선택 사항)"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
                 />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 ml-1">예상 직원 수 (대표 포함) *</label>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setInitialStaffCount(c => Math.max(1, c - 1))}
+                    className="w-10 h-10 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 hover:text-white font-bold"
+                  >
+                    −
+                  </button>
+                  <span className="flex-1 text-center text-2xl font-black">{initialStaffCount}명</span>
+                  <button
+                    type="button"
+                    onClick={() => setInitialStaffCount(c => Math.min(AD_MAX, c + 1))}
+                    className="w-10 h-10 rounded-xl bg-slate-950 border border-slate-800 text-slate-400 hover:text-white font-bold"
+                  >
+                    +
+                  </button>
+                </div>
+                <span className="text-[10px] text-slate-500 block pl-1 font-medium">
+                  신규 가입은 「광고형」으로 시작합니다 (최대 3인, 광고 표시). 지인 선물·유료 PRO는 가입 후 설정에서 변경할 수 있습니다.
+                </span>
               </div>
 
               <div className="space-y-2">

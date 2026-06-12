@@ -9,6 +9,7 @@ import {
     query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
 } from 'firebase/firestore';
 import { db as firestore, auth } from './firebase';
+import { staffCountToPlanCode, tierToPaymentStatus, PlanTier } from '../utils/planLimits';
 // --- Utility Functions (From Original) ---
 export const formatPhoneNumber = (value: string) => {
     if (!value) return '';
@@ -470,7 +471,7 @@ export class DataService {
     }
 
     // --- SaaS Methods ---
-    async createTenant(name: string, ownerUid: string, businessNumber?: string, joinCode?: string): Promise<string> {
+    async createTenant(name: string, ownerUid: string, businessNumber?: string, joinCode?: string, initialStaffCount = 3): Promise<string> {
         const user = auth.currentUser;
         if (!user || user.uid !== ownerUid) {
             throw new Error('로그인된 대표 계정이 필요합니다.');
@@ -486,11 +487,15 @@ export class DataService {
         const ownerName = user.displayName || user.email?.split('@')[0] || '대표';
         const ownerEmail = user.email || '';
 
+        const staffCount = Math.max(1, Math.min(999, initialStaffCount));
+        const plan = staffCountToPlanCode(Math.min(staffCount, 3), 'ad');
+        const paymentStatus = tierToPaymentStatus('ad');
+
         const tenantData: Tenant = {
             id: tenantId,
             name: name.trim(),
             ownerId: ownerUid,
-            plan: 'free',
+            plan: plan as Tenant['plan'],
             createdAt: now,
             businessNumber: businessNumber?.trim() || '',
             joinCode: joinCode.trim(),
@@ -504,7 +509,8 @@ export class DataService {
         const batch = writeBatch(firestore);
         batch.set(tenantRef, {
             ...tenantData,
-            paymentStatus: 'FREE',
+            paymentStatus,
+            maxStaff: Math.min(staffCount, 3),
             lastActiveAt: now,
         });
         batch.set(doc(firestore, 'users', ownerUid), {
@@ -823,7 +829,40 @@ export class DataService {
     async updateQuote(quote: Quote) { const { id, ...data } = quote; await this.updateEntity('quotes', id, data); }
     async deleteQuote(id: string) { await this.deleteEntity('quotes', id); }
     
-    async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro') {}
+    async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro', staffCount?: number) {
+        if (plan === 'pro') {
+            const active =
+                1 + this.data['staff']?.filter((s: any) => !s.isDeleted && s.active !== false).length || 0;
+            const count = Math.max(1, staffCount ?? active);
+            await this.updateTenantPlanSettings(tenantId, { staffCount: count, tier: 'paid' });
+        } else {
+            await this.updateTenantPlanSettings(tenantId, { staffCount: 3, tier: 'ad' });
+        }
+    }
+
+    /** 인원 수 + 무료/유료(PRO) 플랜을 Firestore tenants 문서에 반영 */
+    async updateTenantPlanSettings(
+        tenantId: string,
+        options: { staffCount: number; tier: PlanTier }
+    ) {
+        const tier = options.tier;
+        const staffCount = tier === 'ad'
+            ? Math.min(Math.max(1, options.staffCount), 3)
+            : Math.max(1, Math.min(999, options.staffCount));
+        const plan = staffCountToPlanCode(staffCount, tier);
+        const paymentStatus = tierToPaymentStatus(tier);
+
+        await setDoc(
+            doc(firestore, 'tenants', tenantId),
+            {
+                plan,
+                paymentStatus,
+                maxStaff: staffCount,
+                updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+        );
+    }
 
     async addInstruction(inst: Partial<AdminInstruction>) { await this.addEntity('instructions', inst); }
     async deleteInstruction(id: string) { await this.deleteEntity('instructions', id); }

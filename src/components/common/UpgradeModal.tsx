@@ -4,6 +4,7 @@ import { X, Crown, Users, ShieldCheck, Zap, CreditCard, CheckCircle2, Landmark, 
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../../contexts/AuthContext';
 import { db } from '../../services/dataService';
+import { PRO_MONTHLY_PRICE } from '../../utils/planLimits';
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -35,13 +36,10 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
   
   // Staff count adjustment
   const actualStaffCount = db.getStaff().filter(s => !s.isDeleted && s.id !== 'admin').length;
-  const [staffCount, setStaffCount] = useState(actualStaffCount < 4 ? 4 : actualStaffCount);
+  const activeStaffCount = 1 + actualStaffCount;
+  const [staffCount, setStaffCount] = useState(Math.max(activeStaffCount, 1));
 
-  
-  // Calculate price: Up to 3 is free (ads), 4+ is 1000 per person
-  const isEligibleForFree = staffCount <= 3;
-  const basePricePerPerson = 1000;
-  const totalPrice = staffCount >= 4 ? staffCount * basePricePerPerson : 0;
+  const totalPrice = PRO_MONTHLY_PRICE;
   const vat = Math.floor(totalPrice * 0.1);
 
   const allConsented = consents.terms && consents.autoPay && consents.privacy;
@@ -78,7 +76,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
     await new Promise(resolve => setTimeout(resolve, 2500));
     
     try {
-        await db.upgradeTenantPlan(currentUser.tenantId, 'pro');
+        await db.upgradeTenantPlan(currentUser.tenantId, 'pro', staffCount);
         updatePlan('pro');
         setIsVerifying(false);
         
@@ -183,11 +181,11 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
                             )}
                             <div className="flex items-center gap-3 mb-4">
                                 <Users size={20} className={selectedPlan === 'free' ? 'text-slate-600' : 'text-slate-400'} />
-                                <span className="font-bold text-slate-800 dark:text-slate-200">Standard (Free)</span>
+                                <span className="font-bold text-slate-800 dark:text-slate-200">광고형 (Standard)</span>
                             </div>
                             <ul className="space-y-2 mb-6">
                                 <li className="text-xs text-slate-500 flex items-center gap-2">
-                                    <CheckCircle2 size={12} className="text-emerald-500" /> 최대 직원 3명까지 무료
+                                    <CheckCircle2 size={12} className="text-emerald-500" /> 최대 직원 3명 (요금 대신 광고)
                                 </li>
                                 <li className="text-xs text-slate-500 flex items-center gap-2">
                                     <CheckCircle2 size={12} className="text-emerald-500" /> 화면 하단/달력 광고 노출
@@ -209,7 +207,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
                             </div>
                             <ul className="space-y-2 mb-6">
                                 <li className="text-xs text-blue-600/80 dark:text-blue-400 flex items-center gap-2">
-                                    <ShieldCheck size={12} /> 4인 이상부터 적용 (인당 1,000원)
+                                    <ShieldCheck size={12} /> 월 1,000원 정액 · 인원 무관 · 광고 제거
                                 </li>
                                 <li className="text-xs text-blue-600/80 dark:text-blue-400 flex items-center gap-2">
                                     <ShieldCheck size={12} /> 모든 로고/광고 제거 (클린 UI)
@@ -219,14 +217,14 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
                                 </li>
                             </ul>
                             <div className="font-black text-lg text-blue-600 dark:text-blue-300">
-                                ₩4,000~ <span className="text-[10px] font-normal text-slate-400">/ 월 (부가세 별도)</span>
+                                ₩{PRO_MONTHLY_PRICE.toLocaleString()} <span className="text-[10px] font-normal text-slate-400">/ 월 정액 (부가세 별도)</span>
                             </div>
                         </div>
                     </div>
 
                     <div className="p-4 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800 rounded-xl">
                         <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
-                            <span className="font-black">※ 요금 안내:</span> 3명까지는 광고가 포함된 무료 버전으로 사용 가능하며, 4명 등록 시부터 프로 플랜이 적용됩니다. 요금은 <span className="font-black">인당 1,000원</span>(부가세 별도) 기준입니다.
+                            <span className="font-black">※ 요금 안내:</span> 「광고형」은 3인까지 요금 대신 광고를 봅니다. PRO(유료)는 <span className="font-black">인원과 무관 월 1,000원 정액</span>이며, 혼자 쓰면서 광고만 없애고 싶을 때도 이용할 수 있습니다.
                         </p>
                     </div>
                 </motion.div>
@@ -403,7 +401,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
                             />
                             <div className="flex-1">
                                 <label htmlFor="autoPay" className="text-sm font-bold text-slate-700 dark:text-slate-300 block mb-0.5 cursor-pointer">월 정기 구독 결제 승인 (필수)</label>
-                                <p className="text-[10px] text-slate-500 leading-relaxed font-medium">현재 인원 기준 월 {totalPrice.toLocaleString()}원(부가세 별도)이 정기 결제됨을 확인하였으며, 서비스 중간 해제 시 환불 규정에 동의합니다.</p>
+                                <p className="text-[10px] text-slate-500 leading-relaxed font-medium">PRO 모드 월 {totalPrice.toLocaleString()}원(부가세 별도) 정액이 정기 결제됨을 확인하였으며, 서비스 중간 해제 시 환불 규정에 동의합니다.</p>
                             </div>
                         </div>
                         <div className="p-4 flex items-start gap-3 hover:bg-slate-100/50 transition-colors">
@@ -445,7 +443,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
                             <span className="text-sm font-bold text-slate-500">현재 인원</span>
                             <div className="flex items-center gap-3">
                                 <button 
-                                    onClick={() => setStaffCount(Math.max(4, staffCount - 1))}
+                                    onClick={() => setStaffCount(Math.max(1, staffCount - 1))}
                                     className="w-8 h-8 rounded-lg border border-slate-200 dark:border-slate-700 flex items-center justify-center text-slate-500 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
                                 >
                                     -

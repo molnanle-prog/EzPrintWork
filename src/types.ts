@@ -235,7 +235,7 @@ export interface Tenant {
   ownerId: string;
   licenseKey?: string;
   licenseExpiresAt?: string;
-  plan: 'free' | 'pro';
+  plan: string;
   createdAt: string;
   businessNumber?: string;
   joinCode?: string;

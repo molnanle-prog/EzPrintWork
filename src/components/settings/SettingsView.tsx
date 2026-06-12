@@ -12,7 +12,8 @@ import { StatusManager } from './StatusManager';
 import { SmsManager } from './SmsManager'; // Added
 import { ProfileManager } from './ProfileManager';
 import { ProcessingManager } from './ProcessingManager';
-import { Users, ScrollText, Building2, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors } from 'lucide-react';
+import { PlanManager } from './PlanManager';
+import { Users, ScrollText, Building2, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const SettingsView: React.FC = () => {
@@ -33,6 +34,7 @@ export const SettingsView: React.FC = () => {
     switch (activeSubTab) {
         case 'profile': return <ProfileManager />;
         case 'staff': return isAdmin ? <StaffManager /> : null;
+        case 'plan': return isAdmin ? <PlanManager /> : null;
         case 'company': return isAdmin ? <CompanyInfoManager /> : null;
         case 'status': return isAdmin ? <StatusManager /> : null; 
         case 'product': return <ProductManager />; 
@@ -49,6 +51,7 @@ export const SettingsView: React.FC = () => {
   const allMenuItems = [
     { id: 'profile', label: '개인정보 변경', icon: User, adminOnly: false },
     { id: 'staff', label: '직원 관리', icon: Users, adminOnly: true },
+    { id: 'plan', label: '요금제 / 인원', icon: Crown, adminOnly: true },
     { id: 'company', label: '회사 정보', icon: Building, adminOnly: true },
     { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true }, 
     { id: 'product', label: '상품 관리', icon: Package, adminOnly: true }, 

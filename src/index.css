@@ -173,3 +173,99 @@ html.trello ::-webkit-scrollbar-track { background: #1d2d44; }
 html.trello ::-webkit-scrollbar-thumb { background: #5e6c84; }
 html.trello ::-webkit-scrollbar-thumb:hover { background: #42526e; }
 
+/* ===== Kanban 카드 가독성: 밝은 카드 표면 (light + trello) — dark는 미적용 ===== */
+html.light .kanban-card-title,
+html.trello .kanban-card-title {
+  color: #0f172a !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card-subtitle,
+html.trello .kanban-card-subtitle {
+  color: #475569 !important;
+  font-weight: 500;
+}
+
+html.light .kanban-card .kanban-badge-priority-default,
+html.trello .kanban-card .kanban-badge-priority-default {
+  background-color: #e2e8f0 !important;
+  color: #1e293b !important;
+  border-color: #64748b !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-pay-wait,
+html.trello .kanban-card .kanban-badge-pay-wait {
+  background-color: #fee2e2 !important;
+  color: #991b1b !important;
+  border-color: #dc2626 !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-pay-partial,
+html.trello .kanban-card .kanban-badge-pay-partial {
+  background-color: #d1fae5 !important;
+  color: #065f46 !important;
+  border-color: #059669 !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-pay-done,
+html.trello .kanban-card .kanban-badge-pay-done {
+  background-color: #dbeafe !important;
+  color: #1e40af !important;
+  border-color: #2563eb !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-pay-default,
+html.trello .kanban-card .kanban-badge-pay-default {
+  background-color: #e2e8f0 !important;
+  color: #334155 !important;
+  border-color: #64748b !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-file-ok,
+html.trello .kanban-card .kanban-badge-file-ok {
+  background-color: #d1fae5 !important;
+  color: #047857 !important;
+  border-color: #10b981 !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-file-missing,
+html.trello .kanban-card .kanban-badge-file-missing {
+  background-color: #ffe4e6 !important;
+  color: #9f1239 !important;
+  border-color: #e11d48 !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-sub-pending,
+html.trello .kanban-card .kanban-badge-sub-pending {
+  background-color: #e2e8f0 !important;
+  color: #334155 !important;
+  border-color: #64748b !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-badge-sub-done,
+html.trello .kanban-card .kanban-badge-sub-done {
+  background-color: #d1fae5 !important;
+  color: #065f46 !important;
+  border-color: #059669 !important;
+  font-weight: 600;
+}
+
+html.light .kanban-card .kanban-card-icon-muted,
+html.trello .kanban-card .kanban-card-icon-muted {
+  color: #64748b !important;
+}
+
+html.light .kanban-card .kanban-card-meta,
+html.trello .kanban-card .kanban-card-meta {
+  color: #475569 !important;
+  font-weight: 500;
+}
+
