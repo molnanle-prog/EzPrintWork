@@ -179,6 +179,25 @@ async function main() {
 
     // 웹앱용 리액트 소스도 이식
     copyFolderSync(distDir, targetDir);
+
+    const appVersion = require(path.join(currentDir, 'package.json')).version;
+    const versionManifestPath = path.join(targetDir, 'version.json');
+    let buildId = `${appVersion}-${Date.now()}`;
+    if (fs.existsSync(versionManifestPath)) {
+      try {
+        const existing = JSON.parse(fs.readFileSync(versionManifestPath, 'utf-8'));
+        if (existing.buildId) buildId = existing.buildId;
+      } catch (_) { /* use fresh buildId */ }
+    }
+    fs.writeFileSync(
+      versionManifestPath,
+      JSON.stringify({
+        version: appVersion,
+        buildId,
+        builtAt: new Date().toISOString(),
+      }, null, 2)
+    );
+
     log('✓ 웹 애플리케이션 리액트 소스 복사 완료!', colors.green);
   } catch (err) {
     log(`[에러] 연동 및 이식 실패: ${err.message}`, colors.red);

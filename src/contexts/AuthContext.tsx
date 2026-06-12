@@ -4,6 +4,7 @@ import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/a
 import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
+import { getMaxStaffForPlan } from '../utils/planLimits';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -16,8 +17,12 @@ interface AuthContextType {
   refreshUser: () => Promise<void>;
   isAuthenticated: boolean;
   tenantPlan: 'free' | 'pro';
+  /** Firestore tenants.plan 원본 (u5, u10 등) */
+  tenantPlanCode: string;
+  /** 현재 요금제 최대 직원 수 (대표 포함) */
+  maxStaff: number;
   updatePlan: (plan: 'free' | 'pro') => void;
-  loginCustomSession: (user: AppUser, plan: 'free' | 'pro') => void;
+  loginCustomSession: (user: AppUser, plan: 'free' | 'pro', planCode?: string, paymentStatus?: string) => void;
 }
 
 // [결제 만료 및 미결제 실시간 자동 판별 엔진]
@@ -29,8 +34,9 @@ export const determineTenantPlan = (tenantData: any): 'free' | 'pro' => {
   const paymentStatus = tenantData.paymentStatus || 'UNPAID';
   const licenseExpiresAt = tenantData.licenseExpiresAt || null;
 
-  // 1. 유료 플랜 타입 대조 (pro, pro_plus, u3, u5, u10, service 등)
-  const isPaidPlanType = ['pro', 'pro_plus', 'u3', 'u5', 'u10', 'service'].includes(plan);
+  // 1. 유료 플랜 타입 대조 (u3~u10 등 인원별 플랜 포함)
+  const isPaidPlanType =
+    ['pro', 'pro_plus', 'service'].includes(plan) || /^u\d+$/.test(plan);
   if (!isPaidPlanType) return 'free';
 
   // 2. 결제 미완료 시 즉각 광고형 모드 자동 변환 (UNPAID 등)
@@ -55,7 +61,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [tenantPlan, setTenantPlan] = useState<'free' | 'pro'>('free');
+  const [tenantPlanCode, setTenantPlanCode] = useState<string>('free');
+  const [maxStaff, setMaxStaff] = useState<number>(1);
   const [loading, setLoading] = useState(true);
+
+  const applyTenantSnapshot = (tenantData: any) => {
+    setTenantPlan(determineTenantPlan(tenantData));
+    const code = String(tenantData?.plan || 'free');
+    setTenantPlanCode(code);
+    setMaxStaff(getMaxStaffForPlan(code, tenantData?.paymentStatus));
+  };
 
   const fetchUserProfile = async (user: User) => {
     try {
@@ -93,7 +108,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (updatedUser.tenantId) {
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
-              setTenantPlan(determineTenantPlan(tenantDoc.data()));
+              applyTenantSnapshot(tenantDoc.data());
           }
           dataService.setTenant(updatedUser.tenantId);
 
@@ -209,7 +224,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (tenantId) {
             const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
             if (tenantDoc.exists()) {
-              setTenantPlan(determineTenantPlan(tenantDoc.data()));
+              applyTenantSnapshot(tenantDoc.data());
             }
             dataService.setTenant(tenantId);
           }
@@ -278,19 +293,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const loginCustomSession = (user: AppUser, plan: 'free' | 'pro') => {
+  const loginCustomSession = (user: AppUser, plan: 'free' | 'pro', planCode?: string, paymentStatus?: string) => {
     const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
+    const code = planCode || (plan === 'pro' ? 'pro' : 'free');
     if (keepLoggedIn) {
       localStorage.setItem('customUser', JSON.stringify(user));
       localStorage.setItem('customTenantPlan', plan);
+      localStorage.setItem('customTenantPlanCode', code);
     } else {
       localStorage.removeItem('customUser');
       localStorage.removeItem('customTenantPlan');
+      localStorage.removeItem('customTenantPlanCode');
     }
     sessionStorage.setItem('customUser', JSON.stringify(user));
     sessionStorage.setItem('customTenantPlan', plan);
+    sessionStorage.setItem('customTenantPlanCode', code);
     setCurrentUser(user);
     setTenantPlan(plan);
+    setTenantPlanCode(code);
+    setMaxStaff(getMaxStaffForPlan(code, paymentStatus));
     if (user.tenantId) {
       dataService.setTenant(user.tenantId);
     }
@@ -315,10 +336,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     const unsubscribe = onSnapshot(tenantRef, (docSnap) => {
       if (docSnap.exists()) {
-        const tenantData = docSnap.data();
-        const determined = determineTenantPlan(tenantData);
-        console.log(`[RealtimePlanSync] Tenant plan updated in real-time (Determined: ${determined})`);
-        setTenantPlan(determined);
+        applyTenantSnapshot(docSnap.data());
+        console.log(`[RealtimePlanSync] Tenant plan updated in real-time`);
       }
     }, (err) => {
       console.error("[RealtimePlanSync] Real-time subscription failed:", err);
@@ -391,9 +410,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             setCurrentUser(userData);
             if (userData.tenantId) {
               dataService.setTenant(userData.tenantId);
+              try {
+                const tenantDoc = await getDoc(doc(db, 'tenants', userData.tenantId));
+                if (tenantDoc.exists()) {
+                  applyTenantSnapshot(tenantDoc.data());
+                } else {
+                  const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
+                  const savedCode = sessionStorage.getItem('customTenantPlanCode') || (keepLoggedIn ? localStorage.getItem('customTenantPlanCode') : null);
+                  setTenantPlan(savedPlan || 'free');
+                  setTenantPlanCode(savedCode || 'free');
+                  setMaxStaff(getMaxStaffForPlan(savedCode || 'free', 'PAID'));
+                }
+              } catch {
+                const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
+                setTenantPlan(savedPlan || 'free');
+              }
+            } else {
+              const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
+              setTenantPlan(savedPlan || 'free');
             }
-            const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
-            setTenantPlan(savedPlan || 'free');
           } catch (e) {
             console.error("Failed to parse custom local user session:", e);
             setCurrentUser(null);
@@ -425,6 +460,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       firebaseUser, 
       currentUser, 
       tenantPlan,
+      tenantPlanCode,
+      maxStaff,
       updatePlan: (plan: 'free' | 'pro') => setTenantPlan(plan),
       loading, 
       logout, 

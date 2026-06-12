@@ -6,7 +6,7 @@ import {
 import { toast } from 'sonner';
 import { 
     collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch,
-    query, where, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
+    query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
 } from 'firebase/firestore';
 import { db as firestore, auth } from './firebase';
 // --- Utility Functions (From Original) ---
@@ -183,12 +183,14 @@ export class DataService {
 
     private listeners: (() => void)[] = [];
     private syncStatus: 'synced' | 'connecting' | 'disconnected' = 'disconnected';
+    private lastSyncError: string | null = null;
     private reconnectTimer: any = null;
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
     private joinRequestsUnsub: (() => void) | null = null;
 
     getSyncStatus() { return this.syncStatus; }
+    getLastSyncError() { return this.lastSyncError; }
 
     getIsElectron(): boolean {
         return typeof window !== 'undefined' && !!(window as any).electron;
@@ -205,6 +207,7 @@ export class DataService {
     setTenant(tenantId: string) {
         if (this.tenantId === tenantId) return;
         this.tenantId = tenantId;
+        this.lastSyncError = null;
         this.startSyncing();
     }
 
@@ -399,9 +402,15 @@ export class DataService {
                     this.updateTenantActivity().catch(() => {});
                 }
                 this.notify();
-            }, (error) => {
+            }, (error: any) => {
                 console.error(`[Firestore Sync Error] onSnapshot failed for ${colName}:`, error);
-                this.syncStatus = 'disconnected';
+                const code = error?.code || 'unknown';
+                this.lastSyncError = code;
+                if (code === 'unavailable') {
+                    this.scheduleReconnect();
+                } else {
+                    this.syncStatus = 'disconnected';
+                }
                 this.notify();
             });
 
@@ -530,13 +539,23 @@ export class DataService {
     }
 
     async searchTenants(nameQuery: string): Promise<Tenant[]> {
-        const term = nameQuery.trim().toLowerCase();
+        const term = nameQuery.trim();
         if (!term) return [];
 
-        const snap = await getDocs(query(collection(firestore, 'tenants')));
+        const mapTenant = (d: any) => ({ id: d.id, ...d.data() } as Tenant);
+
+        const exactSnap = await getDocs(
+            query(collection(firestore, 'tenants'), where('name', '==', term), limit(10))
+        );
+        if (!exactSnap.empty) {
+            return exactSnap.docs.map(mapTenant);
+        }
+
+        const snap = await getDocs(query(collection(firestore, 'tenants'), limit(50)));
+        const lower = term.toLowerCase();
         return snap.docs
-            .map(d => ({ id: d.id, ...d.data() } as Tenant))
-            .filter(t => (t.name || '').toLowerCase().includes(term));
+            .map(mapTenant)
+            .filter(t => (t.name || '').toLowerCase().includes(lower));
     }
 
     // --- CRUD Methods (Local JSON Based) ---
@@ -567,6 +586,17 @@ export class DataService {
         }
     }
 
+    private notifyFirestoreWriteError(action: string, e: any) {
+        const code = e?.code || '';
+        if (code === 'resource-exhausted') {
+            toast.error('Firebase 저장 한도가 초과되었습니다. 잠시 후 다시 시도해 주세요.');
+        } else if (code === 'permission-denied') {
+            toast.error('저장 권한이 없습니다. 다시 로그인해 주세요.');
+        } else {
+            toast.error(`${action} 저장 실패: ${getErrorMessage(e)}`);
+        }
+    }
+
     private async addEntity(col: string, entity: any) {
         const id = entity.id || this.generateId();
         const newEntity = { ...entity, id, createdAt: entity.createdAt || new Date().toISOString() };
@@ -583,6 +613,7 @@ export class DataService {
                 await setDoc(docRef, newEntity);
             } catch (e) {
                 console.error(`[Firestore addEntity Error] Failed to upload ${col}/${id}:`, e);
+                this.notifyFirestoreWriteError('데이터', e);
             }
         }
         
@@ -607,6 +638,7 @@ export class DataService {
                 await setDoc(docRef, updated, { merge: true });
             } catch (e) {
                 console.error(`[Firestore updateEntity Error] Failed to update ${col}/${id}:`, e);
+                this.notifyFirestoreWriteError('데이터', e);
                 throw e;
             }
         }
@@ -638,6 +670,7 @@ export class DataService {
                 await deleteDoc(docRef);
             } catch (e) {
                 console.error(`[Firestore deleteEntity Error] Failed to delete ${col}/${id}:`, e);
+                this.notifyFirestoreWriteError('삭제', e);
             }
         }
         
@@ -656,6 +689,7 @@ export class DataService {
                 await setDoc(docRef, settings, { merge: true });
             } catch (e) {
                 console.error(`[Firestore updateSetting Error] Failed to update settings:`, e);
+                this.notifyFirestoreWriteError('설정', e);
             }
         }
         

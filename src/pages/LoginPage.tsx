@@ -1,17 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup, signInWithRedirect } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
 import { db } from '../services/dataService';
+import { getMaxStaffForPlan } from '../utils/planLimits';
+
+const formatSearchError = (error: any): string => {
+    const code = error?.code || '';
+    if (code === 'permission-denied') {
+        return '회사 검색 권한이 없습니다. Ctrl+Shift+R로 강력 새로고침 후 다시 시도해 주세요.';
+    }
+    if (code === 'resource-exhausted') {
+        return 'Firestore 일일 한도에 도달했습니다. 내일 자동 복구되거나 관리자에게 문의하세요.';
+    }
+    if (code === 'unavailable') {
+        return 'Firestore 서버에 일시적으로 연결할 수 없습니다. 인터넷·방화벽 설정을 확인해 주세요.';
+    }
+    return '회사 검색 중 오류가 발생했습니다.';
+};
 
 export const LoginPage: React.FC = () => {
     const navigate = useNavigate();
-    const { loginCustomSession } = useAuth();
     const { theme } = useTheme();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
@@ -261,7 +274,7 @@ IconFile=https://ez-hub.kr/favicon.ico
             setLoginCompanySearchResults(results.map(t => ({ id: t.id, name: t.name })));
         } catch (error: any) {
             console.error("Search login company error:", error);
-            toast.error('회사 검색 중 오류가 발생했습니다.');
+            toast.error(formatSearchError(error));
         } finally {
             setIsSearchingLoginCompany(false);
         }
@@ -306,48 +319,48 @@ IconFile=https://ez-hub.kr/favicon.ico
         setIsStaffLoggingIn(true);
 
         try {
-            const { collection, query, where, getDocs, doc, getDoc } = await import('firebase/firestore');
+            const { collection, query, where, limit, getDocs, doc, getDoc, setDoc } = await import('firebase/firestore');
             const { db } = await import('../services/firebase');
-            
-            // [회사별 독립 직원 인증 체계]
-            // 글로벌 'users' 대신 회사별 직원 서브컬렉션 'tenants/{tenantId}/staff'에서 직접 직원을 조회하여 회사별 아이디 중복 문제를 완전히 격리 해결합니다.
-            // 대표자 피드백 반영: 아이디와 패스워드 대소문자 전면 무시를 위한 3단계 폴백 쿼리 시도
-            let userQuery = query(
-                collection(db, `tenants/${selectedTenantId}/staff`),
-                where('loginId', '==', loginId.trim()),
-                where('password', '==', password.trim())
-            );
 
-            let userSnapshot = await getDocs(userQuery);
+            const staffCol = collection(db, `tenants/${selectedTenantId}/staff`);
+            const loginIdsToTry = [...new Set([
+                loginId.trim(),
+                loginId.trim().toLowerCase(),
+                loginId.trim().toUpperCase(),
+            ])];
+            const passwordsToMatch = [...new Set([
+                password.trim(),
+                password.trim().toLowerCase(),
+                password.trim().toUpperCase(),
+            ])];
 
-            // 2단계 폴백 (소문자 기준 쿼리)
-            if (userSnapshot.empty) {
-                userQuery = query(
-                    collection(db, `tenants/${selectedTenantId}/staff`),
-                    where('loginId', '==', loginId.trim().toLowerCase()),
-                    where('password', '==', password.trim().toLowerCase())
+            let userDoc: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
+            let userData: Record<string, any> | null = null;
+
+            for (const candidateId of loginIdsToTry) {
+                const snap = await getDocs(
+                    query(staffCol, where('loginId', '==', candidateId), limit(10))
                 );
-                userSnapshot = await getDocs(userQuery);
+                for (const docSnap of snap.docs) {
+                    const data = docSnap.data();
+                    const dbPassword = (data.password || '').trim();
+                    const matched = passwordsToMatch.some(
+                        (p) => p === dbPassword || p.toLowerCase() === dbPassword.toLowerCase()
+                    );
+                    if (matched) {
+                        userDoc = docSnap;
+                        userData = data;
+                        break;
+                    }
+                }
+                if (userDoc) break;
             }
 
-            // 3단계 폴백 (대문자 기준 쿼리)
-            if (userSnapshot.empty) {
-                userQuery = query(
-                    collection(db, `tenants/${selectedTenantId}/staff`),
-                    where('loginId', '==', loginId.trim().toUpperCase()),
-                    where('password', '==', password.trim().toUpperCase())
-                );
-                userSnapshot = await getDocs(userQuery);
-            }
-
-            if (userSnapshot.empty) {
+            if (!userDoc || !userData) {
                 toast.error('아이디 또는 비밀번호가 올바르지 않거나 선택한 회사와 일치하지 않습니다.');
                 setIsStaffLoggingIn(false);
                 return;
             }
-
-            const userDoc = userSnapshot.docs[0];
-            const userData = userDoc.data();
 
             // Check if deleted or suspended
             if (userData.isDeleted === true || userData.active === false) {
@@ -358,29 +371,59 @@ IconFile=https://ez-hub.kr/favicon.ico
 
             const tenantId = selectedTenantId; // 서브컬렉션 소속이므로 selectedTenantId가 곧 tenantId가 됩니다.
 
-            // Retrieve the tenant's plan info
             const tenantDocRef = doc(db, 'tenants', tenantId);
             const tenantDocSnap = await getDoc(tenantDocRef);
-            let tenantPlan = 'free';
             let tenantName = '';
             if (tenantDocSnap.exists()) {
-                const tenantData = tenantDocSnap.data();
-                tenantPlan = (tenantData.plan === 'pro_plus' ? 'pro' : tenantData.plan) || 'free';
-                tenantName = tenantData.name || '';
+                tenantName = tenantDocSnap.data().name || '';
             }
 
-            // Set custom session in AuthContext
-            const appUser = {
-                uid: userDoc.id,
-                id: userDoc.id,
-                email: userData.email || '',
-                displayName: userData.userName || userData.name || '사원',
-                name: userData.userName || userData.name || '사원',
-                photoURL: '',
-                avatarUrl: '',
-                tenantId: tenantId,
-                role: 'staff' as const
-            };
+            // Firebase Auth 로그인 (Firestore rules isMember 통과에 필수)
+            const rawLoginId = (userData.loginId || loginId.trim()).toLowerCase();
+            const authEmail = (userData.email?.includes('@') ? userData.email : `${rawLoginId}@ez-hub.kr`).trim().toLowerCase();
+            const passwordsToTry = [...new Set([
+                password.trim(),
+                password.trim().toLowerCase(),
+                userData.password?.trim(),
+                userData.password?.trim().toLowerCase(),
+            ].filter(Boolean))] as string[];
+
+            let signedIn = false;
+            let lastAuthError: any = null;
+            for (const pwd of passwordsToTry) {
+                try {
+                    await signInWithEmailAndPassword(auth, authEmail, pwd);
+                    signedIn = true;
+                    break;
+                } catch (authErr) {
+                    lastAuthError = authErr;
+                }
+            }
+
+            if (!signedIn) {
+                console.error('Staff Firebase auth failed:', lastAuthError);
+                toast.error('Firebase 계정 연동이 필요합니다. 관리자에게 직원 아이디/비밀번호 재저장을 요청하세요.');
+                setIsStaffLoggingIn(false);
+                return;
+            }
+
+            const firebaseUid = auth.currentUser?.uid;
+            if (firebaseUid) {
+                try {
+                    await setDoc(doc(db, 'users', firebaseUid), {
+                        uid: firebaseUid,
+                        id: firebaseUid,
+                        email: authEmail,
+                        displayName: userData.userName || userData.name || '사원',
+                        name: userData.userName || userData.name || '사원',
+                        tenantId,
+                        role: 'staff',
+                        loginId: rawLoginId,
+                    }, { merge: true });
+                } catch (profileErr) {
+                    console.warn('Staff users profile upsert failed (login continues):', profileErr);
+                }
+            }
 
             // 아이디 및 비밀번호 소문자 자동 마이그레이션 자가 치유 (Self-Healing)
             const currentLoginIdInDb = userData.loginId || '';
@@ -424,8 +467,8 @@ IconFile=https://ez-hub.kr/favicon.ico
             setSelectedTenantId(tenantId);
 
             localStorage.setItem('ezprint_active_tab', 'kanban');
-            loginCustomSession(appUser, tenantPlan as 'free' | 'pro');
             toast.success(tenantName ? `[${tenantName}] 직원 로그인에 성공했습니다! 환영합니다.` : '직원 로그인에 성공했습니다! 환영합니다.');
+            navigate('/');
 
             // 구글 시트 직원 로그인 웹훅 비동기 전송
             (async () => {
@@ -505,6 +548,20 @@ IconFile=https://ez-hub.kr/favicon.ico
             const tenantDoc = tenantSnapshot.docs[0];
             const tenantId = tenantDoc.id;
             const tenantData = tenantDoc.data();
+
+            // 1.5 요금제 인원 제한 확인 (대표 1석 + 직원)
+            const maxStaff = getMaxStaffForPlan(tenantData.plan, tenantData.paymentStatus);
+            const staffColRef = collection(db, `tenants/${tenantId}/staff`);
+            const staffSnap = await getDocs(staffColRef);
+            const activeStaff = staffSnap.docs.filter(d => {
+                const s = d.data();
+                return s.isDeleted !== true && s.active !== false;
+            }).length;
+            if (1 + activeStaff >= maxStaff) {
+                toast.error(`요금제 인원 제한(${maxStaff}명)에 도달했습니다. 관리자에게 문의하세요.`);
+                setIsStaffSigningUp(false);
+                return;
+            }
 
             // 2. Check if loginId is already taken inside global users for this tenant
             const normalizedLoginId = loginId.trim().toLowerCase();
@@ -602,7 +659,7 @@ IconFile=https://ez-hub.kr/favicon.ico
             setSearchResults(results.map(t => ({ id: t.id, name: t.name })));
         } catch (error: any) {
             console.error("Search company error:", error);
-            toast.error('회사 검색 중 오류가 발생했습니다.');
+            toast.error(formatSearchError(error));
         } finally {
             setIsSearchingCompany(false);
         }
@@ -693,7 +750,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                     </div>
                     <div>
                         <h1 className="text-4xl font-black text-white tracking-tighter mb-2">EzPrintWork</h1>
-                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v1.2.1)</p>
+                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v1.2.6)</p>
                     </div>
                 </div>
  

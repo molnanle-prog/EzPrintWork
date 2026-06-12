@@ -61,13 +61,40 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
     );
 };
 
+const getDisconnectDetail = (code: string | null) => {
+    if (code === 'permission-denied') {
+        return {
+            title: '데이터 접근 권한이 없습니다',
+            body: <>Firebase 로그인이 만료되었거나 권한이 없습니다.<br/>로그아웃 후 다시 로그인해 주세요.</>,
+        };
+    }
+    if (code === 'resource-exhausted') {
+        return {
+            title: 'Firestore 일일 한도 초과',
+            body: <>오늘 Firestore 무료 한도에 도달했습니다.<br/>UTC 자정 이후 자동 복구됩니다.</>,
+        };
+    }
+    if (code === 'unavailable') {
+        return {
+            title: '서버에 일시적으로 연결할 수 없습니다',
+            body: <>인터넷·방화벽·회사망 설정을 확인해 주세요.<br/>복구되면 자동으로 재동기화됩니다.</>,
+        };
+    }
+    return {
+        title: '클라우드 연결이 끊겼습니다',
+        body: <>Firestore 서버와의 연결이 일시적으로 끊어졌습니다.<br/>인터넷 연결을 확인해 주세요. 복구되면 자동으로 재동기화됩니다.</>,
+    };
+};
+
 const ReconnectOverlay: React.FC = () => {
     const [status, setStatus] = useState(db.getSyncStatus());
+    const [syncError, setSyncError] = useState(db.getLastSyncError());
     const [isRetrying, setIsRetrying] = useState(false);
 
     useEffect(() => {
         const unsubscribe = db.subscribe(() => {
             setStatus(db.getSyncStatus());
+            setSyncError(db.getLastSyncError());
         });
         return () => unsubscribe();
     }, []);
@@ -79,6 +106,8 @@ const ReconnectOverlay: React.FC = () => {
 
     if (status !== 'disconnected') return null;
 
+    const detail = getDisconnectDetail(syncError);
+
     return (
         <div className="fixed inset-0 bg-slate-900/80 z-[9999] flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
             <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border border-slate-200 dark:border-slate-700 text-center space-y-6">
@@ -89,11 +118,10 @@ const ReconnectOverlay: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                     <h3 className="text-xl font-black text-slate-800 dark:text-slate-100">
-                        클라우드 연결이 끊겼습니다
+                        {detail.title}
                     </h3>
                     <p className="text-sm text-slate-500 dark:text-slate-400 leading-relaxed">
-                        Firestore 서버와의 연결이 일시적으로 끊어졌습니다.<br/>
-                        인터넷 연결을 확인해 주세요. 복구되면 자동으로 재동기화됩니다.
+                        {detail.body}
                     </p>
                 </div>
                 <button

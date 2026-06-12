@@ -90,7 +90,7 @@ async function run() {
     console.log(`   → 일치 테넌트: ${snap.docs[0].id}`);
   });
 
-  await test('4. staff loginId+password 쿼리 (직원 로그인)', async () => {
+  await test('4a. staff loginId 단일 쿼리 (직원 로그인 v1.2.5+)', async () => {
     if (!sampleTenantId) {
       console.log('   → 스킵 (테넌트 없음)');
       return;
@@ -99,8 +99,7 @@ async function run() {
       query(
         collection(db, `tenants/${sampleTenantId}/staff`),
         where('loginId', '==', '__nonexistent_test__'),
-        where('password', '==', '__nonexistent_test__'),
-        limit(1)
+        limit(10)
       )
     );
     console.log(`   → 쿼리 허용됨 (결과 ${snap.size}건 — 권한 오류 없음)`);

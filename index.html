@@ -4,6 +4,9 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <title>EzPrintWork - UPDATED</title>
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700&display=swap" rel="stylesheet">
     
@@ -17,6 +20,34 @@
         } else {
           document.documentElement.classList.add('dark');
         }
+      })();
+    </script>
+
+    <!-- 배포 후 구버전 JS 자동 감지 → 1회 새로고침 -->
+    <script>
+      (function () {
+        var BUILD_KEY = 'ezpw_build_id';
+        var GUARD_KEY = 'ezpw_reload_guard';
+        try {
+          var url = new URL('version.json', window.location.href);
+          url.searchParams.set('t', String(Date.now()));
+          fetch(url.href, { cache: 'no-store' })
+            .then(function (res) { return res.ok ? res.json() : null; })
+            .then(function (manifest) {
+              if (!manifest || !manifest.buildId) return;
+              var prev = localStorage.getItem(BUILD_KEY);
+              var guarded = sessionStorage.getItem(GUARD_KEY) === manifest.buildId;
+              if (prev && prev !== manifest.buildId && !guarded) {
+                sessionStorage.setItem(GUARD_KEY, manifest.buildId);
+                localStorage.setItem(BUILD_KEY, manifest.buildId);
+                window.location.reload();
+                return;
+              }
+              localStorage.setItem(BUILD_KEY, manifest.buildId);
+              sessionStorage.removeItem(GUARD_KEY);
+            })
+            .catch(function () {});
+        } catch (e) {}
       })();
     </script>
 

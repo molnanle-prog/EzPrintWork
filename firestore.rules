@@ -17,8 +17,16 @@ service cloud.firestore {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
+    function isStaffEmailAuth() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower().matches('.*@ez-hub\\.kr$');
+    }
+
     function isMember(tenantId) {
-      return isVerified() && getProfile().tenantId == tenantId;
+      return isSignedIn()
+        && getProfile().tenantId == tenantId
+        && (request.auth.token.email_verified == true || isStaffEmailAuth());
     }
 
     function isSuperAdmin() {
@@ -44,22 +52,62 @@ service cloud.firestore {
         && request.query.filters[1].op == '==';
     }
 
-    function isStaffLoginQuery() {
-      return request.query.filters.size() >= 2
-        && request.query.filters[0].field.path == ['loginId']
+    // 로그인/가입 화면 회사명 검색 (name == 쿼리)
+    function isTenantNameSearchQuery() {
+      return request.query.filters.size() == 1
+        && request.query.filters[0].field.path == ['name']
         && request.query.filters[0].op == '=='
-        && request.query.filters[1].field.path == ['password']
-        && request.query.filters[1].op == '=='
         && isReasonableListQuery();
+    }
+
+    // tenants 목록/단건 — 로그인 전 회사 찾기용 공개 조회
+    function isPublicTenantDiscovery() {
+      return isReasonableListQuery()
+        || isTenantNameSearchQuery()
+        || isTenantNameJoinCodeQuery();
+    }
+
+    function isStaffLoginQuery() {
+      return request.query.filters.size() == 2
+        && isReasonableListQuery()
+        && (
+          (request.query.filters[0].field.path == ['loginId'] && request.query.filters[0].op == '=='
+            && request.query.filters[1].field.path == ['password'] && request.query.filters[1].op == '==')
+          || (request.query.filters[0].field.path == ['password'] && request.query.filters[0].op == '=='
+            && request.query.filters[1].field.path == ['loginId'] && request.query.filters[1].op == '==')
+        );
+    }
+
+    // 직원 로그인: loginId 단일 조회 (비밀번호는 앱에서 검증)
+    function isStaffLoginIdQuery() {
+      return request.query.filters.size() >= 1
+        && request.query.filters.size() <= 2
+        && (
+          (request.query.filters[0].field.path == ['loginId'] && request.query.filters[0].op == '==')
+          || (request.query.filters.size() == 2
+            && request.query.filters[1].field.path == ['loginId'] && request.query.filters[1].op == '==')
+        )
+        && (!('limit' in request.query) || request.query.limit <= 50);
+    }
+
+    function isStaffPreAuthRead() {
+      return isStaffLoginQuery() || isStaffLoginIdQuery();
+    }
+
+    function hasFilter(fieldName) {
+      return request.query.filters.size() >= 1
+        && (
+          (request.query.filters[0].field.path == [fieldName] && request.query.filters[0].op == '==')
+          || (request.query.filters.size() >= 2
+            && request.query.filters[1].field.path == [fieldName] && request.query.filters[1].op == '==')
+        );
     }
 
     function isStaffDuplicateCheckQuery() {
       return request.query.filters.size() == 2
-        && request.query.filters[0].field.path == ['tenantId']
-        && request.query.filters[0].op == '=='
-        && request.query.filters[1].field.path == ['loginId']
-        && request.query.filters[1].op == '=='
-        && isReasonableListQuery();
+        && isReasonableListQuery()
+        && hasFilter('tenantId')
+        && hasFilter('loginId');
     }
 
     function isStaffSelfSignupUser(data) {
@@ -104,13 +152,25 @@ service cloud.firestore {
 
     // 2. User Profiles
     match /users/{userId} {
-      allow list: if isSuperAdmin() || isStaffDuplicateCheckQuery();
-      allow get: if isSuperAdmin() || (isSignedIn() && request.auth.uid == userId);
+      // list·get 모두 허용해야 중복체크 쿼리 결과 문서 읽기 가능
+      allow read: if isSuperAdmin()
+        || (isSignedIn() && request.auth.uid == userId)
+        || isStaffDuplicateCheckQuery();
       allow create: if (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()))
-        || (!isSignedIn() && isStaffSelfSignupUser(incoming()));
+        || (!isSignedIn() && isStaffSelfSignupUser(incoming()))
+        || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()));
       allow update: if isSuperAdmin()
         || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && !privilegeEscalation(incoming()))
+        || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
         || isAdminUpdatingMember(incoming());
+
+      function isStaffLoginProfileUpsert(data) {
+        return data.role == 'staff'
+          && data.tenantId is string
+          && isValidId(data.tenantId)
+          && data.email is string
+          && data.email.size() <= 256;
+      }
 
       function isValidUser(data) {
         return data.email is string && data.email.size() <= 256 &&
@@ -122,18 +182,20 @@ service cloud.firestore {
 
     // 3. Tenants
     match /tenants/{tenantId} {
-      // Company search (login/signup/onboarding) — name+joinCode query or signed-in discovery
-      allow list: if isSuperAdmin()
-        || (isSignedIn() && isReasonableListQuery())
-        || (!isSignedIn() && isReasonableListQuery())
-        || (!isSignedIn() && isTenantNameJoinCodeQuery());
-      allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn();
+      // 회사 검색: list 쿼리 허용 + get은 결과 문서 읽기용으로 공개 (jobs/clients 등 하위는 isMember로 보호)
+      allow list: if isSuperAdmin() || isPublicTenantDiscovery();
+      allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn() || isSignedIn();
       allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
       allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
 
+      function isValidPlan(plan) {
+        return plan in ['free', 'lite', 'pro', 'pro_plus', 'service']
+          || plan.matches('^u[0-9]+$');
+      }
+
       function isValidTenant(data) {
         return data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
-               (!('plan' in data) || data.plan in ['free', 'pro']) &&
+               (!('plan' in data) || isValidPlan(data.plan)) &&
                data.keys().hasAll(['name', 'ownerId']);
       }
 
@@ -153,10 +215,9 @@ service cloud.firestore {
                data.keys().hasAll(['title', 'status']);
       }
 
-      // STAFF
+      // STAFF — 로그인 전 loginId 조회 허용 (비밀번호는 앱에서 검증)
       match /staff/{staffId} {
-        allow list: if isMember(tenantId) || isStaffLoginQuery();
-        allow get: if isMember(tenantId) || isAdmin(tenantId) || isStaffLoginQuery();
+        allow read: if isMember(tenantId) || isStaffPreAuthRead() || (!isSignedIn() && isReasonableListQuery());
         allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
           || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()));
         allow update: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))

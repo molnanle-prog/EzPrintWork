@@ -27,7 +27,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { firebaseConfig, db as firestore } from '../../services/firebase';
 
 export const StaffManager: React.FC = () => {
-  const { tenantPlan, currentUser } = useAuth();
+  const { tenantPlan, maxStaff, currentUser } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -38,7 +38,9 @@ export const StaffManager: React.FC = () => {
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
 
-  const isAtLimit = tenantPlan === 'free' && staffList.length >= 3;
+  // 대표(1석) + staff 서브컬렉션 활성 직원
+  const activeStaffCount = 1 + staffList.filter(s => !s.isDeleted && s.active !== false).length;
+  const isAtLimit = activeStaffCount >= maxStaff;
 
   const loadStaff = () => {
      // Exclude deleted staff AND system admin
@@ -246,6 +248,12 @@ export const StaffManager: React.FC = () => {
           if (staff.password) staff.password = staff.password.trim().toLowerCase();
 
           let uid = staff.uid || '';
+
+          const isNewStaff = !uid && !staff.id;
+          if (isNewStaff && activeStaffCount >= maxStaff) {
+              setIsUpgradeModalOpen(true);
+              return;
+          }
 
           // 1. 로그인 크리덴셜 정보가 제공된 경우 Firebase Auth 백그라운드 등록 및 동기화 수행
           if (staff.loginId && staff.password) {
@@ -648,7 +656,7 @@ export const StaffManager: React.FC = () => {
         {/* Add Staff Button */}
         <button 
             onClick={handleOpenAdd}
-            title={isAtLimit ? "무료 버전 인원 제한 초과" : "새로운 직원을 등록합니다"}
+            title={isAtLimit ? `요금제 인원 제한 (${maxStaff}명) 도달` : "새로운 직원을 등록합니다"}
             className={`rounded-xl border-2 border-dashed flex flex-col items-center justify-center p-6 transition-all min-h-[300px] 
             ${isAtLimit 
                 ? 'border-orange-200 bg-orange-50/30 text-orange-400 opacity-80 cursor-not-allowed group' 
@@ -658,7 +666,7 @@ export const StaffManager: React.FC = () => {
             ${isAtLimit ? 'bg-orange-100' : 'bg-slate-100 dark:bg-slate-700'}`}>
             <User size={24} />
             </div>
-            <span className="font-bold">{isAtLimit ? '인원 제한 도달' : '신규 직원 등록'}</span>
+            <span className="font-bold">{isAtLimit ? `인원 제한 (${activeStaffCount}/${maxStaff})` : '신규 직원 등록'}</span>
             {isAtLimit && (
                 <div className="mt-4 px-3 py-1 bg-orange-100 text-orange-700 rounded-lg text-xs font-black animate-pulse">
                     PRO 버전으로 해제하기
