@@ -99,7 +99,7 @@ async function main() {
   const projectRoot = path.resolve(__dirname, '..');
   const version = require(path.join(projectRoot, 'package.json')).version;
   const tag = `v${version}`;
-  const releaseDir = path.join(projectRoot, process.env.ELECTRON_BUILD_OUTPUT || 'release-build');
+  const releaseDir = path.join(projectRoot, process.env.ELECTRON_BUILD_OUTPUT || 'release');
 
   if (!fs.existsSync(releaseDir)) {
     console.error(`빌드 폴더 없음: ${releaseDir} — 먼저 electron-builder를 실행하세요.`);

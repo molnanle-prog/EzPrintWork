@@ -36,6 +36,7 @@ jobs:
       - name: Publish to GitHub Releases
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ELECTRON_BUILD_OUTPUT: release
         run: node scripts/publish-github-release.js
 
       - name: Release summary
