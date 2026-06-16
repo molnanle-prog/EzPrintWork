@@ -55,11 +55,26 @@ fs.mkdirSync(downloadsDir, { recursive: true });
 fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
 
 const manifestPath = path.join(downloadsDir, 'download-manifest.json');
-const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-manifest.version = version;
-manifest.setupBytes = exeAsset.size;
-manifest.exeBytes = exeAsset.size;
-manifest.updatedAt = new Date().toISOString();
+const setupExeName = 'EzPrintWork-Setup.exe';
+const versionDownloadUrl =
+  `https://github.com/molnanle-prog/EzPrintWork/releases/download/${tag}/${setupExeName}`;
+const manifest = {
+  version,
+  setupFile: setupExeName,
+  latestSetupFile: setupExeName,
+  setupExeName,
+  setupBytes: exeAsset.size,
+  exeBytes: exeAsset.size,
+  downloadUrl: ghUrl,
+  latestDownloadUrl: ghUrl,
+  githubReleaseUrl: `https://github.com/molnanle-prog/EzPrintWork/releases/tag/${tag}`,
+  githubReleaseLatest: 'https://github.com/molnanle-prog/EzPrintWork/releases/latest',
+  githubVersionDownloadUrl: versionDownloadUrl,
+  downloadType: 'exe',
+  host: 'github-releases',
+  updatedAt: new Date().toISOString(),
+  installHint: '다운로드 후 EzPrintWork-Setup.exe 설치 프로그램을 실행하세요.',
+};
 fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
 
 console.log(`✓ synced ${tag} latest.yml (exe ${exeAsset.size} bytes)`);

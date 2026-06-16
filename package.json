@@ -15,7 +15,9 @@
     "deploy:app": "node scripts/deploy-app.js",
     "deploy:all": "node scripts/deploy-app.js",
     "test:smoke": "node scripts/verify_firestore_rules.mjs && npx -y tsx scripts/smoke_admin_access_ts.ts",
-    "publish:release": "node scripts/publish-github-release.js"
+    "publish:release": "node scripts/publish-github-release.js",
+    "sync:downloads": "node scripts/sync-github-latest-yml.mjs",
+    "setup:home": "node scripts/home-setup.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
