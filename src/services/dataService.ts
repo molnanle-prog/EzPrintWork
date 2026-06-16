@@ -579,10 +579,13 @@ export class DataService {
                     this.data[colName] = list;
                 }
 
-                // 춘천인쇄 데이터 접근 시 임의 관리자(dev-admin) 계정 자동 삭제
+                // 춘천인쇄 등 실제 테넌트 접근 시 dev-admin 시드 계정 자동 삭제
                 if (colName === 'staff') {
-                    const hasChuncheon = this.data['staff']?.some((s: any) => s.companyName === '춘천인쇄');
-                    if (hasChuncheon) {
+                    const companyName = this.getCompanyInfo()?.name?.trim();
+                    const isChuncheonTenant =
+                        this.tenantId === 'tenant-or73mu1cz' ||
+                        companyName === '춘천인쇄';
+                    if (isChuncheonTenant) {
                         const originalLength = this.data['staff'].length;
                         this.data['staff'] = this.data['staff'].filter((s: any) => s.id !== 'dev-admin');
                         if (this.data['staff'].length !== originalLength) {
@@ -957,6 +960,7 @@ export class DataService {
 
     private async deleteEntity(col: string, id: string) {
         const list = this.data[col] || [];
+        const previous = list;
         this.data[col] = list.filter(e => e.id !== id);
         this.notify();
         
@@ -965,8 +969,11 @@ export class DataService {
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await deleteDoc(docRef);
             } catch (e) {
+                this.data[col] = previous;
+                this.notify();
                 console.error(`[Firestore deleteEntity Error] Failed to delete ${col}/${id}:`, e);
                 this.notifyFirestoreWriteError('삭제', e);
+                throw e;
             }
         }
         
@@ -1071,7 +1078,21 @@ export class DataService {
     async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
     async updateStaff(staff: Staff) { const { id, ...data } = staff; await this.updateEntity('staff', id, data); }
     async updateStaffLastReadMsgId(staffId: string, lastReadMsgId: string) { await this.updateEntity('staff', staffId, { lastReadMsgId }); }
-    async deleteStaff(id: string) { await this.updateEntity('staff', id, { isDeleted: true, active: false }); }
+    async deleteStaff(id: string) {
+        await this.updateEntity('staff', id, { isDeleted: true, active: false });
+        const staff = (this.data['staff'] || []).find((s: Staff) => s.id === id);
+        const uid = staff?.uid || (staff?.id && staff.id.length > 20 ? staff.id : undefined);
+        if (uid) {
+            try {
+                await setDoc(doc(firestore, 'users', uid), {
+                    active: false,
+                    deactivatedAt: new Date().toISOString(),
+                }, { merge: true });
+            } catch (e) {
+                console.warn('[deleteStaff] users 문서 비활성화 실패:', e);
+            }
+        }
+    }
     
     getJoinRequests(): JoinRequest[] {
         return (this.data['joinRequests'] || []).filter(

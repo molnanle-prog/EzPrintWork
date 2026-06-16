@@ -21,7 +21,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const [staff, setStaff] = useState<Staff[]>([]);
   const [instructions, setInstructions] = useState<AdminInstruction[]>([]);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
-  const { currentUser } = useAuth();
+  const { currentUser, canManageInstructions } = useAuth();
   const { showConfirm, showAlert } = useDialog();
   const { theme } = useTheme();
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -312,7 +312,8 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
         <InstructionPanel 
           instructions={instructions} 
           onAdd={handleAddInstruction} 
-          onDelete={deleteInstruction} 
+          onDelete={deleteInstruction}
+          canManage={canManageInstructions}
         />
       </div>
       )}

@@ -8,9 +8,10 @@ interface InstructionPanelProps {
   instructions: AdminInstruction[];
   onAdd: (content: string, important: boolean) => void;
   onDelete: (id: string) => void;
+  canManage?: boolean;
 }
 
-export const InstructionPanel: React.FC<InstructionPanelProps> = ({ instructions, onAdd, onDelete }) => {
+export const InstructionPanel: React.FC<InstructionPanelProps> = ({ instructions, onAdd, onDelete, canManage = false }) => {
   const [newInstruction, setNewInstruction] = useState('');
   const [isImportant, setIsImportant] = useState(false);
 
@@ -43,6 +44,7 @@ export const InstructionPanel: React.FC<InstructionPanelProps> = ({ instructions
                <span>{new Date(inst.date).toLocaleDateString()}</span>
                {inst.important && <span className="text-orange-500 dark:text-orange-400 font-bold">중요</span>}
             </div>
+            {canManage && (
             <button 
               onClick={() => onDelete(inst.id)}
               title="지시사항 삭제"
@@ -50,6 +52,7 @@ export const InstructionPanel: React.FC<InstructionPanelProps> = ({ instructions
             >
               <Trash2 size={14} />
             </button>
+            )}
           </div>
         ))}
       </div>
@@ -58,6 +61,7 @@ export const InstructionPanel: React.FC<InstructionPanelProps> = ({ instructions
         <AdBanner slot="dashboard_instruction" type="dashed" size="300x250" format="rectangle" />
       </div>
 
+      {canManage && (
       <div className="p-3 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/50">
         <div className="flex gap-2 items-center">
           <button 
@@ -84,6 +88,7 @@ export const InstructionPanel: React.FC<InstructionPanelProps> = ({ instructions
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 };

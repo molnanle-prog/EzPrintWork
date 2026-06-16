@@ -206,7 +206,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const [linkedClientId, setLinkedClientId] = useState<string | null>(null);
   
   const { showConfirm, showAlert } = useDialog();
-  const { currentUser } = useAuth();
+  const { currentUser, canDeletePermanently } = useAuth();
   const [pastJobs, setPastJobs] = useState<Job[]>([]);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [estimateResult, setEstimateResult] = useState<{cost: number, recommended: number} | null>(null);
@@ -571,6 +571,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
         }
     } catch (error) {
         console.error('거래처 연락처 동기화 실패:', error);
+        toast.error('거래처 자동 등록에 실패했습니다. 상호명을 확인 후 다시 저장해 주세요.');
     }
 
     onUpdate(finalJob);
@@ -1167,8 +1168,9 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                     <span className="text-[10px] text-slate-400 font-medium">"{clientSearchQuery}"</span>
                                 </div>
                                 {clientSearchResults.length === 0 ? (
-                                    <div className="px-3 py-3 text-xs text-slate-500 text-center">
-                                        등록된 거래처가 없습니다. 새 상호명으로 입력할 수 있습니다.
+                                    <div className="px-3 py-3 text-xs text-slate-500 text-center leading-relaxed">
+                                        등록된 거래처가 없습니다.<br />
+                                        <span className="text-blue-600 font-medium">새 상호명을 입력하고 작업을 저장하면 거래처가 자동 등록됩니다.</span>
                                     </div>
                                 ) : (
                                     <div className="max-h-48 overflow-y-auto custom-scrollbar">
@@ -1744,7 +1746,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
             </div>
           </div>
           <div className="p-2.5 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 flex-none">
-            {!isNew && (
+            {!isNew && canDeletePermanently && (
               <div className="mr-auto flex items-center gap-2 transition-all">
                 {/* 1. 완전 삭제 */}
                 <button 

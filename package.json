@@ -1,6 +1,6 @@
 {
   "name": "ezprintwork",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "author": "EzPrintWork",
   "description": "인쇄소 통합 관리 시스템",
   "main": "electron/main.js",
@@ -13,6 +13,8 @@
     "package": "electron-builder",
     "deploy": "node scripts/deploy.js",
     "deploy:app": "node scripts/deploy-app.js",
+    "deploy:all": "node scripts/deploy-app.js",
+    "test:smoke": "node scripts/verify_firestore_rules.mjs && npx -y tsx scripts/smoke_admin_access_ts.ts",
     "publish:release": "node scripts/publish-github-release.js"
   },
   "dependencies": {

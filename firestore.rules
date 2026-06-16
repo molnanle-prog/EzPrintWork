@@ -104,10 +104,14 @@ service cloud.firestore {
     }
 
     function isStaffDuplicateCheckQuery() {
-      return request.query.filters.size() == 2
-        && isReasonableListQuery()
-        && hasFilter('tenantId')
-        && hasFilter('loginId');
+      return isReasonableListQuery()
+        && request.query.filters.size() == 2
+        && request.query.filters[0].op == '=='
+        && request.query.filters[1].op == '=='
+        && (
+          (request.query.filters[0].field.path == ['tenantId'] && request.query.filters[1].field.path == ['loginId'])
+          || (request.query.filters[0].field.path == ['loginId'] && request.query.filters[1].field.path == ['tenantId'])
+        );
     }
 
     function isStaffSelfSignupUser(data) {
@@ -152,7 +156,7 @@ service cloud.firestore {
 
     // 2. User Profiles
     match /users/{userId} {
-      // list·get 모두 허용해야 중복체크 쿼리 결과 문서 읽기 가능
+      // list·get — 중복체크 쿼리는 비로그인 list + 결과 문서 get 모두 필요
       allow read: if isSuperAdmin()
         || (isSignedIn() && request.auth.uid == userId)
         || isStaffDuplicateCheckQuery();
@@ -252,10 +256,12 @@ service cloud.firestore {
           && data.keys().hasAll(['userId', 'userEmail', 'userName', 'status']);
       }
 
-      // CLIENTS
+      // CLIENTS — 직원: 등록·수정(작업 연동), 관리자: 삭제·합치기
       match /clients/{clientId} {
         allow read: if isMember(tenantId);
-        allow write: if isMember(tenantId) && isValidId(clientId) && isValidClient(incoming());
+        allow create: if isMember(tenantId) && isValidId(clientId) && isValidClient(incoming());
+        allow update: if isMember(tenantId) && isValidId(clientId) && isValidClient(incoming());
+        allow delete: if isAdmin(tenantId);
       }
 
       function isValidClient(data) {
@@ -263,10 +269,12 @@ service cloud.firestore {
                data.keys().hasAll(['name']);
       }
 
-      // QUOTES
+      // QUOTES — 직원: 작성·수정, 관리자: 삭제
       match /quotes/{quoteId} {
         allow read: if isMember(tenantId);
-        allow write: if isMember(tenantId) && isValidId(quoteId) && isValidQuote(incoming());
+        allow create: if isMember(tenantId) && isValidId(quoteId) && isValidQuote(incoming());
+        allow update: if isMember(tenantId) && isValidId(quoteId) && isValidQuote(incoming());
+        allow delete: if isAdmin(tenantId);
       }
 
       function isValidQuote(data) {
@@ -275,10 +283,11 @@ service cloud.firestore {
                data.keys().hasAll(['clientName', 'totalAmount']);
       }
 
-      // INSTRUCTIONS
+      // INSTRUCTIONS — 관리자만 등록·수정·삭제
       match /instructions/{instId} {
         allow read: if isMember(tenantId);
         allow create: if isAdmin(tenantId) && isValidId(instId) && isValidInstruction(incoming());
+        allow update: if isAdmin(tenantId) && isValidId(instId) && isValidInstruction(incoming());
         allow delete: if isAdmin(tenantId);
       }
 

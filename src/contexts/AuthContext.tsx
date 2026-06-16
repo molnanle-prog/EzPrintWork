@@ -1,11 +1,11 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { auth, db } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
-import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
-import { isTenantOwnerUser } from '../utils/adminAccess';
+import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, CompanyPermissionContext } from '../utils/adminAccess';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -36,6 +36,13 @@ interface AuthContextType {
   canAccessAdminSettings: boolean;
   /** 메인 관리자 전용 — 요금제·백업 */
   canAccessRootSettings: boolean;
+  /** 사내·메인 관리자 — 회사 운영(직원·삭제·마스터 데이터) */
+  canManageCompany: boolean;
+  /** 영구 삭제·거래처 합치기 등 */
+  canDeletePermanently: boolean;
+  canManageStaff: boolean;
+  canManageClientMaster: boolean;
+  canManageInstructions: boolean;
 }
 
 // [결제 만료 및 미결제 실시간 자동 판별 엔진]
@@ -77,6 +84,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canAccessAdminSettings = isTenantOwner || currentUser?.role === 'admin';
   const canAccessRootSettings = isTenantOwner || currentUser?.email === 'molnanle@gmail.com';
 
+  const permissionCtx: CompanyPermissionContext = {
+    userUid: currentUser?.uid,
+    userRole: currentUser?.role,
+    tenantOwnerId,
+    userEmail: currentUser?.email,
+  };
+  const canManageCompanyFlag = canManageCompany(permissionCtx);
+  const canDeletePermanentlyFlag = canDeletePermanently(permissionCtx);
+  const canManageStaffFlag = canManageStaff(permissionCtx);
+  const canManageClientMasterFlag = canManageClientMaster(permissionCtx);
+  const canManageInstructionsFlag = canManageInstructions(permissionCtx);
+
+  const assertStaffNotDeleted = async (tenantId: string, user: User) => {
+    const staffByUid = await getDoc(doc(db, `tenants/${tenantId}/staff`, user.uid));
+    if (staffByUid.exists()) {
+      const s = staffByUid.data();
+      if (s.isDeleted === true || s.active === false) {
+        throw new Error('DELETED_STAFF');
+      }
+      return;
+    }
+    if (user.email) {
+      const q = query(
+        collection(db, `tenants/${tenantId}/staff`),
+        where('email', '==', user.email.trim().toLowerCase()),
+        limit(1)
+      );
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const s = snap.docs[0].data();
+        if (s.isDeleted === true || s.active === false) {
+          throw new Error('DELETED_STAFF');
+        }
+      }
+    }
+  };
+
   const fetchUserProfile = async (user: User) => {
     try {
       const userDoc = await getDoc(doc(db, 'users', user.uid));
@@ -97,6 +141,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       if (userDoc.exists()) {
         const userData = userDoc.data() as AppUser;
+        if ((userData as any).active === false) {
+          throw new Error('DELETED_STAFF');
+        }
         
         const updatedUser = {
           ...userData,
@@ -111,6 +158,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser(updatedUser);
         
         if (updatedUser.tenantId) {
+          await assertStaffNotDeleted(updatedUser.tenantId, user);
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
               applyTenantSnapshot(tenantDoc.data());
@@ -282,6 +330,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
     } catch (error) {
+      if (error instanceof Error && error.message === 'DELETED_STAFF') {
+        console.warn('[Auth] Deleted staff account blocked from login');
+        await signOut(auth);
+        setCurrentUser(null);
+        return;
+      }
       console.error("Error fetching user profile:", error);
       // 프로필 조회 실패 시에도 흰 화면 방지 — Firebase 기본 정보로 폴백
       setCurrentUser({
@@ -479,6 +533,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       isSiteAdmin,
       canAccessAdminSettings,
       canAccessRootSettings,
+      canManageCompany: canManageCompanyFlag,
+      canDeletePermanently: canDeletePermanentlyFlag,
+      canManageStaff: canManageStaffFlag,
+      canManageClientMaster: canManageClientMasterFlag,
+      canManageInstructions: canManageInstructionsFlag,
     }}>
       {children}
     </AuthContext.Provider>

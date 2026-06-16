@@ -175,7 +175,11 @@ export const BackupManager: React.FC = () => {
     const handleDeleteBackup = async (backupName: string) => {
         if (!window.confirm(`"${backupName}" 백업을 삭제하시겠습니까?`)) return;
         try {
-            await db.deleteCloudBackup(backupName);
+            const ok = await db.deleteCloudBackup(backupName);
+            if (!ok) {
+                showStatus('백업 삭제에 실패했습니다. 권한 또는 네트워크를 확인해 주세요.', 'error');
+                return;
+            }
             showStatus('백업을 삭제했습니다.', 'success');
             await fetchBackups();
         } catch (e: unknown) {

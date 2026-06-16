@@ -105,17 +105,16 @@ async function run() {
     console.log(`   → 쿼리 허용됨 (결과 ${snap.size}건 — 권한 오류 없음)`);
   });
 
-  await test('5. users tenantId+loginId 중복 체크 쿼리 (직원 가입)', async () => {
+  await test('5. staff loginId 중복 체크 쿼리 (직원 가입 — v1.3.1+)', async () => {
     if (!sampleTenantId) {
       console.log('   → 스킵 (테넌트 없음)');
       return;
     }
     const snap = await getDocs(
       query(
-        collection(db, 'users'),
-        where('tenantId', '==', sampleTenantId),
-        where('loginId', '==', '__nonexistent_test__'),
-        limit(1)
+        collection(db, `tenants/${sampleTenantId}/staff`),
+        where('loginId', '==', '__nonexistent_signup_test__'),
+        limit(10)
       )
     );
     console.log(`   → 쿼리 허용됨 (결과 ${snap.size}건)`);

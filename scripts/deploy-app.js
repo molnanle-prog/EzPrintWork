@@ -62,6 +62,154 @@ function formatBytes(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function removeHostingBinaryDownloads(downloadsDir, log, colors) {
+  for (const name of fs.readdirSync(downloadsDir)) {
+    if (/\.(exe|zip)$/i.test(name)) {
+      fs.unlinkSync(path.join(downloadsDir, name));
+      log(`* Hosting 제한: downloads/${name} 제거 (GitHub Release 사용)`, colors.yellow);
+    }
+  }
+}
+
+function writeDownloadManifest({
+  appVersion,
+  setupExeName,
+  setupBytes,
+  githubDownloadUrl,
+  githubVersionUrl,
+  downloadsDir,
+  log,
+  colors,
+}) {
+  removeHostingBinaryDownloads(downloadsDir, log, colors);
+  fs.writeFileSync(
+    path.join(downloadsDir, 'download-manifest.json'),
+    JSON.stringify({
+      version: appVersion,
+      setupFile: setupExeName,
+      latestSetupFile: setupExeName,
+      setupExeName,
+      setupBytes,
+      exeBytes: setupBytes,
+      downloadUrl: githubDownloadUrl,
+      latestDownloadUrl: githubDownloadUrl,
+      githubReleaseUrl: `https://github.com/molnanle-prog/EzPrintWork/releases/tag/v${appVersion}`,
+      githubReleaseLatest: 'https://github.com/molnanle-prog/EzPrintWork/releases/latest',
+      githubVersionDownloadUrl: githubVersionUrl,
+      downloadType: 'exe',
+      host: 'github-releases',
+      updatedAt: new Date().toISOString(),
+      installHint: '다운로드 후 EzPrintWork-Setup.exe 설치 프로그램을 실행하세요.',
+    }, null, 2)
+  );
+  log(`✓ GitHub exe 다운로드: ${githubDownloadUrl}`, colors.green);
+}
+
+function fetchGithubReleaseAsset(tag, assetName) {
+  const https = require('https');
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      `https://api.github.com/repos/molnanle-prog/EzPrintWork/releases/tags/${tag}`,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          'User-Agent': 'EzPrintWork-Deploy',
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (chunk) => { data += chunk; });
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            reject(new Error(`GitHub Release ${tag} 조회 실패 (${res.statusCode})`));
+            return;
+          }
+          try {
+            const release = JSON.parse(data);
+            const asset = (release.assets || []).find((a) => a.name === assetName);
+            if (!asset) {
+              reject(new Error(`GitHub Release ${tag}에 ${assetName} 없음`));
+              return;
+            }
+            resolve({
+              size: asset.size,
+              releaseDate: release.published_at,
+            });
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+  });
+}
+
+async function writeDownloadManifestFromGithub({
+  appVersion,
+  setupExeName,
+  githubDownloadUrl,
+  githubVersionUrl,
+  downloadsDir,
+  log,
+  colors,
+}) {
+  const tag = `v${appVersion}`;
+  const { size, releaseDate } = await fetchGithubReleaseAsset(tag, setupExeName);
+  writeDownloadManifest({
+    appVersion,
+    setupExeName,
+    setupBytes: size,
+    githubDownloadUrl,
+    githubVersionUrl,
+    downloadsDir,
+    log,
+    colors,
+  });
+
+  const ymlPath = path.join(downloadsDir, 'latest.yml');
+  const ymlDownloadUrl =
+    `https://github.com/molnanle-prog/EzPrintWork/releases/download/${tag}/latest.yml`;
+  try {
+    const ymlAsset = await new Promise((resolve, reject) => {
+      const https = require('https');
+      const fetchUrl = (url, redirects = 0) => {
+        https.get(
+          url,
+          { headers: { 'User-Agent': 'EzPrintWork-Deploy' } },
+          (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              if (redirects > 5) {
+                reject(new Error('latest.yml redirect 과다'));
+                return;
+              }
+              fetchUrl(res.headers.location, redirects + 1);
+              return;
+            }
+            let data = '';
+            res.on('data', (c) => { data += c; });
+            res.on('end', () => {
+              if (res.statusCode !== 200) reject(new Error(`latest.yml 다운로드 실패 (${res.statusCode})`));
+              else resolve(data);
+            });
+          }
+        ).on('error', reject);
+      };
+      fetchUrl(ymlDownloadUrl);
+    });
+    let yml = ymlAsset;
+    yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
+    yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
+    fs.writeFileSync(ymlPath, yml);
+    log('✓ latest.yml (GitHub Release) → ez-hub.kr/downloads/', colors.green);
+  } catch (err) {
+    log(`* latest.yml GitHub 복사 실패 — manifest만 적용: ${err.message}`, colors.yellow);
+    const fallbackYml = `version: ${appVersion}\nfiles:\n  - url: ${githubDownloadUrl}\n    size: ${size}\npath: ${setupExeName}\nreleaseDate: '${releaseDate || new Date().toISOString()}'\n`;
+    fs.writeFileSync(ymlPath, fallbackYml);
+    log('✓ latest.yml (fallback) 작성', colors.yellow);
+  }
+}
+
 async function main() {
   const { resolveHomepageDir } = require('./resolve-homepage-dir');
   const currentDir = path.resolve(__dirname, '..');
@@ -78,8 +226,14 @@ async function main() {
   const ghToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 
   log('===================================================', colors.bold + colors.green);
-  log('   🚀 EzPrintWork 앱 링킹 & 원클릭 통합 배포 가동', colors.bold + colors.green);
+  log('   🚀 EzPrintWork 통합 배포 (웹 + 홈페이지 + 업데이트)', colors.bold + colors.green);
   log('===================================================', colors.bold + colors.green);
+  log('   배포 범위: 웹앱 + 홈페이지 + latest.yml + manifest', colors.cyan);
+  if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
+    log('   (DEPLOY_SKIP_ELECTRON=1 → PC exe 빌드 생략, GitHub Release 메타 사용)', colors.yellow);
+  } else if (!ghToken) {
+    log('   (GH_TOKEN 없음 → exe 빌드 후 GitHub 업로드는 수동 필요)', colors.yellow);
+  }
   log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
   if (deployExeDirect) {
     log('* exe 다운로드: GitHub Releases (Firebase Spark exe 호스팅 불가)', colors.green);
@@ -141,14 +295,15 @@ async function main() {
       .sort((a, b) => b.mtime - a.mtime);
     const setupFile = setupCandidates[0]?.name;
 
+    const setupExeName = 'EzPrintWork-Setup.exe';
+    const githubDownloadUrl =
+      `https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/${setupExeName}`;
+    const githubVersionUrl =
+      `https://github.com/molnanle-prog/EzPrintWork/releases/download/v${appVersion}/${setupExeName}`;
+
     if (setupFile) {
       const sourcePath = path.join(releaseDir, setupFile);
       const sourceStat = fs.statSync(sourcePath);
-      const setupExeName = 'EzPrintWork-Setup.exe';
-      const githubDownloadUrl =
-        `https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/${setupExeName}`;
-      const githubVersionUrl =
-        `https://github.com/molnanle-prog/EzPrintWork/releases/download/v${appVersion}/${setupExeName}`;
 
       log(`* 감지된 설치 파일: ${setupFile} (${formatBytes(sourceStat.size)})`, colors.cyan);
 
@@ -158,35 +313,16 @@ async function main() {
         );
       }
 
-      // Firebase Hosting(Spark)에 exe/zip 올리면 배포 실패 — 로컬 copies 제거
-      for (const name of fs.readdirSync(downloadsDir)) {
-        if (/\.(exe|zip)$/i.test(name)) {
-          fs.unlinkSync(path.join(downloadsDir, name));
-          log(`* Hosting 제한: downloads/${name} 제거 (GitHub Release 사용)`, colors.yellow);
-        }
-      }
-
-      fs.writeFileSync(
-        path.join(downloadsDir, 'download-manifest.json'),
-        JSON.stringify({
-          version: appVersion,
-          setupFile: setupExeName,
-          latestSetupFile: setupExeName,
-          setupExeName,
-          setupBytes: sourceStat.size,
-          exeBytes: sourceStat.size,
-          downloadUrl: githubDownloadUrl,
-          latestDownloadUrl: githubDownloadUrl,
-          githubReleaseUrl: `https://github.com/molnanle-prog/EzPrintWork/releases/tag/v${appVersion}`,
-          githubReleaseLatest: 'https://github.com/molnanle-prog/EzPrintWork/releases/latest',
-          githubVersionDownloadUrl: githubVersionUrl,
-          downloadType: 'exe',
-          host: 'github-releases',
-          updatedAt: new Date().toISOString(),
-          installHint: '다운로드 후 EzPrintWork-Setup.exe 설치 프로그램을 실행하세요.',
-        }, null, 2)
-      );
-      log(`✓ GitHub exe 다운로드: ${githubDownloadUrl}`, colors.green);
+      writeDownloadManifest({
+        appVersion,
+        setupExeName,
+        setupBytes: sourceStat.size,
+        githubDownloadUrl,
+        githubVersionUrl,
+        downloadsDir,
+        log,
+        colors,
+      });
 
       const latestYmlSource = path.join(releaseDir, 'latest.yml');
       if (fs.existsSync(latestYmlSource)) {
@@ -203,6 +339,17 @@ async function main() {
       } else {
         log('* GitHub Release 수동 업로드: set GH_TOKEN=... && node scripts/publish-github-release.js', colors.yellow);
       }
+    } else if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
+      log('* 로컬 exe 없음 — GitHub Release v' + appVersion + ' 메타데이터 사용', colors.yellow);
+      await writeDownloadManifestFromGithub({
+        appVersion,
+        setupExeName,
+        githubDownloadUrl,
+        githubVersionUrl,
+        downloadsDir,
+        log,
+        colors,
+      });
     } else {
       throw new Error(`${releaseDirName} 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.`);
     }
@@ -255,8 +402,11 @@ async function main() {
   runCommand('npx -y firebase-tools deploy --only hosting', homepageDir);
 
   log('\n===================================================', colors.bold + colors.green);
-  log('   🎉 [성공] 앱 다운로드 링킹 및 실시간 홈페이지 업로드 완료!', colors.bold + colors.green);
-  log('   도메인 주소로 접속해 변경사항을 즉시 확인해 보세요.', colors.bold + colors.green);
+  log('   🎉 [성공] 통합 배포 완료', colors.bold + colors.green);
+  log('   • 웹앱 /ezpw/ + version.json', colors.cyan);
+  log('   • 홈페이지 (ez-hub.kr) Firebase Hosting', colors.cyan);
+  log('   • /downloads/latest.yml + download-manifest.json', colors.cyan);
+  log('   확인: https://ez-hub.kr/ezpw/  |  Ctrl+Shift+R', colors.cyan);
   log('===================================================', colors.bold + colors.green);
 }
 

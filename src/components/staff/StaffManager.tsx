@@ -8,7 +8,7 @@ import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { UpgradeModal } from '../common/UpgradeModal';
 import { GAS_WEBHOOK_URL } from '../../constants';
-import { isStaffAdminRole, isTenantOwnerUser, resolveAppRoleFromStaff } from '../../utils/adminAccess';
+import { isStaffAdminRole, isTenantOwnerUser, resolveAppRoleFromStaff, isHiddenStaffId } from '../../utils/adminAccess';
 
 // 연락처 추출 유틸리티 함수
 const getStaffContact = (staff: Staff): string => {
@@ -33,7 +33,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { firebaseConfig, db as firestore } from '../../services/firebase';
 
 export const StaffManager: React.FC = () => {
-  const { tenantPlan, maxStaff, currentUser, tenantOwnerId } = useAuth();
+  const { tenantPlan, maxStaff, currentUser, tenantOwnerId, isTenantOwner } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -50,7 +50,7 @@ export const StaffManager: React.FC = () => {
 
   const loadStaff = () => {
      // Exclude deleted staff AND system admin
-     setStaffList(db.getStaff().filter(s => !s.isDeleted && s.id !== 'admin'));
+     setStaffList(db.getStaff().filter(s => !s.isDeleted && !isHiddenStaffId(s.id)));
      setJoinRequests(db.getJoinRequests());
   };
 
@@ -153,40 +153,56 @@ export const StaffManager: React.FC = () => {
     }
   };
 
+  const syncDeleteStaffWebhook = async (staff: Staff) => {
+    try {
+      const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+      const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+      await fetch(GAS_WEBHOOK_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({
+          action: 'delete_staff',
+          companyName,
+          loginId: pureId,
+          staffName: staff.name,
+        }),
+      });
+    } catch (err) {
+      console.error('Google Sheets Sync Error (delete_staff):', err);
+    }
+  };
+
   const handleDelete = async (id: string, name: string) => {
     const staff = staffList.find(s => s.id === id);
     if (!staff) return;
 
-    const isAdminRole = staff.role === 'admin' || staff.role === '대표자' || staff.role === '관리자';
+    if (isStaffMainOwner(staff, tenantOwnerId)) {
+      showAlert('회사 메인 관리자(대표) 계정은 삭제할 수 없습니다.');
+      return;
+    }
 
-    if (isAdminRole) {
-      // 관리자 계정 삭제 시 비밀번호 확인 모달 표시
+    const isAdminRole = isAdminStaff(staff);
+
+    if (isAdminRole && !isTenantOwner) {
+      // 사내 관리자가 다른 관리자 삭제 — 비밀번호 확인 (있을 때만)
       setDeletingAdminStaff(staff);
       setAdminPasswordInput('');
       setPasswordError('');
+    } else if (isAdminRole && isTenantOwner) {
+      if (await showConfirm(`관리자 '${name}' 직원을 삭제(비활성)하시겠습니까?\n\n과거 작업 내역의 담당자 기록은 유지됩니다.`)) {
+        try {
+          await db.deleteStaff(id);
+          await syncDeleteStaffWebhook(staff);
+        } catch (error) {
+          showAlert(getErrorMessage(error));
+        }
+      }
     } else {
       // 일반 사원 삭제 확인창
       if (await showConfirm(`'${name}' 직원을 정말 삭제하시겠습니까?\n\n삭제하더라도 과거 작업 내역의 담당자 기록은 유지됩니다.`)) {
         try {
             await db.deleteStaff(id);
-
-            // 구글 시트 직원 삭제 웹훅 전송
-            try {
-                const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-                const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
-                await fetch(GAS_WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({
-                        action: "delete_staff",
-                        companyName,
-                        loginId: pureId,
-                        staffName: staff.name
-                    })
-                });
-            } catch (err) {
-                console.error("Google Sheets Sync Error (delete_staff):", err);
-            }
+            await syncDeleteStaffWebhook(staff);
         } catch (error) {
             showAlert(getErrorMessage(error));
         }
@@ -199,37 +215,17 @@ export const StaffManager: React.FC = () => {
 
     const correctPassword = deletingAdminStaff.password || '';
     if (!correctPassword) {
-      setPasswordError('해당 관리자 계정의 비밀번호가 설정되어 있지 않습니다.');
-      return;
-    }
-
-    if (adminPasswordInput.trim().toLowerCase() !== correctPassword.trim().toLowerCase()) {
+      if (!await showConfirm(
+        `'${deletingAdminStaff.name}' 관리자 계정에 삭제 확인용 비밀번호가 없습니다.\n(구글 로그인 관리자일 수 있습니다)\n\n정말 삭제(비활성)하시겠습니까?`
+      )) return;
+    } else if (adminPasswordInput.trim().toLowerCase() !== correctPassword.trim().toLowerCase()) {
       setPasswordError('비밀번호가 일치하지 않습니다.');
       return;
     }
 
     try {
-      const id = deletingAdminStaff.id;
-      const name = deletingAdminStaff.name;
-      await db.deleteStaff(id);
-
-      // 구글 시트 직원 삭제 웹훅 전송
-      try {
-          const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-          const pureId = deletingAdminStaff.loginId?.includes('@') ? deletingAdminStaff.loginId.split('@')[0] : (deletingAdminStaff.loginId || '');
-          await fetch(GAS_WEBHOOK_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-              body: JSON.stringify({
-                  action: "delete_staff",
-                  companyName,
-                  loginId: pureId,
-                  staffName: name
-              })
-          });
-      } catch (err) {
-          console.error("Google Sheets Sync Error (delete_staff):", err);
-      }
+      await db.deleteStaff(deletingAdminStaff.id);
+      await syncDeleteStaffWebhook(deletingAdminStaff);
 
       setDeletingAdminStaff(null);
       setAdminPasswordInput('');

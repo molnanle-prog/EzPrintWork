@@ -540,7 +540,7 @@ export const LoginPage: React.FC = () => {
         setIsStaffSigningUp(true);
 
         try {
-            const { collection, query, where, getDocs, doc, setDoc } = await import('firebase/firestore');
+            const { collection, query, where, getDocs, doc, setDoc, limit } = await import('firebase/firestore');
             const { db } = await import('../services/firebase');
 
             // 1. Query Firestore for the tenant matching companyName & joinCode
@@ -575,16 +575,20 @@ export const LoginPage: React.FC = () => {
                 return;
             }
 
-            // 2. Check if loginId is already taken inside global users for this tenant
+            // 2. 같은 회사 내 loginId 중복 확인 (staff 컬렉션 — 가입 전 조회 허용)
             const normalizedLoginId = loginId.trim().toLowerCase();
             const normalizedPassword = password.trim().toLowerCase();
-            const userCheckQuery = query(
-                collection(db, 'users'),
-                where('tenantId', '==', tenantId),
-                where('loginId', '==', normalizedLoginId)
+            const staffCheckQuery = query(
+                collection(db, `tenants/${tenantId}/staff`),
+                where('loginId', '==', normalizedLoginId),
+                limit(10)
             );
-            const userCheckSnapshot = await getDocs(userCheckQuery);
-            if (!userCheckSnapshot.empty) {
+            const staffCheckSnapshot = await getDocs(staffCheckQuery);
+            const duplicateStaff = staffCheckSnapshot.docs.some(d => {
+                const s = d.data();
+                return s.isDeleted !== true && s.active !== false;
+            });
+            if (duplicateStaff) {
                 toast.error('이 아이디는 해당 회사에 이미 등록되어 사용 중입니다.');
                 setIsStaffSigningUp(false);
                 return;
