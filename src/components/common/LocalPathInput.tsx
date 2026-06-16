@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { FolderOpen, Search, Copy, Check } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
+import { triggerDesktopSetupDownload } from '../../utils/desktopDownload';
 
 interface LocalPathInputProps {
   value: string;
@@ -10,15 +11,10 @@ interface LocalPathInputProps {
 }
 
 const promptDesktopAppDownload = () => {
-  if (!confirm("⚠️ 이 기능은 EzPrintWork 데스크톱 앱이 설치·실행 중이어야 사용할 수 있습니다.\n\nPC 전용 앱(EzPrintWork-Setup.zip)을 다운로드하시겠습니까?")) {
+  if (!confirm("⚠️ 이 기능은 EzPrintWork 데스크톱 앱이 설치·실행 중이어야 사용할 수 있습니다.\n\nPC 전용 설치 프로그램(EzPrintWork-Setup.exe)을 다운로드하시겠습니까?")) {
     return;
   }
-  const link = document.createElement('a');
-  link.href = '/downloads/EzPrintWork-Setup.zip';
-  link.setAttribute('download', 'EzPrintWork-Setup.zip');
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
+  triggerDesktopSetupDownload();
 };
 
 export const LocalPathInput: React.FC<LocalPathInputProps> = ({ 

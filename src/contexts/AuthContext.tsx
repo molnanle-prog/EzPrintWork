@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, g
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
+import { isTenantOwnerUser } from '../utils/adminAccess';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -25,6 +26,16 @@ interface AuthContextType {
   tenantPaymentStatus: string;
   updatePlan: (plan: 'free' | 'pro') => void;
   loginCustomSession: (user: AppUser, plan: 'free' | 'pro', planCode?: string, paymentStatus?: string) => void;
+  /** tenants.ownerId — 구글 로그인 메인 관리자 UID */
+  tenantOwnerId: string | null;
+  /** 구글 가입 대표(메인) 관리자 */
+  isTenantOwner: boolean;
+  /** 사내 관리자 (staff admin, 메인 아님) */
+  isSiteAdmin: boolean;
+  /** 사내·메인 관리자 공통 — 대부분 설정 메뉴 */
+  canAccessAdminSettings: boolean;
+  /** 메인 관리자 전용 — 요금제·백업 */
+  canAccessRootSettings: boolean;
 }
 
 // [결제 만료 및 미결제 실시간 자동 판별 엔진]
@@ -49,6 +60,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [tenantPlanCode, setTenantPlanCode] = useState<string>('free');
   const [maxStaff, setMaxStaff] = useState<number>(1);
   const [tenantPaymentStatus, setTenantPaymentStatus] = useState<string>('UNPAID');
+  const [tenantOwnerId, setTenantOwnerId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const applyTenantSnapshot = (tenantData: any) => {
@@ -57,7 +69,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTenantPlanCode(code);
     setTenantPaymentStatus(String(tenantData?.paymentStatus || 'UNPAID').toUpperCase());
     setMaxStaff(getMaxStaffForPlan(code, tenantData?.paymentStatus));
+    setTenantOwnerId(tenantData?.ownerId || null);
   };
+
+  const isTenantOwner = isTenantOwnerUser(currentUser?.uid, tenantOwnerId);
+  const isSiteAdmin = currentUser?.role === 'admin' && !isTenantOwner;
+  const canAccessAdminSettings = isTenantOwner || currentUser?.role === 'admin';
+  const canAccessRootSettings = isTenantOwner || currentUser?.email === 'molnanle@gmail.com';
 
   const fetchUserProfile = async (user: User) => {
     try {
@@ -455,7 +473,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       logout, 
       refreshUser,
       isAuthenticated: !!firebaseUser || !!currentUser,
-      loginCustomSession
+      loginCustomSession,
+      tenantOwnerId,
+      isTenantOwner,
+      isSiteAdmin,
+      canAccessAdminSettings,
+      canAccessRootSettings,
     }}>
       {children}
     </AuthContext.Provider>

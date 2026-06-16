@@ -6,7 +6,6 @@ import { DialogProvider } from './contexts/DialogContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import './index.css';
 import { db } from './services/dataService';
-import { checkAndReloadIfStale, startAutoUpdatePolling } from './utils/autoUpdate';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -15,9 +14,6 @@ if (!rootElement) {
 
 const root = ReactDOM.createRoot(rootElement);
 console.log('EzPrintWork index.tsx loaded');
-
-void checkAndReloadIfStale();
-const stopAutoUpdatePolling = startAutoUpdatePolling();
 
 db.init().finally(() => {
   root.render(
@@ -32,7 +28,3 @@ db.init().finally(() => {
     </React.StrictMode>
   );
 });
-
-if (import.meta.hot) {
-  import.meta.hot.dispose(() => stopAutoUpdatePolling());
-}

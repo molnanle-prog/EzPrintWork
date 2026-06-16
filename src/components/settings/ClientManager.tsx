@@ -1,14 +1,28 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone } from 'lucide-react';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
+import {
+  getPreferredSmsNumber,
+  inferSmsReceiveMode,
+  resolveClientSmsNumber,
+  resolveSmsNumberForMode,
+  type SmsReceiveMode,
+} from '../../utils/clientSms';
+import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
 
 export const ClientManager: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
+  const [mergePickIds, setMergePickIds] = useState<string[]>([]);
+  const [mergePrimaryId, setMergePrimaryId] = useState<string | null>(null);
+  const [mergeSearchQuery, setMergeSearchQuery] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
   const { showConfirm, showAlert } = useDialog();
   
   // OCR State
@@ -17,6 +31,7 @@ export const ClientManager: React.FC = () => {
 
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [smsReceiveMode, setSmsReceiveMode] = useState<SmsReceiveMode>('mobile');
   const [formData, setFormData] = useState<Partial<Client>>({
       name: '', 
       businessRegistrationNumber: '',
@@ -40,21 +55,144 @@ export const ClientManager: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  const filteredClients = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return clients;
+
+    return clients.filter((client) => {
+      if (client.name.toLowerCase().includes(q)) return true;
+      if (client.contactPerson?.toLowerCase().includes(q)) return true;
+      if (client.phone?.includes(q)) return true;
+      if (client.businessRegistrationNumber?.includes(q)) return true;
+      if (client.address?.toLowerCase().includes(q)) return true;
+      if (client.note?.toLowerCase().includes(q)) return true;
+      if (client.customSmsNumber?.includes(q)) return true;
+      if (client.contacts?.some((contact) =>
+        contact.name?.toLowerCase().includes(q) ||
+        contact.phone?.includes(q) ||
+        contact.email?.toLowerCase().includes(q) ||
+        contact.department?.toLowerCase().includes(q)
+      )) return true;
+      return false;
+    });
+  }, [clients, searchQuery]);
+
+  const mergeFilteredClients = useMemo(() => {
+    const q = mergeSearchQuery.trim().toLowerCase();
+    if (!q) return clients;
+    return clients.filter((client) => {
+      if (client.name.toLowerCase().includes(q)) return true;
+      if (client.contactPerson?.toLowerCase().includes(q)) return true;
+      if (client.phone?.includes(q)) return true;
+      if (client.businessRegistrationNumber?.includes(q)) return true;
+      return false;
+    });
+  }, [clients, mergeSearchQuery]);
+
+  const mergeSelectedClients = useMemo(() => {
+    return mergePickIds
+      .map((id) => clients.find((c) => c.id === id))
+      .filter((c): c is Client => !!c);
+  }, [clients, mergePickIds]);
+
+  const mergePreview = useMemo(() => {
+    if (mergeSelectedClients.length !== 2 || !mergePrimaryId) return null;
+    const primary = mergeSelectedClients.find((c) => c.id === mergePrimaryId);
+    const secondary = mergeSelectedClients.find((c) => c.id !== mergePrimaryId);
+    if (!primary || !secondary) return null;
+    return getClientMergePreview(primary, secondary);
+  }, [mergeSelectedClients, mergePrimaryId]);
+
+  const openMergeModal = () => {
+    setMergePickIds([]);
+    setMergePrimaryId(null);
+    setMergeSearchQuery('');
+    setIsMergeModalOpen(true);
+  };
+
+  const toggleMergePick = (clientId: string) => {
+    setMergePickIds((prev) => {
+      if (prev.includes(clientId)) {
+        const next = prev.filter((id) => id !== clientId);
+        if (mergePrimaryId === clientId) {
+          setMergePrimaryId(next[0] || null);
+        }
+        return next;
+      }
+      if (prev.length >= 2) {
+        const next = [prev[1], clientId];
+        setMergePrimaryId((current) => (current && next.includes(current) ? current : next[0]));
+        return next;
+      }
+      const next = [...prev, clientId];
+      if (next.length === 1) setMergePrimaryId(clientId);
+      if (next.length === 2 && !mergePrimaryId) setMergePrimaryId(next[0]);
+      return next;
+    });
+  };
+
+  const handleMergeClients = async () => {
+    if (mergeSelectedClients.length !== 2 || !mergePrimaryId) {
+      await showAlert('합칠 거래처 2개와 유지할 거래처명을 선택해 주세요.');
+      return;
+    }
+
+    const primary = mergeSelectedClients.find((c) => c.id === mergePrimaryId);
+    const secondary = mergeSelectedClients.find((c) => c.id !== mergePrimaryId);
+    if (!primary || !secondary) return;
+
+    const preview = getClientMergePreview(primary, secondary);
+    const confirmed = await showConfirm(
+      `[거래처 합치기]\n\n` +
+      `유지: '${primary.name}'\n` +
+      `흡수: '${secondary.name}' (삭제됨)\n\n` +
+      `• 작업 ${preview.totalJobs}건 → '${primary.name}'으로 통합\n` +
+      `• 견적 ${preview.totalQuotes}건 → '${primary.name}'으로 통합\n` +
+      `• 담당자/연락처 정보 병합\n\n` +
+      `이 작업은 되돌릴 수 없습니다. 진행하시겠습니까?`
+    );
+    if (!confirmed) return;
+
+    setIsMerging(true);
+    try {
+      const result = await mergeClients(primary.id, secondary.id);
+      await showAlert(
+        `거래처 합치기가 완료되었습니다.\n\n` +
+        `• 유지 거래처: ${result.primaryName}\n` +
+        `• 작업 ${result.totalJobs}건 통합\n` +
+        `• 견적 ${result.totalQuotes}건 통합\n` +
+        `• 담당자 ${result.contactsMerged > 0 ? `${result.contactsMerged}명 추가 병합` : '정보 병합 완료'}`
+      );
+      setIsMergeModalOpen(false);
+      setMergePickIds([]);
+      setMergePrimaryId(null);
+      loadClients();
+    } catch (error) {
+      await showAlert(getErrorMessage(error));
+    } finally {
+      setIsMerging(false);
+    }
+  };
+
   // --- Data Handlers ---
 
   const handleEdit = (client: Client) => {
+      const contacts = client.contacts || [{ name: client.contactPerson, phone: client.phone }];
+      const mode = inferSmsReceiveMode({ ...client, contacts }, client.customSmsNumber);
+      setSmsReceiveMode(mode);
       setEditingId(client.id);
       setFormData({
           ...client,
-          contacts: client.contacts || [{ name: client.contactPerson, phone: client.phone }],
+          contacts,
           sendSmsOnComplete: client.sendSmsOnComplete !== false,
-          customSmsNumber: client.customSmsNumber || ''
+          customSmsNumber: resolveSmsNumberForMode({ ...client, contacts }, mode),
       });
       setIsModalOpen(true);
   };
 
   const handleAddNew = () => {
       setEditingId(null);
+      setSmsReceiveMode('mobile');
       setFormData({
           name: '',
           businessRegistrationNumber: '',
@@ -92,7 +230,9 @@ export const ClientManager: React.FC = () => {
         note: formData.note || '',
         contacts: formData.contacts || [],
         sendSmsOnComplete: formData.sendSmsOnComplete !== false,
-        customSmsNumber: formData.customSmsNumber || ''
+        customSmsNumber: formData.sendSmsOnComplete !== false
+            ? resolveSmsNumberForMode(formData, smsReceiveMode)
+            : '',
     };
 
     try {
@@ -140,7 +280,60 @@ export const ClientManager: React.FC = () => {
           finalValue = formatPhoneNumber(value);
       }
       updated[index] = { ...updated[index], [field]: finalValue };
-      setFormData({ ...formData, contacts: updated });
+      const nextForm = { ...formData, contacts: updated };
+      if (smsReceiveMode === 'mobile' && (field === 'phone' || field === 'department')) {
+          nextForm.customSmsNumber = getPreferredSmsNumber(nextForm);
+      } else if (smsReceiveMode === 'primary' && index === 0 && field === 'phone') {
+          nextForm.customSmsNumber = finalValue;
+      }
+      setFormData(nextForm);
+  };
+
+  const handleSmsReceiveModeChange = (mode: SmsReceiveMode) => {
+      setSmsReceiveMode(mode);
+      setFormData((prev) => ({
+          ...prev,
+          customSmsNumber: resolveSmsNumberForMode(prev, mode),
+      }));
+  };
+
+  const handleAddressSearch = () => {
+      const scriptId = 'daum-postcode-script';
+      const existingScript = document.getElementById(scriptId);
+
+      const openPostcode = () => {
+          new (window as any).daum.Postcode({
+              oncomplete: (data: { address: string; addressType: string; bname: string; buildingName: string }) => {
+                  let fullAddress = data.address;
+                  let extraAddress = '';
+
+                  if (data.addressType === 'R') {
+                      if (data.bname !== '') {
+                          extraAddress += data.bname;
+                      }
+                      if (data.buildingName !== '') {
+                          extraAddress += extraAddress !== '' ? `, ${data.buildingName}` : data.buildingName;
+                      }
+                      fullAddress += extraAddress !== '' ? ` (${extraAddress})` : '';
+                  }
+
+                  setFormData((prev) => ({ ...prev, address: fullAddress }));
+              },
+          }).open();
+      };
+
+      if (!existingScript) {
+          const script = document.createElement('script');
+          script.id = scriptId;
+          script.src = 'https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+          script.onload = openPostcode;
+          script.onerror = () => {
+              void showAlert('주소 검색 서비스를 불러오는 데 실패했습니다. 네트워크 연결을 확인해 주세요.');
+          };
+          document.body.appendChild(script);
+      } else {
+          openPostcode();
+      }
   };
 
   // --- OCR Handlers ---
@@ -220,6 +413,15 @@ export const ClientManager: React.FC = () => {
             <Building2 className="text-blue-600 dark:text-blue-400" />
             거래처 관리
           </h3>
+          <div className="flex flex-wrap gap-2">
+          <button 
+            onClick={openMergeModal}
+            disabled={clients.length < 2}
+            title="비슷한 이름으로 중복 등록된 거래처를 하나로 합칩니다"
+            className="bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 px-4 py-2 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-600 border border-slate-200 dark:border-slate-600 shadow-sm flex items-center gap-2 font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+             <GitMerge size={18} /> 거래처 합치기
+          </button>
           <button 
             onClick={handleAddNew}
             title="새로운 거래처를 등록합니다"
@@ -227,10 +429,53 @@ export const ClientManager: React.FC = () => {
           >
              <Plus size={18} /> 거래처 등록
           </button>
+          </div>
       </div>
 
+      <div className="mb-5 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="relative flex-1">
+              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                  type="search"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="상호명, 담당자, 연락처, 사업자번호 검색..."
+                  className="w-full pl-10 pr-10 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  autoComplete="off"
+              />
+              {searchQuery && (
+                  <button
+                      type="button"
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-600 rounded-lg transition-colors"
+                      title="검색어 지우기"
+                  >
+                      <X size={16} />
+                  </button>
+              )}
+          </div>
+          <div className="text-sm text-slate-500 dark:text-slate-400 font-medium shrink-0 px-1">
+              {searchQuery.trim()
+                  ? `검색 결과 ${filteredClients.length.toLocaleString()}건 / 전체 ${clients.length.toLocaleString()}건`
+                  : `전체 ${clients.length.toLocaleString()}건`}
+          </div>
+      </div>
+
+      {clients.length === 0 ? (
+          <div className="text-center py-16 text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-600 rounded-xl">
+              <Building2 size={40} className="mx-auto mb-3 opacity-40" />
+              <p className="font-bold">등록된 거래처가 없습니다.</p>
+              <p className="text-sm mt-1">우측 상단 「거래처 등록」으로 추가해 주세요.</p>
+          </div>
+      ) : filteredClients.length === 0 ? (
+          <div className="text-center py-16 text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-600 rounded-xl">
+              <Search size={40} className="mx-auto mb-3 opacity-40" />
+              <p className="font-bold">「{searchQuery}」 검색 결과가 없습니다.</p>
+              <p className="text-sm mt-1">다른 검색어를 입력하거나 검색어를 지워 전체 목록을 확인해 주세요.</p>
+          </div>
+      ) : (
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {clients.map(client => (
+          {filteredClients.map(client => (
               <div key={client.id} className="border border-slate-200 dark:border-slate-700 rounded-xl p-5 hover:shadow-md transition-all relative group bg-white dark:bg-slate-700">
                   <div className="flex justify-between items-start mb-3">
                       <div>
@@ -250,9 +495,9 @@ export const ClientManager: React.FC = () => {
                                       {client.businessRegistrationNumber}
                                   </span>
                               )}
-                              {client.sendSmsOnComplete !== false && client.customSmsNumber && (
-                                  <span className="text-[10px] bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-900/50 font-medium" title="알림 수신 전용 연락처">
-                                      수신: {client.customSmsNumber}
+                              {client.sendSmsOnComplete !== false && (
+                                  <span className="text-[10px] bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-900/50 font-medium" title="알림 수신 번호">
+                                      수신: {resolveClientSmsNumber(client) || '번호 없음'}
                                   </span>
                               )}
                           </div>
@@ -310,6 +555,7 @@ export const ClientManager: React.FC = () => {
               </div>
           ))}
       </div>
+      )}
 
       {/* --- Add/Edit Modal --- */}
       {isModalOpen && (
@@ -383,12 +629,22 @@ export const ClientManager: React.FC = () => {
                             </div>
                             <div className="md:col-span-2 space-y-1">
                                 <label className="text-xs font-bold text-slate-500 dark:text-slate-400">주소</label>
-                                <input 
-                                    value={formData.address || ''}
-                                    onChange={e => setFormData({...formData, address: e.target.value})}
-                                    className={inputClass}
-                                    placeholder="서울시 강남구..."
-                                />
+                                <div className="flex gap-2">
+                                    <input 
+                                        value={formData.address || ''}
+                                        onChange={e => setFormData({...formData, address: e.target.value})}
+                                        className={inputClass}
+                                        placeholder="도로명 주소 검색 또는 상세 주소 입력"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={handleAddressSearch}
+                                        className="px-4 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-all flex items-center gap-1.5 active:scale-95 shrink-0 shadow-sm"
+                                    >
+                                        <Search size={14} />
+                                        주소 검색
+                                    </button>
+                                </div>
                             </div>
                             <div className="md:col-span-2 space-y-1">
                                 <label className="text-xs font-bold text-slate-500 dark:text-slate-400">메모/특이사항</label>
@@ -431,27 +687,12 @@ export const ClientManager: React.FC = () => {
                                     <div className="space-y-1">
                                         <label className="text-[10px] font-bold text-slate-400">수신처 분류</label>
                                         <select 
-                                            value={
-                                                !formData.customSmsNumber 
-                                                    ? 'primary' 
-                                                    : formData.contacts?.some(c => c.phone === formData.customSmsNumber) 
-                                                        ? 'contact' 
-                                                        : 'custom'
-                                            }
-                                            onChange={(e) => {
-                                                const type = e.target.value;
-                                                if (type === 'primary') {
-                                                    setFormData(prev => ({ ...prev, customSmsNumber: '' }));
-                                                } else if (type === 'contact') {
-                                                    const firstWithPhone = formData.contacts?.find(c => c.phone) || { phone: '' };
-                                                    setFormData(prev => ({ ...prev, customSmsNumber: firstWithPhone.phone }));
-                                                } else {
-                                                    setFormData(prev => ({ ...prev, customSmsNumber: '010-' }));
-                                                }
-                                            }}
+                                            value={smsReceiveMode}
+                                            onChange={(e) => handleSmsReceiveModeChange(e.target.value as SmsReceiveMode)}
                                             className={smallInputClass}
                                         >
-                                            <option value="primary">기본 대표 번호 (첫 번째 담당자)</option>
+                                            <option value="mobile">휴대폰 우선 (권장)</option>
+                                            <option value="primary">첫 번째 담당자 번호</option>
                                             {formData.contacts && formData.contacts.length > 0 && (
                                                 <option value="contact">등록된 담당자 중 선택</option>
                                             )}
@@ -459,10 +700,17 @@ export const ClientManager: React.FC = () => {
                                         </select>
                                     </div>
 
+                                    {smsReceiveMode === 'mobile' && (
+                                        <div className="space-y-1">
+                                            <label className="text-[10px] font-bold text-slate-400">자동 선택된 휴대폰</label>
+                                            <div className={`${smallInputClass} bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300`}>
+                                                {getPreferredSmsNumber(formData) || '휴대폰 번호를 담당자 연락처에 입력해 주세요.'}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     {/* 담당자 중 선택하는 경우 */}
-                                    {(formData.sendSmsOnComplete as boolean | undefined) !== false && formData.contacts && formData.contacts.length > 0 && 
-                                     formData.customSmsNumber && 
-                                     formData.contacts.some(c => c.phone === formData.customSmsNumber) && (
+                                    {smsReceiveMode === 'contact' && formData.contacts && formData.contacts.length > 0 && (
                                         <div className="space-y-1">
                                             <label className="text-[10px] font-bold text-slate-400">수신할 담당자 선택</label>
                                             <select 
@@ -480,10 +728,7 @@ export const ClientManager: React.FC = () => {
                                     )}
 
                                     {/* 직접 입력하는 경우 */}
-                                    {(formData.sendSmsOnComplete as boolean | undefined) !== false && 
-                                     formData.customSmsNumber !== undefined && 
-                                     formData.customSmsNumber !== '' && 
-                                     (!formData.contacts || !formData.contacts.some(c => c.phone === formData.customSmsNumber)) && (
+                                    {smsReceiveMode === 'custom' && (
                                         <div className="space-y-1">
                                             <label className="text-[10px] font-bold text-slate-400">수신 번호 입력</label>
                                             <input 
@@ -588,6 +833,198 @@ export const ClientManager: React.FC = () => {
                         className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 shadow-md transition-colors flex items-center gap-2"
                     >
                         <Save size={18} /> 저장하기
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* --- Merge Clients Modal --- */}
+      {isMergeModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh] transition-colors">
+                <div className="p-5 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
+                    <div>
+                        <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                            <GitMerge className="text-amber-600 dark:text-amber-400" />
+                            거래처 합치기
+                        </h2>
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                            중복 등록된 거래처 2개를 선택하고, 유지할 상호명을 정한 뒤 작업·견적 내역을 함께 합칩니다.
+                        </p>
+                    </div>
+                    <button onClick={() => setIsMergeModalOpen(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors">
+                        <X size={24} className="text-slate-500 dark:text-slate-400" />
+                    </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+                    <div>
+                        <div className="flex items-center justify-between mb-3">
+                            <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200">1. 합칠 거래처 2개 선택</h4>
+                            <span className="text-xs font-bold text-slate-500 dark:text-slate-400">
+                                {mergePickIds.length}/2 선택
+                            </span>
+                        </div>
+
+                        {mergeSelectedClients.length > 0 && (
+                            <div className="flex flex-wrap gap-2 mb-3">
+                                {mergeSelectedClients.map((client) => (
+                                    <span
+                                        key={client.id}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800"
+                                    >
+                                        <CheckCircle2 size={14} />
+                                        {client.name}
+                                        <button
+                                            type="button"
+                                            onClick={() => toggleMergePick(client.id)}
+                                            className="ml-1 p-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40 rounded-full"
+                                            title="선택 해제"
+                                        >
+                                            <X size={12} />
+                                        </button>
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+
+                        <div className="relative mb-3">
+                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                            <input
+                                type="search"
+                                value={mergeSearchQuery}
+                                onChange={(e) => setMergeSearchQuery(e.target.value)}
+                                placeholder="합칠 거래처 검색..."
+                                className="w-full pl-9 pr-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:ring-2 focus:ring-amber-500 outline-none"
+                            />
+                        </div>
+
+                        <div className="max-h-52 overflow-y-auto custom-scrollbar border border-slate-200 dark:border-slate-700 rounded-xl divide-y divide-slate-100 dark:divide-slate-700">
+                            {mergeFilteredClients.length === 0 ? (
+                                <div className="p-6 text-center text-sm text-slate-400">검색 결과가 없습니다.</div>
+                            ) : (
+                                mergeFilteredClients.map((client) => {
+                                    const isSelected = mergePickIds.includes(client.id);
+                                    const jobCount = db.getJobsByClient(client.name).length;
+                                    return (
+                                        <button
+                                            key={client.id}
+                                            type="button"
+                                            onClick={() => toggleMergePick(client.id)}
+                                            className={`w-full text-left px-4 py-3 flex items-center justify-between gap-3 transition-colors ${
+                                                isSelected
+                                                    ? 'bg-amber-50 dark:bg-amber-950/20'
+                                                    : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                                            }`}
+                                        >
+                                            <div className="min-w-0">
+                                                <div className="font-bold text-slate-800 dark:text-slate-100 truncate">{client.name}</div>
+                                                <div className="text-xs text-slate-500 dark:text-slate-400 truncate">
+                                                    {client.contactPerson || '담당자 없음'} · {client.phone || '연락처 없음'}
+                                                </div>
+                                            </div>
+                                            <div className="text-right shrink-0">
+                                                <div className="text-[11px] font-bold text-slate-500 dark:text-slate-400">작업 {jobCount}건</div>
+                                                {isSelected && (
+                                                    <div className="text-[10px] font-bold text-amber-600 dark:text-amber-400 mt-0.5">선택됨</div>
+                                                )}
+                                            </div>
+                                        </button>
+                                    );
+                                })
+                            )}
+                        </div>
+                    </div>
+
+                    {mergeSelectedClients.length === 2 && (
+                        <div className="space-y-4 animate-in fade-in duration-200">
+                            <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200">2. 유지할 거래처명 선택</h4>
+                            <p className="text-xs text-slate-500 dark:text-slate-400">
+                                선택한 상호명이 최종 거래처명이 되며, 다른 거래처의 작업·견적·담당자 정보가 이쪽으로 합쳐집니다.
+                            </p>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                {mergeSelectedClients.map((client) => {
+                                    const isPrimary = mergePrimaryId === client.id;
+                                    const other = mergeSelectedClients.find((c) => c.id !== client.id);
+                                    const preview = other ? getClientMergePreview(
+                                        isPrimary ? client : other,
+                                        isPrimary ? other : client
+                                    ) : null;
+                                    const ownJobs = preview
+                                        ? (isPrimary ? preview.primaryJobs : preview.secondaryJobs)
+                                        : db.getJobsByClient(client.name).length;
+
+                                    return (
+                                        <label
+                                            key={client.id}
+                                            className={`relative flex flex-col p-4 rounded-xl border-2 cursor-pointer transition-all ${
+                                                isPrimary
+                                                    ? 'border-amber-500 bg-amber-50/50 dark:bg-amber-950/20 shadow-sm'
+                                                    : 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700/50 hover:border-slate-300 dark:hover:border-slate-500'
+                                            }`}
+                                        >
+                                            <input
+                                                type="radio"
+                                                name="mergePrimary"
+                                                checked={isPrimary}
+                                                onChange={() => setMergePrimaryId(client.id)}
+                                                className="sr-only"
+                                            />
+                                            <div className="flex items-start justify-between gap-2 mb-2">
+                                                <span className="font-bold text-slate-800 dark:text-slate-100 text-base leading-snug">{client.name}</span>
+                                                {isPrimary && (
+                                                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500 text-white shrink-0">유지</span>
+                                                )}
+                                            </div>
+                                            <div className="text-xs text-slate-500 dark:text-slate-400 space-y-1">
+                                                <div>작업 {ownJobs}건</div>
+                                                {client.businessRegistrationNumber && (
+                                                    <div className="font-mono">사업자 {client.businessRegistrationNumber}</div>
+                                                )}
+                                                <div className="truncate">{client.contactPerson || '-'} · {client.phone || '-'}</div>
+                                            </div>
+                                        </label>
+                                    );
+                                })}
+                            </div>
+
+                            {mergePreview && mergePrimaryId && (
+                                <div className="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50/60 dark:bg-blue-950/20 p-4">
+                                    <div className="text-sm font-bold text-blue-800 dark:text-blue-200 mb-2 flex items-center gap-2 flex-wrap">
+                                        <span>{mergePreview.secondaryName}</span>
+                                        <ArrowRight size={16} />
+                                        <span>{mergePreview.primaryName}</span>
+                                        <span className="text-xs font-normal text-blue-600 dark:text-blue-300">(최종 거래처명)</span>
+                                    </div>
+                                    <ul className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
+                                        <li>• 작업 {mergePreview.totalJobs}건 통합 ({mergePreview.primaryJobs}건 + {mergePreview.secondaryJobs}건)</li>
+                                        <li>• 견적 {mergePreview.totalQuotes}건 통합 ({mergePreview.primaryQuotes}건 + {mergePreview.secondaryQuotes}건)</li>
+                                        <li>• 담당자·연락처·주소 등 빈 정보는 서로 보완, 중복 연락처는 제거</li>
+                                        <li>• '{mergePreview.secondaryName}' 거래처는 삭제됩니다</li>
+                                    </ul>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+
+                <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-end gap-3 sticky bottom-0 z-10">
+                    <button
+                        onClick={() => setIsMergeModalOpen(false)}
+                        disabled={isMerging}
+                        className="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-bold bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-600 rounded-lg transition-colors disabled:opacity-50"
+                    >
+                        취소
+                    </button>
+                    <button
+                        onClick={handleMergeClients}
+                        disabled={isMerging || mergeSelectedClients.length !== 2 || !mergePrimaryId}
+                        className="px-6 py-2.5 bg-amber-600 text-white font-bold rounded-lg hover:bg-amber-700 shadow-md transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        {isMerging ? <Loader2 size={18} className="animate-spin" /> : <GitMerge size={18} />}
+                        {isMerging ? '합치는 중...' : '거래처 합치기 실행'}
                     </button>
                 </div>
             </div>

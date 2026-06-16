@@ -1,13 +1,14 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { JobStatusDefinition } from '../../types';
-import { ListChecks, Save, Trash2, Plus, Edit3, Eye, EyeOff } from 'lucide-react';
+import { ListChecks, Save, Trash2, Plus, Eye, EyeOff } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 
 export const StatusManager: React.FC = () => {
   const [statuses, setStatuses] = useState<JobStatusDefinition[]>([]);
   const [newStatusName, setNewStatusName] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
   const { showConfirm, showAlert } = useDialog();
 
   useEffect(() => {
@@ -18,7 +19,6 @@ export const StatusManager: React.FC = () => {
 
   const loadStatuses = () => {
     const raw = db.getStatusDefinitions();
-    // Default visibility to true for legacy data if missing
     setStatuses(raw.map(s => ({ ...s, isVisible: s.isVisible !== false })));
   };
 
@@ -40,14 +40,12 @@ export const StatusManager: React.FC = () => {
     setStatuses(updated);
   };
 
-  const handleAddStatus = () => {
+  const handleAddStatus = async () => {
     if (!newStatusName.trim()) return;
 
     const visibleCount = statuses.filter(s => s.isVisible !== false).length;
     if (visibleCount >= 7) {
         showAlert('칸반 보드는 가독성을 위해 최대 7개까지만 표시할 수 있습니다.\n기존 단계 중 하나를 숨긴 후 추가해 주세요.');
-        // We can still add it, but maybe hidden? Or just limit?
-        // User asked for "up to 7", implying total columns.
     }
 
     const key = newStatusName.trim().toUpperCase().replace(/\s+/g, '_');
@@ -61,28 +59,78 @@ export const StatusManager: React.FC = () => {
         label: newStatusName.trim(),
         isVisible: true
     };
-    db.saveStatusDefinitions([...statuses, newStatus]);
-    setNewStatusName('');
+    const updated = [...statuses, newStatus];
+
+    try {
+        await db.saveStatusDefinitions(updated);
+        setStatuses(updated);
+        setNewStatusName('');
+        await showAlert(`'${newStatus.label}' 단계가 추가되었습니다.`);
+    } catch (error) {
+        await showAlert('단계 추가 실패: ' + getErrorMessage(error));
+    }
   };
   
   const handleDeleteStatus = async (key: string) => {
     if (statuses.length <= 2) {
-        showAlert('작업 단계는 최소 2개 이상이어야 합니다.');
+        await showAlert('작업 단계는 최소 2개 이상이어야 합니다.');
         return;
     }
-    if (await showConfirm(`이 작업 단계를 삭제하시겠습니까?\n이 단계에 있던 작업들은 이전 단계로 이동해야 할 수 있습니다.`)) {
-        db.saveStatusDefinitions(statuses.filter(s => s.key !== key));
+
+    const target = statuses.find((s) => s.key === key);
+    if (!target) return;
+
+    const idx = statuses.findIndex((s) => s.key === key);
+    const fallback = statuses[idx > 0 ? idx - 1 : idx + 1];
+    if (!fallback) {
+        await showAlert('삭제할 수 없습니다. 단계가 부족합니다.');
+        return;
+    }
+
+    const jobsInStatus = db.getAllJobs().filter((j) => j.status === key).length;
+    const confirmed = await showConfirm(
+        `[칸반 단계 삭제]\n\n` +
+        `'${target.label}' 단계를 삭제하시겠습니까?\n\n` +
+        (jobsInStatus > 0
+            ? `• 이 단계의 작업 ${jobsInStatus}건 → '${fallback.label}' 단계로 이동\n`
+            : '') +
+        `• 삭제 후 되돌릴 수 없습니다.\n\n` +
+        `확인(삭제)을 누르면 즉시 저장됩니다.`
+    );
+    if (!confirmed) return;
+
+    const updated = statuses.filter((s) => s.key !== key);
+
+    try {
+        if (jobsInStatus > 0) {
+            await db.migrateJobsFromStatus(key, fallback.key);
+        }
+        await db.saveStatusDefinitions(updated);
+        setStatuses(updated);
+        await showAlert(
+            `'${target.label}' 단계가 삭제되었습니다.` +
+            (jobsInStatus > 0 ? `\n작업 ${jobsInStatus}건을 '${fallback.label}' 단계로 옮겼습니다.` : '')
+        );
+    } catch (error) {
+        await showAlert('단계 삭제 실패: ' + getErrorMessage(error));
     }
   };
 
-  const handleSave = () => {
-    // Basic validation
+  const handleSave = async () => {
     if (statuses.some(s => !s.label.trim())) {
-        showAlert('단계 이름은 비워둘 수 없습니다.');
+        await showAlert('단계 이름은 비워둘 수 없습니다.');
         return;
     }
-    db.saveStatusDefinitions(statuses);
-    showAlert('작업 단계가 저장되었습니다.');
+
+    setIsSaving(true);
+    try {
+        await db.saveStatusDefinitions(statuses);
+        await showAlert('작업 단계가 저장되었습니다.');
+    } catch (error) {
+        await showAlert('저장 실패: ' + getErrorMessage(error));
+    } finally {
+        setIsSaving(false);
+    }
   };
 
   return (
@@ -92,7 +140,7 @@ export const StatusManager: React.FC = () => {
         작업 단계(칸반) 관리
       </h3>
       <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-        칸반 보드에 표시될 단계와 이름을 편집합니다. 최대 7개까지 표시 가능합니다.
+        칸반 보드에 표시될 단계와 이름을 편집합니다. 삭제 시 확인 후 즉시 저장됩니다. (최대 7개 표시)
       </p>
 
       <div className="space-y-4 mb-8">
@@ -114,16 +162,19 @@ export const StatusManager: React.FC = () => {
             </div>
             <div className="flex items-center gap-1">
                 <button
+                    type="button"
                     onClick={() => handleToggleVisibility(status.key)}
-                    className={`p-2 rounded-md transition-colors ${status.isVisible !== false ? 'text-blue-500 hover:bg-blue-50' : 'text-slate-400 hover:bg-slate-200'}`}
+                    className={`p-2 rounded-md transition-colors ${status.isVisible !== false ? 'text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/30' : 'text-slate-400 hover:bg-slate-200 dark:hover:bg-slate-700'}`}
                     title={status.isVisible !== false ? "칸반에서 숨기기" : "칸반에 표시하기"}
                 >
                     {status.isVisible !== false ? <Eye size={18} /> : <EyeOff size={18} />}
                 </button>
                 <button
+                type="button"
                 onClick={() => handleDeleteStatus(status.key)}
                 className="p-2 text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors"
                 title="단계 삭제"
+                disabled={statuses.length <= 2}
                 >
                 <Trash2 size={18} />
                 </button>
@@ -140,20 +191,23 @@ export const StatusManager: React.FC = () => {
             onKeyDown={(e) => e.key === 'Enter' && handleAddStatus()}
             className="flex-1 p-2 border border-slate-300 dark:border-slate-600 rounded text-sm min-w-[120px] bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100"
          />
-         <button onClick={handleAddStatus} className="bg-slate-700 dark:bg-slate-600 text-white p-2 rounded hover:bg-slate-800 dark:hover:bg-slate-500 flex items-center gap-1 px-4 text-sm font-bold">
+         <button type="button" onClick={handleAddStatus} className="bg-slate-700 dark:bg-slate-600 text-white p-2 rounded hover:bg-slate-800 dark:hover:bg-slate-500 flex items-center gap-1 px-4 text-sm font-bold">
              <Plus size={16} /> 추가
          </button>
       </div>
 
       <div className="pt-4 border-t border-slate-100 dark:border-slate-700 flex justify-end">
         <button
+          type="button"
           onClick={handleSave}
-          className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 flex items-center gap-2 shadow-md transition-colors"
+          disabled={isSaving}
+          className="bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 flex items-center gap-2 shadow-md transition-colors disabled:opacity-50"
         >
           <Save size={18} />
-          변경사항 저장
+          {isSaving ? '저장 중...' : '변경사항 저장'}
         </button>
       </div>
     </div>
   );
 };
+

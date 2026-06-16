@@ -1,13 +1,15 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
-import { db, calculateEstimate, formatPhoneNumber, getErrorMessage, formatJobNumber } from '../../services/dataService';
+import { db, calculateEstimate, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
 import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, ArrowRightCircle, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, FastForward } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
 import { useDialog } from '../../contexts/DialogContext';
 import { LocalPathInput } from './LocalPathInput';
 import { useAuth } from '../../contexts/AuthContext';
+import { syncClientFromJob } from '../../utils/clientSync';
+import { toast } from 'sonner';
 
 
 // --- Helper Components for History Timeline ---
@@ -199,6 +201,9 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
   const [clientSearchResults, setClientSearchResults] = useState<Client[]>([]);
   const [showClientSearch, setShowClientSearch] = useState(false);
+  const [clientSearchField, setClientSearchField] = useState<'company' | 'person'>('company');
+  const [clientSearchQuery, setClientSearchQuery] = useState('');
+  const [linkedClientId, setLinkedClientId] = useState<string | null>(null);
   
   const { showConfirm, showAlert } = useDialog();
   const { currentUser } = useAuth();
@@ -208,7 +213,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
   const currentSubJob = editedJob.subJobs![activeTabIdx];
   const currentSpecs = currentSubJob.specs;
-  const isBooklet = currentSubJob.type.includes('책자') || currentSubJob.type.includes('카탈로그') || currentSubJob.type.includes('카달로그');
+  const isBooklet = isBookletProductType(currentSubJob.type);
 
   useEffect(() => {
     setStatusDefinitions(db.getStatusDefinitions());
@@ -259,20 +264,31 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       setEditedJob({ ...editedJob, subJobs: newSubJobs });
   };
 
-  const getFilteredProcessingOptions = () => {
-      const matchedDef = productDefs.find(d => d.name === currentSubJob.type);
-      if (matchedDef && matchedDef.processings && matchedDef.processings.length > 0) {
-          const definedOptions = matchedDef.processings;
-          const checkedOptions = currentSpecs.processing || [];
-          const combined = [...definedOptions];
-          checkedOptions.forEach(opt => {
-              if (processingOptions.includes(opt) && !combined.includes(opt)) {
-                  combined.push(opt);
-              }
-          });
-          return combined;
-      }
-      return processingOptions;
+  const pruneProcessingSelection = (selected: string[] | undefined, allowed: string[]): string[] => {
+      const allowedSet = new Set(allowed);
+      return (selected || []).filter(
+          (opt) => allowedSet.has(opt) || !processingOptions.includes(opt)
+      );
+  };
+
+  const getFilteredProcessingOptions = (category: 'common' | 'cover' | 'inner' = 'common') => {
+      const sets = db.getProductProcessingSets(currentSubJob.type);
+      const allowed =
+          category === 'cover' ? sets.cover : category === 'inner' ? sets.inner : sets.common;
+      const selected =
+          category === 'cover'
+              ? currentSpecs.processingCover || []
+              : category === 'inner'
+                ? currentSpecs.processingInner || []
+                : currentSpecs.processing || [];
+
+      const combined = [...allowed];
+      selected.forEach((opt) => {
+          if (!combined.includes(opt)) {
+              combined.push(opt);
+          }
+      });
+      return combined.filter((opt) => allowed.includes(opt) || !processingOptions.includes(opt));
   };
 
   const getInnerPages = () => {
@@ -337,13 +353,17 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
   const handleTypeChange = (newType: string) => {
       const def = productDefs.find(d => d.name === newType);
-      const isNewTypeBooklet = newType.includes('책자') || newType.includes('카탈로그') || newType.includes('카달로그');
+      const isNewTypeBooklet = isBookletProductType(newType);
+      const sets = db.getProductProcessingSets(newType);
       
       const newSpecs: JobSpecs = {
           ...currentSubJob.specs,
           size: def?.sizes?.[0] || '',
           paperType: def?.paperTypes?.[0] || '',
           paperWeight: def?.paperWeights?.[0] || '',
+          processing: pruneProcessingSelection(currentSubJob.specs.processing, sets.common),
+          processingCover: pruneProcessingSelection(currentSubJob.specs.processingCover, sets.cover),
+          processingInner: pruneProcessingSelection(currentSubJob.specs.processingInner, sets.inner),
           // Reset Inner if switching AWAY from booklet, or Initialize if switching TO booklet
           paperTypeInner: isNewTypeBooklet ? (def?.paperTypes?.[0] || '') : undefined,
           paperWeightInner: isNewTypeBooklet ? (def?.paperWeights?.[0] || '') : undefined,
@@ -495,8 +515,14 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
         specs: mainItem.specs,
         description: summaryDesc,
         subJobs: subJobs,
-        assignedStaffId: (editedJob.assignedStaffIds && editedJob.assignedStaffIds.length > 0) ? editedJob.assignedStaffIds[0] : undefined
     };
+    if (editedJob.assignedStaffIds && editedJob.assignedStaffIds.length > 0) {
+        finalJob.assignedStaffId = editedJob.assignedStaffIds[0];
+        finalJob.assignedStaffIds = editedJob.assignedStaffIds;
+    } else {
+        delete finalJob.assignedStaffId;
+        finalJob.assignedStaffIds = [];
+    }
 
     // --- 완료 알림 문자 발송 및 이력 자동 기록 트리거 ---
     if (isStatusChangedToDelivery && finalJob.clientPhone) {
@@ -534,6 +560,17 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                 }
             }
         }
+    }
+
+    try {
+        const clientSyncResult = await syncClientFromJob(finalJob, linkedClientId);
+        if (clientSyncResult === 'created') {
+            toast.success('입력하신 거래처가 거래처 목록에 자동 등록되었습니다.');
+        } else if (clientSyncResult === 'updated') {
+            toast.success('입력하신 담당자/연락처가 거래처 정보에도 저장되었습니다.');
+        }
+    } catch (error) {
+        console.error('거래처 연락처 동기화 실패:', error);
     }
 
     onUpdate(finalJob);
@@ -747,20 +784,46 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const isColor = currentSpecs.printColor.includes('4도') || currentSpecs.printColor.includes('8도') || currentSpecs.printColor.includes('컬러');
   const isBW = currentSpecs.printColor.includes('1도') || currentSpecs.printColor.includes('2도') || currentSpecs.printColor.includes('흑백');
 
-  const handleClientSearch = (query: string, field: 'company' | 'person') => {
-      if (field === 'company') setEditedJob({...editedJob, clientName: query});
-      if (field === 'person') setEditedJob({...editedJob, contactPerson: query});
-      if (query.length > 1) {
-          setClientSearchResults(db.searchClients(query));
+  const runClientSearch = (query: string, field: 'company' | 'person') => {
+      const trimmed = query.trim();
+      setClientSearchField(field);
+      setClientSearchQuery(trimmed);
+
+      if (trimmed.length >= 1) {
+          setClientSearchResults(db.searchClients(trimmed));
           setShowClientSearch(true);
       } else {
+          setClientSearchResults([]);
           setShowClientSearch(false);
       }
   };
 
+  const handleClientSearch = (query: string, field: 'company' | 'person') => {
+      if (field === 'company') {
+          setEditedJob({ ...editedJob, clientName: query });
+          setLinkedClientId(null);
+      }
+      if (field === 'person') setEditedJob({ ...editedJob, contactPerson: query });
+      runClientSearch(query, field);
+  };
+
+  const handleClientInputFocus = (field: 'company' | 'person') => {
+      const query = field === 'company' ? editedJob.clientName : (editedJob.contactPerson || '');
+      runClientSearch(query, field);
+  };
+
   const selectClient = (client: Client) => {
-      setEditedJob({ ...editedJob, clientName: client.name, contactPerson: client.contactPerson, clientPhone: client.phone });
+      const primaryContact = client.contacts?.[0];
+      setLinkedClientId(client.id);
+      setEditedJob({
+          ...editedJob,
+          clientName: client.name,
+          contactPerson: primaryContact?.name || client.contactPerson || '',
+          clientPhone: primaryContact?.phone || client.phone || '',
+      });
       setShowClientSearch(false);
+      setClientSearchResults([]);
+      setClientSearchQuery('');
   };
 
   const getDisplayTime = (isoString: string) => {
@@ -880,7 +943,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                     <h3 className="text-lg font-bold text-slate-800 mb-4 flex items-center gap-2"><Layers size={20}/> 제작 사양 상세</h3>
                     <div className="space-y-4">
                         {(editedJob.subJobs || []).map((subJob, idx) => {
-                            const isSubBooklet = subJob.type?.includes('책자') || subJob.type?.includes('카탈로그') || subJob.type?.includes('카달로그') || false;
+                            const isSubBooklet = isBookletProductType(subJob.type || '');
                             return (
                                 <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
                                     <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
@@ -1058,10 +1121,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             <input 
                                 value={editedJob.clientName}
                                 onChange={(e) => handleClientSearch(e.target.value, 'company')}
-                                onFocus={() => { if(editedJob.clientName.length > 1) setShowClientSearch(true); }}
+                                onFocus={() => handleClientInputFocus('company')}
                                 onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
                                 className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-700 w-full placeholder-slate-300 font-bold py-1 transition-colors text-sm"
                                 placeholder="고객사(상호)"
+                                autoComplete="off"
                             />
                         </div>
                         <div className="flex items-center gap-1.5 w-36 sm:w-44 relative">
@@ -1070,10 +1134,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             <input 
                                 value={editedJob.contactPerson || ''}
                                 onChange={(e) => handleClientSearch(e.target.value, 'person')}
-                                onFocus={() => { if((editedJob.contactPerson || '').length > 1) setShowClientSearch(true); }}
+                                onFocus={() => handleClientInputFocus('person')}
                                 onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
                                 className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-600 w-full placeholder-slate-300 py-1 transition-colors text-sm"
                                 placeholder="담당자명"
+                                autoComplete="off"
                             />
                         </div>
                         <div className="flex items-center gap-1.5 w-40 sm:w-52">
@@ -1091,6 +1156,49 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                 </button>
                             )}
                         </div>
+
+                        {showClientSearch && clientSearchQuery.length >= 1 && (
+                            <div className="absolute left-0 right-0 top-full mt-1 z-[70] bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden">
+                                <div className="px-3 py-2 border-b border-slate-100 bg-slate-50 flex items-center justify-between gap-2">
+                                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide flex items-center gap-1">
+                                        <Search size={11} />
+                                        {clientSearchField === 'company' ? '거래처 검색' : '담당자 검색'}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400 font-medium">"{clientSearchQuery}"</span>
+                                </div>
+                                {clientSearchResults.length === 0 ? (
+                                    <div className="px-3 py-3 text-xs text-slate-500 text-center">
+                                        등록된 거래처가 없습니다. 새 상호명으로 입력할 수 있습니다.
+                                    </div>
+                                ) : (
+                                    <div className="max-h-48 overflow-y-auto custom-scrollbar">
+                                        {clientSearchResults.map((client) => {
+                                            const primaryContact = client.contacts?.[0];
+                                            const contactName = primaryContact?.name || client.contactPerson;
+                                            const contactPhone = primaryContact?.phone || client.phone;
+
+                                            return (
+                                                <button
+                                                    key={client.id}
+                                                    type="button"
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                    onClick={() => selectClient(client)}
+                                                    className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 transition-colors flex items-center justify-between gap-3"
+                                                >
+                                                    <div className="min-w-0">
+                                                        <p className="text-sm font-bold text-slate-800 truncate">{client.name}</p>
+                                                        <p className="text-[11px] text-slate-500 truncate">
+                                                            {[contactName, contactPhone].filter(Boolean).join(' · ') || '연락처 없음'}
+                                                        </p>
+                                                    </div>
+                                                    <span className="text-[10px] font-bold text-blue-600 shrink-0">선택</span>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        )}
                     </div>
                   </div>
                 </div>
@@ -1551,11 +1659,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션 (책자 분류)</label>
                             
                             {/* 1. 제본/공통 후가공 */}
-                            <div className="p-2.5 bg-slate-50/50 rounded-lg border border-slate-200">
-                                <span className="text-xs font-bold text-slate-500 mb-1.5 block">제본 및 공통 후가공</span>
+                            <div className="p-2.5 bg-slate-50/50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700">
+                                <span className="text-xs font-bold text-slate-500 dark:text-slate-300 mb-1.5 block">제본 및 공통 후가공</span>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                                    {getFilteredProcessingOptions().map((opt) => (
-                                        <label key={`common-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                    {getFilteredProcessingOptions('common').map((opt) => (
+                                        <label key={`common-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-600 text-blue-700 dark:text-blue-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
                                             <input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
                                             {opt}
                                         </label>
@@ -1564,11 +1672,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             </div>
 
                             {/* 2. 표지 후가공 */}
-                            <div className="p-2.5 bg-blue-50/20 rounded-lg border border-blue-100">
-                                <span className="text-xs font-bold text-blue-600 mb-1.5 block">표지 전용 후가공</span>
+                            <div className="p-2.5 bg-blue-50/20 dark:bg-blue-950/20 rounded-lg border border-blue-100 dark:border-blue-900">
+                                <span className="text-xs font-bold text-blue-600 dark:text-blue-300 mb-1.5 block">표지 전용 후가공</span>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                                    {getFilteredProcessingOptions().map((opt) => (
-                                        <label key={`cover-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingCover || []).includes(opt) ? 'bg-blue-100 border-blue-300 text-blue-800 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                    {getFilteredProcessingOptions('cover').map((opt) => (
+                                        <label key={`cover-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingCover || []).includes(opt) ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-300 dark:border-blue-500 text-blue-800 dark:text-blue-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
                                             <input type="checkbox" checked={(currentSpecs.processingCover || []).includes(opt)} onChange={() => toggleProcessingCover(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
                                             {opt}
                                         </label>
@@ -1577,11 +1685,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             </div>
 
                             {/* 3. 내지 후가공 */}
-                            <div className="p-2.5 bg-emerald-50/20 rounded-lg border border-emerald-100">
-                                <span className="text-xs font-bold text-emerald-600 mb-1.5 block">내지 전용 후가공</span>
+                            <div className="p-2.5 bg-emerald-50/20 dark:bg-emerald-950/20 rounded-lg border border-emerald-100 dark:border-emerald-900">
+                                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-300 mb-1.5 block">내지 전용 후가공</span>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                                    {getFilteredProcessingOptions().map((opt) => (
-                                        <label key={`inner-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingInner || []).includes(opt) ? 'bg-emerald-100 border-emerald-300 text-emerald-800 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                                    {getFilteredProcessingOptions('inner').map((opt) => (
+                                        <label key={`inner-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingInner || []).includes(opt) ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-600 text-emerald-800 dark:text-emerald-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
                                             <input type="checkbox" checked={(currentSpecs.processingInner || []).includes(opt)} onChange={() => toggleProcessingInner(opt)} className="rounded border-slate-300 text-emerald-600 focus:ring-blue-500 w-3.5 h-3.5" />
                                             {opt}
                                         </label>
@@ -1593,10 +1701,10 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         <div className="mb-2.5">
                             <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션</label>
                             <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
-                            {getFilteredProcessingOptions().map((opt) => (<label key={opt} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}><input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />{opt}</label>))}
+                            {getFilteredProcessingOptions().map((opt) => (<label key={opt} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-600 text-blue-700 dark:text-blue-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}><input type="checkbox" checked={currentSpecs.processing.includes(opt)} onChange={() => toggleProcessing(opt)} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500" />{opt}</label>))}
                             
                             {/* 기타 (직접입력) 체크박스 배지 수동 추가 */}
-                            <label className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${isCustomChecked ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>
+                            <label className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-sm ${isCustomChecked ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-600 text-blue-700 dark:text-blue-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
                                 <input 
                                     type="checkbox" 
                                     checked={isCustomChecked} 

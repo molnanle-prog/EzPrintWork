@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Crown, Users, ShieldCheck, Zap, CreditCard, CheckCircle2, Landmark, ShieldAlert, ChevronRight, AlertCircle, Check, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -9,14 +9,25 @@ import { PRO_MONTHLY_PRICE } from '../../utils/planLimits';
 interface UpgradeModalProps {
   isOpen: boolean;
   onClose: () => void;
+  /** PlanManager 등에서 PRO 인원을 미리 정한 경우 */
+  initialStaffCount?: number;
+  /** true면 플랜 선택 단계 생략 → 결제 단계부터 (추후 PG 연동 지점) */
+  skipPlanStep?: boolean;
+  onUpgradeComplete?: () => void;
 }
 
 type ModalStep = 'PLAN' | 'PAYMENT_METHOD' | 'CARD_REGISTRATION' | 'CONSENT' | 'FINAL_INFO' | 'PROCESSING';
 type PaymentMethod = 'CARD' | 'BANK';
 
-export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) => {
+export const UpgradeModal: React.FC<UpgradeModalProps> = ({
+  isOpen,
+  onClose,
+  initialStaffCount,
+  skipPlanStep = false,
+  onUpgradeComplete,
+}) => {
   const { tenantPlan, currentUser, updatePlan } = useAuth();
-  const [step, setStep] = useState<ModalStep>('PLAN');
+  const [step, setStep] = useState<ModalStep>(skipPlanStep ? 'PAYMENT_METHOD' : 'PLAN');
   const [selectedPlan, setSelectedPlan] = useState<'free' | 'pro'>('pro');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CARD');
   
@@ -38,6 +49,17 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
   const actualStaffCount = db.getStaff().filter(s => !s.isDeleted && s.id !== 'admin').length;
   const activeStaffCount = 1 + actualStaffCount;
   const [staffCount, setStaffCount] = useState(Math.max(activeStaffCount, 1));
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setStep(skipPlanStep ? 'PAYMENT_METHOD' : 'PLAN');
+    setSelectedPlan('pro');
+    if (initialStaffCount != null) {
+      setStaffCount(Math.max(initialStaffCount, activeStaffCount, 1));
+    } else {
+      setStaffCount(Math.max(activeStaffCount, 1));
+    }
+  }, [isOpen, skipPlanStep, initialStaffCount, activeStaffCount]);
 
   const totalPrice = PRO_MONTHLY_PRICE;
   const vat = Math.floor(totalPrice * 0.1);
@@ -81,9 +103,9 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({ isOpen, onClose }) =
         setIsVerifying(false);
         
         window.alert('입금 확인 및 결제 승인이 자동 완료되었습니다! 이제 Enterprise PRO 기능을 즉시 사용하실 수 있습니다.');
+        onUpgradeComplete?.();
         onClose();
-        // Reset for next open
-        setStep('PLAN');
+        setStep(skipPlanStep ? 'PAYMENT_METHOD' : 'PLAN');
     } catch (error) {
         console.error("Upgrade failed:", error);
         window.alert('승인 처리 중 오류가 발생했습니다. 관리자에게 문의해 주세요.');

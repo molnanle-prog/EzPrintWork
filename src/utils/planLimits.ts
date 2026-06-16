@@ -31,6 +31,15 @@ export const getTierLabel = (tier: PlanTier): string => {
   return '광고형';
 };
 
+/** 앱 설정 화면용 — gift(무료 선물)는 개발자 전용이라 사용자에게 노출하지 않음 */
+export const getTenantFacingTierLabel = (tier: PlanTier): string => {
+  if (tier === 'gift') return '특별 혜택';
+  return getTierLabel(tier);
+};
+
+/** 테넌트 관리자가 앱에서 선택 가능한 플랜 (gift 제외) */
+export const TENANT_SELECTABLE_PLAN_TIERS: Exclude<PlanTier, 'gift'>[] = ['ad', 'paid'];
+
 /** 광고 표시 여부 — gift(FREE)·paid(PAID)는 광고 없음, ad(AD/UNPAID)만 광고 표시 */
 export const isProPlan = (
   rawPlan?: string | null,

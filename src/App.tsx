@@ -7,6 +7,7 @@ import { OnboardingPage } from './pages/OnboardingPage';
 import { TenantGuard } from './components/auth/TenantGuard';
 import { Loader2 } from 'lucide-react';
 import { Toaster } from 'sonner';
+import { AutoUpdateProvider } from './components/common/AutoUpdateProvider';
 
 const LoadingScreen = () => (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 gap-6">
@@ -36,6 +37,7 @@ function App() {
     }
 
     return (
+        <AutoUpdateProvider>
         <Router>
             <div className="h-screen w-screen overflow-hidden">
                 <Routes>
@@ -60,6 +62,7 @@ function App() {
                 <Toaster richColors position="top-right" />
             </div>
         </Router>
+        </AutoUpdateProvider>
     );
 }
 

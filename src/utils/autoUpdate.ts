@@ -1,18 +1,61 @@
 const BUILD_ID_KEY = 'ezpw_build_id';
-const RELOAD_GUARD_KEY = 'ezpw_reload_guard';
+const DISMISS_BUILD_KEY = 'ezpw_update_dismissed_build';
+
+/** Firebase Hosting 배포 경로 */
+export const PRODUCTION_MANIFEST_URL = 'https://ez-hub.kr/ezpw/version.json';
+export const PRODUCTION_DOWNLOAD_MANIFEST_URL = 'https://ez-hub.kr/downloads/download-manifest.json';
 
 export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
 export const APP_BUILD_ID = typeof __APP_BUILD_ID__ !== 'undefined' ? __APP_BUILD_ID__ : 'dev';
 
-type VersionManifest = { version?: string; buildId?: string };
+export type UpdateManifest = {
+    version?: string;
+    buildId?: string;
+    builtAt?: string;
+};
 
-function versionManifestUrl(): string {
-    return new URL('version.json', window.location.href).href;
+export type DownloadManifest = {
+    version?: string;
+    setupFile?: string;
+    downloadUrl?: string;
+    installHint?: string;
+    updatedAt?: string;
+};
+
+export type UpdateCheckResult = {
+    available: boolean;
+    manifest: UpdateManifest | null;
+    currentBuildId: string;
+    currentVersion: string;
+};
+
+export type InstallerUpdateResult = {
+    available: boolean;
+    manifest: DownloadManifest | null;
+    currentVersion: string;
+};
+
+export function isAutoUpdateEnabled(): boolean {
+    return !import.meta.env.DEV;
 }
 
-async function fetchServerManifest(): Promise<VersionManifest | null> {
+export function getUpdateManifestUrl(): string {
+    if (import.meta.env.DEV) {
+        return new URL('/version.json', window.location.origin).href;
+    }
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+        return new URL('version.json', window.location.href).href;
+    }
+    if (host.includes('ez-hub.kr')) {
+        return new URL('version.json', window.location.href).href;
+    }
+    return PRODUCTION_MANIFEST_URL;
+}
+
+async function fetchJson<T>(url: string): Promise<T | null> {
     try {
-        const res = await fetch(`${versionManifestUrl()}?t=${Date.now()}`, {
+        const res = await fetch(`${url}${url.includes('?') ? '&' : '?'}t=${Date.now()}`, {
             cache: 'no-store',
             headers: { 'Cache-Control': 'no-cache' },
         });
@@ -23,29 +66,117 @@ async function fetchServerManifest(): Promise<VersionManifest | null> {
     }
 }
 
-/** 서버에 더 새 빌드가 있으면 1회 자동 새로고침 */
-export async function checkAndReloadIfStale(): Promise<void> {
-    const manifest = await fetchServerManifest();
-    if (!manifest?.buildId) return;
-
-    const storedBuildId = localStorage.getItem(BUILD_ID_KEY);
-    const alreadyReloaded = sessionStorage.getItem(RELOAD_GUARD_KEY) === manifest.buildId;
-
-    if (storedBuildId && storedBuildId !== manifest.buildId && !alreadyReloaded) {
-        sessionStorage.setItem(RELOAD_GUARD_KEY, manifest.buildId);
-        localStorage.setItem(BUILD_ID_KEY, manifest.buildId);
-        window.location.reload();
-        return;
-    }
-
-    localStorage.setItem(BUILD_ID_KEY, manifest.buildId);
-    sessionStorage.removeItem(RELOAD_GUARD_KEY);
+export async function fetchServerManifest(): Promise<UpdateManifest | null> {
+    return fetchJson<UpdateManifest>(getUpdateManifestUrl());
 }
 
-/** 앱 사용 중 주기적으로 새 배포 감지 (기본 10분) */
-export function startAutoUpdatePolling(intervalMs = 10 * 60 * 1000): () => void {
-    const timer = window.setInterval(() => {
-        void checkAndReloadIfStale();
-    }, intervalMs);
+export async function fetchDownloadManifest(): Promise<DownloadManifest | null> {
+    return fetchJson<DownloadManifest>(PRODUCTION_DOWNLOAD_MANIFEST_URL);
+}
+
+function parseBuildTimestamp(buildId: string): number {
+    const tail = buildId.split('-').pop() || '';
+    const ts = parseInt(tail, 10);
+    return Number.isFinite(ts) ? ts : 0;
+}
+
+/** semver 간단 비교 — a > b 이면 true */
+export function isNewerVersion(a: string, b: string): boolean {
+    const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+    const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const da = pa[i] ?? 0;
+        const db = pb[i] ?? 0;
+        if (da > db) return true;
+        if (da < db) return false;
+    }
+    return false;
+}
+
+export function isNewerBuild(serverBuildId: string, currentBuildId: string): boolean {
+    if (!serverBuildId || !currentBuildId) return false;
+    if (serverBuildId === currentBuildId) return false;
+
+    const serverTs = parseBuildTimestamp(serverBuildId);
+    const currentTs = parseBuildTimestamp(currentBuildId);
+    if (serverTs > 0 && currentTs > 0) {
+        return serverTs > currentTs;
+    }
+
+    return serverBuildId !== currentBuildId;
+}
+
+export async function checkForUpdate(): Promise<UpdateCheckResult> {
+    const manifest = await fetchServerManifest();
+    const currentBuildId = APP_BUILD_ID;
+    const currentVersion = APP_VERSION;
+
+    const available = !!manifest?.buildId && isNewerBuild(manifest.buildId, currentBuildId);
+
+    if (manifest?.buildId) {
+        localStorage.setItem(BUILD_ID_KEY, manifest.buildId);
+    }
+
+    return {
+        available,
+        manifest,
+        currentBuildId,
+        currentVersion,
+    };
+}
+
+export async function checkForInstallerUpdate(): Promise<InstallerUpdateResult> {
+    const manifest = await fetchDownloadManifest();
+    const currentVersion = APP_VERSION;
+    const available = !!manifest?.version && isNewerVersion(manifest.version, currentVersion);
+
+    return { available, manifest, currentVersion };
+}
+
+export function isUpdateDismissed(buildId?: string): boolean {
+    if (!buildId) return false;
+    return sessionStorage.getItem(DISMISS_BUILD_KEY) === buildId;
+}
+
+export function dismissUpdate(buildId?: string): void {
+    if (!buildId) return;
+    sessionStorage.setItem(DISMISS_BUILD_KEY, buildId);
+}
+
+export function applyWebUpdate(): void {
+    const manifestBuildId = localStorage.getItem(BUILD_ID_KEY);
+    if (manifestBuildId) {
+        sessionStorage.removeItem(DISMISS_BUILD_KEY);
+    }
+    window.location.reload();
+}
+
+/** @deprecated checkForUpdate + applyWebUpdate 사용 권장 */
+export async function checkAndReloadIfStale(): Promise<boolean> {
+    const result = await checkForUpdate();
+    if (result.available && !isUpdateDismissed(result.manifest?.buildId)) {
+        applyWebUpdate();
+        return true;
+    }
+    return false;
+}
+
+export function startAutoUpdatePolling(
+    onUpdate?: (result: UpdateCheckResult) => void,
+    intervalMs = 5 * 60 * 1000
+): () => void {
+    if (!isAutoUpdateEnabled()) {
+        return () => {};
+    }
+
+    const run = () => {
+        void checkForUpdate().then((result) => {
+            if (result.available && onUpdate) {
+                onUpdate(result);
+            }
+        });
+    };
+
+    const timer = window.setInterval(run, intervalMs);
     return () => window.clearInterval(timer);
 }

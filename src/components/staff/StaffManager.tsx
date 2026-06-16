@@ -8,6 +8,7 @@ import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { UpgradeModal } from '../common/UpgradeModal';
 import { GAS_WEBHOOK_URL } from '../../constants';
+import { isStaffAdminRole, isTenantOwnerUser, resolveAppRoleFromStaff } from '../../utils/adminAccess';
 
 // 연락처 추출 유틸리티 함수
 const getStaffContact = (staff: Staff): string => {
@@ -19,6 +20,11 @@ const getStaffContact = (staff: Staff): string => {
   return parts.length > 0 ? parts.join(' | ') : '';
 };
 
+const isAdminStaff = (staff: Staff): boolean => isStaffAdminRole(staff.role);
+
+const isStaffMainOwner = (staff: Staff, ownerId: string | null): boolean =>
+  isTenantOwnerUser(staff.uid || staff.id, ownerId);
+
 
 // Firebase Secondary Auth imports for silent user creation/management
 import { initializeApp, getApp } from 'firebase/app';
@@ -27,7 +33,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { firebaseConfig, db as firestore } from '../../services/firebase';
 
 export const StaffManager: React.FC = () => {
-  const { tenantPlan, maxStaff, currentUser } = useAuth();
+  const { tenantPlan, maxStaff, currentUser, tenantOwnerId } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -61,11 +67,19 @@ export const StaffManager: React.FC = () => {
       return;
     }
 
-    const nextRole = staff.role === 'admin' ? 'staff' : 'admin';
-    const nextRoleLabel = nextRole === 'admin' ? '관리자' : '일반 직원';
+    if (isStaffMainOwner(staff, tenantOwnerId)) {
+      showAlert('메인(대표) 관리자 권한은 변경할 수 없습니다.');
+      return;
+    }
+
+    const currentlyAdmin = isStaffAdminRole(staff.role);
+    const nextRole = currentlyAdmin ? '사원' : 'admin';
+    const nextRoleLabel = currentlyAdmin ? '일반 직원' : '사내 관리자';
 
     const confirm = await showConfirm(
-      `'${staff.name}' 직원을 정말 ${nextRoleLabel}(으)로 변경하시겠습니까?`
+      currentlyAdmin
+        ? `'${staff.name}' 직원의 사내 관리자 권한을 해제하시겠습니까?`
+        : `'${staff.name}' 직원에게 사내 관리자 권한을 추가하시겠습니까?\n\n메인 관리자는 그대로 유지되며, 관리자는 여러 명이 될 수 있습니다.`
     );
     if (!confirm) return;
 
@@ -75,7 +89,7 @@ export const StaffManager: React.FC = () => {
 
       if (staff.uid) {
         await setDoc(doc(firestore, 'users', staff.uid), {
-          role: nextRole
+          role: currentlyAdmin ? 'staff' : 'admin',
         }, { merge: true });
       }
 
@@ -99,7 +113,11 @@ export const StaffManager: React.FC = () => {
         console.error("Google Sheets Sync Error (update_staff role):", err);
       }
 
-      showAlert(`'${staff.name}' 직원이 ${nextRoleLabel}(으)로 성공적으로 변경되었습니다.`);
+      showAlert(
+        currentlyAdmin
+          ? `'${staff.name}' 직원의 사내 관리자 권한이 해제되었습니다.`
+          : `'${staff.name}' 직원이 사내 관리자로 추가되었습니다.`
+      );
     } catch (error: any) {
       showAlert('권한 변경 중 오류가 발생했습니다: ' + (error.message || getErrorMessage(error)));
     }
@@ -521,9 +539,21 @@ export const StaffManager: React.FC = () => {
                 )}
             </div>
             <div className="pt-12 p-6">
-                <div className="flex justify-between items-start mb-2">
+                <div className="flex justify-between items-start mb-2 gap-2">
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
                 <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">{staff.name}</h3>
-                <span className={`px-2 py-1 rounded text-xs font-bold ${staff.active ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'}`}>
+                {isAdminStaff(staff) && (
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black tracking-wide shrink-0 shadow-sm border ${
+                        isStaffMainOwner(staff, tenantOwnerId)
+                            ? 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-200 border-red-300/80 dark:border-red-600'
+                            : 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200 border-amber-300/80 dark:border-amber-600'
+                    }`}>
+                        <Shield size={10} />
+                        {isStaffMainOwner(staff, tenantOwnerId) ? '메인 관리자' : '사내 관리자'}
+                    </span>
+                )}
+                </div>
+                <span className={`px-2 py-1 rounded text-xs font-bold shrink-0 ${staff.active ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400' : 'bg-slate-100 text-slate-500 dark:bg-slate-700 dark:text-slate-400'}`}>
                     {staff.active ? '근무중' : '휴가/비활성'}
                 </span>
                 </div>
@@ -593,6 +623,7 @@ export const StaffManager: React.FC = () => {
                 </div>
 
                 {currentUser?.role === 'admin' && 
+                 !isStaffMainOwner(staff, tenantOwnerId) &&
                  staff.id !== currentUser?.uid && 
                  staff.uid !== currentUser?.uid && 
                  !(staff.email && currentUser?.email && staff.email.toLowerCase() === currentUser.email.toLowerCase()) && (
@@ -600,12 +631,12 @@ export const StaffManager: React.FC = () => {
                         <button
                             onClick={() => toggleRole(staff)}
                             className={`w-full py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border shadow-sm active:scale-95
-                            ${staff.role === 'admin'
+                            ${isStaffAdminRole(staff.role)
                                 ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/20 dark:border-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-950/40'
                                 : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/20 dark:border-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-950/40'}`}
                         >
                             <Shield size={14} />
-                            {staff.role === 'admin' ? '일반 사원으로 강등' : '관리자(Admin)로 지정'}
+                            {isStaffAdminRole(staff.role) ? '사내 관리자 권한 해제' : '사내 관리자로 추가'}
                         </button>
                     </div>
                 )}

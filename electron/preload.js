@@ -14,5 +14,15 @@ contextBridge.exposeInMainWorld('electron', {
     findLegacyDbFiles: () => ipcRenderer.invoke('find-legacy-db-files'),
     minimize: () => ipcRenderer.send('window-minimize'),
     maximize: () => ipcRenderer.send('window-maximize'),
-    close: () => ipcRenderer.send('window-close')
+    close: () => ipcRenderer.send('window-close'),
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+    updaterCheck: () => ipcRenderer.invoke('updater-check'),
+    updaterDownload: () => ipcRenderer.invoke('updater-download'),
+    updaterInstall: () => ipcRenderer.invoke('updater-install'),
+    onUpdaterStatus: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on('updater-status', handler);
+        return () => ipcRenderer.removeListener('updater-status', handler);
+    },
+    createDesktopShortcut: () => ipcRenderer.invoke('create-desktop-shortcut'),
 });

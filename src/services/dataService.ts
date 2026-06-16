@@ -1,7 +1,7 @@
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
     JobStatusDefinition, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
-    JoinRequest
+    JoinRequest, ProductProcessingSets
 } from '../types';
 import { toast } from 'sonner';
 import { 
@@ -40,6 +40,21 @@ export const getErrorMessage = (error: any): string => {
     if (error instanceof Error) message = error.message;
     else if (typeof error === 'string') message = error;
     return message;
+};
+
+/** Firestore는 undefined 필드를 허용하지 않음 — 저장 전 제거 */
+export const stripUndefinedForFirestore = <T>(value: T): T => {
+    if (value === undefined) return value;
+    if (value === null || typeof value !== 'object') return value;
+    if (Array.isArray(value)) {
+        return value.map((item) => stripUndefinedForFirestore(item)) as T;
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+        if (val === undefined) continue;
+        out[key] = stripUndefinedForFirestore(val);
+    }
+    return out as T;
 };
 
 export interface EstimateResult {
@@ -115,18 +130,22 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         processings: ['유광코팅', '무광코팅', '오시', '미싱', '접지', '금박', '은박']
     },
     {
-        name: '카탈로그/브로셔',
+        name: '카탈로그',
         sizes: ['A4(세로)', 'A4(가로)', 'A5(세로)', 'B5(세로)', '190x260mm', '규격외'],
         paperTypes: ['아트지', '스노우지', '랑데뷰', '반누보', '몽블랑', '모조지'],
         paperWeights: ['내지100g/표지250g', '내지120g/표지250g', '내지150g/표지300g', '80g', '100g', '120g', '150g', '180g', '250g', '300g'],
-        processings: ['유광코팅', '무광코팅', '오시', '접지', '무선제본', '중철제본', '스프링제본', '금박', '은박', '에폭시']
+        processings: ['접지', '중철제본', '스프링제본', '오시'],
+        processingsCover: ['유광코팅', '무광코팅', '금박', '은박', '에폭시'],
+        processingsInner: ['유광코팅', '무광코팅', '오시', '미싱']
     },
     {
         name: '책자',
         sizes: ['A4(210x297)', 'B5(182x257)', 'A5(148x210)', '190x260mm(사륙배판)', '규격외'],
         paperTypes: ['모조지(백색)', '모조지(미색)', '아트지', '스노우지', '표지용 레자크지', '표지용 특수지'],
         paperWeights: ['표지150g/내지80g', '표지180g/내지80g', '표지250g/내지80g', '표지250g/내지100g', '70g', '80g', '100g', '120g', '150g', '180g', '250g'],
-        processings: ['유광코팅', '무광코팅', '오시', '접지', '무선제본', '중철제본', '스프링제본', '금박', '은박', '에폭시']
+        processings: ['무선제본', '중철제본', '스프링제본', '접지', '오시'],
+        processingsCover: ['유광코팅', '무광코팅', '금박', '은박', '에폭시', '형압'],
+        processingsInner: ['유광코팅', '무광코팅', '오시', '미싱']
     },
     {
         name: '봉투',
@@ -157,6 +176,199 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         processings: ['유광코팅', '무광코팅', '금박', '은박', '형압']
     }
 ];
+
+const LEGACY_CATALOG_TYPE_NAMES = ['카탈로그/브로셔', '카탈로그/책자', '카달로그/책자', '카달로그/브로셔'];
+
+const DEFAULT_STAFF_ROLES = ['관리자', '디자이너', '인쇄기장', '후가공', '배송', '실장', '부장', '과장', '대리', '사원'];
+
+/** 사용자가 저장한 목록이 있으면 그대로 사용 (삭제 반영). 없을 때만 기본값 */
+function mergeStringListField(user: string[] | undefined, defaults: string[] | undefined): string[] {
+    if (user !== undefined) return [...user];
+    if (!defaults?.length) return [];
+    return [...defaults];
+}
+
+function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
+    const left = a || [];
+    const right = b || [];
+    if (left.length !== right.length) return false;
+    return left.every((v, i) => v === right[i]);
+}
+
+function mergeProductDefinition(template: JobTypeDefinition, source: JobTypeDefinition, name: string): JobTypeDefinition {
+    return {
+        ...template,
+        ...source,
+        name,
+        sizes: mergeStringListField(source.sizes, template.sizes),
+        paperTypes: mergeStringListField(source.paperTypes, template.paperTypes),
+        paperWeights: mergeStringListField(source.paperWeights, template.paperWeights),
+        processings: mergeStringListField(source.processings, template.processings),
+        processingsCover: mergeStringListField(source.processingsCover, template.processingsCover),
+        processingsInner: mergeStringListField(source.processingsInner, template.processingsInner),
+    };
+}
+
+function productDefinitionFieldsEqual(a: JobTypeDefinition, b: JobTypeDefinition): boolean {
+    return (
+        stringArraysEqual(a.sizes, b.sizes) &&
+        stringArraysEqual(a.paperTypes, b.paperTypes) &&
+        stringArraysEqual(a.paperWeights, b.paperWeights) &&
+        stringArraysEqual(a.processings, b.processings) &&
+        stringArraysEqual(a.processingsCover, b.processingsCover) &&
+        stringArraysEqual(a.processingsInner, b.processingsInner)
+    );
+}
+
+/** 저장된 품목 정의 + INITIAL 신규 항목 자동 병합 */
+export function mergeAllProductDefinitionsWithInitial(
+    definitions: JobTypeDefinition[]
+): { definitions: JobTypeDefinition[]; changed: boolean } {
+    const { definitions: normalized, changed: normChanged } = normalizeProductDefinitions(definitions);
+    let changed = normChanged;
+    const byName = new Map(normalized.map((d) => [d.name, d]));
+    const result: JobTypeDefinition[] = [];
+
+    for (const template of INITIAL_PRODUCT_DEFINITIONS) {
+        const existing = byName.get(template.name);
+        if (existing) {
+            const merged = mergeProductDefinition(template, existing, template.name);
+            if (!productDefinitionFieldsEqual(merged, existing)) changed = true;
+            result.push(merged);
+            byName.delete(template.name);
+        }
+        // 삭제된 기본 품목은 merge로 되살리지 않음 (신규 테넌트는 INITIAL 전체로 초기화)
+    }
+
+    for (const custom of byName.values()) {
+        result.push(custom);
+    }
+
+    return { definitions: result, changed };
+}
+
+export function mergeProcessingDefinitionsWithInitial(
+    definitions: string[]
+): { definitions: string[]; changed: boolean } {
+    const merged = mergeStringListField(definitions, INITIAL_PROCESSING_DEFINITIONS);
+    return { definitions: merged, changed: !stringArraysEqual(merged, definitions) };
+}
+
+export function mergeStatusDefinitionsWithInitial(
+    definitions: JobStatusDefinition[]
+): { definitions: JobStatusDefinition[]; changed: boolean } {
+    const byKey = new Map(definitions.map((d) => [d.key, d]));
+    let changed = false;
+    const result: JobStatusDefinition[] = [...definitions];
+
+    for (const template of INITIAL_STATUS_DEFINITIONS) {
+        if (!byKey.has(template.key)) {
+            result.push({ ...template });
+            changed = true;
+        }
+    }
+
+    return { definitions: result, changed };
+}
+
+export function mergeRolesWithInitial(roles: string[]): { roles: string[]; changed: boolean } {
+    const merged = mergeStringListField(roles, DEFAULT_STAFF_ROLES);
+    return { roles: merged, changed: !stringArraysEqual(merged, roles) };
+}
+
+function splitLegacyBookletProcessings(all: string[]): ProductProcessingSets {
+    const coverKeywords = ['코팅', '박', '형압', '에폭시', '하드커버'];
+    const commonKeywords = ['제본', '접지'];
+    const common: string[] = [];
+    const cover: string[] = [];
+    const inner: string[] = [];
+
+    all.forEach((p) => {
+        if (coverKeywords.some((kw) => p.includes(kw))) {
+            cover.push(p);
+        } else if (commonKeywords.some((kw) => p.includes(kw))) {
+            common.push(p);
+        } else {
+            inner.push(p);
+        }
+    });
+
+    return { common, cover, inner };
+}
+
+function resolveBookletProcessingSets(def: JobTypeDefinition | undefined, typeName: string): ProductProcessingSets {
+    const initial = INITIAL_PRODUCT_DEFINITIONS.find((d) => d.name === typeName);
+
+    if (def?.processingsCover?.length || def?.processingsInner?.length) {
+        return {
+            common: def.processings || [],
+            cover: def.processingsCover || [],
+            inner: def.processingsInner || [],
+        };
+    }
+
+    if (def?.processings?.length) {
+        return splitLegacyBookletProcessings(def.processings);
+    }
+
+    if (initial?.processingsCover?.length || initial?.processingsInner?.length) {
+        return {
+            common: initial.processings || [],
+            cover: initial.processingsCover || [],
+            inner: initial.processingsInner || [],
+        };
+    }
+
+    if (initial?.processings?.length) {
+        return splitLegacyBookletProcessings(initial.processings);
+    }
+
+    return { common: [], cover: [], inner: [] };
+}
+
+export function normalizeProductDefinitions(definitions: JobTypeDefinition[]): { definitions: JobTypeDefinition[]; changed: boolean } {
+    const catalogTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '카탈로그');
+    const bookTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '책자');
+    if (!catalogTemplate || !bookTemplate) {
+        return { definitions, changed: false };
+    }
+
+    let changed = false;
+    const result: JobTypeDefinition[] = [];
+    let catalogFromCombined: JobTypeDefinition | null = null;
+    let needBookFromSplit = false;
+
+    for (const def of definitions) {
+        if (def.name === '카탈로그/브로셔' || def.name === '카달로그/브로셔') {
+            changed = true;
+            result.push(mergeProductDefinition(catalogTemplate, def, '카탈로그'));
+            continue;
+        }
+        if (def.name === '카탈로그/책자' || def.name === '카달로그/책자') {
+            changed = true;
+            catalogFromCombined = mergeProductDefinition(catalogTemplate, def, '카탈로그');
+            needBookFromSplit = true;
+            continue;
+        }
+        result.push(def);
+    }
+
+    if (catalogFromCombined && !result.some(d => d.name === '카탈로그')) {
+        result.push(catalogFromCombined);
+    }
+    if (needBookFromSplit && !result.some(d => d.name === '책자')) {
+        result.push({ ...bookTemplate });
+    }
+
+    return { definitions: result, changed };
+}
+
+export function isBookletProductType(typeName: string): boolean {
+    if (!typeName) return false;
+    if (typeName.includes('책자')) return true;
+    if (typeName.includes('카탈로그') || typeName.includes('카달로그')) return true;
+    return LEGACY_CATALOG_TYPE_NAMES.some(name => typeName === name);
+}
 
 export class DataService {
     private tenantId: string | null = null;
@@ -248,6 +460,68 @@ export class DataService {
         return main;
     }
 
+    /** 앱/웹 기동 시 저장 설정 + 새 버전 기본값 자동 병합 (사용자 항목 유지, 신규만 추가) */
+    private applySettingsDefaultsMerge(settingsObj: Record<string, any>): boolean {
+        let changed = false;
+
+        const rawDefs = settingsObj?.productDefinitions?.definitions;
+        if (rawDefs?.length) {
+            const { definitions: mergedDefs, changed: defsChanged } = mergeAllProductDefinitionsWithInitial(rawDefs);
+            if (defsChanged) {
+                settingsObj.productDefinitions = { definitions: mergedDefs };
+                changed = true;
+            }
+        }
+
+        const rawProc = settingsObj?.processingDefinitions?.definitions;
+        if (!rawProc?.length && !settingsObj?.processingDefinitions) {
+            settingsObj.processingDefinitions = { definitions: [...INITIAL_PROCESSING_DEFINITIONS] };
+            changed = true;
+        }
+
+        const rawStatus = settingsObj?.statusDefinitions?.definitions;
+        if (!rawStatus?.length && !settingsObj?.statusDefinitions) {
+            settingsObj.statusDefinitions = { definitions: [...INITIAL_STATUS_DEFINITIONS] };
+            changed = true;
+        }
+
+        const rawRoles = settingsObj?.roles?.roles;
+        if (rawRoles?.length) {
+            const { roles: mergedRoles, changed: rolesChanged } = mergeRolesWithInitial(rawRoles);
+            if (rolesChanged) {
+                settingsObj.roles = { roles: mergedRoles };
+                changed = true;
+            }
+        }
+
+        return changed;
+    }
+
+    private async persistSettingsDefaultsMerge(settingsObj: Record<string, any>): Promise<void> {
+        this.data['settings'] = [settingsObj];
+        this.notify();
+
+        if (!this.tenantId) return;
+
+        try {
+            const docRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+            await setDoc(
+                docRef,
+                stripUndefinedForFirestore({
+                    productDefinitions: settingsObj.productDefinitions,
+                    processingDefinitions: settingsObj.processingDefinitions,
+                    statusDefinitions: settingsObj.statusDefinitions,
+                    roles: settingsObj.roles,
+                }),
+                { merge: true }
+            );
+            console.log('[DataService] Settings merged with app defaults (user data preserved).');
+        } catch (err) {
+            console.error('[DataService] Failed to persist merged settings:', err);
+            this.notifyFirestoreWriteError('설정 병합', err);
+        }
+    }
+
     private async startSyncing() {
         if (!this.tenantId) return;
 
@@ -294,6 +568,13 @@ export class DataService {
                     } else {
                         this.data['settings'] = [this.mergeSettingsDocs(list)];
                     }
+
+                    const settingsObj = this.data['settings']?.[0];
+                    if (settingsObj && this.applySettingsDefaultsMerge(settingsObj)) {
+                        this.persistSettingsDefaultsMerge(settingsObj).catch((err) =>
+                            console.error('[DataService] Settings defaults merge failed:', err)
+                        );
+                    }
                 } else {
                     this.data[colName] = list;
                 }
@@ -323,6 +604,10 @@ export class DataService {
                         let jobChanged = false;
                         if (job.type === '무선제본책자') {
                             job.type = '책자';
+                            jobChanged = true;
+                        }
+                        if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type)) {
+                            job.type = '카탈로그';
                             jobChanged = true;
                         }
                         
@@ -375,6 +660,10 @@ export class DataService {
                             job.subJobs = job.subJobs.map((sj: any) => {
                                 if (sj.type === '무선제본책자') {
                                     sj.type = '책자';
+                                    jobChanged = true;
+                                }
+                                if (LEGACY_CATALOG_TYPE_NAMES.includes(sj.type)) {
+                                    sj.type = '카탈로그';
                                     jobChanged = true;
                                 }
                                 if (sj.specs && migrateSpecs(sj.specs)) jobChanged = true;
@@ -616,10 +905,11 @@ export class DataService {
                     newEntity.senderId = auth.currentUser.uid;
                 }
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
-                await setDoc(docRef, newEntity);
+                await setDoc(docRef, stripUndefinedForFirestore(newEntity));
             } catch (e) {
                 console.error(`[Firestore addEntity Error] Failed to upload ${col}/${id}:`, e);
                 this.notifyFirestoreWriteError('데이터', e);
+                throw e;
             }
         }
         
@@ -641,7 +931,7 @@ export class DataService {
         if (this.tenantId) {
             try {
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
-                await setDoc(docRef, updated, { merge: true });
+                await setDoc(docRef, stripUndefinedForFirestore(updated), { merge: true });
             } catch (e) {
                 console.error(`[Firestore updateEntity Error] Failed to update ${col}/${id}:`, e);
                 this.notifyFirestoreWriteError('데이터', e);
@@ -683,6 +973,23 @@ export class DataService {
         this.updateTenantActivity().catch(() => {});
     }
 
+    private static readonly SETTINGS_FRAGMENT_IDS = [
+        'productDefinitions',
+        'statusDefinitions',
+        'processingDefinitions',
+        'pricing',
+        'roles',
+    ] as const;
+
+    /** mergeSettingsDocs가 settings/{name} 조각 문서를 우선하므로, 저장 시 조각에도 동기화 */
+    private buildSettingFragmentPayload(name: string, data: any): Record<string, unknown> {
+        if (name === 'roles') return { roles: data.roles };
+        if (name === 'productDefinitions' || name === 'statusDefinitions' || name === 'processingDefinitions') {
+            return { definitions: data.definitions };
+        }
+        return data;
+    }
+
     private async updateSetting(name: string, data: any) {
         const settings = this.data['settings']?.[0] || {};
         settings[name] = data;
@@ -691,11 +998,26 @@ export class DataService {
         
         if (this.tenantId) {
             try {
-                const docRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
-                await setDoc(docRef, settings, { merge: true });
+                const mainRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+                await setDoc(mainRef, stripUndefinedForFirestore({ [name]: data }), { merge: true });
+
+                if ((DataService.SETTINGS_FRAGMENT_IDS as readonly string[]).includes(name)) {
+                    const fragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', name);
+                    await setDoc(
+                        fragmentRef,
+                        stripUndefinedForFirestore(this.buildSettingFragmentPayload(name, data)),
+                        { merge: true }
+                    );
+                }
+
+                if (name === 'companyInfo') {
+                    const companyRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'companyInfo');
+                    await setDoc(companyRef, stripUndefinedForFirestore(data), { merge: true });
+                }
             } catch (e) {
                 console.error(`[Firestore updateSetting Error] Failed to update settings:`, e);
                 this.notifyFirestoreWriteError('설정', e);
+                throw e;
             }
         }
         
@@ -840,11 +1162,14 @@ export class DataService {
         }
     }
 
-    /** 인원 수 + 무료/유료(PRO) 플랜을 Firestore tenants 문서에 반영 */
+    /** 인원 수 + 플랜 유형을 Firestore tenants 문서에 반영 (gift는 개발자 관리 도구 전용) */
     async updateTenantPlanSettings(
         tenantId: string,
         options: { staffCount: number; tier: PlanTier }
     ) {
+        if (options.tier === 'gift') {
+            throw new Error('무료(선물) 플랜은 개발자 관리 도구에서만 설정할 수 있습니다.');
+        }
         const tier = options.tier;
         const staffCount = tier === 'ad'
             ? Math.min(Math.max(1, options.staffCount), 3)
@@ -972,22 +1297,95 @@ export class DataService {
     getPapers(): PaperStock[] { return (this.data['papers'] || []) as PaperStock[]; }
 
     getStatusDefinitions(): JobStatusDefinition[] {
-        return this.getSettingsObj()['statusDefinitions']?.definitions || INITIAL_STATUS_DEFINITIONS;
+        const raw = this.getSettingsObj()['statusDefinitions']?.definitions;
+        if (!raw?.length) {
+            return INITIAL_STATUS_DEFINITIONS.map((s) => ({ ...s, isVisible: s.isVisible !== false }));
+        }
+        // 저장된 목록 그대로 사용 — 삭제한 단계를 INITIAL 병합으로 되살리지 않음
+        return raw.map((s: JobStatusDefinition) => ({ ...s, isVisible: s.isVisible !== false }));
     }
-    getProductDefinitions(): JobTypeDefinition[] { return this.getSettingsObj()['productDefinitions']?.definitions || INITIAL_PRODUCT_DEFINITIONS; }
-    getProcessingDefinitions(): string[] { return this.getSettingsObj()['processingDefinitions']?.definitions || INITIAL_PROCESSING_DEFINITIONS; }
+    getProductDefinitions(): JobTypeDefinition[] {
+        const raw = this.getSettingsObj()['productDefinitions']?.definitions || INITIAL_PRODUCT_DEFINITIONS;
+        return mergeAllProductDefinitionsWithInitial(raw).definitions;
+    }
+    /** 품목별로 상품 관리에서 선택한 후가공만 반환 (일반 품목용) */
+    getProductProcessings(typeName: string): string[] {
+        if (isBookletProductType(typeName)) {
+            return this.getProductProcessingSets(typeName).common;
+        }
+        const def = this.getProductDefinitions().find(d => d.name === typeName);
+        if (def?.processings && def.processings.length > 0) {
+            return def.processings;
+        }
+        if (def && def.processings === undefined) {
+            const initial = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === typeName);
+            if (initial?.processings?.length) return initial.processings;
+        }
+        return [];
+    }
+    /** 책자·카탈로그 품목의 공통/표지/내지 후가공 목록 */
+    getProductProcessingSets(typeName: string): ProductProcessingSets {
+        if (!isBookletProductType(typeName)) {
+            const def = this.getProductDefinitions().find((d) => d.name === typeName);
+            if (def?.processings?.length) {
+                return { common: def.processings, cover: [], inner: [] };
+            }
+            if (def && def.processings === undefined) {
+                const initial = INITIAL_PRODUCT_DEFINITIONS.find((d) => d.name === typeName);
+                if (initial?.processings?.length) {
+                    return { common: initial.processings, cover: [], inner: [] };
+                }
+            }
+            return { common: [], cover: [], inner: [] };
+        }
+        const def = this.getProductDefinitions().find((d) => d.name === typeName);
+        return resolveBookletProcessingSets(def, typeName);
+    }
+    getProcessingDefinitions(): string[] {
+        const raw = this.getSettingsObj()['processingDefinitions']?.definitions;
+        if (!raw?.length) return [...INITIAL_PROCESSING_DEFINITIONS];
+        // 저장된 목록 그대로 사용 — 삭제한 후가공을 INITIAL 병합으로 되살리지 않음
+        return [...raw];
+    }
     async saveProcessingDefinitions(definitions: string[]) { await this.updateSetting('processingDefinitions', { definitions }); }
+
+    /** 삭제된 칸반 단계에 있던 작업을 다른 단계로 이동 */
+    async migrateJobsFromStatus(fromKey: string, toKey: string): Promise<number> {
+        const jobs = this.getAllJobs().filter((j) => j.status === fromKey);
+        for (const job of jobs) {
+            await this.updateJob({ ...job, status: toKey });
+        }
+        return jobs.length;
+    }
     async restoreProductDefaults() { await this.saveProductDefinitions(INITIAL_PRODUCT_DEFINITIONS); }
     getJobTypes(): string[] { return this.getProductDefinitions().map(d => d.name); }
     getPricingConfig(): PricingConfig { return this.getSettingsObj()['pricing'] || { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 }; }
     getCompanyInfo(): CompanyInfo { return this.getSettingsObj()['companyInfo'] || { name: 'EzPrintWork' }; }
     getSmsConfig() { return this.getSettingsObj()['smsConfig'] || {}; }
-    getRoles(): string[] { return this.getSettingsObj()['roles']?.roles || ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"]; }
+    getRoles(): string[] {
+        const raw = this.getSettingsObj()['roles']?.roles;
+        if (!raw?.length) return DEFAULT_STAFF_ROLES;
+        return mergeRolesWithInitial(raw).roles;
+    }
 
     // Search Helpers
-    searchClients(q: string): Client[] {
-        const t = q.toLowerCase();
-        return this.getClients().filter(c => c.name.toLowerCase().includes(t) || (c.contactPerson && c.contactPerson.toLowerCase().includes(t)));
+    searchClients(q: string, limit = 12): Client[] {
+        const t = q.trim().toLowerCase();
+        if (!t) return [];
+
+        return this.getClients()
+            .filter((c) => {
+                if (c.name.toLowerCase().includes(t)) return true;
+                if (c.contactPerson?.toLowerCase().includes(t)) return true;
+                if (c.phone?.includes(t)) return true;
+                if (c.businessRegistrationNumber?.includes(t)) return true;
+                if (c.contacts?.some((contact) =>
+                    contact.name?.toLowerCase().includes(t) ||
+                    contact.phone?.includes(t)
+                )) return true;
+                return false;
+            })
+            .slice(0, limit);
     }
 
     getJobsByClient(clientName: string): Job[] {
@@ -1198,16 +1596,21 @@ export class DataService {
                     mergedProductDefsMap.set(d.name, d);
                 }
             });
-            mergedSettings.productDefinitions = { 
-                definitions: Array.from(mergedProductDefsMap.values()) 
+            mergedSettings.productDefinitions = {
+                definitions: mergeAllProductDefinitionsWithInitial(
+                    Array.from(mergedProductDefsMap.values())
+                ).definitions,
             };
 
-            // 후가공 정의 병합
+            // 후가공 정의 병합 (합집합 + 앱 기본값)
             const curProcDefs = curSettingsObj.processingDefinitions?.definitions || [];
             const impProcDefs = impSettingsObj.processingDefinitions?.definitions || [];
-            const mergedProcDefsSet = new Set([...curProcDefs, ...impProcDefs]);
+            const procUnion = mergeStringListField(
+                mergeStringListField(curProcDefs, impProcDefs),
+                INITIAL_PROCESSING_DEFINITIONS
+            );
             mergedSettings.processingDefinitions = {
-                definitions: Array.from(mergedProcDefsSet)
+                definitions: procUnion,
             };
 
             // 상태 정의 병합 (key 기준)

@@ -3,6 +3,7 @@ import React from 'react';
 import { Job, JobItem } from '../../types';
 import { FileText, Calendar, User, Phone } from 'lucide-react';
 import { formatJobNumber } from '../../services/dataService';
+import { APP_VERSION } from '../../utils/autoUpdate';
 
 interface JobOrderDocumentProps {
   job: Job;
@@ -348,7 +349,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
 
               {/* Footer */}
               <div className="mt-2 flex justify-between items-end text-[10px] text-slate-500 flex-none">
-                  <div><span className="lift-text">EzPrintWork v1.2.0</span></div>
+                  <div><span className="lift-text">EzPrintWork v{APP_VERSION}</span></div>
                   <div className="font-bold text-slate-200 text-xl tracking-widest uppercase"><span className="lift-text">Original</span></div>
               </div>
             </div>

@@ -8,6 +8,10 @@ import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
 import { db } from '../services/dataService';
 import { getMaxStaffForPlan } from '../utils/planLimits';
+import { APP_VERSION } from '../utils/autoUpdate';
+import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
+import { createDesktopShortcut } from '../utils/desktopShortcut';
+import { resolveAppRoleFromStaff } from '../utils/adminAccess';
 
 const formatSearchError = (error: any): string => {
     const code = error?.code || '';
@@ -109,26 +113,24 @@ export const LoginPage: React.FC = () => {
     const [isSearchingCompany, setIsSearchingCompany] = useState(false);
     const [hasSearched, setHasSearched] = useState(false);
 
-    const handleDownloadShortcut = () => {
-        const isConfirmed = window.confirm('바탕화면 바로가기 아이콘 파일을 다운로드하시겠습니까?\n\n다운로드 후, 다운로드 폴더의 파일을 컴퓨터 바탕화면에 마우스로 끌어다(드래그) 놓고 사용하세요!');
-        if (!isConfirmed) return;
+    const handleDownloadShortcut = async () => {
+        const isElectronApp = typeof window !== 'undefined' && !!window.electron?.createDesktopShortcut;
+        const confirmMessage = isElectronApp
+            ? '바탕화면에 EzPrintWork 바로가기를 만들까요?\n\n설치된 PC 앱과 같은 아이콘으로 바로 생성됩니다.'
+            : '바탕화면 바로가기 설치 파일을 다운로드할까요?\n\n다운로드 후 파일을 더블클릭하면 바탕화면에 아이콘이 생성됩니다.';
 
-        const shortcutContent = `[InternetShortcut]
-URL=https://ez-hub.kr/ezpw/
-IDList=
-HotKey=0
-IconIndex=0
-IconFile=https://ez-hub.kr/favicon.ico
-`;
-        const blob = new Blob([shortcutContent], { type: 'text/plain;charset=utf-8' });
-        const url = window.URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = 'EzPrintWork 바탕화면 바로가기.url';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        window.URL.revokeObjectURL(url);
+        if (!window.confirm(confirmMessage)) return;
+
+        try {
+            const result = await createDesktopShortcut();
+            if (result.ok) {
+                toast.success(result.message);
+            } else {
+                toast.error(result.message);
+            }
+        } catch {
+            toast.error('바탕화면 아이콘 생성 중 오류가 발생했습니다.');
+        }
     };
 
     const handleGoogleLogin = async () => {
@@ -410,6 +412,16 @@ IconFile=https://ez-hub.kr/favicon.ico
             const firebaseUid = auth.currentUser?.uid;
             if (firebaseUid) {
                 try {
+                    let staffRoleForAuth: string | undefined = userData.role || userData.position;
+                    try {
+                        const staffDocSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
+                        if (staffDocSnap.exists()) {
+                            staffRoleForAuth = staffDocSnap.data().role || staffRoleForAuth;
+                        }
+                    } catch {
+                        /* staff role lookup optional */
+                    }
+
                     await setDoc(doc(db, 'users', firebaseUid), {
                         uid: firebaseUid,
                         id: firebaseUid,
@@ -417,7 +429,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                         displayName: userData.userName || userData.name || '사원',
                         name: userData.userName || userData.name || '사원',
                         tenantId,
-                        role: 'staff',
+                        role: resolveAppRoleFromStaff(staffRoleForAuth),
                         loginId: rawLoginId,
                     }, { merge: true });
                 } catch (profileErr) {
@@ -750,7 +762,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                     </div>
                     <div>
                         <h1 className="text-4xl font-black text-white tracking-tighter mb-2">EzPrintWork</h1>
-                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v1.2.6)</p>
+                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v{APP_VERSION})</p>
                     </div>
                 </div>
  
@@ -806,20 +818,13 @@ IconFile=https://ez-hub.kr/favicon.ico
                                 </div>
 
                                 <button 
-                                    onClick={() => {
-                                        const link = document.createElement('a');
-                                        link.href = '/downloads/EzPrintWork-Setup.zip';
-                                        link.setAttribute('download', 'EzPrintWork-Setup.zip');
-                                        document.body.appendChild(link);
-                                        link.click();
-                                        document.body.removeChild(link);
-                                    }}
+                                    onClick={() => triggerDesktopSetupDownload()}
                                     className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
                                 >
                                     <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
                                     <div className="flex flex-col items-start leading-tight text-left">
-                                        <span className="text-[13px] font-black">PC 전용 앱 (.zip)</span>
-                                        <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">관리자 PC 로컬 백업 지원</span>
+                                        <span className="text-[13px] font-black">PC 전용 앱 (.exe)</span>
+                                        <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">클릭 후 설치 프로그램 실행</span>
                                     </div>
                                 </button>
                             </div>
@@ -1183,14 +1188,7 @@ IconFile=https://ez-hub.kr/favicon.ico
                     <p className="text-slate-600 text-sm font-medium">
                         © 2026 EzPrintWork Cloud. All rights reserved.
                         <span 
-                            onClick={() => {
-                                const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Setup.zip';
-                                link.download = 'EzPrintWork-Setup.zip';
-                                document.body.appendChild(link);
-                                link.click();
-                                document.body.removeChild(link);
-                            }} 
+                            onClick={() => triggerDesktopSetupDownload()} 
                             className="inline-block ml-1 text-slate-600 hover:text-slate-400 cursor-pointer select-none text-sm transition-colors font-medium"
                             title="EzPrintWork 데스크톱 앱 다운로드"
                         >ⓓ</span>

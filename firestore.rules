@@ -299,15 +299,36 @@ service cloud.firestore {
                data.keys().hasAll(['content', 'senderId']);
       }
 
-      // LEAVES
+      // LEAVES — 본인 휴가 등록 + 관리자 전체 등록
       match /leaves/{leaveId} {
         allow read: if isMember(tenantId);
-        allow write: if isMember(tenantId) && isValidId(leaveId) && isValidLeave(incoming());
+        allow create: if isMember(tenantId) && isValidId(leaveId) && isValidLeave(incoming())
+          && (isAdmin(tenantId) || isOwnLeaveStaff(tenantId, incoming().staffId));
+        allow update: if isMember(tenantId) && isValidId(leaveId) && isValidLeave(incoming())
+          && (isAdmin(tenantId) || isOwnLeaveStaff(tenantId, incoming().staffId));
+        allow delete: if isMember(tenantId) && isValidId(leaveId)
+          && (isAdmin(tenantId) || isOwnLeaveStaff(tenantId, existing().staffId));
+      }
+
+      function staffData(tenantId, staffId) {
+        return get(/databases/$(database)/documents/tenants/$(tenantId)/staff/$(staffId)).data;
+      }
+
+      function isOwnLeaveStaff(tenantId, staffId) {
+        return exists(/databases/$(database)/documents/tenants/$(tenantId)/staff/$(staffId))
+          && (
+            ('uid' in staffData(tenantId, staffId) && staffData(tenantId, staffId).uid == request.auth.uid)
+            || ('email' in staffData(tenantId, staffId) && staffData(tenantId, staffId).email.lower() == request.auth.token.email.lower())
+            || staffId == request.auth.uid
+          );
       }
 
       function isValidLeave(data) {
-        return data.staffName is string && data.startDate is string &&
-               data.keys().hasAll(['staffName', 'startDate']);
+        return data.staffId is string
+          && data.startDate is string
+          && data.endDate is string
+          && data.type in ['연차', '반차', '병가', '기타']
+          && data.keys().hasAll(['staffId', 'startDate', 'endDate', 'type']);
       }
 
       // PAPERS

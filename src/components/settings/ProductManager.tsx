@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { db } from '../../services/dataService';
+import { db, isBookletProductType, getErrorMessage } from '../../services/dataService';
 import { JobTypeDefinition } from '../../types';
 import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
@@ -15,6 +15,10 @@ export const ProductManager: React.FC = () => {
   const [newPaper, setNewPaper] = useState('');
   const [newWeight, setNewWeight] = useState('');
   const [allProcessings, setAllProcessings] = useState<string[]>([]);
+  const [draftProcessings, setDraftProcessings] = useState<string[]>([]);
+  const [draftProcessingsCover, setDraftProcessingsCover] = useState<string[]>([]);
+  const [draftProcessingsInner, setDraftProcessingsInner] = useState<string[]>([]);
+  const [processingsDirty, setProcessingsDirty] = useState(false);
 
   const { showConfirm, showAlert } = useDialog();
 
@@ -36,21 +40,107 @@ export const ProductManager: React.FC = () => {
       }
   }, [definitions]);
 
+  const syncDraftProcessingsFromType = (type: JobTypeDefinition) => {
+      if (isBookletProductType(type.name)) {
+          const sets = db.getProductProcessingSets(type.name);
+          setDraftProcessings(sets.common);
+          setDraftProcessingsCover(sets.cover);
+          setDraftProcessingsInner(sets.inner);
+      } else {
+          setDraftProcessings(type.processings || []);
+          setDraftProcessingsCover([]);
+          setDraftProcessingsInner([]);
+      }
+  };
+
+  useEffect(() => {
+      if (selectedType) {
+          syncDraftProcessingsFromType(selectedType);
+          setProcessingsDirty(false);
+      } else {
+          setDraftProcessings([]);
+          setDraftProcessingsCover([]);
+          setDraftProcessingsInner([]);
+          setProcessingsDirty(false);
+      }
+  }, [selectedType?.name]);
+
+  useEffect(() => {
+      if (!processingsDirty && selectedType) {
+          syncDraftProcessingsFromType(selectedType);
+      }
+  }, [selectedType?.processings, selectedType?.processingsCover, selectedType?.processingsInner, processingsDirty, selectedType?.name]);
+
   const loadData = () => {
       setDefinitions(db.getProductDefinitions());
       setAllProcessings(db.getProcessingDefinitions());
   };
 
-  const toggleProcessingOption = (option: string) => {
+  const toggleProcessingOption = (
+      option: string,
+      list: 'common' | 'cover' | 'inner' = 'common'
+  ) => {
+      const setter =
+          list === 'cover'
+              ? setDraftProcessingsCover
+              : list === 'inner'
+                ? setDraftProcessingsInner
+                : setDraftProcessings;
+      setter((prev) =>
+          prev.includes(option) ? prev.filter((p) => p !== option) : [...prev, option]
+      );
+      setProcessingsDirty(true);
+  };
+
+  const handleSelectAllProcessings = (list: 'common' | 'cover' | 'inner' = 'common') => {
+      const setter =
+          list === 'cover'
+              ? setDraftProcessingsCover
+              : list === 'inner'
+                ? setDraftProcessingsInner
+                : setDraftProcessings;
+      setter([...allProcessings]);
+      setProcessingsDirty(true);
+  };
+
+  const handleClearAllProcessings = (list: 'common' | 'cover' | 'inner' = 'common') => {
+      const setter =
+          list === 'cover'
+              ? setDraftProcessingsCover
+              : list === 'inner'
+                ? setDraftProcessingsInner
+                : setDraftProcessings;
+      setter([]);
+      setProcessingsDirty(true);
+  };
+
+  const handleSaveProcessings = async () => {
       if (!selectedType) return;
-      const currentProcessings = selectedType.processings || [];
-      const updatedProcessings = currentProcessings.includes(option)
-          ? currentProcessings.filter(p => p !== option)
-          : [...currentProcessings, option];
-          
-      const updatedDef = { ...selectedType, processings: updatedProcessings };
-      const newDefs = definitions.map(d => d.name === selectedType.name ? updatedDef : d);
-      db.saveProductDefinitions(newDefs);
+
+      const latestDefs = db.getProductDefinitions();
+      const isBooklet = isBookletProductType(selectedType.name);
+      const updatedDef = isBooklet
+          ? {
+                ...selectedType,
+                processings: draftProcessings,
+                processingsCover: draftProcessingsCover,
+                processingsInner: draftProcessingsInner,
+            }
+          : { ...selectedType, processings: draftProcessings };
+      const newDefs = latestDefs.map((d) => (d.name === selectedType.name ? updatedDef : d));
+
+      try {
+          await db.saveProductDefinitions(newDefs);
+          setDefinitions(newDefs);
+          setSelectedType(updatedDef);
+          setProcessingsDirty(false);
+          const total = isBooklet
+              ? draftProcessings.length + draftProcessingsCover.length + draftProcessingsInner.length
+              : draftProcessings.length;
+          showAlert(`'${selectedType.name}' 후가공 ${total}개가 저장되었습니다.`);
+      } catch {
+          showAlert('후가공 설정 저장 중 오류가 발생했습니다.');
+      }
   };
 
   // --- Type Management ---
@@ -73,8 +163,14 @@ export const ProductManager: React.FC = () => {
   };
 
   const handleDeleteType = async (name: string) => {
-      if (await showConfirm(`'${name}' 작업 종류를 삭제하시겠습니까?\n해당 종류의 모든 하위 설정(규격, 용지 등)이 삭제됩니다.`)) {
-          db.deleteJobType(name);
+      if (await showConfirm(`'${name}' 작업 종류를 삭제하시겠습니까?\n\n해당 종류의 모든 하위 설정(규격, 용지 등)이 삭제됩니다.\n확인(삭제)을 누르면 즉시 저장됩니다.`)) {
+          try {
+              await db.deleteJobType(name);
+              if (selectedType?.name === name) setSelectedType(null);
+              await showAlert(`'${name}' 작업 종류가 삭제되었습니다.`);
+          } catch (error) {
+              await showAlert('삭제 실패: ' + getErrorMessage(error));
+          }
       }
   };
 
@@ -129,10 +225,16 @@ export const ProductManager: React.FC = () => {
 
       const categoryName = category === 'sizes' ? '규격' : category === 'paperTypes' ? '용지' : '평량';
 
-      if (await showConfirm(`'${value}' ${categoryName} 항목을 삭제하시겠습니까?`)) {
+      if (await showConfirm(`'${value}' ${categoryName} 항목을 삭제하시겠습니까?\n\n확인(삭제)을 누르면 즉시 저장됩니다.`)) {
           const updatedDef = { ...selectedType, [category]: selectedType[category].filter(v => v !== value) };
           const newDefs = definitions.map(d => d.name === selectedType.name ? updatedDef : d);
-          db.saveProductDefinitions(newDefs);
+          try {
+              await db.saveProductDefinitions(newDefs);
+              setSelectedType(updatedDef);
+              await showAlert(`'${value}' ${categoryName} 항목이 삭제되었습니다.`);
+          } catch (error) {
+              await showAlert('삭제 실패: ' + getErrorMessage(error));
+          }
       }
   };
 
@@ -301,27 +403,142 @@ export const ProductManager: React.FC = () => {
                           </div>
 
                           {/* 4. Processings */}
-                          <div className="space-y-3">
+                          <div className={`space-y-3 ${isBookletProductType(selectedType.name) ? 'xl:col-span-4' : ''}`}>
                               <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <Scissors size={16} className="text-blue-500"/> 후가공 설정 (Processings)
                               </h4>
-                              <p className="text-[10px] text-slate-400">이 품목에 노출시킬 후가공들을 선택해 주세요.</p>
-                              <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
-                                  {allProcessings.map(opt => {
-                                      const isChecked = (selectedType.processings || []).includes(opt);
-                                      return (
-                                          <label key={opt} className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer text-sm font-medium transition-all ${isChecked ? 'bg-blue-50 dark:bg-slate-750 border-blue-200 dark:border-slate-600 text-blue-700 dark:text-blue-300' : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50'}`}>
-                                              <input 
-                                                  type="checkbox" 
-                                                  checked={isChecked} 
-                                                  onChange={() => toggleProcessingOption(opt)} 
-                                                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" 
-                                              />
-                                              <span>{opt}</span>
-                                          </label>
-                                      );
-                                  })}
-                              </div>
+                              <p className="text-[10px] text-slate-400">
+                                  {isBookletProductType(selectedType.name)
+                                      ? '제본·공통 / 표지 / 내지 후가공을 각각 선택한 뒤 하단 후가공 저장을 눌러 주세요.'
+                                      : '여러 개를 체크한 뒤 하단 후가공 저장을 눌러 주세요.'}
+                              </p>
+
+                              {isBookletProductType(selectedType.name) ? (
+                                  <div className="space-y-4">
+                                      {([
+                                          {
+                                              key: 'common' as const,
+                                              title: '제본 및 공통 후가공',
+                                              draft: draftProcessings,
+                                              boxClass: 'bg-slate-50 dark:bg-slate-900 border-slate-200 dark:border-slate-700',
+                                              titleClass: 'text-slate-600 dark:text-slate-300',
+                                              checkedClass: 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-600 text-blue-700 dark:text-blue-100',
+                                          },
+                                          {
+                                              key: 'cover' as const,
+                                              title: '표지 전용 후가공',
+                                              draft: draftProcessingsCover,
+                                              boxClass: 'bg-blue-50/40 dark:bg-slate-900 border-blue-100 dark:border-slate-700',
+                                              titleClass: 'text-blue-600 dark:text-blue-300',
+                                              checkedClass: 'bg-blue-100 dark:bg-blue-900/50 border-blue-300 dark:border-blue-500 text-blue-800 dark:text-blue-100',
+                                          },
+                                          {
+                                              key: 'inner' as const,
+                                              title: '내지 전용 후가공',
+                                              draft: draftProcessingsInner,
+                                              boxClass: 'bg-emerald-50/40 dark:bg-slate-900 border-emerald-100 dark:border-slate-700',
+                                              titleClass: 'text-emerald-600 dark:text-emerald-300',
+                                              checkedClass: 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-600 text-emerald-800 dark:text-emerald-100',
+                                          },
+                                      ]).map((section) => (
+                                          <div key={section.key} className={`rounded-lg border p-3 ${section.boxClass}`}>
+                                              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                                  <span className={`text-xs font-bold ${section.titleClass}`}>{section.title}</span>
+                                                  <div className="flex flex-wrap gap-2">
+                                                      <button
+                                                          type="button"
+                                                          onClick={() => handleSelectAllProcessings(section.key)}
+                                                          className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-600"
+                                                      >
+                                                          전체 선택
+                                                      </button>
+                                                      <button
+                                                          type="button"
+                                                          onClick={() => handleClearAllProcessings(section.key)}
+                                                          className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600"
+                                                      >
+                                                          전체 해제
+                                                      </button>
+                                                      <span className="text-[11px] text-slate-500 dark:text-slate-400 self-center">
+                                                          선택 {section.draft.length} / {allProcessings.length}
+                                                      </span>
+                                                  </div>
+                                              </div>
+                                              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                                                  {allProcessings.map((opt) => {
+                                                      const isChecked = section.draft.includes(opt);
+                                                      return (
+                                                          <label
+                                                              key={`${section.key}-${opt}`}
+                                                              className={`flex items-center gap-2 px-2 py-1.5 rounded border cursor-pointer text-xs font-medium transition-all ${isChecked ? section.checkedClass : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}
+                                                          >
+                                                              <input
+                                                                  type="checkbox"
+                                                                  checked={isChecked}
+                                                                  onChange={() => toggleProcessingOption(opt, section.key)}
+                                                                  className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                                                              />
+                                                              <span>{opt}</span>
+                                                          </label>
+                                                      );
+                                                  })}
+                                              </div>
+                                          </div>
+                                      ))}
+                                  </div>
+                              ) : (
+                                  <>
+                                      <div className="flex flex-wrap gap-2">
+                                          <button
+                                              type="button"
+                                              onClick={() => handleSelectAllProcessings('common')}
+                                              className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-600"
+                                          >
+                                              전체 선택
+                                          </button>
+                                          <button
+                                              type="button"
+                                              onClick={() => handleClearAllProcessings('common')}
+                                              className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600"
+                                          >
+                                              전체 해제
+                                          </button>
+                                          <span className="text-[11px] text-slate-500 dark:text-slate-400 self-center">
+                                              선택 {draftProcessings.length} / {allProcessings.length}
+                                          </span>
+                                      </div>
+                                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                                          {allProcessings.map(opt => {
+                                              const isChecked = draftProcessings.includes(opt);
+                                              return (
+                                                  <label key={opt} className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer text-sm font-medium transition-all ${isChecked ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-600 text-blue-700 dark:text-blue-100' : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
+                                                      <input 
+                                                          type="checkbox" 
+                                                          checked={isChecked} 
+                                                          onChange={() => toggleProcessingOption(opt, 'common')} 
+                                                          className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" 
+                                                      />
+                                                      <span>{opt}</span>
+                                                  </label>
+                                              );
+                                          })}
+                                      </div>
+                                  </>
+                              )}
+
+                              <button
+                                  type="button"
+                                  onClick={handleSaveProcessings}
+                                  disabled={!processingsDirty}
+                                  className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors ${
+                                      processingsDirty
+                                          ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
+                                          : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'
+                                  }`}
+                              >
+                                  <Save size={16} />
+                                  후가공 저장
+                              </button>
                           </div>
                       </div>
                   </div>

@@ -55,15 +55,42 @@ console.log('Path patching complete. Running Vite build programmatically...');
 // Load and run Vite build
 const vitePath = path.join(projectRoot, 'node_modules', 'vite', 'dist', 'node', 'index.js');
 import('file:///' + vitePath.replace(/\\/g, '/')).then(({ build }) => {
+  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
+  const buildId = `${pkg.version}-${Date.now()}`;
   return build({
     root: projectRoot.replace(/\\/g, '/'),
     base: './',
+    define: {
+      __APP_VERSION__: JSON.stringify(pkg.version),
+      __APP_BUILD_ID__: JSON.stringify(buildId),
+    },
     build: {
       outDir: path.join(projectRoot, 'dist').replace(/\\/g, '/'),
     }
+  }).then(() => {
+    const distDir = path.join(projectRoot, 'dist');
+    const manifest = {
+      version: pkg.version,
+      buildId,
+      builtAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(path.join(distDir, 'version.json'), JSON.stringify(manifest, null, 2));
+
+    const indexPath = path.join(distDir, 'index.html');
+    if (fs.existsSync(indexPath)) {
+      let html = fs.readFileSync(indexPath, 'utf-8');
+      if (!html.includes('name="ezpw-build-id"')) {
+        html = html.replace(
+          '</head>',
+          `    <meta name="ezpw-build-id" content="${buildId}" />\n  </head>`
+        );
+        fs.writeFileSync(indexPath, html);
+      }
+    }
+
+    console.log('Build succeeded programmatically with patched paths!');
+    console.log(`version.json → v${pkg.version} (${buildId})`);
   });
-}).then(() => {
-  console.log('Build succeeded programmatically with patched paths!');
 }).catch((err) => {
   console.error('Build failed programmatically:', err);
   process.exit(1);

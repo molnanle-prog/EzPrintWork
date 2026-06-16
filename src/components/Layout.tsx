@@ -11,6 +11,8 @@ import { AdBanner } from './common/AdBanner';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { toast } from 'sonner';
+import { APP_VERSION } from '../utils/autoUpdate';
+import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -171,7 +173,6 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isPinned, setIsPinned] = useState(false);
   const [opacity, setOpacity] = useState(1);
-  const [appVersion, setAppVersion] = useState('2.0.0 (Cloud)');
   const sidebarRef = useRef<HTMLElement>(null);
 
 
@@ -245,7 +246,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
           <div className="flex items-center gap-2 px-3 text-slate-300">
               <Printer size={isPinned ? 14 : 16} className={isPinned ? "text-yellow-400" : "text-blue-500"} />
               <span className={`font-bold tracking-wide ${isPinned ? 'text-[10px]' : 'text-xs'}`}>
-                  {isPinned ? `EzPrint v${appVersion} (위젯)` : `EzPrintWork Cloud v${appVersion}`}
+                  {isPinned ? `EzPrint v${APP_VERSION} (위젯)` : `EzPrintWork Cloud v${APP_VERSION}`}
               </span>
           </div>
           
@@ -414,19 +415,12 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                     {!isElectron && (
                         <div className="space-y-1">
                             <button 
-                                onClick={() => {
-                                    const link = document.createElement('a');
-                                    link.href = '/downloads/EzPrintWork-Setup.zip';
-                                    link.setAttribute('download', 'EzPrintWork-Setup.zip');
-                                    document.body.appendChild(link);
-                                    link.click();
-                                    document.body.removeChild(link);
-                                }} 
+                                onClick={() => triggerDesktopSetupDownload()} 
                                 className={`flex items-center w-full px-3 py-2 rounded-xl transition-all text-slate-500 hover:text-white hover:bg-slate-800 ${!isSidebarExpanded ? 'justify-center' : 'gap-4'}`}
-                                title={!isSidebarExpanded ? '데스크톱 앱 다운로드 (.zip)' : ''}
+                                title={!isSidebarExpanded ? '데스크톱 앱 다운로드 (.exe)' : ''}
                             >
                                 <ArrowDownToLine size={22} className="text-blue-500 hover:scale-110 transition-transform" />
-                                {isSidebarExpanded && <span className="text-[15px] font-bold text-slate-300">데스크톱 앱 (.zip)</span>}
+                                {isSidebarExpanded && <span className="text-[15px] font-bold text-slate-300">데스크톱 앱 (.exe)</span>}
                             </button>
                         </div>
                     )}
@@ -513,17 +507,10 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                         <button 
-                            onClick={() => {
-                                const link = document.createElement('a');
-                                link.href = '/downloads/EzPrintWork-Setup.zip';
-                                link.setAttribute('download', 'EzPrintWork-Setup.zip');
-                                document.body.appendChild(link);
-                                link.click();
-                                document.body.removeChild(link);
-                            }}
+                            onClick={() => triggerDesktopSetupDownload()}
                             className="bg-white text-blue-700 hover:bg-blue-50 px-3.5 py-1.5 rounded-lg text-xs font-black shadow-sm transition-all active:scale-95 whitespace-nowrap"
                         >
-                            PC 전용 앱 (.zip)
+                            PC 전용 앱 (.exe)
                         </button>
                         <button 
                             onClick={() => {

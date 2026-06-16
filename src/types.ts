@@ -187,7 +187,18 @@ export interface JobTypeDefinition {
   sizes: string[]; 
   paperTypes: string[]; 
   paperWeights: string[]; 
-  processings?: string[]; 
+  /** 일반 품목 후가공 / 책자·카탈로그 제본·공통 후가공 */
+  processings?: string[];
+  /** 책자·카탈로그 표지 전용 후가공 */
+  processingsCover?: string[];
+  /** 책자·카탈로그 내지 전용 후가공 */
+  processingsInner?: string[];
+}
+
+export interface ProductProcessingSets {
+  common: string[];
+  cover: string[];
+  inner: string[];
 }
 
 export interface PricingConfig {
@@ -258,6 +269,27 @@ export interface AuthData {
 }
 
 // --- Electron Bridge ---
+
+export type ElectronUpdaterPhase =
+  | 'checking'
+  | 'available'
+  | 'none'
+  | 'downloading'
+  | 'downloaded'
+  | 'error';
+
+export interface ElectronUpdaterStatus {
+  phase: ElectronUpdaterPhase;
+  version?: string;
+  releaseDate?: string;
+  percent?: number;
+  transferred?: number;
+  total?: number;
+  message?: string;
+  /** true면 자동 확인 실패 — UI 토스트 생략 */
+  silent?: boolean;
+}
+
 export interface IElectronAPI {
   saveFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
   readFile: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string; mtime?: number }>;
@@ -282,6 +314,17 @@ export interface IElectronAPI {
   getLicenseInfo: () => Promise<any>;
 
   getAppVersion: () => Promise<string>;
+  /** GitHub Release 기반 데스크톱 설치본 자동 업데이트 */
+  updaterCheck?: () => Promise<{
+    ok: boolean;
+    currentVersion: string;
+    updateInfo?: { version: string; releaseDate?: string } | null;
+    error?: string;
+  }>;
+  updaterDownload?: () => Promise<{ ok: boolean; error?: string }>;
+  updaterInstall?: () => Promise<{ ok: boolean }>;
+  onUpdaterStatus?: (callback: (payload: ElectronUpdaterStatus) => void) => () => void;
+  createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   getUserDataPath: () => Promise<string>;
   findLegacyDbFiles: () => Promise<{ name: string; path: string; size: string; mtime: string }[]>;
   minimize: () => void;

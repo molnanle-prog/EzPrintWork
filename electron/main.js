@@ -2,6 +2,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { setupAutoUpdater } = require('./updater');
 
 // 프로토콜 등록 (ezpw://)
 if (process.defaultApp) {
@@ -40,6 +41,8 @@ function createWindow() {
     } else {
         win.loadURL('https://ez-hub.kr/ezpw/');
     }
+
+    return win;
 }
 
 // 프로토콜 파싱 및 폴더 열기 실행 함수
@@ -83,7 +86,8 @@ if (!gotTheLock) {
     });
 
     app.whenReady().then(() => {
-        createWindow();
+        const win = createWindow();
+        setupAutoUpdater(win);
         // 앱이 프로토콜 호출로 처음 켜졌을 때 처리
         handleProtocolUrl(process.argv);
     });
@@ -325,4 +329,47 @@ ipcMain.on('window-maximize', () => {
 ipcMain.on('window-close', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.close();
+});
+
+function resolveShortcutIconPath() {
+    if (app.isPackaged) {
+        return process.execPath;
+    }
+
+    const devIcon = path.join(__dirname, '..', 'public', 'icon.ico');
+    if (fs.existsSync(devIcon)) {
+        return devIcon;
+    }
+
+    return process.execPath;
+}
+
+ipcMain.handle('create-desktop-shortcut', async () => {
+    if (process.platform !== 'win32') {
+        return { ok: false, error: 'Windows에서만 지원됩니다.' };
+    }
+
+    try {
+        const desktopDir = app.getPath('desktop');
+        const shortcutPath = path.join(desktopDir, 'EzPrintWork.lnk');
+        const target = process.execPath;
+        const icon = resolveShortcutIconPath();
+
+        const ok = shell.writeShortcutLink(shortcutPath, 'replace', {
+            target,
+            cwd: path.dirname(target),
+            icon,
+            iconIndex: 0,
+            description: 'EzPrintWork - 인쇄소 업무 관리',
+            args: '',
+        });
+
+        if (!ok) {
+            return { ok: false, error: '바로가기 생성에 실패했습니다.' };
+        }
+
+        return { ok: true, path: shortcutPath };
+    } catch (error) {
+        return { ok: false, error: error?.message || '바로가기 생성 중 오류가 발생했습니다.' };
+    }
 });

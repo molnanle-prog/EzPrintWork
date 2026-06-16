@@ -10,6 +10,7 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { useDialog } from '../../contexts/DialogContext';
 import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv } from 'lucide-react';
 import { toast } from 'sonner';
+import { resolveClientSmsNumber } from '../../utils/clientSms';
 import {
   DndContext,
   DragOverlay,
@@ -262,9 +263,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             if (clientInfo && clientInfo.sendSmsOnComplete === false) {
                 toast.info(`'${draggedJob.clientName}' 거래처는 알림 문자 수신 거부 상태이므로 발송을 건너뜁니다.`);
             } else {
-                const targetPhone = (clientInfo && clientInfo.customSmsNumber) 
-                    ? clientInfo.customSmsNumber 
-                    : draggedJob.clientPhone;
+                const targetPhone = resolveClientSmsNumber(clientInfo || {}, draggedJob.clientPhone);
                 
                 if (targetPhone) {
                     const companyName = db.getCompanyInfo().name || 'EzPrintWork';

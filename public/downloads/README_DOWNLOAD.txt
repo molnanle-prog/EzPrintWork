@@ -1,2 +1,2 @@
-이 폴더(public/downloads/) 안에 대표님이 빌드하신 진짜 'EzPrintWork_Setup.exe' 파일을 넣어주세요!
-파일을 넣은 뒤 'deploy.bat'를 실행하시면 홈페이지(https://ez-hub.kr/ezpw/downloads/EzPrintWork_Setup.exe)에서 원클릭 다운로드가 완벽하게 활성화됩니다.
+이 폴더에는 deploy:app 실행 시 EzPrintWork-Setup.exe 가 자동 복사됩니다.
+홈페이지 다운로드: https://ez-hub.kr/downloads/EzPrintWork-Setup.exe

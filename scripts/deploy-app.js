@@ -16,10 +16,14 @@ function log(message, color = colors.reset) {
   console.log(`${color}${message}${colors.reset}`);
 }
 
-function runCommand(command, cwd) {
+function runCommand(command, cwd, extraEnv = {}) {
   log(`\n> 실행 중: ${command}`, colors.cyan);
   try {
-    const output = execSync(command, { stdio: 'pipe', cwd });
+    const output = execSync(command, {
+      stdio: 'pipe',
+      cwd,
+      env: { ...process.env, ...extraEnv },
+    });
     console.log(output.toString());
   } catch (error) {
     log(`[에러 발생] 명령어 실행 실패: ${command}`, colors.red);
@@ -65,22 +69,27 @@ async function main() {
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const downloadsDir = path.join(homepageDir, 'public', 'downloads');
   const distDir = path.join(currentDir, 'dist');
-  const releaseDir = path.join(currentDir, 'release');
-  const deployExeDirect = process.env.DEPLOY_SETUP_EXE === '1';
+  const releaseDir = path.join(currentDir, process.env.ELECTRON_BUILD_OUTPUT || 'release');
+  const releaseDirName = path.basename(releaseDir);
+  const deployExeDirect = process.env.DEPLOY_SETUP_ZIP !== '1';
   const MIN_SETUP_BYTES = 15 * 1024 * 1024;
+  const GITHUB_EXE_URL = 'https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/EzPrintWork-Setup.exe';
+  const appVersion = require(path.join(currentDir, 'package.json')).version;
+  const ghToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 
   log('===================================================', colors.bold + colors.green);
   log('   🚀 EzPrintWork 앱 링킹 & 원클릭 통합 배포 가동', colors.bold + colors.green);
   log('===================================================', colors.bold + colors.green);
   log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
   if (deployExeDirect) {
-    log('* .exe 직접 배포 모드 (Firebase Blaze 요금제 필요)', colors.yellow);
+    log('* exe 다운로드: GitHub Releases (Firebase Spark exe 호스팅 불가)', colors.green);
+    log(`* ${GITHUB_EXE_URL}`, colors.cyan);
   } else {
-    log('* .zip 배포 모드 (Spark 무료 요금제 호환 — 압축 해제 후 설치)', colors.cyan);
+    log('* .zip 배포 모드 (DEPLOY_SETUP_ZIP=1 — 압축 해제 후 설치)', colors.yellow);
   }
 
   // 0. 파일 점유 에러 예방을 위해 powershell 강제 삭제 구동
-  if (fs.existsSync(distDir)) {
+  if (fs.existsSync(distDir) && process.env.DEPLOY_SKIP_BUILD !== '1') {
     log('\n[0/5] 기존 dist 빌드 폴더를 깨끗하게 청소 중...', colors.cyan);
     try {
       execSync('powershell -Command "if (Test-Path dist) { Remove-Item -Recurse -Force dist }"', { stdio: 'ignore', cwd: currentDir });
@@ -91,16 +100,35 @@ async function main() {
   }
 
   // 1. EzPrintWork 빌드 (Vite & Type Check 우회)
-  log('\n[1/5] EzPrintWork 웹 컴파일 중...', colors.yellow);
-  runCommand('npm run build', currentDir);
+  if (process.env.DEPLOY_SKIP_BUILD === '1') {
+    log('\n[1/5] 웹 빌드 생략 (DEPLOY_SKIP_BUILD=1)', colors.yellow);
+  } else {
+    log('\n[1/5] EzPrintWork 웹 컴파일 중...', colors.yellow);
+    runCommand('npm run build', currentDir);
+  }
 
-  // 2. 일렉트론 데스크톱 설치 패키지 (.exe) 패키징 구동
-  log('\n[2/5] PC용 데스크톱 설치 프로그램 (.exe) 패키징 컴파일 중...', colors.yellow);
-  log('* 이 작업은 다소 시간이 소요될 수 있습니다 (약 30초~1분)...', colors.cyan);
-  runCommand('npx electron-builder', currentDir);
+  // 2. Electron 설치본 빌드 + GitHub Release 업로드 (자동 업데이트용)
+  if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
+    log('\n[2/5] Electron 빌드/Release 생략 (DEPLOY_SKIP_ELECTRON=1)', colors.yellow);
+  } else {
+    log('\n[2/5] PC용 설치 프로그램 (.exe) 빌드 및 GitHub Release 업로드...', colors.yellow);
+    const builderOutputFlag = `-c.directories.output=${releaseDirName}`;
+    runCommand(`npx electron-builder --publish never "${builderOutputFlag}"`, currentDir);
+    if (ghToken) {
+      log('* GitHub Release 업로드 중...', colors.green);
+      log(`* Release: https://github.com/molnanle-prog/EzPrintWork/releases/tag/v${appVersion}`, colors.cyan);
+      runCommand('node scripts/publish-github-release.js', currentDir, {
+        GH_TOKEN: ghToken,
+        ELECTRON_BUILD_OUTPUT: releaseDirName,
+      });
+    } else {
+      log('* GitHub Release 업로드 생략 (GH_TOKEN 없음)', colors.yellow);
+      log('* 업로드: set GH_TOKEN=... && npm run publish:release', colors.yellow);
+    }
+  }
 
-  // 3. 빌드된 설치 파일 감지 및 리네임하여 홈페이지 다운로드 폴더로 이식
-  log('\n[3/5] 빌드된 설치 파일을 홈페이지 다운로드 디렉토리로 연동 중...', colors.yellow);
+  // 3. 다운로드 manifest + 웹앱 이식 (exe는 GitHub Releases — Firebase Spark exe 호스팅 불가)
+  log('\n[3/5] download-manifest 갱신 및 웹앱 홈페이지 연동...', colors.yellow);
   try {
     if (!fs.existsSync(downloadsDir)) {
       fs.mkdirSync(downloadsDir, { recursive: true });
@@ -108,19 +136,21 @@ async function main() {
 
     const files = fs.readdirSync(releaseDir);
     const setupCandidates = files
-      .filter(f => f.endsWith('.exe') && f.includes('Setup'))
+      .filter(f => f.endsWith('.exe') && /EzPrintWork-Setup/i.test(f))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(releaseDir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
     const setupFile = setupCandidates[0]?.name;
 
     if (setupFile) {
       const sourcePath = path.join(releaseDir, setupFile);
-      const targetZipPath = path.join(downloadsDir, 'EzPrintWork-Setup.zip');
-      const targetExePath = path.join(downloadsDir, 'EzPrintWork-Setup.exe');
       const sourceStat = fs.statSync(sourcePath);
+      const setupExeName = 'EzPrintWork-Setup.exe';
+      const githubDownloadUrl =
+        `https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/${setupExeName}`;
+      const githubVersionUrl =
+        `https://github.com/molnanle-prog/EzPrintWork/releases/download/v${appVersion}/${setupExeName}`;
 
-      log(`* 감지된 원본 파일: ${setupFile}`, colors.cyan);
-      log(`* 설치 파일 용량: ${formatBytes(sourceStat.size)}`, colors.cyan);
+      log(`* 감지된 설치 파일: ${setupFile} (${formatBytes(sourceStat.size)})`, colors.cyan);
 
       if (sourceStat.size < MIN_SETUP_BYTES) {
         throw new Error(
@@ -128,65 +158,65 @@ async function main() {
         );
       }
 
-      if (fs.existsSync(targetZipPath)) fs.unlinkSync(targetZipPath);
-      if (fs.existsSync(targetExePath)) fs.unlinkSync(targetExePath);
-
-      log('* 데스크톱 설치 파일을 Zip으로 압축 중...', colors.cyan);
-      execSync(`powershell -Command "Compress-Archive -Path '${sourcePath}' -DestinationPath '${targetZipPath}' -Force"`);
-
-      const zipStat = fs.statSync(targetZipPath);
-      log(`* Zip 용량: ${formatBytes(zipStat.size)} (원본 ${formatBytes(sourceStat.size)})`, colors.cyan);
-
-      if (zipStat.size < sourceStat.size * 0.4) {
-        throw new Error('Zip 압축 결과 용량 검증 실패 — 손상된 파일일 수 있습니다.');
-      }
-      log('✓ EzPrintWork-Setup.zip 생성 완료', colors.green);
-
-      let downloadUrl = '/downloads/EzPrintWork-Setup.zip';
-      let downloadType = 'zip';
-
-      if (deployExeDirect) {
-        fs.copyFileSync(sourcePath, targetExePath);
-        const exeStat = fs.statSync(targetExePath);
-        if (exeStat.size !== sourceStat.size) {
-          throw new Error('.exe 복사 후 용량이 일치하지 않습니다.');
+      // Firebase Hosting(Spark)에 exe/zip 올리면 배포 실패 — 로컬 copies 제거
+      for (const name of fs.readdirSync(downloadsDir)) {
+        if (/\.(exe|zip)$/i.test(name)) {
+          fs.unlinkSync(path.join(downloadsDir, name));
+          log(`* Hosting 제한: downloads/${name} 제거 (GitHub Release 사용)`, colors.yellow);
         }
-        downloadUrl = '/downloads/EzPrintWork-Setup.exe';
-        downloadType = 'exe';
-        log(`✓ EzPrintWork-Setup.exe 직접 배포 (${formatBytes(exeStat.size)})`, colors.green);
-      } else {
-        log('* Spark 요금제 호환: .exe는 zip 안에 포함됩니다. 압축 해제 후 설치 프로그램을 실행하세요.', colors.cyan);
       }
 
       fs.writeFileSync(
         path.join(downloadsDir, 'download-manifest.json'),
         JSON.stringify({
-          version: require(path.join(currentDir, 'package.json')).version,
-          setupFile: deployExeDirect ? 'EzPrintWork-Setup.exe' : 'EzPrintWork-Setup.zip',
-          setupBytes: deployExeDirect ? fs.statSync(targetExePath).size : zipStat.size,
+          version: appVersion,
+          setupFile: setupExeName,
+          latestSetupFile: setupExeName,
+          setupExeName,
+          setupBytes: sourceStat.size,
           exeBytes: sourceStat.size,
-          downloadUrl,
-          downloadType,
+          downloadUrl: githubDownloadUrl,
+          latestDownloadUrl: githubDownloadUrl,
+          githubReleaseUrl: `https://github.com/molnanle-prog/EzPrintWork/releases/tag/v${appVersion}`,
+          githubReleaseLatest: 'https://github.com/molnanle-prog/EzPrintWork/releases/latest',
+          githubVersionDownloadUrl: githubVersionUrl,
+          downloadType: 'exe',
+          host: 'github-releases',
           updatedAt: new Date().toISOString(),
-          installHint: deployExeDirect
-            ? '다운로드 후 바로 설치 프로그램을 실행하세요.'
-            : 'zip을 압축 해제한 뒤 EzPrintWork-Setup.exe를 실행하세요.',
+          installHint: '다운로드 후 EzPrintWork-Setup.exe 설치 프로그램을 실행하세요.',
         }, null, 2)
       );
+      log(`✓ GitHub exe 다운로드: ${githubDownloadUrl}`, colors.green);
+
+      const latestYmlSource = path.join(releaseDir, 'latest.yml');
+      if (fs.existsSync(latestYmlSource)) {
+        let yml = fs.readFileSync(latestYmlSource, 'utf-8');
+        // path는 파일명만 — 전체 URL이면 Windows가 바탕화면/다운로드 폴더에 exe를 저장할 수 있음
+        yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
+        yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
+        fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
+        log('✓ latest.yml → ez-hub.kr/downloads/ (앱 자동업데이트용)', colors.green);
+      }
+
+      if (ghToken) {
+        log('* GitHub Release는 electron-builder --publish always 로 업로드됨', colors.cyan);
+      } else {
+        log('* GitHub Release 수동 업로드: set GH_TOKEN=... && node scripts/publish-github-release.js', colors.yellow);
+      }
     } else {
-      throw new Error('release 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.');
+      throw new Error(`${releaseDirName} 폴더에서 EzPrintWork .exe 설치 파일을 찾을 수 없습니다.`);
     }
 
     // 웹앱용 리액트 소스도 이식
     copyFolderSync(distDir, targetDir);
 
-    const appVersion = require(path.join(currentDir, 'package.json')).version;
     const versionManifestPath = path.join(targetDir, 'version.json');
+    const distVersionPath = path.join(distDir, 'version.json');
     let buildId = `${appVersion}-${Date.now()}`;
-    if (fs.existsSync(versionManifestPath)) {
+    if (fs.existsSync(distVersionPath)) {
       try {
-        const existing = JSON.parse(fs.readFileSync(versionManifestPath, 'utf-8'));
-        if (existing.buildId) buildId = existing.buildId;
+        const distManifest = JSON.parse(fs.readFileSync(distVersionPath, 'utf-8'));
+        if (distManifest.buildId) buildId = distManifest.buildId;
       } catch (_) { /* use fresh buildId */ }
     }
     fs.writeFileSync(

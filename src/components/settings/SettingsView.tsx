@@ -15,10 +15,17 @@ import { ProcessingManager } from './ProcessingManager';
 import { PlanManager } from './PlanManager';
 import { Users, ScrollText, Building2, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { isRootSettingsTab } from '../../utils/adminAccess';
 
 export const SettingsView: React.FC = () => {
-  const { currentUser } = useAuth();
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.email === 'molnanle@gmail.com';
+  const {
+    currentUser,
+    canAccessAdminSettings,
+    canAccessRootSettings,
+    isTenantOwner,
+    isSiteAdmin,
+  } = useAuth();
+  const isAdmin = canAccessAdminSettings || currentUser?.email === 'molnanle@gmail.com';
   
   // Default to 'profile' for regular users, 'staff' for admin
   const [activeSubTab, setActiveSubTab] = useState(isAdmin ? 'staff' : 'profile');
@@ -28,13 +35,16 @@ export const SettingsView: React.FC = () => {
     if (!isAdmin && activeSubTab !== 'profile') {
         setActiveSubTab('profile');
     }
-  }, [isAdmin, activeSubTab]);
+    if (isAdmin && !canAccessRootSettings && isRootSettingsTab(activeSubTab)) {
+        setActiveSubTab('staff');
+    }
+  }, [isAdmin, activeSubTab, canAccessRootSettings]);
 
   const renderContent = () => {
     switch (activeSubTab) {
         case 'profile': return <ProfileManager />;
         case 'staff': return isAdmin ? <StaffManager /> : null;
-        case 'plan': return isAdmin ? <PlanManager /> : null;
+        case 'plan': return canAccessRootSettings ? <PlanManager /> : null;
         case 'company': return isAdmin ? <CompanyInfoManager /> : null;
         case 'status': return isAdmin ? <StatusManager /> : null; 
         case 'product': return <ProductManager />; 
@@ -43,27 +53,31 @@ export const SettingsView: React.FC = () => {
         case 'client': return isAdmin ? <ClientManager /> : null;
         case 'price': return isAdmin ? <PriceManager /> : null;
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
-        case 'backup': return isAdmin ? <BackupManager /> : null;
+        case 'backup': return canAccessRootSettings ? <BackupManager /> : null;
         default: return isAdmin ? <StaffManager /> : <ProfileManager />;
     }
   };
 
   const allMenuItems = [
-    { id: 'profile', label: '개인정보 변경', icon: User, adminOnly: false },
-    { id: 'staff', label: '직원 관리', icon: Users, adminOnly: true },
-    { id: 'plan', label: '요금제 / 인원', icon: Crown, adminOnly: true },
-    { id: 'company', label: '회사 정보', icon: Building, adminOnly: true },
-    { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true }, 
-    { id: 'product', label: '상품 관리', icon: Package, adminOnly: true }, 
-    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: true },
-    { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true },
-    { id: 'client', label: '거래처', icon: Building2, adminOnly: true },
-    { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true },
-    { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true }, // Added
-    { id: 'backup', label: '백업/복원', icon: Database, adminOnly: true },
+    { id: 'profile', label: '개인정보 변경', icon: User, adminOnly: false, rootOnly: false },
+    { id: 'staff', label: '직원 관리', icon: Users, adminOnly: true, rootOnly: false },
+    { id: 'plan', label: '요금제 / 인원', icon: Crown, adminOnly: true, rootOnly: true },
+    { id: 'company', label: '회사 정보', icon: Building, adminOnly: true, rootOnly: false },
+    { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true, rootOnly: false }, 
+    { id: 'product', label: '상품 관리', icon: Package, adminOnly: true, rootOnly: false }, 
+    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: true, rootOnly: false },
+    { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true, rootOnly: false },
+    { id: 'client', label: '거래처', icon: Building2, adminOnly: true, rootOnly: false },
+    { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true, rootOnly: false },
+    { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true, rootOnly: false },
+    { id: 'backup', label: '백업/복원', icon: Database, adminOnly: true, rootOnly: true },
   ];
 
-  const visibleMenuItems = allMenuItems.filter(item => isAdmin || !item.adminOnly);
+  const visibleMenuItems = allMenuItems.filter((item) => {
+    if (item.rootOnly) return canAccessRootSettings;
+    if (item.adminOnly) return isAdmin;
+    return true;
+  });
 
   return (
     <div className="flex flex-col lg:flex-row h-full gap-6">
@@ -72,8 +86,9 @@ export const SettingsView: React.FC = () => {
           <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden h-auto lg:h-full flex flex-col transition-colors">
              <div className="p-4 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 flex items-center gap-2 text-slate-700 dark:text-slate-200 font-bold transition-colors">
                 <Shield size={20} />
-                {isAdmin ? '관리자 설정' : '시스템 설정'}
-                {isAdmin && <span className="text-xs bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded ml-auto">ROOT</span>}
+                {isAdmin ? (isTenantOwner ? '관리자 설정' : '사내 관리자 설정') : '시스템 설정'}
+                {isTenantOwner && <span className="text-xs bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 px-2 py-0.5 rounded ml-auto">메인</span>}
+                {isSiteAdmin && <span className="text-xs bg-blue-100 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400 px-2 py-0.5 rounded ml-auto">사내</span>}
              </div>
              <nav className="p-2 space-y-1 flex lg:block overflow-x-auto lg:overflow-visible">
                  {visibleMenuItems.map(item => {

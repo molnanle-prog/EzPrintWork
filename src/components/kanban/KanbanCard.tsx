@@ -122,7 +122,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         const updatedJob = {
           ...job,
           assignedStaffIds,
-          assignedStaffId: assignedStaffIds[0] || undefined,
+          ...(assignedStaffIds[0] ? { assignedStaffId: assignedStaffIds[0] } : {}),
           history: [
             ...(job.history || []),
             {

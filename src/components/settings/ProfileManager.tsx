@@ -2,7 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { Staff } from '../../types';
-import { User, Mail, Phone, Shield, Lock, Save, Building, PhoneCall, CheckCircle2, AlertCircle } from 'lucide-react';
+import { User, Mail, Phone, Shield, Lock, Save, Building, PhoneCall, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { APP_BUILD_ID, APP_VERSION } from '../../utils/autoUpdate';
+import { manualUpdateCheck } from '../../hooks/useAutoUpdate';
 import { doc, setDoc } from 'firebase/firestore';
 import { db as firestore } from '../../services/firebase';
 
@@ -349,6 +351,28 @@ export const ProfileManager: React.FC = () => {
                   </>
                 )}
               </div>
+            </div>
+
+            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
+                  프로그램 버전
+                </p>
+                <p className="text-sm font-black text-slate-800 dark:text-slate-100">
+                  v{APP_VERSION}
+                </p>
+                <p className="text-[10px] text-slate-400 mt-0.5 font-mono truncate max-w-xs">
+                  build {APP_BUILD_ID}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void manualUpdateCheck()}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
+              >
+                <RefreshCw size={15} />
+                업데이트 확인
+              </button>
             </div>
 
             {/* Submit Button */}
