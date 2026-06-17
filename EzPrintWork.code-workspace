@@ -1,0 +1,18 @@
+{
+  "folders": [
+    {
+      "name": "EzPrintWork",
+      "path": "."
+    },
+    {
+      "name": "ez-hub-homepage",
+      "path": "../../ez-hub-homepage"
+    }
+  ],
+  "settings": {
+    "npm.autoDetect": "on",
+    "npm.enableRunFromFolder": true,
+    "npm.packageManager": "npm",
+    "npm.exclude": "**/node_modules/**"
+  }
+}

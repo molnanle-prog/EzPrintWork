@@ -1,0 +1,7 @@
+{
+  "npm.autoDetect": "on",
+  "npm.enableRunFromFolder": true,
+  "npm.packageManager": "npm",
+  "npm.scriptExplorerAction": "run",
+  "npm.exclude": "**/node_modules/**"
+}

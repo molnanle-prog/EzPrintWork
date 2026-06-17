@@ -18,6 +18,7 @@ interface KanbanColumnProps {
   onRightClickJob?: (job: Job) => void;
   onStatusChange: (job: Job, direction: 'next' | 'prev') => void;
   currentUserId?: string;
+  resolveIsMyJob?: (job: Job) => boolean;
   isCompact?: boolean;
   showAd?: boolean;
   isTvMode?: boolean;
@@ -32,6 +33,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   onRightClickJob,
   onStatusChange, 
   currentUserId,
+  resolveIsMyJob,
   isCompact = false,
   showAd = false,
   isTvMode = false
@@ -101,7 +103,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
                 onSelect={onSelectJob}
                 onRightClick={onRightClickJob}
                 onStatusChange={onStatusChange}
-                isMyJob={currentUserId ? (job.assignedStaffIds?.includes(currentUserId) || job.assignedStaffId === currentUserId) : false}
+                isMyJob={resolveIsMyJob ? resolveIsMyJob(job) : false}
                 isCompact={isCompact}
                 currentUserId={currentUserId}
                 isTvMode={isTvMode}

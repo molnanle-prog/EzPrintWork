@@ -4,6 +4,7 @@ import { db, getErrorMessage } from '../../services/dataService';
 import { Job, AdminInstruction, Priority, Staff, JobStatusDefinition } from '../../types';
 import { AlertCircle, Clock, Plus, Loader2, Tv } from 'lucide-react';
 import { JobStatusItem } from './JobStatusItem';
+import { isJobAssignedToUser } from '../../utils/staffMatch';
 import { InstructionPanel } from './InstructionPanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
@@ -277,7 +278,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
              </div>
           )}
           {sortedJobs.map((job) => {
-             const isMyJob = currentUser && job.assignedStaffId === currentUser.id;
+             const isMyJob = currentUser ? isJobAssignedToUser(job, currentUser, staff) : false;
              return (
                <div 
                  key={job.id} 

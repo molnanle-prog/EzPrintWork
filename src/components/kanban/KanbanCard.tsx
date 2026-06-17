@@ -7,7 +7,14 @@ import {
 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { useTheme } from '../../contexts/ThemeContext';
+import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
+import {
+  isJobAssignedToUser,
+  addUserToJobAssignees,
+  removeUserFromJobAssignees,
+  getStaffIdForUser,
+} from '../../utils/staffMatch';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 
@@ -39,6 +46,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   isDragOverlay = false
 }) => {
   const { theme } = useTheme();
+  const { currentUser } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
 
   const {
@@ -105,19 +113,17 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       // 1. 'A' 키: 담당자 즉시 나에게 지정 / 해제
       if (key === 'a') {
         e.preventDefault();
-        if (!currentUserId) {
+        if (!currentUser) {
           toast.error('로그인 세션 정보를 찾을 수 없습니다.');
           return;
         }
-        
-        let assignedStaffIds = [...(job.assignedStaffIds || [])];
-        const isAssignedToMe = assignedStaffIds.includes(currentUserId);
-        
-        if (isAssignedToMe) {
-          assignedStaffIds = assignedStaffIds.filter(id => id !== currentUserId);
-        } else {
-          assignedStaffIds.push(currentUserId);
-        }
+
+        const staffList = db.getStaff();
+        const isAssignedToMe = isJobAssignedToUser(job, currentUser, staffList);
+        const assignedStaffIds = isAssignedToMe
+          ? removeUserFromJobAssignees(job, currentUser, staffList)
+          : addUserToJobAssignees(job, currentUser, staffList);
+        const assignStaffId = getStaffIdForUser(staffList, currentUser);
 
         const updatedJob = {
           ...job,
@@ -127,7 +133,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             ...(job.history || []),
             {
               timestamp: new Date().toISOString(),
-              staffId: currentUserId,
+              staffId: assignStaffId || currentUser.id,
               action: '단축키 담당자 변경',
               details: isAssignedToMe ? '본인 해제' : '본인 지정'
             }

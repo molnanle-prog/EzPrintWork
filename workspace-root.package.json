@@ -1,0 +1,16 @@
+{
+  "name": "ezprintwork-workspace",
+  "private": true,
+  "version": "1.0.0",
+  "description": "EzPrintWork workspace root — EzPrintWork(웹) 폴더를 열 때 사용",
+  "scripts": {
+    "dev": "npm --prefix EzPrintWork run dev",
+    "build": "npm --prefix EzPrintWork run build",
+    "start": "npm --prefix EzPrintWork run start",
+    "lint": "npm --prefix EzPrintWork run lint",
+    "deploy:app": "npm --prefix EzPrintWork run deploy:app",
+    "setup:home": "npm --prefix EzPrintWork run setup:home",
+    "sync:downloads": "npm --prefix EzPrintWork run sync:downloads",
+    "test:smoke": "npm --prefix EzPrintWork run test:smoke"
+  }
+}

@@ -23,6 +23,11 @@ import {
   MeasuringStrategy,
 } from '@dnd-kit/core';
 import { kanbanCollisionDetection, resolveKanbanDropTarget, computeKanbanInsertIndex, getDragPointerY } from './kanbanCollisionDetection';
+import {
+  isJobAssignedToUser,
+  isJobAssignedToStaffId,
+  getStaffIdForUser,
+} from '../../utils/staffMatch';
 
 interface KanbanBoardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -441,8 +446,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       
       // 2. 내 작업만 보기 필터
       if (filterOnlyMyJobs && currentUser) {
-        const isMyJob = job.assignedStaffIds?.includes(currentUser.id) || job.assignedStaffId === currentUser.id;
-        if (!isMyJob) return false;
+        if (!isJobAssignedToUser(job, currentUser, staff)) return false;
       }
       
       // 3. 미결제만 보기 필터
@@ -457,13 +461,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       
       // 5. 특정 담당자 필터
       if (selectedStaffFilter !== 'all') {
-        const hasStaff = job.assignedStaffIds?.includes(selectedStaffFilter) || job.assignedStaffId === selectedStaffFilter;
-        if (!hasStaff) return false;
+        if (!isJobAssignedToStaffId(job, selectedStaffFilter, staff)) return false;
       }
       
       return true;
     });
-  }, [displayJobs, searchQuery, filterOnlyMyJobs, filterUnpaidOnly, filterUrgentOnly, selectedStaffFilter, currentUser]);
+  }, [displayJobs, searchQuery, filterOnlyMyJobs, filterUnpaidOnly, filterUrgentOnly, selectedStaffFilter, currentUser, staff]);
+
+  const currentStaffId = currentUser ? getStaffIdForUser(staff, currentUser) : undefined;
+  const resolveIsMyJob = (job: Job) =>
+    currentUser ? isJobAssignedToUser(job, currentUser, staff) : false;
 
   const getJobsForStatus = (statusKey: string) => {
     return filteredJobs.filter((j: Job) => j.status === statusKey).sort((a: Job, b: Job) => a.order - b.order);
@@ -766,7 +773,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                     onSelectJob={handleSelectJob}
                     onRightClickJob={handleRightClickJob}
                     onStatusChange={updateJobStatus}
-                    currentUserId={currentUser?.id}
+                    currentUserId={currentStaffId ?? currentUser?.id}
+                    resolveIsMyJob={resolveIsMyJob}
                     isCompact={statusDef.key === 'DELIVERY' || visibleStatusDefinitions.length > 5}
                     showAd={tenantPlan === 'free' && statusDef.key === adStatusKey}
                     isTvMode={isTvMode}
@@ -788,9 +796,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 staffName={getStaffName(dragJob)}
                 onSelect={() => {}}
                 onStatusChange={() => {}}
-                isMyJob={currentUser ? (dragJob.assignedStaffIds?.includes(currentUser.id) || dragJob.assignedStaffId === currentUser.id) : false}
+                isMyJob={resolveIsMyJob(dragJob)}
                 isCompact={dragJob.status === 'DELIVERY' || visibleStatusDefinitions.length > 5}
-                currentUserId={currentUser?.id}
+                currentUserId={currentStaffId ?? currentUser?.id}
                 isTvMode={isTvMode}
                 isDragOverlay
               />

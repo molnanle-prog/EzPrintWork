@@ -31,7 +31,8 @@ yarn-error.log*
 .env.production.local
 
 # Editor Folders
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.suo
 *.ntvs*
