@@ -50,6 +50,7 @@ public/downloads/*.exe
 public/downloads/*.zip
 
 # Temporary and log files
+scratch/
 *.log
 *.log*
 build_error.txt
