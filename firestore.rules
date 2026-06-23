@@ -165,8 +165,16 @@ service cloud.firestore {
         || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()));
       allow update: if isSuperAdmin()
         || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && !privilegeEscalation(incoming()))
+        || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && isOwnerOnboardingUpdate(incoming()))
         || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
         || isAdminUpdatingMember(incoming());
+
+      function isOwnerOnboardingUpdate(data) {
+        return data.role == 'admin'
+          && data.tenantId is string
+          && isValidId(data.tenantId)
+          && (!('tenantId' in existing()) || existing().tenantId == null);
+      }
 
       function isStaffLoginProfileUpsert(data) {
         return data.role == 'staff'
@@ -203,6 +211,12 @@ service cloud.firestore {
                data.keys().hasAll(['name', 'ownerId']);
       }
 
+      function isTenantOwner(tenantId) {
+        return isVerified()
+          && exists(/databases/$(database)/documents/tenants/$(tenantId))
+          && get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerId == request.auth.uid;
+      }
+
       // JOBS
       match /jobs/{jobId} {
         allow list: if isMember(tenantId);
@@ -223,7 +237,8 @@ service cloud.firestore {
       match /staff/{staffId} {
         allow read: if isMember(tenantId) || isStaffPreAuthRead() || (!isSignedIn() && isReasonableListQuery());
         allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
-          || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()));
+          || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()))
+          || (isTenantOwner(tenantId) && request.auth.uid == staffId && isValidId(staffId) && isValidStaff(incoming()));
         allow update: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
           || (!isSignedIn() && isStaffCredentialMigration(incoming()));
         allow delete: if isAdmin(tenantId);
@@ -354,7 +369,8 @@ service cloud.firestore {
       // SETTINGS
       match /settings/{settingId} {
         allow read: if isMember(tenantId);
-        allow write: if isAdmin(tenantId) && isValidId(settingId);
+        allow write: if (isAdmin(tenantId) && isValidId(settingId))
+          || (isTenantOwner(tenantId) && isValidId(settingId));
       }
 
       // BACKUPS

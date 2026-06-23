@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { db, formatBusinessNumber } from '../services/dataService';
+import { db, formatBusinessNumber, getErrorMessage } from '../services/dataService';
 import { Building2, UserPlus, ArrowRight, Loader2, LogOut, CheckCircle2 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -62,7 +62,12 @@ export const OnboardingPage: React.FC = () => {
       navigate('/', { replace: true });
     } catch (error) {
       console.error(error);
-      toast.error('회사 생성 중 오류가 발생했습니다.');
+      const msg = getErrorMessage(error);
+      if (msg.includes('permission') || msg.includes('PERMISSION')) {
+        toast.error('회사 생성 권한이 없습니다. Google 이메일 인증 후 다시 시도해 주세요.');
+      } else {
+        toast.error(`회사 생성 중 오류: ${msg}`);
+      }
     } finally {
       setIsCreating(false);
     }

@@ -9,7 +9,7 @@ import {
     query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
 } from 'firebase/firestore';
 import { db as firestore, auth } from './firebase';
-import { staffCountToPlanCode, tierToPaymentStatus, PlanTier } from '../utils/planLimits';
+import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX } from '../utils/planLimits';
 // --- Utility Functions (From Original) ---
 export const formatPhoneNumber = (value: string) => {
     if (!value) return '';
@@ -812,12 +812,17 @@ export class DataService {
             displayName: ownerName,
             name: ownerName,
             photoURL: user.photoURL || '',
+            avatarUrl: user.photoURL || '',
             tenantId,
             role: 'admin',
             createdAt: now,
         }, { merge: true });
-        batch.set(doc(firestore, 'tenants', tenantId, 'settings', 'main'), defaultSettings);
-        batch.set(doc(firestore, 'tenants', tenantId, 'staff', ownerUid), {
+        await batch.commit();
+
+        // 2단계: users에 tenantId 반영 후 staff/settings 생성 (동일 배치 시 rules에서 isMember 미충족)
+        const batch2 = writeBatch(firestore);
+        batch2.set(doc(firestore, 'tenants', tenantId, 'settings', 'main'), defaultSettings);
+        batch2.set(doc(firestore, 'tenants', tenantId, 'staff', ownerUid), {
             id: ownerUid,
             uid: ownerUid,
             name: ownerName,
@@ -830,8 +835,7 @@ export class DataService {
             password: '',
             joinDate: now,
         });
-
-        await batch.commit();
+        await batch2.commit();
         this.setTenant(tenantId);
         return tenantId;
     }
@@ -1173,13 +1177,14 @@ export class DataService {
     async deleteQuote(id: string) { await this.deleteEntity('quotes', id); }
     
     async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro', staffCount?: number) {
+        const active =
+            1 + this.data['staff']?.filter((s: any) => !s.isDeleted && s.active !== false).length || 0;
         if (plan === 'pro') {
-            const active =
-                1 + this.data['staff']?.filter((s: any) => !s.isDeleted && s.active !== false).length || 0;
             const count = Math.max(1, staffCount ?? active);
             await this.updateTenantPlanSettings(tenantId, { staffCount: count, tier: 'paid' });
         } else {
-            await this.updateTenantPlanSettings(tenantId, { staffCount: 3, tier: 'ad' });
+            const count = Math.min(Math.max(1, staffCount ?? active), AD_TIER_MAX);
+            await this.updateTenantPlanSettings(tenantId, { staffCount: count, tier: 'ad' });
         }
     }
 
