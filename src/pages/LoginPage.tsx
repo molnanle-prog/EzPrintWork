@@ -562,14 +562,19 @@ export const LoginPage: React.FC = () => {
             const tenantData = tenantDoc.data();
 
             // 1.5 요금제 인원 제한 확인 (대표 1석 + 직원)
-            const maxStaff = getMaxStaffForPlan(tenantData.plan, tenantData.paymentStatus);
+            const maxStaff = getMaxStaffForPlan(
+              tenantData.plan,
+              tenantData.paymentStatus,
+              tenantData.maxStaff
+            );
             const staffColRef = collection(db, `tenants/${tenantId}/staff`);
             const staffSnap = await getDocs(staffColRef);
-            const activeStaff = staffSnap.docs.filter(d => {
-                const s = d.data();
-                return s.isDeleted !== true && s.active !== false;
-            }).length;
-            if (1 + activeStaff >= maxStaff) {
+            const staffRows = staffSnap.docs
+              .map((d) => ({ id: d.id, ...d.data() } as import('../types').Staff))
+              .filter((s) => s.isDeleted !== true && s.active !== false);
+            const { countActiveStaffSeats } = await import('../utils/planLimits');
+            const seatsInUse = countActiveStaffSeats(staffRows, tenantData.ownerId);
+            if (seatsInUse >= maxStaff) {
                 toast.error(`요금제 인원 제한(${maxStaff}명)에 도달했습니다. 관리자에게 문의하세요.`);
                 setIsStaffSigningUp(false);
                 return;

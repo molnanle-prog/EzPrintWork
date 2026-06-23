@@ -4,7 +4,7 @@ import { X, Crown, Users, ShieldCheck, Zap, CreditCard, CheckCircle2, Landmark, 
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../../contexts/AuthContext';
 import { db } from '../../services/dataService';
-import { PRO_MONTHLY_PRICE } from '../../utils/planLimits';
+import { PRO_MONTHLY_PRICE, countActiveStaffSeats } from '../../utils/planLimits';
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -26,7 +26,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   skipPlanStep = false,
   onUpgradeComplete,
 }) => {
-  const { tenantPlan, currentUser, updatePlan } = useAuth();
+  const { tenantPlan, currentUser, updatePlan, tenantOwnerId } = useAuth();
   const [step, setStep] = useState<ModalStep>(skipPlanStep ? 'PAYMENT_METHOD' : 'PLAN');
   const [selectedPlan, setSelectedPlan] = useState<'free' | 'pro'>('pro');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CARD');
@@ -46,8 +46,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const [isVerifying, setIsVerifying] = useState(false);
   
   // Staff count adjustment
-  const actualStaffCount = db.getStaff().filter(s => !s.isDeleted && s.id !== 'admin').length;
-  const activeStaffCount = 1 + actualStaffCount;
+  const activeStaffCount = countActiveStaffSeats(db.getStaff(), tenantOwnerId);
   const [staffCount, setStaffCount] = useState(Math.max(activeStaffCount, 1));
 
   useEffect(() => {

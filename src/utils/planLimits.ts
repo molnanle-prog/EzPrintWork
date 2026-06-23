@@ -12,6 +12,32 @@ export type PlanTier = 'gift' | 'ad' | 'paid';
 
 const AD_TIER_MAX = 3;
 
+import { Staff } from '../types';
+import { isHiddenStaffId, isTenantOwnerUser } from './adminAccess';
+
+/** staff에서 tenants.ownerId 추정 (createTenant: id === uid 인 대표) */
+export function inferTenantOwnerIdFromStaff(staffList: Staff[]): string | null {
+  const ownerLike = staffList.find(
+    (s) => !s.isDeleted && s.uid && s.id === s.uid
+  );
+  return ownerLike?.uid ?? ownerLike?.id ?? null;
+}
+
+/** 대표 1석 포함 활성 인원 (대표가 staff 목록에 있어도 중복 집계하지 않음) */
+export function countActiveStaffSeats(
+  staffList: Staff[],
+  ownerId?: string | null
+): number {
+  const resolvedOwner = ownerId ?? inferTenantOwnerIdFromStaff(staffList);
+  const active = staffList.filter(
+    (s) => !s.isDeleted && s.active !== false && !isHiddenStaffId(s.id)
+  );
+  const nonOwner = active.filter(
+    (s) => !isTenantOwnerUser(s.uid || s.id, resolvedOwner)
+  );
+  return 1 + nonOwner.length;
+}
+
 export const paymentStatusToTier = (paymentStatus?: string | null): PlanTier => {
   const pay = String(paymentStatus || 'AD').toUpperCase();
   if (pay === 'FREE') return 'gift';
@@ -67,12 +93,16 @@ export const isProPlan = (
 
 export const getMaxStaffForPlan = (
   rawPlan?: string | null,
-  paymentStatus?: string | null
+  paymentStatus?: string | null,
+  storedMaxStaff?: number | null
 ): number => {
   const plan = String(rawPlan || 'free').toLowerCase();
   const pay = String(paymentStatus || 'AD').toUpperCase();
 
   if (pay === 'AD' || pay === 'UNPAID') {
+    if (typeof storedMaxStaff === 'number' && Number.isFinite(storedMaxStaff) && storedMaxStaff >= 1) {
+      return Math.min(Math.floor(storedMaxStaff), AD_TIER_MAX);
+    }
     return AD_TIER_MAX;
   }
 

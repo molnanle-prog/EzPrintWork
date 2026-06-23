@@ -9,6 +9,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { UpgradeModal } from '../common/UpgradeModal';
 import { GAS_WEBHOOK_URL } from '../../constants';
 import { isStaffAdminRole, isTenantOwnerUser, resolveAppRoleFromStaff, isHiddenStaffId } from '../../utils/adminAccess';
+import { countActiveStaffSeats } from '../../utils/planLimits';
 
 // 연락처 추출 유틸리티 함수
 const getStaffContact = (staff: Staff): string => {
@@ -44,8 +45,8 @@ export const StaffManager: React.FC = () => {
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
 
-  // 대표(1석) + staff 서브컬렉션 활성 직원
-  const activeStaffCount = 1 + staffList.filter(s => !s.isDeleted && s.active !== false).length;
+  // 대표(1석) + staff 서브컬렉션 활성 직원 (대표가 staff에 있어도 1명으로 집계)
+  const activeStaffCount = countActiveStaffSeats(staffList, tenantOwnerId);
   const isAtLimit = activeStaffCount >= maxStaff;
 
   const loadStaff = () => {

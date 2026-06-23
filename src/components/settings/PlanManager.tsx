@@ -23,6 +23,7 @@ import {
   PlanTier,
   PRO_MONTHLY_PRICE,
   TENANT_SELECTABLE_PLAN_TIERS,
+  countActiveStaffSeats,
 } from '../../utils/planLimits';
 import { useDialog } from '../../contexts/DialogContext';
 import { UpgradeModal } from '../common/UpgradeModal';
@@ -39,8 +40,11 @@ function buildStaffMemory(
   appliedStaff: number,
   activeStaffCount: number
 ): TierStaffMemory {
-  const paidDefault = Math.max(activeStaffCount, appliedTier === 'paid' ? appliedStaff : 3);
-  const adDefault = appliedTier === 'ad' ? Math.min(appliedStaff, AD_TIER_MAX) : AD_TIER_MAX;
+  const paidDefault = Math.max(activeStaffCount, appliedTier === 'paid' ? appliedStaff : 1);
+  const adDefault =
+    appliedTier === 'ad'
+      ? Math.min(Math.max(appliedStaff, 1), AD_TIER_MAX)
+      : Math.min(activeStaffCount, AD_TIER_MAX);
 
   return {
     ad: adDefault,
@@ -55,11 +59,11 @@ export const PlanManager: React.FC = () => {
     tenantPlanCode,
     tenantPaymentStatus,
     maxStaff,
+    tenantOwnerId,
   } = useAuth();
   const { showAlert, showConfirm } = useDialog();
 
-  const activeStaffCount =
-    1 + db.getStaff().filter(s => !s.isDeleted && s.active !== false && s.id !== 'admin').length;
+  const activeStaffCount = countActiveStaffSeats(db.getStaff(), tenantOwnerId);
 
   const appliedTier = paymentStatusToTier(tenantPaymentStatus);
   const appliedStaff = planCodeToStaffCount(tenantPlanCode);
@@ -378,7 +382,7 @@ export const PlanManager: React.FC = () => {
               </div>
               <p className="text-[11px] text-slate-500 mt-2">
                 {pendingTier === 'ad'
-                  ? `광고형은 ${AD_TIER_MAX}명으로 고정됩니다. PRO 인원(${staffByTier.paid}명)은 따로 기억됩니다.`
+                  ? `광고형은 최대 ${AD_TIER_MAX}명까지 선택할 수 있습니다. PRO 인원(${staffByTier.paid}명)은 따로 기억됩니다.`
                   : `PRO 인원은 광고형(${staffByTier.ad}명)과 별도로 유지됩니다.`}
               </p>
             </div>

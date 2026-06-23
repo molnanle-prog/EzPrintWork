@@ -9,7 +9,7 @@ import {
     query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
 } from 'firebase/firestore';
 import { db as firestore, auth } from './firebase';
-import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX } from '../utils/planLimits';
+import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
 // --- Utility Functions (From Original) ---
 export const formatPhoneNumber = (value: string) => {
     if (!value) return '';
@@ -1177,8 +1177,7 @@ export class DataService {
     async deleteQuote(id: string) { await this.deleteEntity('quotes', id); }
     
     async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro', staffCount?: number) {
-        const active =
-            1 + this.data['staff']?.filter((s: any) => !s.isDeleted && s.active !== false).length || 0;
+        const active = countActiveStaffSeats(this.data['staff'] || []);
         if (plan === 'pro') {
             const count = Math.max(1, staffCount ?? active);
             await this.updateTenantPlanSettings(tenantId, { staffCount: count, tier: 'paid' });
