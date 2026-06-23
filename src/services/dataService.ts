@@ -1218,7 +1218,17 @@ export class DataService {
     async deleteInstruction(id: string) { await this.deleteEntity('instructions', id); }
 
     async uploadThumbnail(jobId: string, file: Blob | File): Promise<string> { return ''; }
-    async saveCompanyInfo(info: CompanyInfo) { await this.updateSetting('companyInfo', info); }
+    async saveCompanyInfo(info: CompanyInfo) {
+        await this.updateSetting('companyInfo', info);
+        const bn = String(info.businessNumber || '').trim();
+        if (this.tenantId && bn) {
+            await setDoc(
+                doc(firestore, 'tenants', this.tenantId),
+                { businessNumber: bn },
+                { merge: true }
+            );
+        }
+    }
     async savePricingConfig(config: PricingConfig) { await this.updateSetting('pricing', config); }
     async saveProductDefinitions(definitions: JobTypeDefinition[]) { await this.updateSetting('productDefinitions', { definitions }); }
     async saveStatusDefinitions(definitions: JobStatusDefinition[]) { await this.updateSetting('statusDefinitions', { definitions }); }

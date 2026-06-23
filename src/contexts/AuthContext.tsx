@@ -75,7 +75,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const code = String(tenantData?.plan || 'free');
     setTenantPlanCode(code);
     setTenantPaymentStatus(String(tenantData?.paymentStatus || 'UNPAID').toUpperCase());
-    setMaxStaff(getMaxStaffForPlan(code, tenantData?.paymentStatus));
+    setMaxStaff(getMaxStaffForPlan(code, tenantData?.paymentStatus, tenantData?.maxStaff));
     setTenantOwnerId(tenantData?.ownerId || null);
   };
 

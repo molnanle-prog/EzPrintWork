@@ -368,7 +368,7 @@ service cloud.firestore {
 
       // SETTINGS
       match /settings/{settingId} {
-        allow read: if isMember(tenantId);
+        allow read: if isMember(tenantId) || isSuperAdmin();
         allow write: if (isAdmin(tenantId) && isValidId(settingId))
           || (isTenantOwner(tenantId) && isValidId(settingId));
       }
