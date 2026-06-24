@@ -55,7 +55,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const { showConfirm } = useDialog();
-  const { tenantPlan } = useAuth();
+  const { showsAds } = useAuth();
   const { theme } = useTheme();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -220,7 +220,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   // Find the best padding cells for the Ad
   const adCellIndices = useMemo(() => {
     const { gridDates } = calendarLayout;
-    if (tenantPlan === 'pro') return [];
+    if (!showsAds) return [];
     
     // Find non-current month cells
     const paddingIndices = gridDates.reduce((acc: number[], dateKey, idx) => {
@@ -236,7 +236,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
         return [paddingIndices[0], paddingIndices[paddingIndices.length - 1]];
     }
     return [paddingIndices[0]];
-  }, [calendarLayout, currentDate, tenantPlan]);
+  }, [calendarLayout, currentDate, showsAds]);
 
   const prevMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
   const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));

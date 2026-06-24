@@ -52,7 +52,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
-  const { currentUser, tenantPlan } = useAuth();
+  const { currentUser, showsAds } = useAuth();
   const { theme } = useTheme();
   const { showAlert, showConfirm } = useDialog();
 
@@ -776,7 +776,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                     currentUserId={currentStaffId ?? currentUser?.id}
                     resolveIsMyJob={resolveIsMyJob}
                     isCompact={statusDef.key === 'DELIVERY' || visibleStatusDefinitions.length > 5}
-                    showAd={tenantPlan === 'free' && statusDef.key === adStatusKey}
+                    showAd={showsAds && statusDef.key === adStatusKey}
                     isTvMode={isTvMode}
                 />
             </div>

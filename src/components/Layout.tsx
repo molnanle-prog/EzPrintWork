@@ -7,7 +7,6 @@ import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
 import { db } from '../services/dataService';
 import { Job, Staff } from '../types';
-import { AdBanner } from './common/AdBanner';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { toast } from 'sonner';

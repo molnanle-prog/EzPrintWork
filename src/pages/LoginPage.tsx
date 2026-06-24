@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
 import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword } from 'firebase/auth';
-import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X } from 'lucide-react';
+import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
-import { db } from '../services/dataService';
+import { db, formatPhoneNumber, isValidPhoneNumber } from '../services/dataService';
 import { getMaxStaffForPlan } from '../utils/planLimits';
 import { APP_VERSION } from '../utils/autoUpdate';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
@@ -105,6 +105,7 @@ export const LoginPage: React.FC = () => {
     // B2B Staff Self-Signup States
     const [isStaffSignup, setIsStaffSignup] = useState(false);
     const [staffName, setStaffName] = useState('');
+    const [staffPhone, setStaffPhone] = useState('');
     const [staffRole, setStaffRole] = useState('디자이너');
     const [isStaffSigningUp, setIsStaffSigningUp] = useState(false);
 
@@ -525,8 +526,14 @@ export const LoginPage: React.FC = () => {
 
     const handleStaffSignup = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!companyName.trim() || !joinCode.trim() || !loginId.trim() || !password.trim() || !staffName.trim()) {
+        if (!companyName.trim() || !joinCode.trim() || !loginId.trim() || !password.trim() || !staffName.trim() || !staffPhone.trim()) {
             toast.error('모든 정보를 입력해주세요.');
+            return;
+        }
+
+        const formattedPhone = formatPhoneNumber(staffPhone.trim());
+        if (!isValidPhoneNumber(formattedPhone)) {
+            toast.error('연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
             return;
         }
 
@@ -614,6 +621,7 @@ export const LoginPage: React.FC = () => {
                 name: staffName.trim(),
                 role: 'staff',
                 position: staffRole,
+                contactInfo: formattedPhone,
                 createdAt: new Date().toISOString()
             });
 
@@ -624,7 +632,7 @@ export const LoginPage: React.FC = () => {
                 uid: newUserId,
                 name: staffName.trim(),
                 role: staffRole,
-                phone: '',
+                phone: formattedPhone,
                 avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${staffName.trim()}`,
                 active: true,
                 email: '',
@@ -645,7 +653,7 @@ export const LoginPage: React.FC = () => {
                         password: normalizedPassword,
                         staffName: staffName.trim(),
                         staffRole: staffRole,
-                        contact: ''
+                        contact: formattedPhone
                     })
                 });
             } catch (err) {
@@ -657,6 +665,7 @@ export const LoginPage: React.FC = () => {
             setIsStaffSignup(false);
             // Reset fields
             setStaffName('');
+            setStaffPhone('');
             setLoginId('');
             setPassword('');
         } catch (error: any) {
@@ -1097,6 +1106,23 @@ export const LoginPage: React.FC = () => {
                                 </div>
 
                                 <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-slate-400 block pl-1">연락처 *</label>
+                                    <div className="relative">
+                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
+                                            <Phone size={16} />
+                                        </span>
+                                        <input 
+                                            type="tel" 
+                                            value={staffPhone}
+                                            onChange={(e) => setStaffPhone(formatPhoneNumber(e.target.value))}
+                                            placeholder="010-1234-5678"
+                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
+                                            required
+                                        />
+                                    </div>
+                                </div>
+
+                                <div className="space-y-1.5">
                                     <label className="text-xs font-bold text-slate-400 block pl-1">사내 아이디 (4자 이상) *</label>
                                     <div className="relative">
                                         <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
@@ -1178,6 +1204,7 @@ export const LoginPage: React.FC = () => {
                                 setPassword('');
                                 setCompanyName('');
                                 setJoinCode('');
+                                setStaffPhone('');
                             }}
                             className="text-xs text-blue-400 hover:text-blue-300 font-bold transition-colors underline bg-transparent border-none cursor-pointer"
                         >

@@ -10,7 +10,13 @@ import {
 } from 'firebase/firestore';
 import { db as firestore, auth } from './firebase';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
+import { APP_VERSION } from '../utils/autoUpdate';
 // --- Utility Functions (From Original) ---
+export const isValidPhoneNumber = (value: string): boolean => {
+    const digits = (value || '').replace(/\D/g, '');
+    return digits.length >= 9 && digits.length <= 11;
+};
+
 export const formatPhoneNumber = (value: string) => {
     if (!value) return '';
     const clean = value.replace(/[^0-9]/g, '');
@@ -763,7 +769,14 @@ export class DataService {
     }
 
     // --- SaaS Methods ---
-    async createTenant(name: string, ownerUid: string, businessNumber?: string, joinCode?: string, initialStaffCount = 3): Promise<string> {
+    async createTenant(
+        name: string,
+        ownerUid: string,
+        businessNumber?: string,
+        joinCode?: string,
+        initialStaffCount = 3,
+        ownerPhone?: string
+    ): Promise<string> {
         const user = auth.currentUser;
         if (!user || user.uid !== ownerUid) {
             throw new Error('로그인된 대표 계정이 필요합니다.');
@@ -778,6 +791,10 @@ export class DataService {
         const now = new Date().toISOString();
         const ownerName = user.displayName || user.email?.split('@')[0] || '대표';
         const ownerEmail = user.email || '';
+        const ownerPhoneFormatted = formatPhoneNumber(ownerPhone?.trim() || '');
+        if (!isValidPhoneNumber(ownerPhoneFormatted)) {
+            throw new Error('연락처를 올바르게 입력해주세요.');
+        }
 
         const staffCount = Math.max(1, Math.min(999, initialStaffCount));
         const plan = staffCountToPlanCode(Math.min(staffCount, 3), 'ad');
@@ -804,6 +821,8 @@ export class DataService {
             paymentStatus,
             maxStaff: Math.min(staffCount, 3),
             lastActiveAt: now,
+            appVersion: APP_VERSION,
+            lastAppVersion: APP_VERSION,
         });
         batch.set(doc(firestore, 'users', ownerUid), {
             uid: ownerUid,
@@ -813,6 +832,7 @@ export class DataService {
             name: ownerName,
             photoURL: user.photoURL || '',
             avatarUrl: user.photoURL || '',
+            contactInfo: ownerPhoneFormatted,
             tenantId,
             role: 'admin',
             createdAt: now,
@@ -827,7 +847,7 @@ export class DataService {
             uid: ownerUid,
             name: ownerName,
             role: '관리자',
-            phone: '',
+            phone: ownerPhoneFormatted,
             avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(ownerName)}`,
             active: true,
             email: ownerEmail,
@@ -877,10 +897,13 @@ export class DataService {
             await setDoc(tenantDocRef, {
                 companyName,
                 lastActiveAt: new Date().toISOString(),
+                appVersion: APP_VERSION,
+                lastAppVersion: APP_VERSION,
                 stats: {
                     jobsCount,
                     staffCount,
-                    clientsCount
+                    clientsCount,
+                    appVersion: APP_VERSION,
                 }
             }, { merge: true });
         } catch (e) {

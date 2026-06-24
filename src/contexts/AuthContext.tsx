@@ -18,6 +18,8 @@ interface AuthContextType {
   refreshUser: () => Promise<void>;
   isAuthenticated: boolean;
   tenantPlan: 'free' | 'pro';
+  /** 광고형(AD)일 때 true — EzImpo 배너 표시 */
+  showsAds: boolean;
   /** Firestore tenants.plan 원본 (u5, u10 등) */
   tenantPlanCode: string;
   /** 현재 요금제 최대 직원 수 (대표 포함) */
@@ -71,7 +73,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [loading, setLoading] = useState(true);
 
   const applyTenantSnapshot = (tenantData: any) => {
-    setTenantPlan(determineTenantPlan(tenantData));
+    const plan = determineTenantPlan(tenantData);
+    setTenantPlan(plan);
     const code = String(tenantData?.plan || 'free');
     setTenantPlanCode(code);
     setTenantPaymentStatus(String(tenantData?.paymentStatus || 'UNPAID').toUpperCase());
@@ -95,6 +98,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canManageStaffFlag = canManageStaff(permissionCtx);
   const canManageClientMasterFlag = canManageClientMaster(permissionCtx);
   const canManageInstructionsFlag = canManageInstructions(permissionCtx);
+
+  /** determineTenantPlan과 동일 — 광고형(AD)만 true */
+  const showsAds = tenantPlan === 'free';
 
   const assertStaffNotDeleted = async (tenantId: string, user: User) => {
     const staffByUid = await getDoc(doc(db, `tenants/${tenantId}/staff`, user.uid));
@@ -519,6 +525,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       firebaseUser, 
       currentUser, 
       tenantPlan,
+      showsAds,
       tenantPlanCode,
       maxStaff,
       tenantPaymentStatus,

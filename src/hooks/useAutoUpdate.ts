@@ -5,77 +5,71 @@ import {
     UpdateCheckResult,
     applyWebUpdate,
     checkForUpdate,
-    dismissUpdate,
     isAutoUpdateEnabled,
-    isUpdateDismissed,
     startAutoUpdatePolling,
 } from '../utils/autoUpdate';
 import { hasElectronUpdater, manualElectronUpdateCheck } from './useElectronUpdater';
+import { useUpdateNotice } from '../contexts/UpdateNoticeContext';
 
-const WEB_TOAST_ID = 'ezpw-web-update';
+const POLL_MS = 5 * 60 * 1000;
+const POLL_MS_WHEN_PENDING = 60 * 1000;
 
-const shownToasts = new Set<string>();
-
-function showWebUpdateToast(result: UpdateCheckResult) {
+function showWebUpdateNotice(
+    setWebNotice: ReturnType<typeof useUpdateNotice>['setWebNotice'],
+    result: UpdateCheckResult
+) {
     const buildId = result.manifest?.buildId;
-    if (!buildId || isUpdateDismissed(buildId)) return;
-    if (shownToasts.has(WEB_TOAST_ID)) return;
-    shownToasts.add(WEB_TOAST_ID);
+    const version = result.manifest?.version;
+    if (!buildId || !version) return;
 
-    const version = result.manifest?.version || '새';
-
-    toast.info(`새 버전 v${version}이 배포되었습니다`, {
-        id: WEB_TOAST_ID,
-        description: '지금 업데이트하면 최신 기능이 적용됩니다. (자동 새로고침)',
-        duration: Infinity,
-        action: {
-            label: '지금 업데이트',
-            onClick: () => applyWebUpdate(),
-        },
-        cancel: {
-            label: '나중에',
-            onClick: () => dismissUpdate(buildId),
-        },
-    });
-}
-
-async function showInstallerUpdateToastIfNeeded() {
-    // Electron + electron-updater 사용 시 GitHub Release에서 처리
-    if (hasElectronUpdater()) return;
+    setWebNotice({ kind: 'web', version, buildId });
 }
 
 export function useAutoUpdate() {
-    const notifiedBuildRef = useRef<string | null>(null);
+    const { notice, setWebNotice, clearWebNotice } = useUpdateNotice();
+    const pendingBuildRef = useRef<string | null>(null);
 
-    const handleUpdate = useCallback((result: UpdateCheckResult) => {
-        const buildId = result.manifest?.buildId;
-        if (!buildId || notifiedBuildRef.current === buildId) return;
-        notifiedBuildRef.current = buildId;
-        showWebUpdateToast(result);
-    }, []);
+    const handleUpdate = useCallback(
+        (result: UpdateCheckResult) => {
+            if (hasElectronUpdater()) return;
+
+            const buildId = result.manifest?.buildId;
+            if (!buildId || !result.available) {
+                pendingBuildRef.current = null;
+                clearWebNotice();
+                return;
+            }
+
+            pendingBuildRef.current = buildId;
+            showWebUpdateNotice(setWebNotice, result);
+        },
+        [setWebNotice, clearWebNotice]
+    );
 
     useEffect(() => {
         if (!isAutoUpdateEnabled()) return;
 
         void checkForUpdate().then((result) => {
-            if (result.available) {
-                handleUpdate(result);
-            }
+            if (result.available) handleUpdate(result);
         });
 
-        void showInstallerUpdateToastIfNeeded();
+        const hasPendingNotice = notice != null;
+        const intervalMs = hasPendingNotice ? POLL_MS_WHEN_PENDING : POLL_MS;
 
-        const stop = startAutoUpdatePolling(handleUpdate, 5 * 60 * 1000);
+        const stop = startAutoUpdatePolling(handleUpdate, intervalMs);
         return stop;
-    }, [handleUpdate]);
+    }, [handleUpdate, notice]);
 
     return {};
 }
 
 /** 설정 화면 등에서 수동 확인 */
-export async function manualUpdateCheck(): Promise<void> {
+export async function manualUpdateCheck(
+    setWebNotice: ReturnType<typeof useUpdateNotice>['setWebNotice'],
+    setDesktopNotice: ReturnType<typeof useUpdateNotice>['setDesktopNotice']
+): Promise<void> {
     if (hasElectronUpdater()) {
-        const handled = await manualElectronUpdateCheck();
+        const handled = await manualElectronUpdateCheck(setDesktopNotice);
         if (handled) return;
     }
 
@@ -88,13 +82,14 @@ export async function manualUpdateCheck(): Promise<void> {
 
     const result = await checkForUpdate();
     if (result.available) {
-        showWebUpdateToast(result);
+        showWebUpdateNotice(setWebNotice, result);
         return;
     }
 
-    await showInstallerUpdateToastIfNeeded();
-
+    setWebNotice(null);
     toast.success(`최신 버전 v${APP_VERSION}을 사용 중입니다.`, {
         description: '새 배포가 없습니다.',
     });
 }
+
+export { applyWebUpdate };

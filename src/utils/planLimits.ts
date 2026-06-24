@@ -91,6 +91,13 @@ export const isProPlan = (
   return false;
 };
 
+/** 광고형(AD/UNPAID)에서만 true — EzImpo 자체 광고·추후 AdSense 슬롯 표시 */
+export const shouldShowTenantAds = (
+  rawPlan?: string | null,
+  paymentStatus?: string | null,
+  licenseExpiresAt?: string | null
+): boolean => !isProPlan(rawPlan, paymentStatus, licenseExpiresAt);
+
 export const getMaxStaffForPlan = (
   rawPlan?: string | null,
   paymentStatus?: string | null,

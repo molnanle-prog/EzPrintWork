@@ -60,6 +60,7 @@ export const PlanManager: React.FC = () => {
     tenantPaymentStatus,
     maxStaff,
     tenantOwnerId,
+    showsAds,
   } = useAuth();
   const { showAlert, showConfirm } = useDialog();
 
@@ -68,7 +69,6 @@ export const PlanManager: React.FC = () => {
   const appliedTier = paymentStatusToTier(tenantPaymentStatus);
   const appliedStaff = planCodeToStaffCount(tenantPlanCode);
   const isOnGiftPlan = appliedTier === 'gift';
-  const showsAds = tenantPlan === 'free';
 
   const [isPlanChangeOpen, setIsPlanChangeOpen] = useState(false);
   const [pendingTier, setPendingTier] = useState<SelectableTier>('ad');

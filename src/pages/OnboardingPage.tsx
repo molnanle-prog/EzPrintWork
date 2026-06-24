@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { db, formatBusinessNumber, getErrorMessage } from '../services/dataService';
-import { Building2, UserPlus, ArrowRight, Loader2, LogOut, CheckCircle2 } from 'lucide-react';
+import { db, formatBusinessNumber, formatPhoneNumber, getErrorMessage, isValidPhoneNumber } from '../services/dataService';
+import { Building2, UserPlus, ArrowRight, Loader2, LogOut, CheckCircle2, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 
 export const OnboardingPage: React.FC = () => {
@@ -10,6 +10,7 @@ export const OnboardingPage: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false);
   const [companyName, setCompanyName] = useState('');
   const [businessNumber, setBusinessNumber] = useState('');
+  const [ownerPhone, setOwnerPhone] = useState('');
   const [joinCode, setJoinCode] = useState('');
   const [initialStaffCount, setInitialStaffCount] = useState(3);
   const AD_MAX = 3;
@@ -33,9 +34,22 @@ export const OnboardingPage: React.FC = () => {
       return;
     }
 
+    const formattedPhone = formatPhoneNumber(ownerPhone.trim());
+    if (!isValidPhoneNumber(formattedPhone)) {
+      toast.error('연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
+      return;
+    }
+
     setIsCreating(true);
     try {
-      await db.createTenant(companyName.trim(), firebaseUser.uid, businessNumber.trim(), joinCode.trim(), initialStaffCount);
+      await db.createTenant(
+        companyName.trim(),
+        firebaseUser.uid,
+        businessNumber.trim(),
+        joinCode.trim(),
+        initialStaffCount,
+        formattedPhone
+      );
       
       // 구글 시트 대표 가입 웹훅 비동기 전송
       try {
@@ -50,7 +64,8 @@ export const OnboardingPage: React.FC = () => {
             joinCode: joinCode.trim(),
             ownerUid: firebaseUser.uid,
             ownerEmail: firebaseUser.email || '',
-            ownerName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '대표'
+            ownerName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '대표',
+            contact: formattedPhone
           })
         });
       } catch (err) {
@@ -197,6 +212,18 @@ export const OnboardingPage: React.FC = () => {
                   onChange={(e) => setBusinessNumber(formatBusinessNumber(e.target.value))}
                   placeholder="예: 123-45-67890 (선택 사항)"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-400 ml-1">연락처 *</label>
+                <input 
+                  type="tel"
+                  value={ownerPhone}
+                  onChange={(e) => setOwnerPhone(formatPhoneNumber(e.target.value))}
+                  placeholder="010-1234-5678"
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
+                  required
                 />
               </div>
 

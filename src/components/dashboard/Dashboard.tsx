@@ -11,7 +11,6 @@ import { useDialog } from '../../contexts/DialogContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { ClientContactModal } from '../common/ClientContactModal';
-import { AdBanner } from '../common/AdBanner';
 
 interface DashboardProps {
   onNavigateToQuote: (quoteId?: string) => void;
