@@ -35,8 +35,21 @@ service cloud.firestore {
              request.auth.token.email_verified == true;
     }
 
+    function isTenantOwnerOf(tenantId) {
+      return isVerified()
+        && exists(/databases/$(database)/documents/tenants/$(tenantId))
+        && get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerId == request.auth.uid;
+    }
+
     function isAdmin(tenantId) {
-      return isSuperAdmin() || (isMember(tenantId) && getProfile().role == 'admin');
+      return isSuperAdmin()
+        || isTenantOwnerOf(tenantId)
+        || (isSignedIn()
+            && exists(/databases/$(database)/documents/tenants/$(tenantId))
+            && get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerId == request.auth.uid)
+        || (isMember(tenantId)
+            && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+            && getProfile().role == 'admin');
     }
 
     // --- Public / pre-auth helpers (staff login & signup, company search) ---
@@ -150,8 +163,48 @@ service cloud.firestore {
     function isAdminUpdatingMember(data) {
       return isSignedIn()
         && 'tenantId' in data
+        && isValidId(data.tenantId)
         && isAdmin(data.tenantId)
-        && data.role in ['admin', 'staff'];
+        && (!('role' in data) || data.role in ['admin', 'staff'])
+        && data.email is string
+        && data.email.size() <= 256;
+    }
+
+    /** 관리자가 멤버 users 문서를 수정 (tenantId/role 누락·필드 수 등 유연 처리) */
+    function isAdminMemberProfileUpdate() {
+      return isSignedIn()
+        && resource != null
+        && (
+          ('tenantId' in existing() && isValidId(existing().tenantId) && isAdmin(existing().tenantId))
+          || ('tenantId' in incoming() && isValidId(incoming().tenantId) && isAdmin(incoming().tenantId))
+        )
+        && incoming().email is string
+        && incoming().email.size() <= 256
+        && (!('role' in incoming()) || incoming().role in ['admin', 'staff'])
+        && (
+          !('tenantId' in incoming())
+          || !('tenantId' in existing())
+          || incoming().tenantId == existing().tenantId
+        );
+    }
+
+    /** 관리자가 직원 users/{uid} 프로필 생성·수정 (staff 등록 연동) */
+    function isAdminWritingStaffUser() {
+      return isSignedIn()
+        && request.auth.uid != userId
+        && incoming().email is string
+        && incoming().email.size() <= 256
+        && 'tenantId' in incoming()
+        && isValidId(incoming().tenantId)
+        && isAdmin(incoming().tenantId)
+        && incoming().role in ['admin', 'staff'];
+    }
+
+    /** 관리자가 신규 직원 users/{uid} 프로필을 최초 생성할 때 */
+    function isAdminProvisioningMember(data) {
+      return isSignedIn()
+        && request.auth.uid != userId
+        && isAdminUpdatingMember(data);
     }
 
     // 2. User Profiles
@@ -162,12 +215,16 @@ service cloud.firestore {
         || isStaffDuplicateCheckQuery();
       allow create: if (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()))
         || (!isSignedIn() && isStaffSelfSignupUser(incoming()))
-        || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()));
+        || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
+        || isAdminProvisioningMember(incoming())
+        || isAdminWritingStaffUser();
       allow update: if isSuperAdmin()
         || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && !privilegeEscalation(incoming()))
         || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && isOwnerOnboardingUpdate(incoming()))
         || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
-        || isAdminUpdatingMember(incoming());
+        || isAdminUpdatingMember(incoming())
+        || isAdminMemberProfileUpdate()
+        || isAdminWritingStaffUser();
 
       function isOwnerOnboardingUpdate(data) {
         return data.role == 'admin'
@@ -188,7 +245,7 @@ service cloud.firestore {
         return data.email is string && data.email.size() <= 256 &&
                (!('tenantId' in data) || data.tenantId == null || isValidId(data.tenantId)) &&
                (!('role' in data) || data.role in ['admin', 'staff', 'superadmin']) &&
-               data.keys().hasAll(['email']) && data.keys().size() <= 12;
+               data.keys().hasAll(['email']) && data.keys().size() <= 40;
       }
     }
 
@@ -212,9 +269,7 @@ service cloud.firestore {
       }
 
       function isTenantOwner(tenantId) {
-        return isVerified()
-          && exists(/databases/$(database)/documents/tenants/$(tenantId))
-          && get(/databases/$(database)/documents/tenants/$(tenantId)).data.ownerId == request.auth.uid;
+        return isTenantOwnerOf(tenantId);
       }
 
       // JOBS
@@ -245,7 +300,7 @@ service cloud.firestore {
       }
 
       function isValidStaff(data) {
-        return data.name is string && data.name.size() <= 50 &&
+        return data.name is string && data.name.size() >= 1 && data.name.size() <= 50 &&
                (!('phone' in data) || data.phone is string) &&
                data.keys().hasAll(['name']);
       }
@@ -366,11 +421,21 @@ service cloud.firestore {
                data.keys().hasAll(['name']);
       }
 
-      // SETTINGS
+      // SETTINGS — 관리자: 전체, 직원: 상품·후가공만
+      function isStaffWritableSetting(settingId, data) {
+        return settingId == 'productDefinitions'
+          || settingId == 'processingDefinitions'
+          || (settingId == 'main' && (
+               data.keys().hasOnly(['productDefinitions'])
+            || data.keys().hasOnly(['processingDefinitions'])
+          ));
+      }
+
       match /settings/{settingId} {
         allow read: if isMember(tenantId) || isSuperAdmin();
         allow write: if (isAdmin(tenantId) && isValidId(settingId))
-          || (isTenantOwner(tenantId) && isValidId(settingId));
+          || (isTenantOwner(tenantId) && isValidId(settingId))
+          || (isMember(tenantId) && isValidId(settingId) && isStaffWritableSetting(settingId, incoming()));
       }
 
       // BACKUPS

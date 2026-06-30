@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Staff } from '../../types';
 import { db, formatPhoneNumber } from '../../services/dataService';
-import { X, User, Phone, Shield, Save, Hash, Settings, Plus, Camera, Upload, Key } from 'lucide-react';
+import { X, User, Phone, Shield, Save, Hash, Settings, Plus, Camera, Upload, Key, Loader2 } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
+import { getStaffAvatarUrl, MIN_STAFF_PASSWORD_LENGTH } from '../../utils/staffAuthProvision';
 
 interface StaffModalProps {
   staff?: Staff | null;
   onClose: () => void;
-  onSave: (staff: Staff) => void;
+  onSave: (staff: Staff) => void | Promise<void>;
+  isSaving?: boolean;
 }
 
-export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }) => {
+export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, isSaving = false }) => {
   const isEdit = !!staff;
   const [roles, setRoles] = useState<string[]>([]);
   const [isManagingRoles, setIsManagingRoles] = useState(false);
@@ -48,7 +50,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
       const cleanEmail = staff.email?.endsWith('@ez-hub.kr') ? '' : (staff.email || '');
       setFormData({
         ...staff,
-        email: cleanEmail
+        email: cleanEmail,
+        avatarUrl: getStaffAvatarUrl(staff.avatarUrl, staff.id),
       });
     } else {
       setRoles(mergedRoles);
@@ -82,8 +85,13 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         return;
     }
 
+    if (formData.loginId && formData.password && formData.password.trim().length < MIN_STAFF_PASSWORD_LENGTH) {
+        await showAlert(`로그인 비밀번호는 ${MIN_STAFF_PASSWORD_LENGTH}자 이상 입력해 주세요.`);
+        return;
+    }
+
     const finalData: Staff = {
-        id: staff?.id || Date.now().toString(),
+        id: staff?.id || '',
         name: formData.name || '',
         role: formData.role || '',
         phone: formData.phone || '',
@@ -100,7 +108,12 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
         isDeleted: false
     };
 
-    onSave(finalData);
+    await onSave(finalData);
+  };
+
+  const handleClose = () => {
+    if (isSaving) return;
+    onClose();
   };
 
   const handleAddRole = () => {
@@ -175,14 +188,32 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
 
   return (
     <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh] overflow-y-auto custom-scrollbar">
+      <div className="relative bg-white rounded-xl shadow-2xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh] overflow-y-auto custom-scrollbar">
+        {isSaving && (
+          <div className="absolute inset-0 z-30 bg-white/90 backdrop-blur-[2px] flex flex-col items-center justify-center gap-3 px-6 text-center">
+            <Loader2 className="w-11 h-11 text-blue-600 animate-spin" />
+            <p className="text-base font-bold text-slate-800">
+              {isEdit ? '직원 정보 저장 중...' : '직원 등록 중...'}
+            </p>
+            <p className="text-xs text-slate-500 leading-relaxed">
+              목록 저장 및 로그인 계정 연동 중입니다.
+              <br />
+              잠시만 기다려 주세요. (최대 10초 정도)
+            </p>
+          </div>
+        )}
         {/* Header */}
         <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-slate-50 sticky top-0 z-10">
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <User className="text-blue-600" />
-            직원 정보 수정
+            {isEdit ? '직원 정보 수정' : '신규 직원 등록'}
           </h2>
-          <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+          <button
+            type="button"
+            onClick={handleClose}
+            disabled={isSaving}
+            className={`p-2 rounded-full transition-colors ${isSaving ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-200'}`}
+          >
             <X size={24} className="text-slate-500" />
           </button>
         </div>
@@ -199,7 +230,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
                     onClick={() => fileInputRef.current?.click()}
                   >
                       <img 
-                        src={formData.avatarUrl} 
+                        src={getStaffAvatarUrl(formData.avatarUrl, staff?.id || formData.loginId || 'new')} 
                         alt="Preview" 
                         className="w-full h-full rounded-xl border-4 border-slate-100 object-cover bg-slate-200 shadow-sm transition-opacity group-hover:opacity-75"
                         onError={(e) => { (e.target as HTMLImageElement).src = 'https://via.placeholder.com/150?text=User'; }}
@@ -408,17 +439,28 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave }
           <div className="pt-4 flex gap-3 sticky bottom-0 bg-white border-t border-slate-100 mt-auto">
              <button 
                 type="button" 
-                onClick={onClose} 
-                className="flex-1 py-3 text-slate-600 font-bold bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors"
+                onClick={handleClose}
+                disabled={isSaving}
+                className="flex-1 py-3 text-slate-600 font-bold bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
              >
                 취소하기
              </button>
              <button 
-                type="submit" 
-                className="flex-1 py-3 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2"
+                type="submit"
+                disabled={isSaving}
+                className="flex-1 py-3 text-white font-bold bg-blue-600 hover:bg-blue-700 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 disabled:opacity-60 disabled:cursor-not-allowed"
              >
-                <Save size={18} />
-                정보 업데이트
+                {isSaving ? (
+                  <>
+                    <Loader2 size={18} className="animate-spin" />
+                    {isEdit ? '저장 중...' : '등록 중...'}
+                  </>
+                ) : (
+                  <>
+                    <Save size={18} />
+                    {isEdit ? '정보 업데이트' : '직원 등록'}
+                  </>
+                )}
              </button>
           </div>
 

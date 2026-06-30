@@ -10,6 +10,7 @@ import { UpgradeModal } from '../common/UpgradeModal';
 import { GAS_WEBHOOK_URL } from '../../constants';
 import { isStaffAdminRole, isTenantOwnerUser, resolveAppRoleFromStaff, isHiddenStaffId } from '../../utils/adminAccess';
 import { countActiveStaffSeats } from '../../utils/planLimits';
+import { normalizeStaffLoginEmail, provisionStaffAuthAccount, MIN_STAFF_PASSWORD_LENGTH, getStaffAvatarUrl } from '../../utils/staffAuthProvision';
 
 // 연락처 추출 유틸리티 함수
 const getStaffContact = (staff: Staff): string => {
@@ -29,9 +30,10 @@ const isStaffMainOwner = (staff: Staff, ownerId: string | null): boolean =>
 
 // Firebase Secondary Auth imports for silent user creation/management
 import { initializeApp, getApp } from 'firebase/app';
-import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, updatePassword, signOut } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
+import { getAuth, signInWithEmailAndPassword, updatePassword, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { firebaseConfig, db as firestore } from '../../services/firebase';
+import { toast } from 'sonner';
 
 export const StaffManager: React.FC = () => {
   const { tenantPlan, maxStaff, currentUser, tenantOwnerId, isTenantOwner } = useAuth();
@@ -44,6 +46,7 @@ export const StaffManager: React.FC = () => {
   const [deletingAdminStaff, setDeletingAdminStaff] = useState<Staff | null>(null);
   const [adminPasswordInput, setAdminPasswordInput] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [isSavingStaff, setIsSavingStaff] = useState(false);
 
   // 대표(1석) + staff 서브컬렉션 활성 직원 (대표가 staff에 있어도 1명으로 집계)
   const activeStaffCount = countActiveStaffSeats(staffList, tenantOwnerId);
@@ -251,6 +254,7 @@ export const StaffManager: React.FC = () => {
   };
 
   const handleSaveStaff = async (staff: Staff) => {
+      let staffSaved = false;
       try {
           const tenantId = currentUser?.tenantId;
           if (!tenantId) {
@@ -262,161 +266,168 @@ export const StaffManager: React.FC = () => {
           if (staff.loginId) staff.loginId = staff.loginId.trim().toLowerCase();
           if (staff.password) staff.password = staff.password.trim().toLowerCase();
 
-          let uid = staff.uid || '';
-
-          const isNewStaff = !uid && !staff.id;
+          const isNewStaff = !editingStaff;
           if (isNewStaff && activeStaffCount >= maxStaff) {
               setIsUpgradeModalOpen(true);
               return;
           }
 
-          // 1. 로그인 크리덴셜 정보가 제공된 경우 Firebase Auth 백그라운드 등록 및 동기화 수행
-          if (staff.loginId && staff.password) {
-              const email = staff.loginId.includes('@') ? staff.loginId : `${staff.loginId}@ez-hub.kr`;
-
-              // 보조 Firebase App 인스턴스 초기화 (관리자 세션 영향 차단)
-              let secondaryApp;
-              try {
-                  secondaryApp = getApp('Secondary');
-              } catch (e) {
-                  secondaryApp = initializeApp(firebaseConfig, 'Secondary');
+          if (isNewStaff && staff.loginId) {
+              const loginNorm = staff.loginId.trim().toLowerCase();
+              const dup = staffList.find(
+                  (s) => s.loginId?.trim().toLowerCase() === loginNorm
+              );
+              if (dup) {
+                  await showAlert('이미 등록된 사내 아이디입니다. 목록에서 확인해 주세요.');
+                  return;
               }
-              const secondaryAuth = getAuth(secondaryApp);
+          }
+
+          if (staff.loginId && staff.password && staff.password.length < MIN_STAFF_PASSWORD_LENGTH) {
+              await showAlert(`비밀번호는 ${MIN_STAFF_PASSWORD_LENGTH}자 이상 입력해 주세요.`);
+              return;
+          }
+
+          setIsSavingStaff(true);
+
+          // 1. 직원 정보를 Firestore에 먼저 저장 (Auth 실패해도 목록·로그인 조회 가능)
+          if (isNewStaff) {
+              await db.addStaff(staff);
+              const added = db.getStaff().find(
+                  (s) =>
+                      !s.isDeleted &&
+                      staff.loginId &&
+                      s.loginId?.trim().toLowerCase() === staff.loginId.trim().toLowerCase()
+              );
+              if (added) staff.id = added.id;
+          } else {
+              await db.updateStaff(staff);
+          }
+          staffSaved = true;
+
+          // 2. 로그인 계정(Firebase Auth) 연동 — 실패해도 1번 저장은 유지
+          try {
+          if (staff.loginId && staff.password) {
+              const email = normalizeStaffLoginEmail(staff.loginId);
+              let uid = staff.uid || '';
 
               if (!uid) {
-                  // 신규 계정 백그라운드 생성
-                  try {
-                      const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, staff.password);
-                      uid = userCredential.user.uid;
+                  const provision = await provisionStaffAuthAccount({
+                      loginId: staff.loginId,
+                      password: staff.password,
+                      tenantId,
+                      staffName: staff.name,
+                      staffRole: staff.role,
+                      existingStaffInTenant: db.getStaff().filter((s) => !s.isDeleted),
+                      excludeStaffId: staff.id,
+                  });
+                  if (provision.ok) {
+                      uid = provision.uid;
                       staff.uid = uid;
-
-                      // 글로벌 테넌트 매핑을 위한 users/{uid} 생성
-                      await setDoc(doc(firestore, 'users', uid), {
-                          uid,
-                          id: uid,
-                          email,
-                          displayName: staff.name,
-                          name: staff.name,
-                          tenantId,
-                          role: 'staff',
-                          loginId: staff.loginId.trim(),
-                          password: staff.password.trim(),
-                          position: staff.role
-                      });
-
-                      await signOut(secondaryAuth);
-                  } catch (authError: any) {
-                      if (authError.code === 'auth/email-already-in-use') {
-                          await showAlert('오류: 이미 가입되어 사용 중인 아이디(이메일)입니다.');
-                          return;
+                      try {
+                        await db.updateStaff({ ...staff, uid });
+                      } catch (uidErr) {
+                        console.warn('staff uid link failed:', uidErr);
+                        toast.warning('직원은 저장되었으나 로그인 계정(uid) 연결만 실패했습니다.');
                       }
-                      throw authError;
+                      if (provision.recovered) {
+                          toast.success('Firebase에만 남아 있던 로그인 계정을 연결했습니다.');
+                      }
+                  } else {
+                      toast.warning(
+                          `직원은 목록에 저장되었습니다.\n로그인 계정 연결은 실패했습니다 — ${provision.message.split('\n')[0]}`
+                      );
                   }
               } else {
-                  // 패스워드 또는 정보 변경 처리
-                  const oldStaff = staffList.find(s => s.id === staff.id);
+                  let secondaryApp;
+                  try {
+                      secondaryApp = getApp('Secondary');
+                  } catch {
+                      secondaryApp = initializeApp(firebaseConfig, 'Secondary');
+                  }
+                  const secondaryAuth = getAuth(secondaryApp);
+                  const oldStaff = staffList.find((s) => s.id === staff.id);
                   if (oldStaff && oldStaff.password !== staff.password) {
                       try {
-                          // 이전 비밀번호로 보조 세션 로그인 후 패스워드 변경 승인
-                          const oldEmail = oldStaff.loginId?.includes('@') ? oldStaff.loginId.trim().toLowerCase() : `${oldStaff.loginId?.trim().toLowerCase()}@ez-hub.kr`;
+                          const oldEmail = normalizeStaffLoginEmail(oldStaff.loginId || staff.loginId);
                           const oldPassword = oldStaff.password || '';
-
                           await signInWithEmailAndPassword(secondaryAuth, oldEmail, oldPassword);
                           if (secondaryAuth.currentUser) {
                               await updatePassword(secondaryAuth.currentUser, staff.password);
                           }
                           await signOut(secondaryAuth);
                       } catch (updateError) {
-                          console.warn("Silent auth update failed, trying fallback create:", updateError);
-                          // 이전 계정 매핑이 유실된 경우 대비해 대체 재생성 시도
-                          try {
-                              const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, staff.password);
-                              uid = userCredential.user.uid;
-                              staff.uid = uid;
-                              await setDoc(doc(firestore, 'users', uid), {
-                                  uid,
-                                  id: uid,
-                                  email,
-                                  displayName: staff.name,
-                                  name: staff.name,
-                                  tenantId,
-                                  role: 'staff',
-                                  loginId: staff.loginId.trim(),
-                                  password: staff.password.trim(),
-                                  position: staff.role
-                              });
-                              await signOut(secondaryAuth);
-                          } catch (fallbackError) {
-                              await showAlert('오류: 아이디 패스워드 설정 변경 권한이 없거나 중복된 아이디입니다.');
-                              return;
-                          }
+                          console.warn('Auth password update failed:', updateError);
+                          toast.warning('직원 정보는 저장되었으나 Firebase 비밀번호 변경에 실패했습니다.');
                       }
                   }
-                  
-                  // 글로벌 사용자 Profile 동기화 유지
-                  const userProfileUpdate: any = {
+
+                  const userSnap = await getDoc(doc(firestore, 'users', uid));
+                  const existingUser = userSnap.exists() ? userSnap.data() : null;
+                  const authRole =
+                    existingUser?.role === 'admin' || existingUser?.role === 'staff'
+                      ? existingUser.role
+                      : resolveAppRoleFromStaff(staff.role);
+                  const userProfileUpdate: Record<string, unknown> = {
                       displayName: staff.name,
                       name: staff.name,
-                      email: email
+                      email,
+                      tenantId,
+                      role: authRole,
+                      position: staff.role,
+                      loginId: staff.loginId.trim(),
+                      password: staff.password.trim(),
                   };
-                  if (staff.loginId) userProfileUpdate.loginId = staff.loginId.trim();
-                  if (staff.password) userProfileUpdate.password = staff.password.trim();
-                  
-                  await setDoc(doc(firestore, 'users', uid), userProfileUpdate, { merge: true });
+                  if (!userSnap.exists()) {
+                      userProfileUpdate.uid = uid;
+                      userProfileUpdate.id = uid;
+                  }
+
+                  try {
+                      await setDoc(doc(firestore, 'users', uid), userProfileUpdate, { merge: true });
+                  } catch (userErr: unknown) {
+                      // users 프로필은 직원 첫 로그인 시 본인 계정으로 생성됨
+                      console.warn('users profile sync skipped (staff login will create):', userErr);
+                  }
               }
           }
-
-          // 2. 테넌트 내부 DB 정보 저장
-          if (editingStaff) {
-              await db.updateStaff(staff);
-
-              // 구글 시트 직원 수정 웹훅 전송
-              try {
-                  const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-                  const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
-                  await fetch(GAS_WEBHOOK_URL, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                      body: JSON.stringify({
-                          action: "update_staff",
-                          companyName,
-                          loginId: pureId,
-                          password: staff.password || '',
-                          staffName: staff.name,
-                          staffRole: staff.role || '직원',
-                          contact: getStaffContact(staff)
-                      })
-                  });
-              } catch (err) {
-                  console.error("Google Sheets Sync Error (update_staff):", err);
-              }
-          } else {
-              await db.addStaff(staff);
-
-              // 구글 시트 직원 추가 웹훅 전송
-              try {
-                  const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-                  const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
-                  await fetch(GAS_WEBHOOK_URL, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                      body: JSON.stringify({
-                          action: "add_staff",
-                          companyName,
-                          loginId: pureId,
-                          password: staff.password || '',
-                          staffName: staff.name,
-                          staffRole: staff.role || '직원',
-                          contact: getStaffContact(staff)
-                      })
-                  });
-              } catch (err) {
-                  console.error("Google Sheets Sync Error (add_staff):", err);
-              }
+          } catch (authErr) {
+              console.warn('Staff auth sync failed (staff record kept):', authErr);
+              toast.warning('직원은 목록에 저장되었습니다. 로그인 계정 연동 중 오류가 있었습니다.');
           }
+
+          // 구글 시트 웹훅
+          try {
+              const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+              const pureId = staff.loginId?.includes('@') ? staff.loginId.split('@')[0] : (staff.loginId || '');
+              await fetch(GAS_WEBHOOK_URL, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                  body: JSON.stringify({
+                      action: isNewStaff ? 'add_staff' : 'update_staff',
+                      companyName,
+                      loginId: pureId,
+                      password: staff.password || '',
+                      staffName: staff.name,
+                      staffRole: staff.role || '직원',
+                      contact: getStaffContact(staff),
+                  }),
+              });
+          } catch (err) {
+              console.error('Google Sheets Sync Error (staff save):', err);
+          }
+
+          toast.success(isNewStaff ? '직원이 등록되었습니다.' : '직원 정보가 저장되었습니다.');
           setIsModalOpen(false);
       } catch (error: any) {
-          showAlert('직원 등록 처리 중 오류가 발생했습니다: ' + (error.message || getErrorMessage(error)));
+          if (staffSaved) {
+              toast.warning('직원은 저장되었으나 후속 처리 중 오류가 있었습니다.');
+              setIsModalOpen(false);
+              return;
+          }
+          showAlert('직원 정보 저장 중 오류가 발생했습니다: ' + (error.message || getErrorMessage(error)));
+      } finally {
+          setIsSavingStaff(false);
       }
   };
 
@@ -525,7 +536,7 @@ export const StaffManager: React.FC = () => {
             <div key={staff.id} className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden group hover:shadow-md transition-all">
             <div className="h-24 bg-gradient-to-r from-blue-500 to-indigo-600 relative">
                 <div className={`absolute -bottom-10 left-6 w-20 h-20 rounded-full border-4 border-white dark:border-slate-800 overflow-hidden bg-slate-200`}>
-                <img src={staff.avatarUrl} alt={staff.name} className="w-full h-full object-cover" />
+                <img src={getStaffAvatarUrl(staff.avatarUrl, staff.id)} alt={staff.name} className="w-full h-full object-cover" />
                 </div>
                 {/* Extension Number Badge on Header */}
                 {staff.extensionNumber && (
@@ -708,6 +719,7 @@ export const StaffManager: React.FC = () => {
                 staff={editingStaff}
                 onClose={() => setIsModalOpen(false)}
                 onSave={handleSaveStaff}
+                isSaving={isSavingStaff}
             />
         )}
 

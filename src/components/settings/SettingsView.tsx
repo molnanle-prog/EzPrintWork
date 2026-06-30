@@ -15,30 +15,32 @@ import { ProcessingManager } from './ProcessingManager';
 import { PlanManager } from './PlanManager';
 import { Users, ScrollText, Building2, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { isRootSettingsTab } from '../../utils/adminAccess';
+import { isRootSettingsTab, isStaffOperationsSettingsTab } from '../../utils/adminAccess';
 
 export const SettingsView: React.FC = () => {
   const {
     currentUser,
     canAccessAdminSettings,
     canAccessRootSettings,
+    canAccessStaffOperationsSettings,
     isTenantOwner,
     isSiteAdmin,
   } = useAuth();
   const isAdmin = canAccessAdminSettings || currentUser?.email === 'molnanle@gmail.com';
   
-  // Default to 'profile' for regular users, 'staff' for admin
   const [activeSubTab, setActiveSubTab] = useState(isAdmin ? 'staff' : 'profile');
  
   useEffect(() => {
-    // If a regular user tries to access a restricted tab, redirect to Profile
-    if (!isAdmin && activeSubTab !== 'profile') {
+    if (!isAdmin && !canAccessStaffOperationsSettings && activeSubTab !== 'profile') {
+        setActiveSubTab('profile');
+    }
+    if (!isAdmin && canAccessStaffOperationsSettings && activeSubTab !== 'profile' && !isStaffOperationsSettingsTab(activeSubTab)) {
         setActiveSubTab('profile');
     }
     if (isAdmin && !canAccessRootSettings && isRootSettingsTab(activeSubTab)) {
         setActiveSubTab('staff');
     }
-  }, [isAdmin, activeSubTab, canAccessRootSettings]);
+  }, [isAdmin, activeSubTab, canAccessRootSettings, canAccessStaffOperationsSettings]);
 
   const renderContent = () => {
     switch (activeSubTab) {
@@ -48,9 +50,9 @@ export const SettingsView: React.FC = () => {
         case 'company': return isAdmin ? <CompanyInfoManager /> : null;
         case 'status': return isAdmin ? <StatusManager /> : null; 
         case 'product': return <ProductManager />; 
-        case 'processing': return isAdmin ? <ProcessingManager /> : null;
+        case 'processing': return <ProcessingManager />;
         case 'paper': return isAdmin ? <PaperManager /> : null;
-        case 'client': return isAdmin ? <ClientManager /> : null;
+        case 'client': return <ClientManager />;
         case 'price': return isAdmin ? <PriceManager /> : null;
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
         case 'backup': return canAccessRootSettings ? <BackupManager /> : null;
@@ -59,22 +61,23 @@ export const SettingsView: React.FC = () => {
   };
 
   const allMenuItems = [
-    { id: 'profile', label: '개인정보 변경', icon: User, adminOnly: false, rootOnly: false },
-    { id: 'staff', label: '직원 관리', icon: Users, adminOnly: true, rootOnly: false },
-    { id: 'plan', label: '요금제 / 인원', icon: Crown, adminOnly: true, rootOnly: true },
-    { id: 'company', label: '회사 정보', icon: Building, adminOnly: true, rootOnly: false },
-    { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true, rootOnly: false }, 
-    { id: 'product', label: '상품 관리', icon: Package, adminOnly: true, rootOnly: false }, 
-    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: true, rootOnly: false },
-    { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true, rootOnly: false },
-    { id: 'client', label: '거래처', icon: Building2, adminOnly: true, rootOnly: false },
-    { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true, rootOnly: false },
-    { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true, rootOnly: false },
-    { id: 'backup', label: '백업/복원', icon: Database, adminOnly: true, rootOnly: true },
+    { id: 'profile', label: '개인정보 변경', icon: User, adminOnly: false, staffAllowed: false, rootOnly: false },
+    { id: 'staff', label: '직원 관리', icon: Users, adminOnly: true, staffAllowed: false, rootOnly: false },
+    { id: 'plan', label: '요금제 / 인원', icon: Crown, adminOnly: true, staffAllowed: false, rootOnly: true },
+    { id: 'company', label: '회사 정보', icon: Building, adminOnly: true, staffAllowed: false, rootOnly: false },
+    { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true, staffAllowed: false, rootOnly: false }, 
+    { id: 'product', label: '상품 관리', icon: Package, adminOnly: false, staffAllowed: true, rootOnly: false }, 
+    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: false, staffAllowed: true, rootOnly: false },
+    { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true, staffAllowed: false, rootOnly: false },
+    { id: 'client', label: '거래처', icon: Building2, adminOnly: false, staffAllowed: true, rootOnly: false },
+    { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true, staffAllowed: false, rootOnly: false },
+    { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true, staffAllowed: false, rootOnly: false },
+    { id: 'backup', label: '백업/복원', icon: Database, adminOnly: true, staffAllowed: false, rootOnly: true },
   ];
 
   const visibleMenuItems = allMenuItems.filter((item) => {
     if (item.rootOnly) return canAccessRootSettings;
+    if (item.staffAllowed) return canAccessStaffOperationsSettings;
     if (item.adminOnly) return isAdmin;
     return true;
   });
@@ -115,9 +118,9 @@ export const SettingsView: React.FC = () => {
                  <div className="p-4 mt-auto border-t border-slate-100 dark:border-slate-700 hidden lg:block">
                      <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
                          <div className="flex items-center gap-2 font-bold mb-1 text-slate-700 dark:text-slate-300">
-                             <Lock size={12} /> 권한 제한됨
+                             <Lock size={12} /> 권한 안내
                          </div>
-                         직원, 상품, 단가 등의 고급 설정은 관리자 계정으로 로그인해야 접근할 수 있습니다.
+                         직원 계정은 상품·후가공·거래처 등록·수정이 가능합니다. 직원 관리·단가·백업 등은 관리자만 이용할 수 있습니다.
                      </div>
                  </div>
              )}

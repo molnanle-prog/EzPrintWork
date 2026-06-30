@@ -212,7 +212,9 @@ async function writeDownloadManifestFromGithub({
 
 async function main() {
   const { resolveHomepageDir } = require('./resolve-homepage-dir');
+  const { loadDeployEnv } = require('./load-deploy-env');
   const currentDir = path.resolve(__dirname, '..');
+  loadDeployEnv(currentDir);
   const homepageDir = resolveHomepageDir();
   const targetDir = path.join(homepageDir, 'public', 'ezpw');
   const downloadsDir = path.join(homepageDir, 'public', 'downloads');
@@ -313,30 +315,71 @@ async function main() {
         );
       }
 
-      writeDownloadManifest({
-        appVersion,
-        setupExeName,
-        setupBytes: sourceStat.size,
-        githubDownloadUrl,
-        githubVersionUrl,
-        downloadsDir,
-        log,
-        colors,
-      });
+      const {
+        fetchGithubReleaseByTag,
+        writeDownloadMetaFromRelease,
+      } = await import('./github-download-meta.mjs');
 
-      const latestYmlSource = path.join(releaseDir, 'latest.yml');
-      if (fs.existsSync(latestYmlSource)) {
-        let yml = fs.readFileSync(latestYmlSource, 'utf-8');
-        // path는 파일명만 — 전체 URL이면 Windows가 바탕화면/다운로드 폴더에 exe를 저장할 수 있음
-        yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
-        yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
-        fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
-        log('✓ latest.yml → ez-hub.kr/downloads/ (앱 자동업데이트용)', colors.green);
+      const releaseTag = `v${appVersion}`;
+      let githubRelease = await fetchGithubReleaseByTag(releaseTag);
+
+      if (githubRelease) {
+        await writeDownloadMetaFromRelease(githubRelease, downloadsDir);
+        log(`✓ GitHub Release ${releaseTag} ↔ download-meta 동기화`, colors.green);
+      } else if (ghToken) {
+        writeDownloadManifest({
+          appVersion,
+          setupExeName,
+          setupBytes: sourceStat.size,
+          githubDownloadUrl,
+          githubVersionUrl,
+          downloadsDir,
+          log,
+          colors,
+        });
+
+        const latestYmlSource = path.join(releaseDir, 'latest.yml');
+        if (fs.existsSync(latestYmlSource)) {
+          let yml = fs.readFileSync(latestYmlSource, 'utf-8');
+          yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
+          yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
+          fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
+          log('✓ latest.yml → ez-hub.kr/downloads/ (앱 자동업데이트용)', colors.green);
+        }
+      } else {
+        const versionGithubUrl =
+          `https://github.com/molnanle-prog/EzPrintWork/releases/download/${releaseTag}/${setupExeName}`;
+        writeDownloadManifest({
+          appVersion,
+          setupExeName,
+          setupBytes: sourceStat.size,
+          githubDownloadUrl: versionGithubUrl,
+          githubVersionUrl: versionGithubUrl,
+          downloadsDir,
+          log,
+          colors,
+        });
+
+        const latestYmlSource = path.join(releaseDir, 'latest.yml');
+        if (fs.existsSync(latestYmlSource)) {
+          let yml = fs.readFileSync(latestYmlSource, 'utf-8');
+          yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
+          yml = yml.replace(/^(\s+- url: ).+$/m, `$1${versionGithubUrl}`);
+          yml = yml.replace(/^version: .+$/m, `version: ${appVersion}`);
+          fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
+          log(`✓ latest.yml → v${appVersion} (GitHub Release 업로드 대기)`, colors.yellow);
+        }
+
+        throw new Error(
+          `GitHub Release ${releaseTag}가 없습니다. ` +
+          `EzPrintWork/.env.deploy 에 GH_TOKEN=... 저장 후 npm run publish:release 를 실행하거나, ` +
+          `git tag ${releaseTag} && git push origin ${releaseTag} 로 GitHub Actions 릴리스를 트리거해 주세요.`
+        );
       }
 
-      if (ghToken) {
-        log('* GitHub Release는 electron-builder --publish always 로 업로드됨', colors.cyan);
-      } else {
+      if (ghToken && githubRelease) {
+        log('* GitHub Release 업로드·동기화 완료', colors.cyan);
+      } else if (!ghToken) {
         log('* GitHub Release 수동 업로드: set GH_TOKEN=... && node scripts/publish-github-release.js', colors.yellow);
       }
     } else if (process.env.DEPLOY_SKIP_ELECTRON === '1') {

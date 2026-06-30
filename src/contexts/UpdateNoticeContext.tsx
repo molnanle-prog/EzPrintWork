@@ -8,7 +8,7 @@ export type WebUpdateNotice = {
 
 export type DesktopUpdateNotice = {
   kind: 'desktop';
-  phase: 'available' | 'downloading' | 'downloaded' | 'error';
+  phase: 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
   version?: string;
   percent?: number;
   message?: string;

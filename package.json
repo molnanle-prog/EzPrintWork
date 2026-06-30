@@ -1,6 +1,6 @@
 {
   "name": "ezprintwork",
-  "version": "1.3.3",
+  "version": "1.3.5",
   "author": "EzPrintWork",
   "description": "인쇄소 통합 관리 시스템",
   "main": "electron/main.js",
@@ -17,6 +17,7 @@
     "test:smoke": "node scripts/verify_firestore_rules.mjs && npx -y tsx scripts/smoke_admin_access_ts.ts && npm run test:smoke:staff",
     "publish:release": "node scripts/publish-github-release.js",
     "sync:downloads": "node scripts/sync-github-latest-yml.mjs",
+    "sync:downloads:github": "node scripts/github-download-meta.mjs latest",
     "setup:home": "node scripts/home-setup.mjs",
     "test:smoke:staff": "npx -y tsx scripts/smoke_staff_match.ts && npx -y tsx scripts/smoke_staff_seats.ts"
   },

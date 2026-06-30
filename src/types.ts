@@ -50,6 +50,8 @@ export interface JobItem {
   type: string;       // 명함, 전단지...
   specs: JobSpecs;    // Specific specs for this item
   completed?: boolean; // 개별 품목 완료 상태
+  /** 종류별 견적 계산기 — 품목별 입력 금액(공급가액) */
+  lineQuote?: number;
 }
 
 // Generic log for all job changes
@@ -81,6 +83,8 @@ export interface Job {
   progress: number;
   type: string; 
   price: number;
+  /** 총액이 부가세 포함 금액인지 여부 */
+  priceIncludesVat?: boolean;
   linkedQuoteId?: string;
   order: number; 
   filePath?: string; 
@@ -276,6 +280,7 @@ export type ElectronUpdaterPhase =
   | 'none'
   | 'downloading'
   | 'downloaded'
+  | 'installing'
   | 'error';
 
 export interface ElectronUpdaterStatus {

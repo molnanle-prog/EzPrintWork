@@ -90,13 +90,17 @@ function uploadAsset(uploadUrlTemplate, token, filePath, label) {
 }
 
 async function main() {
+  const projectRoot = path.resolve(__dirname, '..');
+  require('./load-deploy-env').loadDeployEnv(projectRoot);
+
   const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
   if (!token) {
     console.error('GH_TOKEN 또는 GITHUB_TOKEN 환경변수가 필요합니다.');
+    console.error('  → EzPrintWork/.env.deploy 파일에 GH_TOKEN=... 를 저장하거나');
+    console.error('  → .env.deploy.example 을 참고해 주세요.');
     process.exit(1);
   }
 
-  const projectRoot = path.resolve(__dirname, '..');
   const version = require(path.join(projectRoot, 'package.json')).version;
   const tag = `v${version}`;
   const releaseDir = path.join(projectRoot, process.env.ELECTRON_BUILD_OUTPUT || 'release');

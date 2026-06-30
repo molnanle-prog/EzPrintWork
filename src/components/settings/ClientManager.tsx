@@ -13,8 +13,10 @@ import {
   type SmsReceiveMode,
 } from '../../utils/clientSms';
 import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
+import { useAuth } from '../../contexts/AuthContext';
 
 export const ClientManager: React.FC = () => {
+  const { canManageClientMaster } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -414,6 +416,7 @@ export const ClientManager: React.FC = () => {
             거래처 관리
           </h3>
           <div className="flex flex-wrap gap-2">
+          {canManageClientMaster && (
           <button 
             onClick={openMergeModal}
             disabled={clients.length < 2}
@@ -422,6 +425,7 @@ export const ClientManager: React.FC = () => {
           >
              <GitMerge size={18} /> 거래처 합치기
           </button>
+          )}
           <button 
             onClick={handleAddNew}
             title="새로운 거래처를 등록합니다"
@@ -510,6 +514,7 @@ export const ClientManager: React.FC = () => {
                         >
                             <Edit2 size={16} />
                         </button>
+                        {canManageClientMaster && (
                         <button 
                             onClick={() => handleDelete(client.id, client.name)}
                             className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
@@ -517,6 +522,7 @@ export const ClientManager: React.FC = () => {
                         >
                             <Trash2 size={16} />
                         </button>
+                        )}
                       </div>
                   </div>
                   

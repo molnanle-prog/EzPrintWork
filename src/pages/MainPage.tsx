@@ -9,10 +9,11 @@ import { StaffManager } from '../components/staff/StaffManager';
 import { ClientManager } from '../components/settings/ClientManager';
 import { PaperManager } from '../components/settings/PaperManager';
 import { ActionLogPage } from './ActionLogPage';
+import { PaymentReceivableManager } from '../components/payments/PaymentReceivableManager';
 import { db } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 
-type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'logs' | 'customers' | 'quotes' | 'staff' | 'inventory' | 'settings';
+type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'logs' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
 
 export const MainPage: React.FC = () => {
     const { currentUser } = useAuth();
@@ -40,6 +41,7 @@ export const MainPage: React.FC = () => {
             case 'kanban': return <KanbanBoard onNavigateToQuote={handleNavigateToQuote} />;
             case 'calendar': return <CalendarView onNavigateToQuote={handleNavigateToQuote} />;
             case 'quotes': return <QuoteManager />;
+            case 'payments': return <PaymentReceivableManager />;
             case 'staff': return <StaffManager />;
             case 'customers': return <ClientManager />;
             case 'inventory': return <PaperManager />;

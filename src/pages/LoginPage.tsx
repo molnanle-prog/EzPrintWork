@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '../contexts/ThemeContext';
@@ -326,37 +326,30 @@ export const LoginPage: React.FC = () => {
             const { db } = await import('../services/firebase');
 
             const staffCol = collection(db, `tenants/${selectedTenantId}/staff`);
-            const loginIdsToTry = [...new Set([
-                loginId.trim(),
-                loginId.trim().toLowerCase(),
-                loginId.trim().toUpperCase(),
-            ])];
-            const passwordsToMatch = [...new Set([
-                password.trim(),
-                password.trim().toLowerCase(),
-                password.trim().toUpperCase(),
-            ])];
+            const loginNorm = loginId.trim().toLowerCase();
+            const snap = await getDocs(
+                query(staffCol, where('loginId', '==', loginNorm), limit(10))
+            );
 
             let userDoc: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
             let userData: Record<string, any> | null = null;
+            const passwordsToMatch = [...new Set([
+                password.trim(),
+                password.trim().toLowerCase(),
+            ])];
 
-            for (const candidateId of loginIdsToTry) {
-                const snap = await getDocs(
-                    query(staffCol, where('loginId', '==', candidateId), limit(10))
+            for (const docSnap of snap.docs) {
+                const data = docSnap.data();
+                if (data.isDeleted === true || data.active === false) continue;
+                const dbPassword = (data.password || '').trim();
+                const matched = passwordsToMatch.some(
+                    (p) => p === dbPassword || p.toLowerCase() === dbPassword.toLowerCase()
                 );
-                for (const docSnap of snap.docs) {
-                    const data = docSnap.data();
-                    const dbPassword = (data.password || '').trim();
-                    const matched = passwordsToMatch.some(
-                        (p) => p === dbPassword || p.toLowerCase() === dbPassword.toLowerCase()
-                    );
-                    if (matched) {
-                        userDoc = docSnap;
-                        userData = data;
-                        break;
-                    }
+                if (matched) {
+                    userDoc = docSnap;
+                    userData = data;
+                    break;
                 }
-                if (userDoc) break;
             }
 
             if (!userDoc || !userData) {
@@ -404,8 +397,29 @@ export const LoginPage: React.FC = () => {
             }
 
             if (!signedIn) {
+                for (const pwd of passwordsToTry) {
+                    try {
+                        await createUserWithEmailAndPassword(auth, authEmail, pwd);
+                        signedIn = true;
+                        break;
+                    } catch (createErr: any) {
+                        lastAuthError = createErr;
+                        if (createErr?.code === 'auth/email-already-in-use') {
+                            try {
+                                await signInWithEmailAndPassword(auth, authEmail, pwd);
+                                signedIn = true;
+                                break;
+                            } catch (retryErr) {
+                                lastAuthError = retryErr;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!signedIn) {
                 console.error('Staff Firebase auth failed:', lastAuthError);
-                toast.error('Firebase 계정 연동이 필요합니다. 관리자에게 직원 아이디/비밀번호 재저장을 요청하세요.');
+                toast.error('Firebase 로그인 연동에 실패했습니다. 관리자에게 직원 정보 재저장을 요청하세요.');
                 setIsStaffLoggingIn(false);
                 return;
             }

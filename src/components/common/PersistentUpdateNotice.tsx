@@ -41,6 +41,11 @@ export const PersistentUpdateNotice: React.FC = () => {
   const { phase, version, percent, message } = notice;
 
   if (phase === 'downloading') {
+    const pct = Math.min(100, Math.max(0, percent ?? 0));
+    const statusText =
+      pct >= 99.5
+        ? '다운로드 완료 — 설치 프로그램을 준비 중입니다…'
+        : `${Math.round(pct)}% — 완료될 때까지 잠시만 기다려 주세요.`;
     return (
       <div className="fixed top-4 right-4 z-[10050] w-[min(100vw-2rem,22rem)]" role="status" aria-live="polite">
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl p-4">
@@ -51,10 +56,26 @@ export const PersistentUpdateNotice: React.FC = () => {
           <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
             <div
               className="h-full bg-blue-600 transition-all duration-300"
-              style={{ width: `${Math.min(100, Math.max(0, percent ?? 0))}%` }}
+              style={{ width: `${pct}%` }}
             />
           </div>
-          <p className="text-[11px] text-slate-500 mt-2">{Math.round(percent ?? 0)}% — 완료될 때까지 잠시만 기다려 주세요.</p>
+          <p className="text-[11px] text-slate-500 mt-2">{statusText}</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (phase === 'installing') {
+    return (
+      <div className="fixed top-4 right-4 z-[10050] w-[min(100vw-2rem,22rem)]" role="status" aria-live="polite">
+        <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-white dark:bg-slate-900 shadow-2xl p-4">
+          <div className="flex items-center gap-2 text-sm font-bold text-emerald-700 dark:text-emerald-300 mb-2">
+            <Loader2 size={16} className="animate-spin" />
+            v{version} 설치 프로그램 실행 중…
+          </div>
+          <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+            {message || '기존 앱 창을 닫고 업데이트를 적용합니다. 설치가 끝나면 EzPrintWork가 다시 실행됩니다.'}
+          </p>
         </div>
       </div>
     );

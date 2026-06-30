@@ -5,7 +5,7 @@ import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, g
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
-import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, CompanyPermissionContext } from '../utils/adminAccess';
+import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -45,6 +45,8 @@ interface AuthContextType {
   canManageStaff: boolean;
   canManageClientMaster: boolean;
   canManageInstructions: boolean;
+  /** 상품·후가공·거래처 등록/수정 (일반 직원 포함) */
+  canAccessStaffOperationsSettings: boolean;
 }
 
 // [결제 만료 및 미결제 실시간 자동 판별 엔진]
@@ -98,6 +100,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canManageStaffFlag = canManageStaff(permissionCtx);
   const canManageClientMasterFlag = canManageClientMaster(permissionCtx);
   const canManageInstructionsFlag = canManageInstructions(permissionCtx);
+  const canAccessStaffOperationsSettingsFlag = canAccessStaffOperationsSettings(permissionCtx);
 
   /** determineTenantPlan과 동일 — 광고형(AD)만 true */
   const showsAds = tenantPlan === 'free';
@@ -545,6 +548,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       canManageStaff: canManageStaffFlag,
       canManageClientMaster: canManageClientMasterFlag,
       canManageInstructions: canManageInstructionsFlag,
+      canAccessStaffOperationsSettings: canAccessStaffOperationsSettingsFlag,
     }}>
       {children}
     </AuthContext.Provider>

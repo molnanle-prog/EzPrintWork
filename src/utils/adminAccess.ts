@@ -3,8 +3,22 @@
  *
  * - 메인 관리자 (Tenant Owner): tenants.ownerId — 요금제·백업 포함 전체 회사 관리
  * - 사내 관리자 (Company Admin): users.role === 'admin' — 직원·마스터 데이터·삭제·정리
- * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·거래처 등록(작업 연동)·조회
+ * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·상품/후가공·거래처 등록·수정
  */
+
+/** 설정 > 직원도 접근 가능한 운영 메뉴 */
+export const STAFF_OPERATIONS_SETTINGS_TAB_IDS = ['product', 'processing', 'client'] as const;
+
+export type StaffOperationsSettingsTabId = (typeof STAFF_OPERATIONS_SETTINGS_TAB_IDS)[number];
+
+export function isStaffOperationsSettingsTab(tabId: string): tabId is StaffOperationsSettingsTabId {
+    return (STAFF_OPERATIONS_SETTINGS_TAB_IDS as readonly string[]).includes(tabId);
+}
+
+/** 상품·후가공·거래처 등록/수정 — 로그인한 회사 구성원 */
+export function canAccessStaffOperationsSettings(ctx: CompanyPermissionContext): boolean {
+    return !!ctx.userUid;
+}
 
 /** staff 컬렉션 role — 관리 권한 여부 */
 export function isStaffAdminRole(role?: string | null): boolean {
@@ -62,7 +76,7 @@ export function canManageStaff(ctx: CompanyPermissionContext): boolean {
     return canManageCompany(ctx);
 }
 
-/** 거래처 마스터 관리(설정 탭·삭제·합치기) — 등록은 작업 저장 시 직원도 가능 */
+/** 거래처 삭제·합치기 — 등록·수정은 직원도 가능 */
 export function canManageClientMaster(ctx: CompanyPermissionContext): boolean {
     return canManageCompany(ctx);
 }

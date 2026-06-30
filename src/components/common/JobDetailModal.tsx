@@ -1,10 +1,12 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
-import { db, calculateEstimate, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, ArrowRightCircle, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, FastForward } from 'lucide-react';
+import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, FastForward } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
+import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
+import { calcQuoteTotals } from '../../utils/quoteCalculator';
 import { useDialog } from '../../contexts/DialogContext';
 import { LocalPathInput } from './LocalPathInput';
 import { useAuth } from '../../contexts/AuthContext';
@@ -178,6 +180,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     subJobs: initialSubJobs,
     history: job.history || [],
     assignedStaffIds: job.assignedStaffIds || (job.assignedStaffId ? [job.assignedStaffId] : []),
+    priceIncludesVat: job.priceIncludesVat ?? false,
   };
 
   const [editedJob, setEditedJob] = useState<Job>(initialJob);
@@ -209,7 +212,9 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
   const { currentUser, canDeletePermanently } = useAuth();
   const [pastJobs, setPastJobs] = useState<Job[]>([]);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
-  const [estimateResult, setEstimateResult] = useState<{cost: number, recommended: number} | null>(null);
+  const [showQuoteCalculator, setShowQuoteCalculator] = useState(false);
+  const [calcLineQuotes, setCalcLineQuotes] = useState<Record<string, number>>({});
+  const [calcVatIncluded, setCalcVatIncluded] = useState(false);
 
   const currentSubJob = editedJob.subJobs![activeTabIdx];
   const currentSpecs = currentSubJob.specs;
@@ -738,20 +743,35 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     }
   };
 
-  const handleCalculate = () => {
-    if (estimateResult) {
-      setEstimateResult(null);
-    } else {
-      const result = calculateEstimate(currentSpecs, db.getPricingConfig());
-      setEstimateResult({ cost: result.totalCost, recommended: result.recommendedPrice });
+  const toggleQuoteCalculator = () => {
+    if (!showQuoteCalculator) {
+      const init: Record<string, number> = {};
+      (editedJob.subJobs || []).forEach((sj) => {
+        init[sj.id] = sj.lineQuote ?? 0;
+      });
+      setCalcLineQuotes(init);
+      setCalcVatIncluded(editedJob.priceIncludesVat ?? false);
     }
+    setShowQuoteCalculator((prev) => !prev);
   };
 
-  const applyEstimate = () => {
-    if (estimateResult) {
-      setEditedJob({ ...editedJob, price: (editedJob.price || 0) + estimateResult.recommended });
-      setEstimateResult(null);
-    }
+  const applyQuoteCalculator = () => {
+    const supplySum = (editedJob.subJobs || []).reduce(
+      (sum, sj) => sum + (Number(calcLineQuotes[sj.id] ?? 0) || 0),
+      0
+    );
+    const totals = calcQuoteTotals(supplySum, calcVatIncluded);
+    const newSubJobs = (editedJob.subJobs || []).map((sj) => ({
+      ...sj,
+      lineQuote: Number(calcLineQuotes[sj.id] ?? 0) || 0,
+    }));
+    setEditedJob({
+      ...editedJob,
+      price: totals.totalAmount,
+      priceIncludesVat: calcVatIncluded,
+      subJobs: newSubJobs,
+    });
+    setShowQuoteCalculator(false);
   };
 
   const handleAddType = () => {
@@ -936,7 +956,15 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                                         </div>
                                     ) : <span className="text-slate-400">없음</span>}
                                 </div>
-                                <div className="flex justify-between"><span className="text-slate-500">총 금액:</span> <span className="font-bold text-slate-800">{editedJob.price.toLocaleString()}원</span></div>
+                                <div className="flex justify-between items-center">
+                                  <span className="text-slate-500">총 금액:</span>
+                                  <div className="text-right">
+                                    <span className="font-bold text-slate-800">{editedJob.price.toLocaleString()}원</span>
+                                    <span className={`ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded ${editedJob.priceIncludesVat ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'}`}>
+                                      {editedJob.priceIncludesVat ? '부가세 포함' : '부가세 미포함'}
+                                    </span>
+                                  </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -1282,11 +1310,57 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                         <div className="bg-white py-1.5 px-2 rounded-lg border border-slate-200 shadow-sm relative overflow-hidden flex flex-col justify-between">
                           <div className="flex justify-between items-center mb-0.5">
                              <label className="text-[10px] font-bold text-slate-500 flex items-center gap-1"><DollarSign size={10} /> 견적 및 결제</label>
-                             <button onClick={handleCalculate} className="text-[9px] flex items-center gap-0.5 bg-slate-800 text-yellow-400 px-1.5 py-0.5 rounded-full font-bold hover:bg-slate-700 transition-colors"><Calculator size={9} /> ⚡계산</button>
+                             <button
+                               type="button"
+                               onClick={toggleQuoteCalculator}
+                               className={`text-[9px] flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-bold transition-colors ${showQuoteCalculator ? 'bg-blue-600 text-white' : 'bg-slate-800 text-yellow-400 hover:bg-slate-700'}`}
+                             >
+                               <Calculator size={9} /> 종류별 계산
+                             </button>
                           </div>
-                          {estimateResult && (<div className="mb-1 bg-slate-100 p-1.5 rounded border border-slate-200 animate-in fade-in zoom-in duration-200"><div className="flex justify-between text-[11px] mb-0.5"><span className="text-slate-500">원가:</span><span className="font-mono text-slate-600">{estimateResult.cost.toLocaleString()}원</span></div><div className="flex justify-between text-[11px] font-bold items-center"><span className="text-slate-700">공급가:</span><div className="flex items-center gap-1"><span className="text-blue-600">+{estimateResult.recommended.toLocaleString()}원</span><button onClick={applyEstimate} className="bg-blue-600 text-white p-0.5 rounded hover:bg-blue-700"><ArrowRightCircle size={10} /></button></div></div></div>)}
-                          <div className="flex items-center gap-1 mb-1"><input type="number" value={editedJob.price} onChange={(e) => setEditedJob({...editedJob, price: Number(e.target.value)})} className="w-full p-0.5 bg-white border border-slate-300 rounded text-right font-bold text-xs text-blue-700 focus:ring-1 focus:ring-blue-500" /><span className="text-[10px] font-bold text-slate-600 whitespace-nowrap">원</span></div>
-                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일일부결제</option><option value="결제완료">결제완료</option></select></div>
+                          {showQuoteCalculator && (
+                            <JobQuoteCalculatorPanel
+                              subJobs={editedJob.subJobs || []}
+                              lineQuotes={calcLineQuotes}
+                              vatIncluded={calcVatIncluded}
+                              onLineQuoteChange={(id, amount) =>
+                                setCalcLineQuotes((prev) => ({ ...prev, [id]: amount }))
+                              }
+                              onVatIncludedChange={setCalcVatIncluded}
+                              onApply={applyQuoteCalculator}
+                              onClose={() => setShowQuoteCalculator(false)}
+                            />
+                          )}
+                          <div className="flex items-center gap-1 mb-0.5">
+                            <input
+                              type="number"
+                              value={editedJob.price}
+                              onChange={(e) =>
+                                setEditedJob({ ...editedJob, price: Number(e.target.value) })
+                              }
+                              className="w-full p-0.5 bg-white border border-slate-300 rounded text-right font-bold text-xs text-blue-700 focus:ring-1 focus:ring-blue-500"
+                            />
+                            <span className="text-[10px] font-bold text-slate-600 whitespace-nowrap">원</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-1 mb-1">
+                            <label className="flex items-center gap-1 cursor-pointer select-none">
+                              <input
+                                type="checkbox"
+                                checked={editedJob.priceIncludesVat ?? false}
+                                onChange={(e) =>
+                                  setEditedJob({ ...editedJob, priceIncludesVat: e.target.checked })
+                                }
+                                className="rounded border-slate-300 text-blue-600 w-3 h-3"
+                              />
+                              <span className="text-[9px] font-bold text-slate-600">부가세 포함 금액</span>
+                            </label>
+                            <span
+                              className={`text-[9px] font-black px-1.5 py-0.5 rounded ${editedJob.priceIncludesVat ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' : 'bg-slate-50 text-slate-600 border border-slate-200'}`}
+                            >
+                              {editedJob.priceIncludesVat ? '부가세 포함' : '부가세 미포함'}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="결제완료">결제완료</option></select></div>
                         </div>
 
                         {/* Dates 2: 납기일 */}

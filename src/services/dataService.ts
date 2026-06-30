@@ -980,8 +980,8 @@ export class DataService {
 
         try {
             await this.persistEntity(col, id, updated);
-        } catch {
-            // persistEntity already logged the error
+        } catch (e) {
+            throw e;
         }
     }
 

@@ -14,11 +14,24 @@ export function hasElectronUpdater(): boolean {
 export function useElectronUpdater() {
     const { setDesktopNotice } = useUpdateNotice();
     const isDownloadingRef = useRef(false);
+    const downloadWatchdogRef = useRef<number | null>(null);
+
+    const clearDownloadWatchdog = useCallback(() => {
+        if (downloadWatchdogRef.current != null) {
+            window.clearTimeout(downloadWatchdogRef.current);
+            downloadWatchdogRef.current = null;
+        }
+    }, []);
 
     const installDesktopUpdate = useCallback(async () => {
         if (!window.electron?.updaterInstall) return;
+        setDesktopNotice({
+            kind: 'desktop',
+            phase: 'installing',
+            message: '설치 프로그램을 실행합니다. 앱 창이 곧 닫힙니다.',
+        });
         await window.electron.updaterInstall();
-    }, []);
+    }, [setDesktopNotice]);
 
     const startDesktopUpdate = useCallback(async () => {
         if (!window.electron?.updaterDownload || isDownloadingRef.current) return;
@@ -27,13 +40,14 @@ export function useElectronUpdater() {
         const result = await window.electron.updaterDownload();
         if (!result.ok) {
             isDownloadingRef.current = false;
+            clearDownloadWatchdog();
             setDesktopNotice({
                 kind: 'desktop',
                 phase: 'error',
                 message: result.error || '네트워크를 확인해 주세요.',
             });
         }
-    }, [setDesktopNotice]);
+    }, [setDesktopNotice, clearDownloadWatchdog]);
 
     useEffect(() => {
         if (!hasElectronUpdater() || !window.electron?.onUpdaterStatus) return;
@@ -56,19 +70,39 @@ export function useElectronUpdater() {
                         version: status.version,
                         percent: status.percent,
                     });
+                    clearDownloadWatchdog();
+                    if ((status.percent ?? 0) >= 99.5) {
+                        downloadWatchdogRef.current = window.setTimeout(() => {
+                            void installDesktopUpdate();
+                        }, 12000);
+                    }
                     break;
 
                 case 'downloaded':
                     isDownloadingRef.current = false;
+                    clearDownloadWatchdog();
                     setDesktopNotice({
                         kind: 'desktop',
                         phase: 'downloaded',
                         version: status.version,
                     });
+                    void installDesktopUpdate();
+                    break;
+
+                case 'installing':
+                    isDownloadingRef.current = false;
+                    clearDownloadWatchdog();
+                    setDesktopNotice({
+                        kind: 'desktop',
+                        phase: 'installing',
+                        version: status.version,
+                        message: status.message,
+                    });
                     break;
 
                 case 'error':
                     isDownloadingRef.current = false;
+                    clearDownloadWatchdog();
                     if (status.silent) break;
                     setDesktopNotice({
                         kind: 'desktop',
@@ -78,6 +112,8 @@ export function useElectronUpdater() {
                     break;
 
                 case 'none':
+                    isDownloadingRef.current = false;
+                    clearDownloadWatchdog();
                     setDesktopNotice(null);
                     break;
 
@@ -86,8 +122,11 @@ export function useElectronUpdater() {
             }
         });
 
-        return unsubscribe;
-    }, [setDesktopNotice]);
+        return () => {
+            clearDownloadWatchdog();
+            unsubscribe();
+        };
+    }, [setDesktopNotice, clearDownloadWatchdog, installDesktopUpdate]);
 
     return { installDesktopUpdate, startDesktopUpdate };
 }
