@@ -12,6 +12,7 @@ import { APP_VERSION } from '../utils/autoUpdate';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
+import { normalizeStaffLoginEmail } from '../utils/staffAuthProvision';
 import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
 import { rememberStaffLoginTenant } from '../utils/resolveStaffTenantProfile';
@@ -381,7 +382,10 @@ export const LoginPage: React.FC = () => {
 
             // Firebase Auth 로그인 (Firestore rules isMember 통과에 필수)
             const rawLoginId = (userData.loginId || loginId.trim()).toLowerCase();
-            const authEmail = (userData.email?.includes('@') ? userData.email : `${rawLoginId}@ez-hub.kr`).trim().toLowerCase();
+            const primaryAuthEmail = normalizeStaffLoginEmail(rawLoginId);
+            const legacyAuthEmail = userData.email?.includes('@') && !userData.email.endsWith('@ez-hub.kr')
+                ? userData.email.trim().toLowerCase()
+                : null;
             const staffRoleForAuth = userData.role || userData.position;
             const resolvedRole = resolveAppRoleFromStaff(staffRoleForAuth);
             const staffDisplayName = userData.userName || userData.name || '사원';
@@ -392,7 +396,7 @@ export const LoginPage: React.FC = () => {
                 name: staffDisplayName,
                 role: resolvedRole,
                 staffDocId: userDoc.id,
-                email: authEmail,
+                email: primaryAuthEmail,
             });
             rememberStaffLoginTenant(tenantId);
 
@@ -405,34 +409,46 @@ export const LoginPage: React.FC = () => {
 
             let signedIn = false;
             let lastAuthError: any = null;
-            for (const pwd of passwordsToTry) {
-                try {
-                    await signInWithEmailAndPassword(auth, authEmail, pwd);
-                    signedIn = true;
-                    break;
-                } catch (authErr) {
-                    lastAuthError = authErr;
+            let authEmail = primaryAuthEmail;
+            const authEmailsToTry = [...new Set([primaryAuthEmail, legacyAuthEmail].filter(Boolean))] as string[];
+
+            for (const emailCandidate of authEmailsToTry) {
+                for (const pwd of passwordsToTry) {
+                    try {
+                        await signInWithEmailAndPassword(auth, emailCandidate, pwd);
+                        signedIn = true;
+                        authEmail = emailCandidate;
+                        break;
+                    } catch (authErr) {
+                        lastAuthError = authErr;
+                    }
                 }
+                if (signedIn) break;
             }
 
             if (!signedIn) {
-                for (const pwd of passwordsToTry) {
-                    try {
-                        await createUserWithEmailAndPassword(auth, authEmail, pwd);
-                        signedIn = true;
-                        break;
-                    } catch (createErr: any) {
-                        lastAuthError = createErr;
-                        if (createErr?.code === 'auth/email-already-in-use') {
-                            try {
-                                await signInWithEmailAndPassword(auth, authEmail, pwd);
-                                signedIn = true;
-                                break;
-                            } catch (retryErr) {
-                                lastAuthError = retryErr;
+                for (const emailCandidate of authEmailsToTry) {
+                    for (const pwd of passwordsToTry) {
+                        try {
+                            await createUserWithEmailAndPassword(auth, emailCandidate, pwd);
+                            signedIn = true;
+                            authEmail = emailCandidate;
+                            break;
+                        } catch (createErr: any) {
+                            lastAuthError = createErr;
+                            if (createErr?.code === 'auth/email-already-in-use') {
+                                try {
+                                    await signInWithEmailAndPassword(auth, emailCandidate, pwd);
+                                    signedIn = true;
+                                    authEmail = emailCandidate;
+                                    break;
+                                } catch (retryErr) {
+                                    lastAuthError = retryErr;
+                                }
                             }
                         }
                     }
+                    if (signedIn) break;
                 }
             }
 
@@ -443,6 +459,15 @@ export const LoginPage: React.FC = () => {
                 setIsStaffLoggingIn(false);
                 return;
             }
+
+            setPendingStaffProfile({
+                tenantId,
+                loginId: rawLoginId,
+                name: staffDisplayName,
+                role: resolvedRole,
+                staffDocId: userDoc.id,
+                email: auth.currentUser?.email?.trim().toLowerCase() || authEmail,
+            });
 
             const firebaseUid = auth.currentUser?.uid;
             if (!firebaseUid) {
@@ -468,7 +493,7 @@ export const LoginPage: React.FC = () => {
                 await setDoc(doc(db, 'users', firebaseUid), {
                     uid: firebaseUid,
                     id: firebaseUid,
-                    email: authEmail,
+                    email: auth.currentUser?.email || authEmail,
                     displayName: staffDisplayName,
                     name: staffDisplayName,
                     tenantId,
@@ -476,9 +501,10 @@ export const LoginPage: React.FC = () => {
                     loginId: rawLoginId,
                 }, { merge: true });
 
-                const profileVerify = await getDoc(doc(db, 'users', firebaseUid));
+                const { getDocFromServer } = await import('firebase/firestore');
+                const profileVerify = await getDocFromServer(doc(db, 'users', firebaseUid));
                 if (!profileVerify.exists() || profileVerify.data()?.tenantId !== tenantId) {
-                    throw new Error('회사 소속 정보 저장에 실패했습니다. Firestore 규칙 배포 여부를 확인해 주세요.');
+                    throw new Error('회사 소속 정보 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.');
                 }
 
                 try {
@@ -498,7 +524,7 @@ export const LoginPage: React.FC = () => {
                 const appUser: AppUser = {
                     uid: firebaseUid,
                     id: firebaseUid,
-                    email: authEmail,
+                    email: auth.currentUser?.email || authEmail,
                     displayName: staffDisplayName,
                     name: staffDisplayName,
                     photoURL: '',

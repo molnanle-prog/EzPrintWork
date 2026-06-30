@@ -25,8 +25,13 @@ service cloud.firestore {
 
     function isMember(tenantId) {
       return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
         && getProfile().tenantId == tenantId
-        && (request.auth.token.email_verified == true || isStaffEmailAuth());
+        && (
+          request.auth.token.email_verified == true
+          || isStaffEmailAuth()
+          || getProfile().role in ['admin', 'staff']
+        );
     }
 
     function isSuperAdmin() {
@@ -233,14 +238,19 @@ service cloud.firestore {
           && (!('tenantId' in existing()) || existing().tenantId == null);
       }
 
-      /** 직원 ID(@ez-hub.kr) 로그인 시 users/{uid}에 tenantId·role 연결 */
+      /** 직원 로그인 시 users/{uid}에 tenantId·role·loginId 연결 (본인 문서만) */
       function isStaffLoginProfileUpsert(data) {
-        return isStaffEmailAuth()
+        return isSignedIn()
+          && request.auth.uid == userId
           && data.role in ['admin', 'staff']
           && data.tenantId is string
           && isValidId(data.tenantId)
           && data.email is string
-          && data.email.size() <= 256;
+          && data.email.lower() == request.auth.token.email.lower()
+          && 'loginId' in data
+          && data.loginId is string
+          && data.loginId.size() >= 2
+          && data.loginId.size() <= 64;
       }
 
       function isValidUser(data) {

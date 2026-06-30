@@ -133,8 +133,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const healStaffUserProfile = async (user: User, userData?: AppUser | null): Promise<AppUser | null> => {
-    if (!user.email?.endsWith('@ez-hub.kr')) return null;
-
     const resolved = await resolveStaffTenantProfile(user);
     if (!resolved) return null;
 
@@ -191,7 +189,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           throw new Error('DELETED_STAFF');
         }
 
-        if (!userData.tenantId && user.email?.endsWith('@ez-hub.kr')) {
+        if (!userData.tenantId) {
           const healed = await healStaffUserProfile(user, userData);
           if (healed) {
             userData = healed;

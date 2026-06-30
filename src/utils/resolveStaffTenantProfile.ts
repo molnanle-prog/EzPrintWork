@@ -23,10 +23,16 @@ export function readStaffLoginTenant(): string | null {
 }
 
 export async function resolveStaffTenantProfile(user: User): Promise<ResolvedStaffProfile | null> {
-  if (!user.email?.endsWith('@ez-hub.kr')) return null;
+  const email = user.email?.trim().toLowerCase();
+  if (!email) return null;
 
-  const loginId = user.email.split('@')[0].trim().toLowerCase();
-  const pending = readPendingStaffProfile(user.email);
+  let loginId = '';
+  if (email.endsWith('@ez-hub.kr')) {
+    loginId = email.split('@')[0].trim().toLowerCase();
+  }
+
+  const loginIdFromEmail = email.endsWith('@ez-hub.kr') ? email.split('@')[0].trim().toLowerCase() : '';
+  const pending = readPendingStaffProfile(user.email, loginIdFromEmail || undefined);
   if (pending?.tenantId) {
     return {
       tenantId: pending.tenantId,
@@ -36,6 +42,29 @@ export async function resolveStaffTenantProfile(user: User): Promise<ResolvedSta
       staffDocId: pending.staffDocId,
     };
   }
+
+  if (!loginId && user.uid) {
+    try {
+      const userSnap = await getDoc(doc(db, 'users', user.uid));
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        if (data.loginId) loginId = String(data.loginId).trim().toLowerCase();
+        if (data.tenantId && loginId) {
+          return {
+            tenantId: data.tenantId,
+            role: data.role === 'admin' ? 'admin' : 'staff',
+            name: data.name || data.displayName || '사원',
+            loginId,
+            staffDocId: loginId,
+          };
+        }
+      }
+    } catch (err) {
+      console.warn('[StaffHeal] users profile lookup failed:', err);
+    }
+  }
+
+  if (!loginId) return null;
 
   const tenantHints = [
     readStaffLoginTenant(),
@@ -78,7 +107,7 @@ export async function resolveStaffTenantProfile(user: User): Promise<ResolvedSta
 
   try {
     const usersSnap = await getDocs(
-      query(collection(db, 'users'), where('email', '==', user.email.trim().toLowerCase()), limit(10))
+      query(collection(db, 'users'), where('email', '==', email), limit(10))
     );
     for (const docSnap of usersSnap.docs) {
       const data = docSnap.data();
@@ -129,6 +158,7 @@ export async function upsertStaffUserProfile(
     }
   }
 
-  const verify = await getDoc(doc(db, 'users', user.uid));
+  const { getDocFromServer } = await import('firebase/firestore');
+  const verify = await getDocFromServer(doc(db, 'users', user.uid));
   return verify.exists() && verify.data()?.tenantId === profile.tenantId;
 }

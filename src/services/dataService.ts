@@ -559,16 +559,8 @@ export class DataService {
 
                 if (colName === 'settings') {
                     if (list.length === 0) {
-                        const defaultSettings = this.data['settings']?.[0] || {
-                            productDefinitions: { definitions: INITIAL_PRODUCT_DEFINITIONS },
-                            statusDefinitions: { definitions: INITIAL_STATUS_DEFINITIONS },
-                            processingDefinitions: { definitions: INITIAL_PROCESSING_DEFINITIONS },
-                            pricing: { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 },
-                            companyInfo: { name: 'EzPrintWork' },
-                            roles: { roles: ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"] }
-                        };
-                        const docId = 'main';
-                        await setDoc(doc(firestore, 'tenants', this.tenantId!, 'settings', docId), defaultSettings);
+                        // 직원은 settings 초기 문서 생성 권한 없음 — 읽기 실패만 방지
+                        this.data['settings'] = [this.getDefaultSettings('EzPrintWork')];
                     } else if (list.length === 1 && list[0].id === 'main' && list[0].companyInfo) {
                         this.data['settings'] = list;
                     } else {
