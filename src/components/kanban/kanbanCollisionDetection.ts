@@ -5,7 +5,8 @@ import {
   rectIntersection,
 } from '@dnd-kit/core';
 import { Job } from '../../types';
-import { COLUMN_DROPPABLE_PREFIX } from './KanbanColumn';
+
+export const COLUMN_DROPPABLE_PREFIX = 'column:';
 
 const isColumnId = (id: string | number) => String(id).startsWith(COLUMN_DROPPABLE_PREFIX);
 
@@ -76,17 +77,20 @@ export const kanbanCollisionDetection: CollisionDetection = (args) => {
 export const resolveKanbanDropTarget = (
   overId: string,
   allJobs: Job[],
-  visibleStatusKeys: string[]
+  visibleStatusKeys: string[],
+  extraDropKeys: string[] = ['QUOTE']
 ): { newStatusKey: string; targetJobId?: string } | null => {
+  const allowedKeys = new Set([...visibleStatusKeys, ...extraDropKeys]);
+
   if (isColumnId(overId)) {
     const statusKey = overId.slice(COLUMN_DROPPABLE_PREFIX.length);
-    if (!visibleStatusKeys.includes(statusKey)) return null;
+    if (!allowedKeys.has(statusKey)) return null;
     return { newStatusKey: statusKey, targetJobId: undefined };
   }
 
   const overJob = allJobs.find((j) => j.id === overId);
   if (!overJob) return null;
-  if (!visibleStatusKeys.includes(overJob.status)) return null;
+  if (!allowedKeys.has(overJob.status)) return null;
   return { newStatusKey: overJob.status, targetJobId: overId };
 };
 

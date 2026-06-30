@@ -56,6 +56,7 @@ body {
   animation: flowing-gradient 1.2s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }
@@ -74,6 +75,7 @@ body {
   animation: flowing-gradient 2s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }
@@ -92,6 +94,7 @@ body {
   animation: flowing-gradient 3s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }
@@ -110,6 +113,7 @@ body {
   animation: flowing-gradient 3s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }
@@ -129,6 +133,7 @@ body {
   animation: flowing-gradient 1.2s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }
@@ -148,6 +153,7 @@ body {
   animation: flowing-gradient 3s linear infinite;
   -webkit-mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   -webkit-mask-composite: xor;
+  mask: linear-gradient(#fff 0 0) padding-box, linear-gradient(#fff 0 0);
   mask-composite: exclude;
   pointer-events: none;
 }
@@ -269,3 +275,69 @@ html.trello .kanban-card .kanban-card-meta {
   font-weight: 500;
 }
 
+/* ===== 긴급·D-Day 테두리/배경 — light·trello에서도 확실히 보이도록 보강 ===== */
+html.light .job-urgency-overdue,
+html.trello .kanban-card.job-urgency-overdue {
+  background-color: #fee2e2 !important;
+  border-color: #dc2626 !important;
+}
+
+html.light .job-urgency-d1,
+html.trello .kanban-card.job-urgency-d1 {
+  background-color: #ffedd5 !important;
+  border-color: #ea580c !important;
+}
+
+html.light .job-urgency-d3,
+html.trello .kanban-card.job-urgency-d3 {
+  background-color: #fef3c7 !important;
+  border-color: #d97706 !important;
+}
+
+html.light .job-urgency-d7,
+html.trello .kanban-card.job-urgency-d7 {
+  background-color: #dbeafe !important;
+  border-color: #3b82f6 !important;
+}
+
+html.light .job-urgency-very-urgent,
+html.trello .kanban-card.job-urgency-very-urgent {
+  background-color: #fecaca !important;
+  border-color: #dc2626 !important;
+}
+
+html.light .job-urgency-urgent,
+html.trello .kanban-card.job-urgency-urgent {
+  background-color: #ffedd5 !important;
+  border-color: #ea580c !important;
+}
+
+/* 상황판(trello 다크 카드) 긴급 강조 */
+html.trello .job-urgency-overdue:not(.kanban-card) {
+  background-color: #4a1f24 !important;
+  border-color: #f87171 !important;
+}
+
+html.trello .job-urgency-d1:not(.kanban-card),
+html.trello .job-urgency-urgent:not(.kanban-card) {
+  background-color: #4a3018 !important;
+  border-color: #fb923c !important;
+}
+
+html.trello .job-urgency-d3:not(.kanban-card) {
+  background-color: #4a3d18 !important;
+  border-color: #fbbf24 !important;
+}
+
+html.trello .job-urgency-very-urgent:not(.kanban-card) {
+  background-color: #4a1f24 !important;
+  border-color: #f87171 !important;
+}
+
+/* 유동 테두리: 배경 위에서도 레이어가 보이도록 */
+[class*="flowing-border"] {
+  overflow: visible;
+}
+[class*="flowing-border"]::after {
+  z-index: 1;
+}

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Job, Priority, PaymentStatus, JobItem } from '../../types';
 import { 
-  MoreVertical, User, AlertTriangle, ArrowLeft, CheckCircle2, 
+  MoreVertical, User, AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, 
   GripHorizontal, Layers, Users, FileText, FileWarning, 
   FolderOpen, Play, CheckCircle, ShieldAlert 
 } from 'lucide-react';
@@ -17,6 +17,7 @@ import {
 } from '../../utils/staffMatch';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
+import { getJobUrgencyStyles } from '../../utils/jobUrgencyStyles';
 
 interface KanbanCardProps {
   job: Job;
@@ -30,6 +31,7 @@ interface KanbanCardProps {
   currentUserId?: string;
   isTvMode?: boolean;
   isDragOverlay?: boolean;
+  isQuoteTray?: boolean;
 }
 
 export const KanbanCard: React.FC<KanbanCardProps> = ({ 
@@ -43,7 +45,8 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   isCompact = false,
   currentUserId,
   isTvMode = false,
-  isDragOverlay = false
+  isDragOverlay = false,
+  isQuoteTray = false,
 }) => {
   const { theme } = useTheme();
   const { currentUser } = useAuth();
@@ -327,46 +330,74 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     }
   };
 
-  // --- D-Day별 박스 테두리 색상 4단계 및 배경 스타일 결정 ---
-  let borderAndBgClass = theme === 'trello'
-    ? "bg-white text-[#172b4d] border-transparent shadow-[0_1px_1px_rgba(9,30,66,0.25),0_0_1px_rgba(9,30,66,0.31)]"
-    : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
-  
-  if (theme !== 'trello') {
-    if (isMyJob) {
-      borderAndBgClass = "bg-white dark:bg-slate-800 border-blue-400 dark:border-blue-600 ring-2 ring-blue-100 dark:ring-blue-900/40 shadow-blue-100 dark:shadow-none";
-    } 
-    
-    // 완료 상태가 아닐 때 D-Day 단계별 테두리 및 꽉 찬 배경 색상 강제 지정 (4단계 분기)
-    if (!isDone) {
-      if (daysRemaining <= 0) {
-        // 1단계: 당일 이하 (진한 빨간색 가득 채운 박스 + 빨간 링)
-        borderAndBgClass = "bg-red-200 dark:bg-red-950/70 border-red-500 dark:border-red-400 ring-2 ring-red-200 dark:ring-red-900/60 shadow-md";
-      } else if (daysRemaining === 1) {
-        // 2단계: 1일 이하 (진한 주황색 가득 채운 박스 + 주황 링)
-        borderAndBgClass = "bg-orange-200 dark:bg-orange-950/70 border-orange-500 dark:border-orange-400 ring-1 ring-orange-200 dark:ring-orange-950/20 shadow-sm";
-      } else if (daysRemaining <= 3) {
-        // 3단계: 3일 이하 (진한 앰버색 가득 채운 박스)
-        borderAndBgClass = "bg-amber-200 dark:bg-amber-950/50 border-amber-400 dark:border-amber-500 shadow-sm";
-      } else if (daysRemaining <= 7) {
-        // 4단계: 7일 이하 (일주일전 - 연한 파란색 가득 채운 박스)
-        borderAndBgClass = "bg-blue-200 dark:bg-blue-950/50 border-blue-300 dark:border-blue-700 shadow-sm";
-      } else {
-        // 일주일보다 더 남으면 기본 테두리 (isMyJob 상태 유지)
-        if (!isMyJob) {
-          borderAndBgClass = "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700";
-        }
-      }
-    }
-  
-    // 우선순위가 VERY_URGENT 인 경우 D-Day보다 우선하는 유동 테두리 효과 및 꽉 찬 배경
-    if (job.priority === Priority.VERY_URGENT && !isDone) {
-      borderAndBgClass = `bg-red-200 dark:bg-red-950/30 ${isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red'} border-red-600 dark:border-red-500 shadow-md ring-2 ring-red-100 dark:ring-red-950/40`;
-    }
-  
-  
+  const cardStyleClass = getJobUrgencyStyles({
+    theme,
+    priority: job.priority,
+    daysRemaining,
+    isDone,
+    isMyJob,
+    isTvMode,
+    surface: 'kanban',
+  });
+
+  // ----------------------------------------------------------------------
+  // QUOTE TRAY VIEW (접수 하단 견적 보관 상자)
+  // ----------------------------------------------------------------------
+  if (isQuoteTray) {
+    return (
+      <div
+        ref={setNodeRef}
+        data-job-id={job.id}
+        style={sortableStyle}
+        {...sortableProps}
+        className={`kanban-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group ${
+          theme === 'trello'
+            ? 'bg-[#24364e] border-[#384c66] hover:border-indigo-400'
+            : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500'
+        }`}
+        onClick={handleCardClick}
+        onContextMenu={handleCardContextMenu}
+      >
+        <GripHorizontal
+          size={14}
+          className="shrink-0 text-slate-300 dark:text-slate-600 group-hover:text-indigo-400"
+        />
+        <div className="flex-1 min-w-0">
+          <div className="kanban-card-title text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate" title={job.title}>
+            {job.title}
+          </div>
+          <div className="kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate" title={job.clientName}>
+            {job.clientName}
+          </div>
+        </div>
+        <span className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-400 shrink-0">
+          {job.price ? `${job.price.toLocaleString()}원` : '미정'}
+        </span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStatusChange(job, 'prev');
+          }}
+          className="shrink-0 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors p-0.5"
+          title="이전 단계"
+        >
+          <ArrowLeft size={14} />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStatusChange(job, 'next');
+          }}
+          className="shrink-0 text-slate-300 dark:text-slate-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors p-0.5"
+          title="다음 단계 (접수 등)"
+        >
+          <ArrowRight size={14} />
+        </button>
+      </div>
+    );
   }
-  let cardStyleClass = borderAndBgClass;
 
   // ----------------------------------------------------------------------
   // COMPACT VIEW (완료/배송 단계 한 줄 축약형)

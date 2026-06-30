@@ -129,11 +129,37 @@ export interface StaffLeave {
   reason?: string;
 }
 
+export interface QuoteLine {
+  id: string;
+  subJobId?: string;
+  productType: string;
+  description: string;
+  quantity: string;
+  unitPrice: number;
+  amount: number;
+}
+
+export interface QuoteTemplateSettings {
+  /** Firebase Storage URL — 테넌트당 1장, 견적 문서마다 복사하지 않음 */
+  headerImageUrl?: string;
+  headerHeightMm?: number;
+}
+
 export interface Quote {
   id: string;
+  jobId?: string;
+  /** 연결된 작업 제목 */
+  title?: string;
   clientName: string;
+  contactPerson?: string;
+  clientPhone?: string;
   items: string;
+  lines?: QuoteLine[];
   totalAmount: number;
+  supplyAmount?: number;
+  vatAmount?: number;
+  vatIncluded?: boolean;
+  discountAmount?: number;
   date: string;
   status: '대기' | '승인' | '거절';
 }

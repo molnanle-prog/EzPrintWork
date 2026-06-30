@@ -3,6 +3,11 @@ import React from 'react';
 import { Job, Priority, Staff, JobStatusDefinition } from '../../types';
 import { CheckCircle2, User, Calendar, AlertTriangle, Phone, MessageCircle, Layers, Users } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
+import {
+  getJobUrgencyStyles,
+  getJobUrgencyBadgeStyles,
+  getJobUrgencyDateTextStyles,
+} from '../../utils/jobUrgencyStyles';
 
 interface JobStatusItemProps {
   job: Job;
@@ -42,37 +47,19 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
   const diffTime = due.getTime() - now.getTime();
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  // Determine Container Styles
-  let containerStyles = "border rounded-xl p-2 md:p-2.5 transition-all hover:shadow-lg shadow-sm group";
-  let priorityBadgeStyles = "bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300";
-  let dateTextStyles = "";
+  const containerStyles = [
+    'border rounded-xl p-2 md:p-2.5 transition-all hover:shadow-lg shadow-sm group',
+    getJobUrgencyStyles({
+      theme,
+      priority: job.priority,
+      daysRemaining,
+      isDone,
+      surface: 'dashboard',
+    }),
+  ].join(' ');
 
-  if (theme === 'trello') {
-    containerStyles += " bg-[#1d2d44] border-[#2c3e56] text-slate-200 hover:border-[#384c66]";
-    priorityBadgeStyles = "bg-[#2c3e56] text-slate-300 border-[#384c66]";
-  } else {
-    containerStyles += " bg-white dark:bg-slate-700";
-    if (job.priority === Priority.VERY_URGENT) {
-      containerStyles += " bg-red-50 dark:bg-red-900/20 flowing-border-red-sm shadow-sm";
-      priorityBadgeStyles = "bg-red-600 text-white shadow-sm";
-    } else if (job.priority === Priority.URGENT) {
-      containerStyles += " bg-red-50/50 dark:bg-red-900/10 flowing-border-orange-sm shadow-sm";
-      priorityBadgeStyles = "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800";
-    } else {
-      if (daysRemaining < 0 && !isDone) {
-         containerStyles += " bg-slate-50 dark:bg-slate-800 flowing-border-red-sm shadow-sm";
-         dateTextStyles = "text-slate-800 dark:text-slate-200 font-extrabold";
-      } else if (daysRemaining <= 1 && !isDone) {
-         containerStyles += " bg-orange-50/50 dark:bg-orange-900/10 flowing-border-orange-sm shadow-sm";
-         dateTextStyles = "text-red-600 dark:text-red-400 font-bold";
-      } else if (daysRemaining <= 3) {
-         containerStyles += " border-slate-400 dark:border-slate-500 border transition-all hover:shadow-lg shadow-sm";
-         dateTextStyles = "text-orange-600 dark:text-orange-400 font-bold";
-      } else {
-         containerStyles += " border-slate-200 dark:border-slate-600 border transition-all hover:shadow-lg shadow-sm";
-      }
-    }
-  }
+  const priorityBadgeStyles = getJobUrgencyBadgeStyles(theme, job.priority, daysRemaining);
+  const dateTextStyles = getJobUrgencyDateTextStyles(daysRemaining, isDone);
 
   const stepStyles = [
     { bg: 'bg-red-500', border: 'border-red-500', text: 'text-red-600 dark:text-red-400' },

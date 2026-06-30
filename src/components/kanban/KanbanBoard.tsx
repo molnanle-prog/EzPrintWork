@@ -36,6 +36,7 @@ interface KanbanBoardProps {
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) => {
   const [displayJobs, setDisplayJobs] = useState<Job[]>([]);
+  const [quoteBoardJobs, setQuoteBoardJobs] = useState<Job[]>([]);
   const [activeJobsStats, setActiveJobsStats] = useState<Job[]>([]); 
   const [staff, setStaff] = useState<Staff[]>([]);
   const [allStatusDefinitions, setAllStatusDefinitions] = useState<JobStatusDefinition[]>([]);
@@ -103,8 +104,20 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     });
 
     setDisplayJobs(filteredJobs);
+    setQuoteBoardJobs(allJobs.filter((j) => j.status === 'QUOTE'));
     setActiveJobsStats(activeJobs);
     setStaff(db.getStaff());
+
+    // 기존 작업 견적 동기화 (jobId 등 누락 보정)
+    void (async () => {
+      for (const job of allJobs) {
+        try {
+          await db.syncQuoteFromJob(job);
+        } catch {
+          /* ignore */
+        }
+      }
+    })();
   };
 
   useEffect(() => {
@@ -137,18 +150,26 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     });
   };
 
+  const getStatusPipeline = useCallback(() => {
+    return db.getStatusDefinitions().filter((s) => s.key !== 'CANCELED');
+  }, []);
+
   const getProgressForStatus = (statusKey: string) => {
-    const idx = allStatusDefinitions.findIndex(s => s.key === statusKey);
+    const pipeline = getStatusPipeline();
+    const idx = pipeline.findIndex((s) => s.key === statusKey);
     if (idx === -1) return 0;
-    return (idx / (allStatusDefinitions.length - 1)) * 100;
+    return pipeline.length <= 1 ? 0 : (idx / (pipeline.length - 1)) * 100;
   };
 
   const updateJobStatus = (job: Job, direction: 'next' | 'prev') => {
-    const currentIndex = allStatusDefinitions.findIndex(s => s.key === job.status);
-    let newIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
+    const pipeline = getStatusPipeline();
+    const currentIndex = pipeline.findIndex((s) => s.key === job.status);
+    if (currentIndex === -1) return;
 
-    if (newIndex >= 0 && newIndex < allStatusDefinitions.length) {
-      const newStatusKey = allStatusDefinitions[newIndex].key;
+    const newIndex = direction === 'next' ? currentIndex + 1 : currentIndex - 1;
+
+    if (newIndex >= 0 && newIndex < pipeline.length) {
+      const newStatusKey = pipeline[newIndex].key;
       handleJobDrop(job.id, newStatusKey);
     }
   };
@@ -327,14 +348,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     if (!dropTarget) return;
 
     const { newStatusKey } = dropTarget;
-    const draggedJob = db.getAllJobs().find((j) => j.id === draggedJobId);
+    const allJobs = db.getAllJobs();
+    const draggedJob = allJobs.find((j) => j.id === draggedJobId);
     if (!draggedJob) return;
 
     const pointerY = getDragPointerY(event);
     if (pointerY === null) return;
 
-    const columnJobIds = filteredJobs
-      .filter((j) => j.status === newStatusKey)
+    const columnJobIds = (newStatusKey === 'QUOTE'
+      ? allJobs.filter((j) => j.status === 'QUOTE')
+      : filteredJobs.filter((j) => j.status === newStatusKey)
+    )
       .sort((a, b) => a.order - b.order)
       .map((j) => j.id);
 
@@ -745,7 +769,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 <KanbanColumn
                     statusDef={statusDef}
                     jobs={getJobsForStatus(statusDef.key)}
-                    quoteJobs={statusDef.key === 'RECEIVED' ? filteredJobs.filter((j: Job) => j.status === 'QUOTE') : undefined}
+                    quoteJobs={statusDef.key === 'RECEIVED' ? quoteBoardJobs : undefined}
                     getStaffName={getStaffName}
                     onSelectJob={handleSelectJob}
                     onRightClickJob={handleRightClickJob}
@@ -763,7 +787,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
       <DragOverlay dropAnimation={null}>
         {activeDragJobId ? (() => {
-          const dragJob = filteredJobs.find(j => j.id === activeDragJobId);
+          const dragJob = db.getAllJobs().find((j) => j.id === activeDragJobId);
           if (!dragJob) return null;
           return (
             <div className="opacity-90 rotate-2 scale-105 shadow-2xl pointer-events-none w-[280px]">
@@ -775,6 +799,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 onStatusChange={() => {}}
                 isMyJob={resolveIsMyJob(dragJob)}
                 isCompact={dragJob.status === 'DELIVERY' || visibleStatusDefinitions.length > 5}
+                isQuoteTray={dragJob.status === 'QUOTE'}
                 currentUserId={currentStaffId ?? currentUser?.id}
                 isTvMode={isTvMode}
                 isDragOverlay

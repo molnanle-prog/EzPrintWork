@@ -6,8 +6,111 @@ import { useTheme } from '../../contexts/ThemeContext';
 import { AdBanner } from '../common/AdBanner';
 import { useDroppable } from '@dnd-kit/core';
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { COLUMN_DROPPABLE_PREFIX } from './kanbanCollisionDetection';
 
-export const COLUMN_DROPPABLE_PREFIX = 'column:';
+export { COLUMN_DROPPABLE_PREFIX };
+
+interface QuoteTraySectionProps {
+  quoteJobs: Job[];
+  getStaffName: (job?: Job) => string;
+  onSelectJob: (job: Job) => void;
+  onRightClickJob?: (job: Job) => void;
+  onStatusChange: (job: Job, direction: 'next' | 'prev') => void;
+  currentUserId?: string;
+  resolveIsMyJob?: (job: Job) => boolean;
+  isTvMode?: boolean;
+}
+
+const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
+  quoteJobs,
+  getStaffName,
+  onSelectJob,
+  onRightClickJob,
+  onStatusChange,
+  currentUserId,
+  resolveIsMyJob,
+  isTvMode = false,
+}) => {
+  const { theme } = useTheme();
+  const droppableId = `${COLUMN_DROPPABLE_PREFIX}QUOTE`;
+  const { setNodeRef, isOver } = useDroppable({ id: droppableId });
+
+  const sortedQuoteJobs = [...quoteJobs].sort((a, b) => {
+    if (a.order !== b.order) return a.order - b.order;
+    return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+  });
+  const quoteJobIds = sortedQuoteJobs.map((job) => job.id);
+
+  return (
+    <div
+      className={`p-2 border-t flex-none ${
+        theme === 'trello'
+          ? 'border-[#2c3e56] bg-[#182535]/80'
+          : 'border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/60'
+      }`}
+    >
+      <div className="flex items-center justify-between mb-1.5 px-1">
+        <span className="text-[10px] lg:text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
+          📋 견적 문의 보관 상자
+        </span>
+        <span
+          className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+            theme === 'trello'
+              ? 'bg-[#2c3e56] text-slate-300'
+              : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+          }`}
+        >
+          {quoteJobs.length}
+        </span>
+      </div>
+
+      <div
+        ref={setNodeRef}
+        data-kanban-column="QUOTE"
+        className={`min-h-[88px] max-h-[220px] overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 flex flex-col gap-1.5 transition-colors ${
+          isOver
+            ? theme === 'trello'
+              ? 'border-indigo-400 bg-indigo-950/30 ring-2 ring-indigo-400/40'
+              : 'border-indigo-400 bg-indigo-50/80 dark:bg-indigo-950/30 ring-2 ring-indigo-300/50'
+            : theme === 'trello'
+              ? 'border-[#384c66] bg-[#152238]/50'
+              : 'border-slate-300 dark:border-slate-600 bg-white/50 dark:bg-slate-900/40'
+        }`}
+      >
+        <SortableContext items={quoteJobIds} strategy={verticalListSortingStrategy}>
+          {sortedQuoteJobs.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none">
+              견적 문의를 여기로 끌어다 놓으세요
+            </div>
+          ) : (
+            sortedQuoteJobs.map((job) => (
+              <KanbanCard
+                key={job.id}
+                job={job}
+                status={job.status}
+                staffName={getStaffName(job)}
+                onSelect={onSelectJob}
+                onRightClick={onRightClickJob}
+                onStatusChange={onStatusChange}
+                isMyJob={resolveIsMyJob ? resolveIsMyJob(job) : false}
+                currentUserId={currentUserId}
+                isTvMode={isTvMode}
+                isQuoteTray
+              />
+            ))
+          )}
+        </SortableContext>
+
+        {isOver && sortedQuoteJobs.length > 0 && (
+          <div className="h-8 shrink-0 rounded border border-dashed border-indigo-400 bg-indigo-50/50 dark:bg-indigo-900/20 flex items-center justify-center pointer-events-none">
+            <span className="text-indigo-500 dark:text-indigo-300 text-[10px] font-bold">견적 상자로 이동</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 
 interface KanbanColumnProps {
   statusDef: JobStatusDefinition;
@@ -121,39 +224,17 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         </SortableContext>
       </div>
 
-      {statusDef.key === 'RECEIVED' && quoteJobs && quoteJobs.length > 0 && (
-        <div className={`p-2 border-t flex-none select-none ${
-          theme === 'trello' 
-            ? 'border-[#2c3e56] bg-[#182535]/80' 
-            : 'border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/60'
-        }`}>
-          <div className="flex items-center justify-between mb-1.5 px-1">
-            <span className="text-[10px] lg:text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
-              📋 견적 문의 보관 상자
-            </span>
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
-              theme === 'trello' 
-                ? 'bg-[#2c3e56] text-slate-300' 
-                : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-            }`}>
-              {quoteJobs.length}
-            </span>
-          </div>
-          
-          <div className="max-h-[90px] overflow-y-auto custom-scrollbar flex flex-wrap gap-1 pr-0.5">
-            {quoteJobs.map(job => (
-              <button
-                key={job.id}
-                onClick={() => onSelectJob(job)}
-                onContextMenu={(e) => { e.preventDefault(); onRightClickJob ? onRightClickJob(job) : onSelectJob(job); }}
-                className="h-7 px-2.5 bg-white hover:bg-slate-50 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] md:text-[11px] font-extrabold truncate transition-all active:scale-95 flex items-center justify-center max-w-[85px] shadow-sm select-none"
-                title={`${job.title} | ${job.clientName} | ${job.price ? job.price.toLocaleString() + '원' : '금액 미정'}\n(클릭 또는 우클릭 시 상세 모달 열기)`}
-              >
-                {job.title}
-              </button>
-            ))}
-          </div>
-        </div>
+      {statusDef.key === 'RECEIVED' && quoteJobs !== undefined && (
+        <QuoteTraySection
+          quoteJobs={quoteJobs}
+          getStaffName={getStaffName}
+          onSelectJob={onSelectJob}
+          onRightClickJob={onRightClickJob}
+          onStatusChange={onStatusChange}
+          currentUserId={currentUserId}
+          resolveIsMyJob={resolveIsMyJob}
+          isTvMode={isTvMode}
+        />
       )}
 
       {showAd && (

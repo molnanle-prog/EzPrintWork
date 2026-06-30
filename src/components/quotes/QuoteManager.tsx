@@ -1,184 +1,411 @@
 import React, { useState, useEffect } from 'react';
-import { db, getErrorMessage } from '../../services/dataService';
+
+import { db } from '../../services/dataService';
+
+import {
+  getQuoteJobNumber,
+  getQuoteTitle,
+  getQuoteBriefContent,
+  formatQuoteClientLabel,
+} from '../../utils/quoteJobSync';
+
 import { Quote } from '../../types';
-import { FileText, Plus, Check, X, Printer, Search, User, Calendar, DollarSign } from 'lucide-react';
-import { QuoteDetailModal } from './QuoteDetailModal';
-import { useDialog } from '../../contexts/DialogContext';
+
+import { Plus, Printer, User, Calendar, DollarSign } from 'lucide-react';
+
+import { QuotePreviewModal } from './QuotePreviewModal';
+
+
 
 export const QuoteManager: React.FC = () => {
+
   const [quotes, setQuotes] = useState<Quote[]>([]);
-  const [selectedQuote, setSelectedQuote] = useState<Quote | null>(null);
-  const { showConfirm, showAlert } = useDialog();
+
+  const [previewQuote, setPreviewQuote] = useState<Quote | null>(null);
+
+
 
   const loadQuotes = () => {
-      setQuotes(db.getQuotes());
+
+    setQuotes(db.getQuotes());
+
   };
+
+
 
   useEffect(() => {
-    loadQuotes();
+
+    const bootstrap = async () => {
+
+      const jobs = db.getAllJobs();
+
+      for (const job of jobs) {
+
+        try {
+
+          await db.syncQuoteFromJob(job);
+
+        } catch {
+
+          /* 개별 실패는 무시 */
+
+        }
+
+      }
+
+      loadQuotes();
+
+    };
+
+    void bootstrap();
+
     const unsubscribe = db.subscribe(loadQuotes);
+
     return () => unsubscribe();
+
   }, []);
 
+
+
+  const jobs = db.getAllJobs();
+
+
+
+  const sortedQuotes = [...quotes].sort(
+
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
+
+  );
+
+
+
   const getStatusColor = (status: string) => {
+
     switch (status) {
-      case '승인': return 'bg-emerald-100 text-emerald-700';
-      case '거절': return 'bg-red-100 text-red-700';
-      default: return 'bg-orange-100 text-orange-700';
+
+      case '승인':
+
+        return 'bg-emerald-100 text-emerald-700';
+
+      case '거절':
+
+        return 'bg-red-100 text-red-700';
+
+      default:
+
+        return 'bg-orange-100 text-orange-700';
+
     }
+
   };
 
-  const handleCreateQuote = () => {
-    const newQuote: Quote = {
-      id: Date.now().toString(),
-      clientName: '신규 고객',
-      items: '내용을 입력하세요',
-      totalAmount: 0,
-      date: new Date().toISOString(),
-      status: '대기'
-    };
-    setSelectedQuote(newQuote);
-  };
 
-  const handleUpdateQuote = async (updated: Quote) => {
-    try {
-        if (updated.id && quotes.some(q => q.id === updated.id)) {
-            await db.updateQuote(updated);
-        } else {
-            await db.addQuote(updated);
-        }
-        setSelectedQuote(null);
-    } catch (error) {
-        showAlert(getErrorMessage(error));
-    }
-  };
 
-  const handleDeleteQuote = async (id: string) => {
-    if (await showConfirm('이 견적서를 정말 삭제하시겠습니까?')) {
-        try {
-            await db.deleteQuote(id);
-            setSelectedQuote(null);
-        } catch (error) {
-            showAlert(getErrorMessage(error));
-        }
-    }
-  };
+  const openPreview = (quote: Quote) => setPreviewQuote(quote);
+
+
 
   return (
+
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full">
+
       <div className="p-4 md:p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50 flex-none">
+
         <div>
+
           <h2 className="text-lg md:text-xl font-bold text-slate-800">견적서 관리</h2>
-          <p className="hidden md:block text-sm text-slate-500 mt-1">발행된 견적서를 관리하고 상태를 변경합니다.</p>
+
+          <p className="hidden md:block text-sm text-slate-500 mt-1">
+
+            작업별 견적서를 확인하고 PDF·JPG로 저장할 수 있습니다.
+
+          </p>
+
         </div>
-        <button 
-          onClick={handleCreateQuote}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 md:px-4 md:py-2 rounded-lg flex items-center gap-2 transition-colors shadow-sm text-sm md:text-base font-bold"
-        >
-          <Plus size={18} />
-          <span>새 견적</span>
-        </button>
+
       </div>
 
+
+
       {/* Desktop Table View */}
+
       <div className="hidden md:block overflow-x-auto flex-1 custom-scrollbar">
-        <table className="w-full text-left border-collapse">
+
+        <table className="w-full text-left border-collapse table-fixed">
+
+          <colgroup>
+            <col style={{ width: '2%' }} />
+            <col style={{ width: '10%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '25%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '2%' }} />
+          </colgroup>
           <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
             <tr>
-              <th className="p-4 font-semibold text-slate-600 text-sm">고객명</th>
-              <th className="p-4 font-semibold text-slate-600 text-sm">내용</th>
-              <th className="p-4 font-semibold text-slate-600 text-sm">금액</th>
-              <th className="p-4 font-semibold text-slate-600 text-sm">발행일</th>
-              <th className="p-4 font-semibold text-slate-600 text-sm">상태</th>
-              <th className="p-4 font-semibold text-slate-600 text-sm text-right">관리</th>
+              <th className="p-0" aria-hidden="true" />
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">작업번호</th>
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">제목</th>
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">업체명</th>
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">내용</th>
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">금액</th>
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">발행일</th>
+              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">상태</th>
+              <th className="px-2 py-3 font-semibold text-slate-600 text-sm text-right">관리</th>
+              <th className="p-0" aria-hidden="true" />
             </tr>
           </thead>
+
           <tbody className="divide-y divide-slate-100">
+
             {quotes.length === 0 && (
+
               <tr>
-                <td colSpan={6} className="p-8 text-center text-slate-400">등록된 견적서가 없습니다.</td>
+
+                <td colSpan={10} className="p-8 text-center text-slate-400">
+
+                  등록된 견적서가 없습니다. 작업을 등록하면 견적서가 자동 생성됩니다.
+
+                </td>
+
               </tr>
+
             )}
-            {quotes.map((quote) => (
-              <tr 
-                key={quote.id} 
-                onClick={() => setSelectedQuote(quote)}
-                onContextMenu={(e) => { e.preventDefault(); setSelectedQuote(quote); }}
+
+            {sortedQuotes.map((quote) => (
+
+              <tr
+
+                key={quote.id}
+
+                onClick={() => openPreview(quote)}
+
                 className="hover:bg-blue-50/50 transition-colors group cursor-pointer"
+
               >
-                <td className="p-4 font-medium text-slate-800">{quote.clientName}</td>
-                <td className="p-4 text-slate-600 max-w-xs truncate">{quote.items}</td>
-                <td className="p-4 font-bold text-slate-800">{quote.totalAmount.toLocaleString()}원</td>
-                <td className="p-4 text-slate-500 text-sm">{new Date(quote.date).toLocaleDateString()}</td>
-                <td className="p-4">
-                  <span className={`px-2 py-1 rounded text-xs font-bold ${getStatusColor(quote.status)}`}>
+                <td className="p-0" aria-hidden="true" />
+                <td
+
+                  className="px-3 py-3 font-mono text-[11px] font-bold text-indigo-700 whitespace-nowrap"
+
+                  title={getQuoteJobNumber(quote, jobs)}
+
+                >
+
+                  {getQuoteJobNumber(quote, jobs)}
+
+                </td>
+
+                <td
+
+                  className="px-3 py-3 font-semibold text-slate-800 text-sm truncate"
+
+                  title={getQuoteTitle(quote, jobs)}
+
+                >
+
+                  {getQuoteTitle(quote, jobs)}
+
+                </td>
+
+                <td className="px-3 py-3 font-medium text-slate-700 text-sm truncate" title={formatQuoteClientLabel(quote, jobs)}>
+                  {formatQuoteClientLabel(quote, jobs)}
+                </td>
+
+                <td
+
+                  className="px-3 py-3 text-slate-600 text-xs truncate"
+
+                  title={getQuoteBriefContent(quote)}
+
+                >
+
+                  {getQuoteBriefContent(quote)}
+
+                </td>
+
+                <td className="px-3 py-3 font-bold text-slate-800 text-sm whitespace-nowrap">
+
+                  {quote.totalAmount.toLocaleString()}원
+
+                  {quote.vatIncluded && (
+
+                    <span className="block text-[9px] font-normal text-slate-400">부가세 포함</span>
+
+                  )}
+
+                </td>
+
+                <td className="px-3 py-3 text-slate-500 text-xs whitespace-nowrap">
+
+                  {new Date(quote.date).toLocaleDateString()}
+
+                </td>
+
+                <td className="px-3 py-3">
+
+                  <span
+
+                    className={`px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap ${getStatusColor(quote.status)}`}
+
+                  >
+
                     {quote.status}
+
                   </span>
+
                 </td>
-                <td className="p-4 text-right">
+
+                <td className="px-2 py-3 text-right">
+
                   <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
-                    <button 
-                      onClick={(e) => { e.stopPropagation(); /* Print Logic */ }}
-                      className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded" 
-                      title="인쇄"
+
+                    <button
+
+                      type="button"
+
+                      onClick={(e) => {
+
+                        e.stopPropagation();
+
+                        openPreview(quote);
+
+                      }}
+
+                      className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded"
+
+                      title="견적서 미리보기"
+
                     >
+
                       <Printer size={16} />
+
                     </button>
+
                   </div>
+
                 </td>
+                <td className="p-0" aria-hidden="true" />
               </tr>
             ))}
           </tbody>
         </table>
+
       </div>
+
+
 
       {/* Mobile Card View */}
+
       <div className="md:hidden flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+
         {quotes.length === 0 && (
-           <div className="text-center text-slate-400 py-10">등록된 견적서가 없습니다.</div>
+
+          <div className="text-center text-slate-400 py-10">등록된 견적서가 없습니다.</div>
+
         )}
-        {quotes.map((quote) => (
-          <div 
+
+        {sortedQuotes.map((quote) => (
+
+          <div
+
             key={quote.id}
-            onClick={() => setSelectedQuote(quote)}
-            onContextMenu={(e) => { e.preventDefault(); setSelectedQuote(quote); }}
-            className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm active:scale-[0.98] transition-transform"
+
+            onClick={() => openPreview(quote)}
+
+            className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm active:scale-[0.98] transition-transform cursor-pointer"
+
           >
-            <div className="flex justify-between items-start mb-2">
-              <h3 className="font-bold text-slate-800 flex items-center gap-2">
-                <User size={16} className="text-slate-400" />
-                {quote.clientName}
-              </h3>
-              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${getStatusColor(quote.status)}`}>
+
+            <div className="flex justify-between items-start mb-2 gap-2">
+
+              <div className="min-w-0 flex-1">
+
+                <span
+
+                  className="text-[11px] font-mono font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded"
+
+                  title={getQuoteJobNumber(quote, jobs)}
+
+                >
+
+                  {getQuoteJobNumber(quote, jobs)}
+
+                </span>
+
+                <h3 className="font-bold text-slate-800 text-sm mt-1 truncate" title={getQuoteTitle(quote, jobs)}>
+
+                  {getQuoteTitle(quote, jobs)}
+
+                </h3>
+
+                <p className="text-xs text-slate-500 flex items-center gap-1 mt-0.5 truncate">
+                  <User size={12} className="shrink-0" />
+                  {formatQuoteClientLabel(quote, jobs)}
+                </p>
+
+              </div>
+
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${getStatusColor(quote.status)}`}>
+
                 {quote.status}
+
               </span>
+
             </div>
-            
-            <div className="text-sm text-slate-600 mb-3 bg-slate-50 p-2 rounded line-clamp-2 min-h-[3rem]">
-              {quote.items}
+
+
+
+            <div className="text-xs text-slate-600 mb-3 bg-slate-50 p-2 rounded line-clamp-2">
+
+              {getQuoteBriefContent(quote)}
+
             </div>
+
+
 
             <div className="flex justify-between items-center border-t border-slate-100 pt-3 text-sm">
-              <div className="flex items-center gap-1.5 text-slate-500">
+
+              <div className="flex items-center gap-1.5 text-slate-500 text-xs">
+
                 <Calendar size={14} />
+
                 <span>{new Date(quote.date).toLocaleDateString()}</span>
+
               </div>
-              <div className="flex items-center gap-1 font-bold text-blue-600">
+
+              <div className="flex items-center gap-1 font-bold text-blue-600 text-sm">
+
                 <DollarSign size={14} />
-                <span>{quote.totalAmount.toLocaleString()}</span>
+
+                <span>{quote.totalAmount.toLocaleString()}원</span>
+
               </div>
+
             </div>
+
           </div>
+
         ))}
+
       </div>
 
-      {selectedQuote && (
-        <QuoteDetailModal 
-          quote={selectedQuote} 
-          onClose={() => setSelectedQuote(null)}
-          onUpdate={handleUpdateQuote}
-        />
+
+
+      {previewQuote && (
+
+        <QuotePreviewModal quote={previewQuote} onClose={() => setPreviewQuote(null)} />
+
       )}
+
     </div>
+
   );
+
 };
+
+

@@ -1,7 +1,7 @@
 
 import React, { useRef, useState } from 'react';
 import { Quote } from '../../types';
-import { X, Download, FileImage, FileText, Loader2, Printer } from 'lucide-react';
+import { X, Download, FileImage, FileText, Loader2 } from 'lucide-react';
 import { QuoteDocument } from './QuoteDocument';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
@@ -13,6 +13,7 @@ interface QuotePreviewModalProps {
 
 export const QuotePreviewModal: React.FC<QuotePreviewModalProps> = ({ quote, onClose }) => {
   const [isProcessing, setIsProcessing] = useState(false);
+  const [documentType, setDocumentType] = useState<'quote' | 'statement'>('quote');
   const quoteRef = useRef<HTMLDivElement>(null);
 
   /**
@@ -111,6 +112,28 @@ export const QuotePreviewModal: React.FC<QuotePreviewModalProps> = ({ quote, onC
             견적서 미리보기
           </h3>
           <div className="flex items-center gap-3">
+             <div className="flex items-center rounded-lg border border-slate-600 overflow-hidden">
+               <button
+                 onClick={() => setDocumentType('quote')}
+                 className={`px-3 py-2 text-xs font-bold transition-colors ${
+                   documentType === 'quote'
+                     ? 'bg-slate-100 text-slate-900'
+                     : 'bg-slate-700 text-slate-200 hover:bg-slate-600'
+                 }`}
+               >
+                 견적서
+               </button>
+               <button
+                 onClick={() => setDocumentType('statement')}
+                 className={`px-3 py-2 text-xs font-bold transition-colors ${
+                   documentType === 'statement'
+                     ? 'bg-slate-100 text-slate-900'
+                     : 'bg-slate-700 text-slate-200 hover:bg-slate-600'
+                 }`}
+               >
+                 명세표
+               </button>
+             </div>
              <button 
                 onClick={handleOpenImage}
                 disabled={isProcessing}
@@ -138,7 +161,7 @@ export const QuotePreviewModal: React.FC<QuotePreviewModalProps> = ({ quote, onC
            {/* Wrapper to capture */}
            <div className="shadow-xl">
               <div ref={quoteRef}>
-                 <QuoteDocument quote={quote} />
+                 <QuoteDocument quote={quote} documentType={documentType} />
               </div>
            </div>
         </div>

@@ -1,14 +1,17 @@
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
     JobStatusDefinition, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
-    JoinRequest, ProductProcessingSets
+    JoinRequest, ProductProcessingSets, QuoteTemplateSettings
 } from '../types';
 import { toast } from 'sonner';
 import { 
     collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch,
     query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
 } from 'firebase/firestore';
-import { db as firestore, auth } from './firebase';
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db as firestore, auth, storage } from './firebase';
+import { buildQuoteFromJob, findQuoteForJob } from '../utils/quoteJobSync';
+import { formatJobNumber } from '../utils/jobNumber';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
 import { APP_VERSION } from '../utils/autoUpdate';
 // --- Utility Functions (From Original) ---
@@ -457,7 +460,7 @@ export class DataService {
             };
         }
 
-        for (const key of ['productDefinitions', 'statusDefinitions', 'processingDefinitions', 'pricing', 'roles'] as const) {
+        for (const key of ['productDefinitions', 'statusDefinitions', 'processingDefinitions', 'pricing', 'roles', 'quoteTemplate'] as const) {
             const fragment = docs.find(d => d.id === key);
             if (!fragment) continue;
             main[key] = fragment[key] ?? fragment;
@@ -1068,8 +1071,15 @@ export class DataService {
     }
 
     // --- Public Business Methods ---
-    async addJob(job: Job) { await this.addEntity('jobs', job); }
-    async updateJob(job: Job) { const { id, ...data } = job; await this.updateEntity('jobs', id!, data); }
+    async addJob(job: Job) {
+        await this.addEntity('jobs', job);
+        await this.ensureQuoteForJob(job);
+    }
+    async updateJob(job: Job) {
+        const { id, ...data } = job;
+        await this.updateEntity('jobs', id!, data);
+        await this.syncQuoteFromJob(job);
+    }
     async deleteJob(id: string) { await this.deleteEntity('jobs', id); }
     
     async saveJobs(jobs: Job[]) {
@@ -1109,6 +1119,8 @@ export class DataService {
         await Promise.all(
             updates.map(({ id, updated }) => this.persistEntity('jobs', id, updated))
         );
+
+        await Promise.all(updates.map(({ updated }) => this.syncQuoteFromJob(updated)));
     }
 
     async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
@@ -1207,6 +1219,60 @@ export class DataService {
     async addQuote(quote: Quote) { await this.addEntity('quotes', quote); }
     async updateQuote(quote: Quote) { const { id, ...data } = quote; await this.updateEntity('quotes', id, data); }
     async deleteQuote(id: string) { await this.deleteEntity('quotes', id); }
+
+    getQuoteByJobId(jobId: string): Quote | undefined {
+        return (this.data['quotes'] || []).find((q: Quote) => q.jobId === jobId);
+    }
+
+    async ensureQuoteForJob(job: Job): Promise<string> {
+        const existing = findQuoteForJob(this.getQuotes(), job);
+        if (existing) {
+            await this.syncQuoteFromJob(job, existing);
+            return existing.id;
+        }
+
+        const quote = buildQuoteFromJob(job);
+        await this.addQuote(quote);
+
+        if (job.id && job.linkedQuoteId !== quote.id) {
+            await this.updateEntity('jobs', job.id, { linkedQuoteId: quote.id });
+        }
+        return quote.id;
+    }
+
+    async syncQuoteFromJob(job: Job, existingQuote?: Quote) {
+        if (!job.id) return;
+        const existing = existingQuote || findQuoteForJob(this.getQuotes(), job);
+        const merged = buildQuoteFromJob(job, existing);
+
+        if (existing) {
+            await this.updateQuote(merged);
+            return;
+        }
+
+        await this.addQuote(merged);
+        if (job.linkedQuoteId !== merged.id) {
+            await this.updateEntity('jobs', job.id, { linkedQuoteId: merged.id });
+        }
+    }
+
+    getQuoteTemplate(): QuoteTemplateSettings {
+        return this.getSettingsObj()['quoteTemplate'] || { headerHeightMm: 17 };
+    }
+
+    async saveQuoteTemplate(template: QuoteTemplateSettings) {
+        await this.updateSetting('quoteTemplate', template);
+    }
+
+    async uploadQuoteHeaderImage(file: File): Promise<string> {
+        if (!this.tenantId) throw new Error('테넌트 정보가 없습니다.');
+        const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+        const safeExt = ['png', 'jpg', 'jpeg', 'webp'].includes(ext) ? ext : 'png';
+        const objectPath = `tenants/${this.tenantId}/quote-header.${safeExt}`;
+        const storageRef = ref(storage, objectPath);
+        await uploadBytes(storageRef, file);
+        return getDownloadURL(storageRef);
+    }
     
     async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro', staffCount?: number) {
         const active = countActiveStaffSeats(this.data['staff'] || []);
@@ -1769,31 +1835,4 @@ export class DataService {
 
 export const db = new DataService();
 
-export const formatJobNumber = (job: { id: string; createdAt: string }) => {
-    if (!job) return '';
-    let d = new Date(job.createdAt);
-    if (isNaN(d.getTime())) {
-        const numId = parseInt(job.id);
-        d = isNaN(numId) ? new Date() : new Date(numId);
-    }
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const min = String(d.getMinutes()).padStart(2, '0');
-    
-    let suffix = '001';
-    if (job.id) {
-        const digits = job.id.replace(/[^0-9]/g, '');
-        if (digits.length >= 3) {
-            suffix = digits.slice(-3);
-        } else {
-            let hash = 0;
-            for (let i = 0; i < job.id.length; i++) {
-                hash = job.id.charCodeAt(i) + ((hash << 5) - hash);
-            }
-            suffix = String(Math.abs(hash) % 1000).padStart(3, '0');
-        }
-    }
-    return `${yyyy}${mm}${dd}${hh}${min}-${suffix}`;
-};
+export { formatJobNumber } from '../utils/jobNumber';
