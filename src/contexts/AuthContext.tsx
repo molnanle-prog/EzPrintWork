@@ -6,6 +6,7 @@ import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
 import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
+import { readPendingStaffProfile } from '../utils/staffLoginSession';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -15,7 +16,7 @@ interface AuthContextType {
   currentUser: AppUser | null;
   loading: boolean;
   logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+  refreshUser: (user?: User | null) => Promise<void>;
   isAuthenticated: boolean;
   tenantPlan: 'free' | 'pro';
   /** 광고형(AD)일 때 true — EzImpo 배너 표시 */
@@ -132,7 +133,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchUserProfile = async (user: User) => {
     try {
-      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      let userDoc = await getDoc(doc(db, 'users', user.uid));
+
+      // 직원 로그인 직후 LoginPage가 users 문서를 쓰는 동안 프로필 조회가 먼저 도착할 수 있음
+      if (!userDoc.exists() && user.email?.endsWith('@ez-hub.kr')) {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          userDoc = await getDoc(doc(db, 'users', user.uid));
+          if (userDoc.exists()) break;
+        }
+      }
       
       // [이름 오버라이트 방지] 기존 DB에 저장된 실제 사용자 정의 이름이 존재한다면, 소셜 로그인 시 구글 계정명으로 무조건 덮어씌워지는 오류를 원천 차단합니다.
       const existingName = userDoc.exists() ? ((userDoc.data() as any).name || (userDoc.data() as any).displayName || '') : '';
@@ -293,10 +303,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         } else {
           // 일치하는 임시 등록 정보가 없는 경우: 기존의 초대코드 확인 및 신규 가입 로직 수행
           let tenantId: string | null = null;
-          let role = 'staff';
+          let role: 'admin' | 'staff' | 'superadmin' = 'staff';
+
+          const pendingStaff = readPendingStaffProfile(user.email);
+          if (pendingStaff) {
+            tenantId = pendingStaff.tenantId;
+            role = pendingStaff.role;
+            try {
+              await setDoc(doc(db, `tenants/${pendingStaff.tenantId}/staff/${pendingStaff.staffDocId}`), {
+                uid: user.uid,
+                active: true,
+              }, { merge: true });
+            } catch (staffLinkErr) {
+              console.warn('[Auth] Failed to link pending staff uid:', staffLinkErr);
+            }
+          }
           
           try {
-            if (user.email) {
+            if (!tenantId && user.email) {
               const inviteDoc = await getDoc(doc(db, 'invitations', user.email.trim().toLowerCase()));
               if (inviteDoc.exists()) {
                 const inviteData = inviteDoc.data();
@@ -329,11 +353,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             photoURL: user.photoURL || '',
             avatarUrl: user.photoURL || '',
             tenantId,
-            role: role as 'admin' | 'staff' | 'superadmin'
+            role
           };
-          await setDoc(doc(db, 'users', user.uid), newUser);
+          await setDoc(doc(db, 'users', user.uid), newUser, { merge: true });
           setCurrentUser(newUser);
           if (tenantId) {
+            const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
+            if (tenantDoc.exists()) {
+              applyTenantSnapshot(tenantDoc.data());
+            }
             dataService.setTenant(tenantId);
           }
         }
@@ -346,6 +374,38 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
       console.error("Error fetching user profile:", error);
+
+      const pendingStaff = readPendingStaffProfile(user.email);
+      if (pendingStaff?.tenantId) {
+        setCurrentUser({
+          uid: user.uid,
+          id: user.uid,
+          email: user.email || pendingStaff.email,
+          displayName: pendingStaff.name || user.displayName || '사원',
+          name: pendingStaff.name || user.displayName || '사원',
+          photoURL: user.photoURL || '',
+          avatarUrl: user.photoURL || '',
+          tenantId: pendingStaff.tenantId,
+          role: pendingStaff.role,
+        });
+        dataService.setTenant(pendingStaff.tenantId);
+        return;
+      }
+
+      try {
+        const customRaw = sessionStorage.getItem('customUser');
+        if (customRaw) {
+          const customUser = JSON.parse(customRaw) as AppUser;
+          if (customUser?.tenantId) {
+            setCurrentUser(customUser);
+            dataService.setTenant(customUser.tenantId);
+            return;
+          }
+        }
+      } catch {
+        /* ignore malformed session cache */
+      }
+
       // 프로필 조회 실패 시에도 흰 화면 방지 — Firebase 기본 정보로 폴백
       setCurrentUser({
         uid: user.uid,
@@ -385,9 +445,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const refreshUser = async () => {
-    if (firebaseUser) {
-      await fetchUserProfile(firebaseUser);
+  const refreshUser = async (user?: User | null) => {
+    const targetUser = user ?? firebaseUser;
+    if (targetUser) {
+      await fetchUserProfile(targetUser);
     }
   };
 

@@ -12,6 +12,9 @@ import { APP_VERSION } from '../utils/autoUpdate';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
+import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
+import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
+import type { AppUser } from '../types';
 
 const formatSearchError = (error: any): string => {
     const code = error?.code || '';
@@ -30,6 +33,7 @@ const formatSearchError = (error: any): string => {
 export const LoginPage: React.FC = () => {
     const navigate = useNavigate();
     const { theme } = useTheme();
+    const { loginCustomSession, refreshUser } = useAuth();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
     const [joinCode, setJoinCode] = useState('');
@@ -377,6 +381,19 @@ export const LoginPage: React.FC = () => {
             // Firebase Auth 로그인 (Firestore rules isMember 통과에 필수)
             const rawLoginId = (userData.loginId || loginId.trim()).toLowerCase();
             const authEmail = (userData.email?.includes('@') ? userData.email : `${rawLoginId}@ez-hub.kr`).trim().toLowerCase();
+            const staffRoleForAuth = userData.role || userData.position;
+            const resolvedRole = resolveAppRoleFromStaff(staffRoleForAuth);
+            const staffDisplayName = userData.userName || userData.name || '사원';
+
+            setPendingStaffProfile({
+                tenantId,
+                loginId: rawLoginId,
+                name: staffDisplayName,
+                role: resolvedRole,
+                staffDocId: userDoc.id,
+                email: authEmail,
+            });
+
             const passwordsToTry = [...new Set([
                 password.trim(),
                 password.trim().toLowerCase(),
@@ -419,37 +436,75 @@ export const LoginPage: React.FC = () => {
 
             if (!signedIn) {
                 console.error('Staff Firebase auth failed:', lastAuthError);
+                clearPendingStaffProfile();
                 toast.error('Firebase 로그인 연동에 실패했습니다. 관리자에게 직원 정보 재저장을 요청하세요.');
                 setIsStaffLoggingIn(false);
                 return;
             }
 
             const firebaseUid = auth.currentUser?.uid;
-            if (firebaseUid) {
-                try {
-                    let staffRoleForAuth: string | undefined = userData.role || userData.position;
-                    try {
-                        const staffDocSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
-                        if (staffDocSnap.exists()) {
-                            staffRoleForAuth = staffDocSnap.data().role || staffRoleForAuth;
-                        }
-                    } catch {
-                        /* staff role lookup optional */
-                    }
+            if (!firebaseUid) {
+                clearPendingStaffProfile();
+                toast.error('로그인 세션을 확인할 수 없습니다. 다시 시도해 주세요.');
+                setIsStaffLoggingIn(false);
+                return;
+            }
 
-                    await setDoc(doc(db, 'users', firebaseUid), {
-                        uid: firebaseUid,
-                        id: firebaseUid,
-                        email: authEmail,
-                        displayName: userData.userName || userData.name || '사원',
-                        name: userData.userName || userData.name || '사원',
-                        tenantId,
-                        role: resolveAppRoleFromStaff(staffRoleForAuth),
-                        loginId: rawLoginId,
-                    }, { merge: true });
-                } catch (profileErr) {
-                    console.warn('Staff users profile upsert failed (login continues):', profileErr);
+            try {
+                let latestStaffRole = staffRoleForAuth;
+                try {
+                    const staffDocSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
+                    if (staffDocSnap.exists()) {
+                        latestStaffRole = staffDocSnap.data().role || latestStaffRole;
+                    }
+                } catch {
+                    /* staff role lookup optional */
                 }
+
+                const appRole = resolveAppRoleFromStaff(latestStaffRole);
+
+                await setDoc(doc(db, 'users', firebaseUid), {
+                    uid: firebaseUid,
+                    id: firebaseUid,
+                    email: authEmail,
+                    displayName: staffDisplayName,
+                    name: staffDisplayName,
+                    tenantId,
+                    role: appRole,
+                    loginId: rawLoginId,
+                }, { merge: true });
+
+                await setDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id), {
+                    uid: firebaseUid,
+                    active: true,
+                }, { merge: true });
+
+                const tenantData = tenantDocSnap.exists() ? tenantDocSnap.data() : {};
+                const tenantPlan = determineTenantPlan(tenantData);
+                const tenantPlanCode = String(tenantData?.plan || 'free');
+                const tenantPaymentStatus = String(tenantData?.paymentStatus || 'UNPAID').toUpperCase();
+
+                const appUser: AppUser = {
+                    uid: firebaseUid,
+                    id: firebaseUid,
+                    email: authEmail,
+                    displayName: staffDisplayName,
+                    name: staffDisplayName,
+                    photoURL: '',
+                    avatarUrl: userData.avatarUrl || '',
+                    tenantId,
+                    role: appRole,
+                };
+
+                loginCustomSession(appUser, tenantPlan, tenantPlanCode, tenantPaymentStatus);
+                await refreshUser(auth.currentUser);
+                clearPendingStaffProfile();
+            } catch (profileErr) {
+                console.error('Staff users profile upsert failed:', profileErr);
+                clearPendingStaffProfile();
+                toast.error('직원 프로필 연동에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+                setIsStaffLoggingIn(false);
+                return;
             }
 
             // 아이디 및 비밀번호 소문자 자동 마이그레이션 자가 치유 (Self-Healing)
