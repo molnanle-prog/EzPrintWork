@@ -7,6 +7,7 @@ import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
 import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
+import { resolveStaffTenantProfile, upsertStaffUserProfile } from '../utils/resolveStaffTenantProfile';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -131,6 +132,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const healStaffUserProfile = async (user: User, userData?: AppUser | null): Promise<AppUser | null> => {
+    if (!user.email?.endsWith('@ez-hub.kr')) return null;
+
+    const resolved = await resolveStaffTenantProfile(user);
+    if (!resolved) return null;
+
+    const saved = await upsertStaffUserProfile(user, resolved);
+    if (!saved) {
+      console.warn('[StaffHeal] users profile write verification failed');
+      return null;
+    }
+
+    return {
+      uid: user.uid,
+      id: user.uid,
+      email: user.email || `${resolved.loginId}@ez-hub.kr`,
+      displayName: resolved.name || userData?.name || user.displayName || '사원',
+      name: resolved.name || userData?.name || user.displayName || '사원',
+      photoURL: user.photoURL || userData?.photoURL || '',
+      avatarUrl: user.photoURL || userData?.avatarUrl || '',
+      tenantId: resolved.tenantId,
+      role: resolved.role,
+      loginId: resolved.loginId,
+    } as AppUser;
+  };
+
   const fetchUserProfile = async (user: User) => {
     try {
       let userDoc = await getDoc(doc(db, 'users', user.uid));
@@ -159,9 +186,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       };
 
       if (userDoc.exists()) {
-        const userData = userDoc.data() as AppUser;
+        let userData = userDoc.data() as AppUser;
         if ((userData as any).active === false) {
           throw new Error('DELETED_STAFF');
+        }
+
+        if (!userData.tenantId && user.email?.endsWith('@ez-hub.kr')) {
+          const healed = await healStaffUserProfile(user, userData);
+          if (healed) {
+            userData = healed;
+          }
         }
         
         const updatedUser = {
@@ -392,6 +426,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
+      const healed = await healStaffUserProfile(user);
+      if (healed?.tenantId) {
+        setCurrentUser(healed);
+        dataService.setTenant(healed.tenantId);
+        return;
+      }
+
       try {
         const customRaw = sessionStorage.getItem('customUser');
         if (customRaw) {
@@ -484,12 +525,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // 로컬 디렉토리 캐시나 쿠키가 남아 있어도 안전을 위해 세션을 무조건 파괴하고 초기 로그인 창으로 진입시킵니다.
     const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
     if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
-      console.log("[AuthSecurity] Keep-login is not active. Cleaning up custom staff session caches.");
+      console.log("[AuthSecurity] Keep-login is not active. Cleaning up persistent custom session caches.");
       localStorage.removeItem('customUser');
       localStorage.removeItem('customTenantPlan');
-      sessionStorage.removeItem('customUser');
-      sessionStorage.removeItem('customTenantPlan');
-      // Google(Firebase) 세션은 유지 — 앱 기동 시 무조건 signOut 하면 로그인 직후 흰 화면/로그아웃 레이스 발생
+      localStorage.removeItem('customTenantPlanCode');
+      // sessionStorage customUser는 새로고침 직후 Firebase 프로필 복구 전까지 유지
     }
 
     if (DEV_BYPASS_LOGIN) {

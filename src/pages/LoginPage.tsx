@@ -14,6 +14,7 @@ import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
 import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
+import { rememberStaffLoginTenant } from '../utils/resolveStaffTenantProfile';
 import type { AppUser } from '../types';
 
 const formatSearchError = (error: any): string => {
@@ -393,6 +394,7 @@ export const LoginPage: React.FC = () => {
                 staffDocId: userDoc.id,
                 email: authEmail,
             });
+            rememberStaffLoginTenant(tenantId);
 
             const passwordsToTry = [...new Set([
                 password.trim(),
@@ -474,10 +476,19 @@ export const LoginPage: React.FC = () => {
                     loginId: rawLoginId,
                 }, { merge: true });
 
-                await setDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id), {
-                    uid: firebaseUid,
-                    active: true,
-                }, { merge: true });
+                const profileVerify = await getDoc(doc(db, 'users', firebaseUid));
+                if (!profileVerify.exists() || profileVerify.data()?.tenantId !== tenantId) {
+                    throw new Error('회사 소속 정보 저장에 실패했습니다. Firestore 규칙 배포 여부를 확인해 주세요.');
+                }
+
+                try {
+                    await setDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id), {
+                        uid: firebaseUid,
+                        active: true,
+                    }, { merge: true });
+                } catch (staffLinkErr) {
+                    console.warn('Staff uid link skipped (non-blocking):', staffLinkErr);
+                }
 
                 const tenantData = tenantDocSnap.exists() ? tenantDocSnap.data() : {};
                 const tenantPlan = determineTenantPlan(tenantData);

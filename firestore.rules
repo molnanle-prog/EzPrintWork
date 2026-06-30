@@ -233,8 +233,10 @@ service cloud.firestore {
           && (!('tenantId' in existing()) || existing().tenantId == null);
       }
 
+      /** 직원 ID(@ez-hub.kr) 로그인 시 users/{uid}에 tenantId·role 연결 */
       function isStaffLoginProfileUpsert(data) {
-        return data.role == 'staff'
+        return isStaffEmailAuth()
+          && data.role in ['admin', 'staff']
           && data.tenantId is string
           && isValidId(data.tenantId)
           && data.email is string
@@ -288,14 +290,22 @@ service cloud.firestore {
                data.keys().hasAll(['title', 'status']);
       }
 
+      function isStaffUidSelfLink(data) {
+        return isStaffEmailAuth()
+          && 'uid' in data
+          && data.uid == request.auth.uid
+          && (!('active' in data) || data.active == true);
+      }
+
       // STAFF — 로그인 전 loginId 조회 허용 (비밀번호는 앱에서 검증)
       match /staff/{staffId} {
-        allow read: if isMember(tenantId) || isStaffPreAuthRead() || (!isSignedIn() && isReasonableListQuery());
+        allow read: if isMember(tenantId) || isStaffPreAuthRead() || isStaffEmailAuth() || (!isSignedIn() && isReasonableListQuery());
         allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
           || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()))
           || (isTenantOwner(tenantId) && request.auth.uid == staffId && isValidId(staffId) && isValidStaff(incoming()));
         allow update: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
-          || (!isSignedIn() && isStaffCredentialMigration(incoming()));
+          || (!isSignedIn() && isStaffCredentialMigration(incoming()))
+          || (isStaffUidSelfLink(incoming()) && isValidId(staffId));
         allow delete: if isAdmin(tenantId);
       }
 
