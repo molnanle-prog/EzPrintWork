@@ -5,6 +5,7 @@ import { Job, AdminInstruction, Priority, Staff, JobStatusDefinition } from '../
 import { AlertCircle, Clock, Plus, Loader2, Tv } from 'lucide-react';
 import { JobStatusItem } from './JobStatusItem';
 import { isJobAssignedToUser } from '../../utils/staffMatch';
+import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
 import { InstructionPanel } from './InstructionPanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
@@ -61,7 +62,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
     const draggedJob = allJobs.find(j => j.id === draggedId);
     if (!draggedJob) return;
 
-    let activeJobs = db.getActiveJobs().sort((a, b) => {
+    let activeJobs = filterJobsForOperationalBoard(db.getAllJobs()).sort((a, b) => {
       if (a.order !== b.order) return a.order - b.order;
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
@@ -107,8 +108,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   }, []);
 
   const loadData = () => {
-    // Performance Optimization: Only load Active Jobs for Dashboard
-    setJobs(db.getActiveJobs());
+    setJobs(filterJobsForOperationalBoard(db.getAllJobs()));
     setInstructions(db.getInstructions());
     setStaff(db.getStaff());
     setStatusDefinitions(db.getStatusDefinitions());

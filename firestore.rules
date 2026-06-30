@@ -441,14 +441,16 @@ service cloud.firestore {
                data.keys().hasAll(['name']);
       }
 
-      // SETTINGS — 관리자: 전체, 직원: 상품·후가공만
+      // SETTINGS — 관리자: 전체, 직원: 상품·후가공·거래처(별도 clients 컬렉션)
       function isStaffWritableSetting(settingId, data) {
         return settingId == 'productDefinitions'
           || settingId == 'processingDefinitions'
-          || (settingId == 'main' && (
-               data.keys().hasOnly(['productDefinitions'])
-            || data.keys().hasOnly(['processingDefinitions'])
-          ));
+          || (settingId == 'main'
+            && resource != null
+            && (
+              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['productDefinitions'])
+              || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['processingDefinitions'])
+            ));
       }
 
       match /settings/{settingId} {

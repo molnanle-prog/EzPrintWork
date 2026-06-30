@@ -1007,6 +1007,12 @@ export class DataService {
         'roles',
     ] as const;
 
+    /** 직원도 저장 가능 — settings/main 병합 시 rules 거부되므로 조각 문서만 씀 */
+    private static readonly STAFF_SAFE_FRAGMENT_SETTINGS = [
+        'productDefinitions',
+        'processingDefinitions',
+    ] as const;
+
     /** mergeSettingsDocs가 settings/{name} 조각 문서를 우선하므로, 저장 시 조각에도 동기화 */
     private buildSettingFragmentPayload(name: string, data: any): Record<string, unknown> {
         if (name === 'roles') return { roles: data.roles };
@@ -1024,21 +1030,32 @@ export class DataService {
         
         if (this.tenantId) {
             try {
-                const mainRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
-                await setDoc(mainRef, stripUndefinedForFirestore({ [name]: data }), { merge: true });
+                const isStaffSafeFragment = (DataService.STAFF_SAFE_FRAGMENT_SETTINGS as readonly string[]).includes(name);
 
-                if ((DataService.SETTINGS_FRAGMENT_IDS as readonly string[]).includes(name)) {
+                if (isStaffSafeFragment) {
                     const fragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', name);
                     await setDoc(
                         fragmentRef,
                         stripUndefinedForFirestore(this.buildSettingFragmentPayload(name, data)),
                         { merge: true }
                     );
-                }
+                } else {
+                    const mainRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+                    await setDoc(mainRef, stripUndefinedForFirestore({ [name]: data }), { merge: true });
 
-                if (name === 'companyInfo') {
-                    const companyRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'companyInfo');
-                    await setDoc(companyRef, stripUndefinedForFirestore(data), { merge: true });
+                    if ((DataService.SETTINGS_FRAGMENT_IDS as readonly string[]).includes(name)) {
+                        const fragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', name);
+                        await setDoc(
+                            fragmentRef,
+                            stripUndefinedForFirestore(this.buildSettingFragmentPayload(name, data)),
+                            { merge: true }
+                        );
+                    }
+
+                    if (name === 'companyInfo') {
+                        const companyRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'companyInfo');
+                        await setDoc(companyRef, stripUndefinedForFirestore(data), { merge: true });
+                    }
                 }
             } catch (e) {
                 console.error(`[Firestore updateSetting Error] Failed to update settings:`, e);

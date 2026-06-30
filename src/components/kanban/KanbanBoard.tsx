@@ -28,6 +28,7 @@ import {
   isJobAssignedToStaffId,
   getStaffIdForUser,
 } from '../../utils/staffMatch';
+import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
 
 interface KanbanBoardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -96,33 +97,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     // 2. User-level visibility (from local UI filter)
     const userFiltered = dbVisibleStatuses.filter(s => !hiddenStatusKeys.includes(s.key));
     setVisibleStatusDefinitions(userFiltered);
-    const filteredJobs = allJobs.filter(job => {
-      // 0. 취소된 건 필터링: '취소 건 조회' 스위치가 활성화되었을 때만 취소된 작업 노출
-      if (job.status === 'CANCELED') {
-        return filterCanceled;
-      }
-
-      // 1. Active jobs are always visible
-      if (job.status !== 'DELIVERY') return true;
-
-      // 2. Completed Jobs Logic
-      
-      // Rule A: If payment is incomplete, ALWAYS show it regardless of date
-      if (job.paymentStatus !== '결제완료') return true;
-
-      // Rule B: Show if completed within last 3 days
-      const completedAt = job.completedAt ? new Date(job.completedAt) : new Date(job.createdAt);
-      const now = new Date();
-      const diffTime = now.getTime() - completedAt.getTime();
-      const diffDays = diffTime / (1000 * 60 * 60 * 24);
-      
-      if (diffDays <= 3) return true;
-
-      // Rule C: Show if matches the manually selected date (for history lookup)
-      const completedDateStr = completedAt.toISOString().split('T')[0];
-      if (completedDateStr === selectedDate) return true;
-
-      return false;
+    const filteredJobs = filterJobsForOperationalBoard(allJobs, {
+      selectedDate,
+      includeCanceled: filterCanceled,
     });
 
     setDisplayJobs(filteredJobs);
