@@ -63,6 +63,12 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
 };
 
 const getDisconnectDetail = (code: string | null) => {
+    if (code === 'profile-not-ready') {
+        return {
+            title: '회사 소속 정보 동기화 대기 중',
+            body: <>프로필이 서버에 반영되지 않았습니다.<br/>잠시 후 새로고침하거나, 로그아웃 후 다시 로그인해 주세요.</>,
+        };
+    }
     if (code === 'permission-denied') {
         return {
             title: '데이터 접근 권한이 없습니다',

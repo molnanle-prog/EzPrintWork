@@ -107,17 +107,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     setQuoteBoardJobs(allJobs.filter((j) => j.status === 'QUOTE'));
     setActiveJobsStats(activeJobs);
     setStaff(db.getStaff());
-
-    // 기존 작업 견적 동기화 (jobId 등 누락 보정)
-    void (async () => {
-      for (const job of allJobs) {
-        try {
-          await db.syncQuoteFromJob(job);
-        } catch {
-          /* ignore */
-        }
-      }
-    })();
   };
 
   useEffect(() => {

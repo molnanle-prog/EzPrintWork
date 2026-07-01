@@ -38,7 +38,7 @@ const defaultSettings = [{
                 paperWeights: ['100g', '120g', '150g']
             },
             {
-                name: '현수막',
+                name: '실사',
                 sizes: ['500x90cm', '400x70cm', '60x180cm (배너)', '규격외'],
                 paperTypes: ['현수막천', '부직포', '망사천', 'PET (배너)', '합성지(유포)'],
                 paperWeights: ['일반']

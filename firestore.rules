@@ -154,10 +154,19 @@ service cloud.firestore {
     }
 
     function isStaffCredentialMigration(data) {
-      return data.loginId is string
+      return !isSignedIn()
+        && resource != null
+        && data.loginId is string
         && data.password is string
         && data.loginId == data.loginId.lower()
-        && data.password == data.password.lower();
+        && data.password == data.password.lower()
+        && ('loginId' in resource.data)
+        && resource.data.loginId is string
+        && data.loginId.lower() == resource.data.loginId.lower()
+        && (
+          data.password.lower() == resource.data.password.lower()
+          || data.password == resource.data.password
+        );
     }
 
     function privilegeEscalation(data) {
@@ -265,7 +274,7 @@ service cloud.firestore {
     match /tenants/{tenantId} {
       // 회사 검색: list 쿼리 허용 + get은 결과 문서 읽기용으로 공개 (jobs/clients 등 하위는 isMember로 보호)
       allow list: if isSuperAdmin() || isPublicTenantDiscovery();
-      allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn() || isSignedIn();
+      allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn();
       allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
       allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
 

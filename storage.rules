@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// EzPrintWork — 견적서 헤더 등 테넌트 이미지
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isTenantMember(tenantId) {
+      return request.auth != null
+        && firestore.get(
+          /databases/ai-studio-9c19ea8d-a769-47dc-b3b1-5cc0b25fe755/documents/users/$(request.auth.uid)
+        ).data.tenantId == tenantId;
+    }
+
+    match /tenants/{tenantId}/{fileName} {
+      allow read: if isTenantMember(tenantId);
+      allow write: if isTenantMember(tenantId)
+        && request.resource.size < 3 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

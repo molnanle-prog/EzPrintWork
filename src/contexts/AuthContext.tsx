@@ -6,6 +6,7 @@ import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
 import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
+import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
 import { resolveStaffTenantProfile, upsertStaffUserProfile } from '../utils/resolveStaffTenantProfile';
 
@@ -207,6 +208,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         });
 
         setCurrentUser(updatedUser);
+        dataService.setSyncUserRole(updatedUser.role);
         
         if (updatedUser.tenantId) {
           await assertStaffNotDeleted(updatedUser.tenantId, user);
@@ -214,7 +216,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (tenantDoc.exists()) {
               applyTenantSnapshot(tenantDoc.data());
           }
-          dataService.setTenant(updatedUser.tenantId);
+          await dataService.setTenantWhenReady(updatedUser.tenantId, user.uid);
 
           // [SSOT 대표자 직원 동기화 자가 치유]
           // 만약 대표자(admin) 역할이지만 테넌트의 직원 목록(staff) 서브컬렉션에 자신의 정보가 등재되어 있지 않은 경우,
@@ -325,12 +327,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           console.log(`[AuthSelfHealing] Successfully destroyed temporary user document: ${oldUid}`);
 
           setCurrentUser(newUser);
+          dataService.setSyncUserRole(newUser.role);
           if (tenantId) {
             const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
             if (tenantDoc.exists()) {
               applyTenantSnapshot(tenantDoc.data());
             }
-            dataService.setTenant(tenantId);
+            await dataService.setTenantWhenReady(tenantId, user.uid);
           }
         } else {
           // 일치하는 임시 등록 정보가 없는 경우: 기존의 초대코드 확인 및 신규 가입 로직 수행
@@ -389,12 +392,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
           await setDoc(doc(db, 'users', user.uid), newUser, { merge: true });
           setCurrentUser(newUser);
+          dataService.setSyncUserRole(newUser.role);
           if (tenantId) {
             const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
             if (tenantDoc.exists()) {
               applyTenantSnapshot(tenantDoc.data());
             }
-            dataService.setTenant(tenantId);
+            await dataService.setTenantWhenReady(tenantId, user.uid);
           }
         }
       }
@@ -420,14 +424,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           tenantId: pendingStaff.tenantId,
           role: pendingStaff.role,
         });
-        dataService.setTenant(pendingStaff.tenantId);
+        dataService.setSyncUserRole(pendingStaff.role);
+        await dataService.setTenantWhenReady(pendingStaff.tenantId, user.uid);
         return;
       }
 
       const healed = await healStaffUserProfile(user);
       if (healed?.tenantId) {
         setCurrentUser(healed);
-        dataService.setTenant(healed.tenantId);
+        dataService.setSyncUserRole(healed.role);
+        await dataService.setTenantWhenReady(healed.tenantId, user.uid);
         return;
       }
 
@@ -437,7 +443,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           const customUser = JSON.parse(customRaw) as AppUser;
           if (customUser?.tenantId) {
             setCurrentUser(customUser);
-            dataService.setTenant(customUser.tenantId);
+            dataService.setSyncUserRole(customUser.role);
+            await dataService.setTenantWhenReady(customUser.tenantId, user.uid);
             return;
           }
         }
@@ -445,7 +452,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         /* ignore malformed session cache */
       }
 
-      // 프로필 조회 실패 시에도 흰 화면 방지 — Firebase 기본 정보로 폴백
+      // Google 등 검증된 계정: 일시 오류로 tenantId=null 폴백 시 중복 회사 생성 방지
+      if (user.emailVerified && !user.email?.endsWith('@ez-hub.kr')) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 400));
+          try {
+            const retryDoc = await getDoc(doc(db, 'users', user.uid));
+            if (retryDoc.exists()) {
+              await fetchUserProfile(user);
+              return;
+            }
+          } catch {
+            /* retry */
+          }
+        }
+        console.error('[Auth] Profile fetch failed for verified user — signing out to prevent duplicate onboarding');
+        await signOut(auth);
+        setCurrentUser(null);
+        return;
+      }
+
+      // 프로필 조회 실패 시에도 흰 화면 방지 — Firebase 기본 정보로 폴백 (직원 @ez-hub.kr 등)
       setCurrentUser({
         uid: user.uid,
         id: user.uid,
@@ -461,7 +488,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const loginCustomSession = (user: AppUser, plan: 'free' | 'pro', planCode?: string, paymentStatus?: string) => {
-    const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
+    const keepLoggedIn = isStaffKeepLoggedIn();
     const code = planCode || (plan === 'pro' ? 'pro' : 'free');
     if (keepLoggedIn) {
       localStorage.setItem('customUser', JSON.stringify(user));
@@ -479,8 +506,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setTenantPlan(plan);
     setTenantPlanCode(code);
     setMaxStaff(getMaxStaffForPlan(code, paymentStatus));
-    if (user.tenantId) {
-      dataService.setTenant(user.tenantId);
+    dataService.setSyncUserRole(user.role);
+    if (user.tenantId && user.uid) {
+      void dataService.setTenantWhenReady(user.tenantId, user.uid);
     }
   };
 
@@ -521,7 +549,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // [앱 기동 시 강력한 보안 안전장치]
     // 사용자가 '자동 로그인 유지'를 수동으로 켜지 않았다면, 
     // 로컬 디렉토리 캐시나 쿠키가 남아 있어도 안전을 위해 세션을 무조건 파괴하고 초기 로그인 창으로 진입시킵니다.
-    const keepLoggedIn = localStorage.getItem('keepLoggedIn') === 'true';
+    const keepLoggedIn = isStaffKeepLoggedIn();
     if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
       console.log("[AuthSecurity] Keep-login is not active. Cleaning up persistent custom session caches.");
       localStorage.removeItem('customUser');
@@ -569,40 +597,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (user) {
         await fetchUserProfile(user);
       } else {
-        // Fallback: Check if there is a custom session in sessionStorage or localStorage!
-        const savedCustomUser = sessionStorage.getItem('customUser') || (keepLoggedIn ? localStorage.getItem('customUser') : null);
-        if (savedCustomUser) {
-          try {
-            const userData = JSON.parse(savedCustomUser) as AppUser;
-            setCurrentUser(userData);
-            if (userData.tenantId) {
-              dataService.setTenant(userData.tenantId);
-              try {
-                const tenantDoc = await getDoc(doc(db, 'tenants', userData.tenantId));
-                if (tenantDoc.exists()) {
-                  applyTenantSnapshot(tenantDoc.data());
-                } else {
-                  const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
-                  const savedCode = sessionStorage.getItem('customTenantPlanCode') || (keepLoggedIn ? localStorage.getItem('customTenantPlanCode') : null);
-                  setTenantPlan(savedPlan || 'free');
-                  setTenantPlanCode(savedCode || 'free');
-                  setMaxStaff(getMaxStaffForPlan(savedCode || 'free', 'PAID'));
-                }
-              } catch {
-                const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
-                setTenantPlan(savedPlan || 'free');
-              }
-            } else {
-              const savedPlan = (sessionStorage.getItem('customTenantPlan') || (keepLoggedIn ? localStorage.getItem('customTenantPlan') : null)) as 'free' | 'pro';
-              setTenantPlan(savedPlan || 'free');
-            }
-          } catch (e) {
-            console.error("Failed to parse custom local user session:", e);
-            setCurrentUser(null);
-          }
-        } else {
-          setCurrentUser(null);
+        const keepLoggedIn = isStaffKeepLoggedIn();
+        if (!keepLoggedIn) {
+          sessionStorage.removeItem('customUser');
+          localStorage.removeItem('customUser');
+          localStorage.removeItem('customTenantPlan');
+          localStorage.removeItem('customTenantPlanCode');
         }
+        setCurrentUser(null);
       }
       setLoading(false);
     });

@@ -3,6 +3,7 @@ import { collection, doc, getDoc, getDocs, limit, query, setDoc, where } from 'f
 import { db } from '../services/firebase';
 import { resolveAppRoleFromStaff } from './adminAccess';
 import { readPendingStaffProfile } from './staffLoginSession';
+import { STAFF_LOGIN_PREFS, loadStaffLoginPreferences } from './staffLoginPreferences';
 
 export const STAFF_LOGIN_TENANT_KEY = 'staffLoginTenantId';
 
@@ -16,6 +17,10 @@ export type ResolvedStaffProfile = {
 
 export function rememberStaffLoginTenant(tenantId: string): void {
   sessionStorage.setItem(STAFF_LOGIN_TENANT_KEY, tenantId);
+  const prefs = loadStaffLoginPreferences();
+  if (prefs.rememberCompany || prefs.keepLoggedIn) {
+    localStorage.setItem(STAFF_LOGIN_PREFS.savedTenantId, tenantId);
+  }
 }
 
 export function readStaffLoginTenant(): string | null {
@@ -68,7 +73,7 @@ export async function resolveStaffTenantProfile(user: User): Promise<ResolvedSta
 
   const tenantHints = [
     readStaffLoginTenant(),
-    localStorage.getItem('savedTenantId'),
+    localStorage.getItem(STAFF_LOGIN_PREFS.savedTenantId),
   ].filter((value, index, arr): value is string => !!value && arr.indexOf(value) === index);
 
   for (const tenantId of tenantHints) {

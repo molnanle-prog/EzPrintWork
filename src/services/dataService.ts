@@ -10,7 +10,8 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db as firestore, auth, storage } from './firebase';
-import { buildQuoteFromJob, findQuoteForJob } from '../utils/quoteJobSync';
+import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
+import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
 import { formatJobNumber } from '../utils/jobNumber';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
 import { APP_VERSION } from '../utils/autoUpdate';
@@ -116,6 +117,23 @@ const INITIAL_STATUS_DEFINITIONS: JobStatusDefinition[] = [
     { key: 'DELIVERY', label: '납품/완료' }
 ];
 
+/** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
+const COMBINED_PAPER_WEIGHT_PATTERN = /\/|표지.*내지|내지.*표지/i;
+
+export const BOOKLET_SINGLE_PAPER_WEIGHTS = [
+    '70g', '80g', '100g', '120g', '150g', '180g', '200g', '250g', '300g',
+] as const;
+
+export function sanitizeBookletPaperWeights(weights: string[] | undefined): string[] {
+    const singles = (weights ?? []).filter((w) => w && !COMBINED_PAPER_WEIGHT_PATTERN.test(w));
+    const merged = [...new Set([...singles, ...BOOKLET_SINGLE_PAPER_WEIGHTS])];
+    return merged.sort((a, b) => {
+        const numA = parseInt(a.replace(/\D/g, ''), 10) || 0;
+        const numB = parseInt(b.replace(/\D/g, ''), 10) || 0;
+        return numA - numB;
+    });
+}
+
 const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     {
         name: '명함',
@@ -142,7 +160,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         name: '카탈로그',
         sizes: ['A4(세로)', 'A4(가로)', 'A5(세로)', 'B5(세로)', '190x260mm', '규격외'],
         paperTypes: ['아트지', '스노우지', '랑데뷰', '반누보', '몽블랑', '모조지'],
-        paperWeights: ['내지100g/표지250g', '내지120g/표지250g', '내지150g/표지300g', '80g', '100g', '120g', '150g', '180g', '250g', '300g'],
+        paperWeights: [...BOOKLET_SINGLE_PAPER_WEIGHTS],
         processings: ['접지', '중철제본', '스프링제본', '오시'],
         processingsCover: ['유광코팅', '무광코팅', '금박', '은박', '에폭시'],
         processingsInner: ['유광코팅', '무광코팅', '오시', '미싱']
@@ -151,7 +169,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         name: '책자',
         sizes: ['A4(210x297)', 'B5(182x257)', 'A5(148x210)', '190x260mm(사륙배판)', '규격외'],
         paperTypes: ['모조지(백색)', '모조지(미색)', '아트지', '스노우지', '표지용 레자크지', '표지용 특수지'],
-        paperWeights: ['표지150g/내지80g', '표지180g/내지80g', '표지250g/내지80g', '표지250g/내지100g', '70g', '80g', '100g', '120g', '150g', '180g', '250g'],
+        paperWeights: [...BOOKLET_SINGLE_PAPER_WEIGHTS],
         processings: ['무선제본', '중철제본', '스프링제본', '접지', '오시'],
         processingsCover: ['유광코팅', '무광코팅', '금박', '은박', '에폭시', '형압'],
         processingsInner: ['유광코팅', '무광코팅', '오시', '미싱']
@@ -171,7 +189,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         processings: ['미싱(절취선)', '넘버링', '미싱']
     },
     {
-        name: '현수막/배너',
+        name: '실사',
         sizes: ['500x90cm(길거리용)', '90x180cm(실외배너)', '60x180cm(실내배너)', '사용자지정(규격외)'],
         paperTypes: ['현수막천', 'PET지(배너)', '텐트천', '부직포', '유포지 실사'],
         paperWeights: ['기본 규격 무게', '실사 출력용'],
@@ -187,6 +205,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
 ];
 
 const LEGACY_CATALOG_TYPE_NAMES = ['카탈로그/브로셔', '카탈로그/책자', '카달로그/책자', '카달로그/브로셔'];
+const LEGACY_SIGNAGE_TYPE_NAMES = ['현수막/배너', '현수막'];
 
 const DEFAULT_STAFF_ROLES = ['관리자', '디자이너', '인쇄기장', '후가공', '배송', '실장', '부장', '과장', '대리', '사원'];
 
@@ -338,6 +357,7 @@ function resolveBookletProcessingSets(def: JobTypeDefinition | undefined, typeNa
 export function normalizeProductDefinitions(definitions: JobTypeDefinition[]): { definitions: JobTypeDefinition[]; changed: boolean } {
     const catalogTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '카탈로그');
     const bookTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '책자');
+    const signageTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '실사');
     if (!catalogTemplate || !bookTemplate) {
         return { definitions, changed: false };
     }
@@ -359,6 +379,27 @@ export function normalizeProductDefinitions(definitions: JobTypeDefinition[]): {
             needBookFromSplit = true;
             continue;
         }
+        if (signageTemplate && LEGACY_SIGNAGE_TYPE_NAMES.includes(def.name)) {
+            changed = true;
+            const idx = result.findIndex((d) => d.name === '실사');
+            const merged = mergeProductDefinition(signageTemplate, def, '실사');
+            if (idx >= 0) {
+                result[idx] = mergeProductDefinition(signageTemplate, { ...result[idx], ...merged }, '실사');
+            } else {
+                result.push(merged);
+            }
+            continue;
+        }
+        if (def.name === '실사') {
+            const idx = result.findIndex((d) => d.name === '실사');
+            const merged = signageTemplate ? mergeProductDefinition(signageTemplate, def, '실사') : def;
+            if (idx >= 0) {
+                result[idx] = mergeProductDefinition(signageTemplate!, { ...result[idx], ...merged }, '실사');
+            } else {
+                result.push(merged);
+            }
+            continue;
+        }
         result.push(def);
     }
 
@@ -369,7 +410,17 @@ export function normalizeProductDefinitions(definitions: JobTypeDefinition[]): {
         result.push({ ...bookTemplate });
     }
 
-    return { definitions: result, changed };
+    const sanitized = result.map((def) => {
+        if (!isBookletProductType(def.name)) return def;
+        const paperWeights = sanitizeBookletPaperWeights(def.paperWeights);
+        if (stringArraysEqual(paperWeights, def.paperWeights)) return def;
+        return { ...def, paperWeights };
+    });
+    if (!sanitized.every((d, i) => productDefinitionFieldsEqual(d, result[i]))) {
+        changed = true;
+    }
+
+    return { definitions: sanitized, changed };
 }
 
 export function isBookletProductType(typeName: string): boolean {
@@ -410,9 +461,54 @@ export class DataService {
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
     private joinRequestsUnsub: (() => void) | null = null;
+    private quotesBootstrappedForTenant: string | null = null;
+    private settingsMergePersisting = false;
+    private quotesBootstrapInProgress = false;
+    private syncUserRole: 'admin' | 'staff' | 'superadmin' | null = null;
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
+
+    setSyncUserRole(role: 'admin' | 'staff' | 'superadmin' | null) {
+        this.syncUserRole = role;
+    }
+
+    getTenantId(): string | null {
+        return this.tenantId;
+    }
+
+    private isSyncAdmin(): boolean {
+        return this.syncUserRole === 'admin' || this.syncUserRole === 'superadmin';
+    }
+
+    /** users/{uid}.tenantId 서버 확인 후 동기화 — permission-denied 레이스 방지 */
+    async setTenantWhenReady(tenantId: string, uid?: string): Promise<boolean> {
+        const effectiveUid = uid || auth.currentUser?.uid;
+        if (!effectiveUid) {
+            console.warn('[DataService] setTenantWhenReady: Firebase Auth 없음 — 동기화 보류');
+            return false;
+        }
+        if (this.tenantId === tenantId && this.syncStatus === 'synced') return true;
+
+        for (let attempt = 0; attempt < 10; attempt++) {
+            try {
+                const userSnap = await getDocFromServer(doc(firestore, 'users', effectiveUid));
+                const profileTenant = userSnap.data()?.tenantId;
+                if (userSnap.exists() && profileTenant === tenantId) {
+                    this.setTenant(tenantId);
+                    return true;
+                }
+            } catch (e) {
+                console.warn('[DataService] setTenantWhenReady 재시도', attempt + 1, e);
+            }
+            await new Promise((r) => setTimeout(r, 250));
+        }
+        console.warn('[DataService] setTenantWhenReady: 프로필 미확인 — 동기화 시작 보류(데이터 손실 방지)');
+        this.lastSyncError = 'profile-not-ready';
+        this.syncStatus = 'disconnected';
+        this.notify();
+        return false;
+    }
 
     getIsElectron(): boolean {
         return typeof window !== 'undefined' && !!(window as any).electron;
@@ -430,6 +526,7 @@ export class DataService {
         if (this.tenantId === tenantId) return;
         this.tenantId = tenantId;
         this.lastSyncError = null;
+        this.quotesBootstrappedForTenant = null;
         this.startSyncing();
     }
 
@@ -507,27 +604,51 @@ export class DataService {
     }
 
     private async persistSettingsDefaultsMerge(settingsObj: Record<string, any>): Promise<void> {
+        if (this.settingsMergePersisting) return;
+        this.settingsMergePersisting = true;
+
         this.data['settings'] = [settingsObj];
         this.notify();
 
-        if (!this.tenantId) return;
+        if (!this.tenantId) {
+            this.settingsMergePersisting = false;
+            return;
+        }
 
         try {
-            const docRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
-            await setDoc(
-                docRef,
-                stripUndefinedForFirestore({
-                    productDefinitions: settingsObj.productDefinitions,
-                    processingDefinitions: settingsObj.processingDefinitions,
-                    statusDefinitions: settingsObj.statusDefinitions,
-                    roles: settingsObj.roles,
-                }),
-                { merge: true }
-            );
+            if (this.isSyncAdmin()) {
+                const docRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+                await setDoc(
+                    docRef,
+                    stripUndefinedForFirestore({
+                        productDefinitions: settingsObj.productDefinitions,
+                        processingDefinitions: settingsObj.processingDefinitions,
+                        statusDefinitions: settingsObj.statusDefinitions,
+                        roles: settingsObj.roles,
+                    }),
+                    { merge: true }
+                );
+            } else {
+                // 직원: admin 전용 필드(status/roles)는 Firestore에 쓰지 않음 — 메모리 병합만
+                for (const name of DataService.STAFF_SAFE_FRAGMENT_SETTINGS) {
+                    const payload = settingsObj[name];
+                    if (!payload) continue;
+                    const fragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', name);
+                    await setDoc(
+                        fragmentRef,
+                        stripUndefinedForFirestore(this.buildSettingFragmentPayload(name, payload)),
+                        { merge: true }
+                    );
+                }
+            }
             console.log('[DataService] Settings merged with app defaults (user data preserved).');
         } catch (err) {
             console.error('[DataService] Failed to persist merged settings:', err);
-            this.notifyFirestoreWriteError('설정 병합', err);
+            if (this.isSyncAdmin()) {
+                this.notifyFirestoreWriteError('설정 병합', err);
+            }
+        } finally {
+            this.settingsMergePersisting = false;
         }
     }
 
@@ -614,6 +735,10 @@ export class DataService {
                             job.type = '카탈로그';
                             jobChanged = true;
                         }
+                        if (LEGACY_SIGNAGE_TYPE_NAMES.includes(job.type)) {
+                            job.type = '실사';
+                            jobChanged = true;
+                        }
                         
                         const migrateSpecs = (specs: any) => {
                             if (!specs) return false;
@@ -670,6 +795,10 @@ export class DataService {
                                     sj.type = '카탈로그';
                                     jobChanged = true;
                                 }
+                                if (LEGACY_SIGNAGE_TYPE_NAMES.includes(sj.type)) {
+                                    sj.type = '실사';
+                                    jobChanged = true;
+                                }
                                 if (sj.specs && migrateSpecs(sj.specs)) jobChanged = true;
                                 return sj;
                             });
@@ -694,14 +823,18 @@ export class DataService {
                         this.runDailyAutoBackup().catch(err => console.error("Auto backup error:", err));
                     }
                     this.updateTenantActivity().catch(() => {});
+                    void this.maybeBootstrapQuotes();
                 }
                 this.notify();
             }, (error: any) => {
                 console.error(`[Firestore Sync Error] onSnapshot failed for ${colName}:`, error);
                 const code = error?.code || 'unknown';
                 this.lastSyncError = code;
-                if (code === 'unavailable') {
+                if (code === 'unavailable' || code === 'permission-denied') {
                     this.scheduleReconnect();
+                    if (code !== 'permission-denied') {
+                        this.syncStatus = 'disconnected';
+                    }
                 } else {
                     this.syncStatus = 'disconnected';
                 }
@@ -881,7 +1014,7 @@ export class DataService {
     }
 
     async updateTenantActivity() {
-        if (!this.tenantId) return;
+        if (!this.tenantId || !this.isSyncAdmin()) return;
         try {
             const companyName = this.getCompanyInfo().name || 'EzPrintWork';
             const jobsCount = this.data['jobs']?.length || 0;
@@ -1078,7 +1211,11 @@ export class DataService {
     async updateJob(job: Job) {
         const { id, ...data } = job;
         await this.updateEntity('jobs', id!, data);
-        await this.syncQuoteFromJob(job);
+        try {
+            await this.syncQuoteFromJob(job);
+        } catch (e) {
+            console.error('[updateJob] quote sync failed (job saved):', e);
+        }
     }
     async deleteJob(id: string) { await this.deleteEntity('jobs', id); }
     
@@ -1120,7 +1257,15 @@ export class DataService {
             updates.map(({ id, updated }) => this.persistEntity('jobs', id, updated))
         );
 
-        await Promise.all(updates.map(({ updated }) => this.syncQuoteFromJob(updated)));
+        await Promise.all(
+            updates.map(async ({ updated }) => {
+                try {
+                    await this.syncQuoteFromJob(updated);
+                } catch (e) {
+                    console.error('[saveJobsPartial] quote sync failed (jobs saved):', e);
+                }
+            })
+        );
     }
 
     async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
@@ -1246,6 +1391,9 @@ export class DataService {
         const merged = buildQuoteFromJob(job, existing);
 
         if (existing) {
+            if (isSameQuotePayload(existing, merged)) {
+                return;
+            }
             await this.updateQuote(merged);
             return;
         }
@@ -1253,6 +1401,49 @@ export class DataService {
         await this.addQuote(merged);
         if (job.linkedQuoteId !== merged.id) {
             await this.updateEntity('jobs', job.id, { linkedQuoteId: merged.id });
+        }
+    }
+
+    /** 관리자 1회 — 누락 견적만 생성 (throttle, 실패해도 기존 데이터 유지) */
+    private async maybeBootstrapQuotes() {
+        if (!this.tenantId || isQuotePreviewRoute()) return;
+        if (!this.isSyncAdmin()) return;
+        if (this.quotesBootstrappedForTenant === this.tenantId) return;
+        if (this.quotesBootstrapInProgress) return;
+
+        this.quotesBootstrapInProgress = true;
+        try {
+            await this.bootstrapQuotesFromJobs();
+            this.quotesBootstrappedForTenant = this.tenantId;
+        } catch (e) {
+            console.error('[maybeBootstrapQuotes] failed:', e);
+        } finally {
+            this.quotesBootstrapInProgress = false;
+        }
+    }
+
+    /** 최초 동기화 완료 후 — 기존 작업에 견적 문서 보장 (미리보기 새 창·직원 세션 제외) */
+    private async bootstrapQuotesFromJobs() {
+        if (isQuotePreviewRoute() || !this.isSyncAdmin()) return;
+
+        const jobs = this.getAllJobs();
+        const BATCH = 5;
+        const DELAY_MS = 300;
+
+        for (let i = 0; i < jobs.length; i += BATCH) {
+            const batch = jobs.slice(i, i + BATCH);
+            await Promise.all(
+                batch.map(async (job) => {
+                    try {
+                        await this.ensureQuoteForJob(job);
+                    } catch (e) {
+                        console.warn('[bootstrapQuotesFromJobs] skipped job', job.id, e);
+                    }
+                })
+            );
+            if (i + BATCH < jobs.length) {
+                await new Promise((r) => setTimeout(r, DELAY_MS));
+            }
         }
     }
 
@@ -1439,7 +1630,12 @@ export class DataService {
     }
     getProductDefinitions(): JobTypeDefinition[] {
         const raw = this.getSettingsObj()['productDefinitions']?.definitions || INITIAL_PRODUCT_DEFINITIONS;
-        return mergeAllProductDefinitionsWithInitial(raw).definitions;
+        return mergeAllProductDefinitionsWithInitial(raw).definitions.map((def) => {
+            if (!isBookletProductType(def.name)) return def;
+            const paperWeights = sanitizeBookletPaperWeights(def.paperWeights);
+            if (stringArraysEqual(paperWeights, def.paperWeights)) return def;
+            return { ...def, paperWeights };
+        });
     }
     /** 품목별로 상품 관리에서 선택한 후가공만 반환 (일반 품목용) */
     getProductProcessings(typeName: string): string[] {

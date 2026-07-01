@@ -8,20 +8,15 @@ import {
   getQuoteBriefContent,
   formatQuoteClientLabel,
 } from '../../utils/quoteJobSync';
+import { cacheQuoteForPreview } from '../../utils/quotePreviewStorage';
 
 import { Quote } from '../../types';
 
 import { Plus, Printer, User, Calendar, DollarSign } from 'lucide-react';
 
-import { QuotePreviewModal } from './QuotePreviewModal';
-
-
-
 export const QuoteManager: React.FC = () => {
 
   const [quotes, setQuotes] = useState<Quote[]>([]);
-
-  const [previewQuote, setPreviewQuote] = useState<Quote | null>(null);
 
 
 
@@ -34,35 +29,9 @@ export const QuoteManager: React.FC = () => {
 
 
   useEffect(() => {
-
-    const bootstrap = async () => {
-
-      const jobs = db.getAllJobs();
-
-      for (const job of jobs) {
-
-        try {
-
-          await db.syncQuoteFromJob(job);
-
-        } catch {
-
-          /* 개별 실패는 무시 */
-
-        }
-
-      }
-
-      loadQuotes();
-
-    };
-
-    void bootstrap();
-
+    loadQuotes();
     const unsubscribe = db.subscribe(loadQuotes);
-
     return () => unsubscribe();
-
   }, []);
 
 
@@ -101,7 +70,15 @@ export const QuoteManager: React.FC = () => {
 
 
 
-  const openPreview = (quote: Quote) => setPreviewQuote(quote);
+  const openPreview = (quote: Quote) => {
+    cacheQuoteForPreview(quote);
+    const base = window.location.href.split('#')[0];
+    const url = `${base}#/quote-preview/${encodeURIComponent(quote.id)}`;
+    const opened = window.open(url, '_blank', 'width=1280,height=900');
+    if (!opened) {
+      window.alert('팝업이 차단되었습니다. 브라우저에서 팝업 허용 후 다시 시도해 주세요.');
+    }
+  };
 
 
 
@@ -394,13 +371,6 @@ export const QuoteManager: React.FC = () => {
 
       </div>
 
-
-
-      {previewQuote && (
-
-        <QuotePreviewModal quote={previewQuote} onClose={() => setPreviewQuote(null)} />
-
-      )}
 
     </div>
 

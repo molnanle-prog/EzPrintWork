@@ -370,10 +370,10 @@ async function main() {
           log(`✓ latest.yml → v${appVersion} (GitHub Release 업로드 대기)`, colors.yellow);
         }
 
-        throw new Error(
-          `GitHub Release ${releaseTag}가 없습니다. ` +
-          `EzPrintWork/.env.deploy 에 GH_TOKEN=... 저장 후 npm run publish:release 를 실행하거나, ` +
-          `git tag ${releaseTag} && git push origin ${releaseTag} 로 GitHub Actions 릴리스를 트리거해 주세요.`
+        log(
+          `* GitHub Release ${releaseTag} 아직 없음 — 웹 배포는 계속합니다. ` +
+          `PC 설치본: GH_TOKEN 후 npm run publish:release 또는 git tag ${releaseTag} && git push origin ${releaseTag}`,
+          colors.yellow
         );
       }
 

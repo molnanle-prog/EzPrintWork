@@ -2,9 +2,11 @@ import { Job, JobSpecs, Quote, QuoteLine } from '../types';
 import { calcQuoteTotals } from './quoteCalculator';
 import { formatJobNumber } from './jobNumber';
 
-export function deriveQuoteStatusFromJobStatus(jobStatus: string): Quote['status'] {
+export function deriveQuoteStatusFromJobStatus(jobStatus: string, existing?: Quote): Quote['status'] {
   if (jobStatus === 'CANCELED') return '거절';
   if (jobStatus === 'QUOTE') return '대기';
+  if (existing?.status === '거절') return '거절';
+  if (existing?.status === '승인') return '승인';
   return '승인';
 }
 
@@ -88,6 +90,18 @@ export function computeQuoteAmounts(job: Job, lines: QuoteLine[]) {
   };
 }
 
+/** Firestore 재저장 방지 — 동기화 결과가 기존과 같으면 true */
+export function isSameQuotePayload(a: Quote, b: Quote): boolean {
+  const scalarKeys: (keyof Quote)[] = [
+    'jobId', 'title', 'clientName', 'contactPerson', 'clientPhone', 'items',
+    'totalAmount', 'supplyAmount', 'vatAmount', 'vatIncluded', 'status',
+  ];
+  for (const key of scalarKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return JSON.stringify(a.lines ?? []) === JSON.stringify(b.lines ?? []);
+}
+
 export function buildQuoteFromJob(job: Job, existing?: Quote): Quote {
   const lines = buildQuoteLinesFromJob(job);
   const amounts = computeQuoteAmounts(job, lines);
@@ -96,7 +110,7 @@ export function buildQuoteFromJob(job: Job, existing?: Quote): Quote {
     id: existing?.id || job.linkedQuoteId || `quote-${job.id}`,
     jobId: job.id,
     title: job.title,
-    clientName: job.clientName,
+    clientName: (job.clientName ?? '').trim() || '미등록',
     contactPerson: job.contactPerson,
     clientPhone: job.clientPhone,
     items: buildItemsSummary(lines),
@@ -106,7 +120,7 @@ export function buildQuoteFromJob(job: Job, existing?: Quote): Quote {
     vatAmount: amounts.vatAmount,
     vatIncluded: amounts.vatIncluded,
     date: existing?.date || new Date().toISOString(),
-    status: deriveQuoteStatusFromJobStatus(job.status),
+    status: deriveQuoteStatusFromJobStatus(job.status, existing),
   };
 }
 

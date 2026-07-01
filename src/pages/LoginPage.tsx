@@ -12,10 +12,11 @@ import { APP_VERSION } from '../utils/autoUpdate';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
-import { normalizeStaffLoginEmail } from '../utils/staffAuthProvision';
+import { normalizeStaffLoginEmail, provisionStaffAuthAccount, MIN_STAFF_PASSWORD_LENGTH } from '../utils/staffAuthProvision';
 import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
 import { rememberStaffLoginTenant } from '../utils/resolveStaffTenantProfile';
+import { loadStaffLoginPreferences, saveStaffLoginPreferences } from '../utils/staffLoginPreferences';
 import type { AppUser } from '../types';
 
 const formatSearchError = (error: any): string => {
@@ -51,23 +52,33 @@ export const LoginPage: React.FC = () => {
     const [loginCompanySearchResults, setLoginCompanySearchResults] = useState<{ id: string; name: string }[]>([]);
 
     const [isElectron, setIsElectron] = useState(false);
+
+    const persistLoginPrefs = (
+        overrides?: Partial<{
+            rememberCompany: boolean;
+            keepLoggedIn: boolean;
+            companyName: string;
+            tenantId: string;
+        }>
+    ) => {
+        saveStaffLoginPreferences({
+            rememberCompany: overrides?.rememberCompany ?? rememberCompany,
+            keepLoggedIn: overrides?.keepLoggedIn ?? keepLoggedIn,
+            companyName: overrides?.companyName ?? companyName,
+            tenantId: overrides?.tenantId ?? selectedTenantId,
+        });
+    };
+
     useEffect(() => {
         setIsElectron(typeof window !== 'undefined' && !!window.electron);
-        
-        // 컴포넌트 마운트 시 저장된 회사 정보 복원
-        const saved = localStorage.getItem('savedCompanyName');
-        const savedId = localStorage.getItem('savedTenantId');
-        const remember = localStorage.getItem('rememberCompany') === 'true';
-        const keep = localStorage.getItem('keepLoggedIn') === 'true';
-        
-        if ((remember || keep) && saved && savedId) {
-            setCompanyName(saved);
-            setSelectedTenantId(savedId);
-            setRememberCompany(remember);
-        }
 
-        // 자동 로그인 유지 설정 복원
-        setKeepLoggedIn(keep);
+        const prefs = loadStaffLoginPreferences();
+        if ((prefs.rememberCompany || prefs.keepLoggedIn) && prefs.companyName && prefs.tenantId) {
+            setCompanyName(prefs.companyName);
+            setSelectedTenantId(prefs.tenantId);
+        }
+        setRememberCompany(prefs.rememberCompany);
+        setKeepLoggedIn(prefs.keepLoggedIn);
     }, []);
 
     useEffect(() => {
@@ -81,32 +92,6 @@ export const LoginPage: React.FC = () => {
             root.classList.add(theme);
         };
     }, [theme]);
-
-    // 선택회사저장(rememberCompany) 및 자동로그인유지(keepLoggedIn) 선언적 동기화 훅
-    // 어떠한 조작 순서(검색 후 클릭 또는 클릭 후 검색)에서도 실시간 연동 및 동기화를 보장합니다.
-    const isMounted = React.useRef(false);
-    useEffect(() => {
-        if (!isMounted.current) {
-            isMounted.current = true;
-            return;
-        }
-
-        // 둘 중 하나라도 활성화되어 있고 회사 정보가 입력/선택되어 있으면 저장
-        if (rememberCompany || keepLoggedIn) {
-            if (companyName && selectedTenantId) {
-                localStorage.setItem('savedCompanyName', companyName);
-                localStorage.setItem('savedTenantId', selectedTenantId);
-                localStorage.setItem('rememberCompany', rememberCompany ? 'true' : 'false');
-                localStorage.setItem('keepLoggedIn', keepLoggedIn ? 'true' : 'false');
-            }
-        } else {
-            // 둘 다 꺼져 있으면 회사 정보 제거
-            localStorage.removeItem('savedCompanyName');
-            localStorage.removeItem('savedTenantId');
-            localStorage.setItem('rememberCompany', 'false');
-            localStorage.setItem('keepLoggedIn', 'false');
-        }
-    }, [rememberCompany, keepLoggedIn, selectedTenantId, companyName]);
 
     // B2B Staff Self-Signup States
     const [isStaffSignup, setIsStaffSignup] = useState(false);
@@ -294,20 +279,27 @@ export const LoginPage: React.FC = () => {
         setSelectedTenantId(id);
         setLoginCompanySearchResults([]);
         setHasSearchedLogin(false);
+        persistLoginPrefs({ companyName: name, tenantId: id });
         toast.success(`[${name}] 회사가 선택되었습니다.`);
     };
 
     const handleToggleRememberCompany = (checked: boolean) => {
         setRememberCompany(checked);
+        const nextKeep = checked ? keepLoggedIn : false;
         if (!checked) {
             setKeepLoggedIn(false);
         }
+        persistLoginPrefs({ rememberCompany: checked, keepLoggedIn: nextKeep });
     };
 
     const handleToggleKeepLoggedIn = (checked: boolean) => {
         setKeepLoggedIn(checked);
+        const nextRemember = checked ? true : rememberCompany;
         if (checked) {
             setRememberCompany(true);
+        }
+        persistLoginPrefs({ rememberCompany: nextRemember, keepLoggedIn: checked });
+        if (checked) {
             toast.info('자동 로그인 상태 유지가 켜졌습니다. 공용 PC인 경우 보안을 위해 꺼주시기 바랍니다.');
         } else {
             toast.success('자동 로그인 상태 유지가 꺼졌습니다. 프로그램 재부팅 시 초기화됩니다.');
@@ -330,6 +322,17 @@ export const LoginPage: React.FC = () => {
         try {
             const { collection, query, where, limit, getDocs, doc, getDoc, setDoc } = await import('firebase/firestore');
             const { db } = await import('../services/firebase');
+            const { setPersistence, browserLocalPersistence, browserSessionPersistence } = await import('firebase/auth');
+
+            persistLoginPrefs({
+                companyName: companyName.trim() || companyName,
+                tenantId: selectedTenantId,
+            });
+
+            await setPersistence(
+                auth,
+                keepLoggedIn ? browserLocalPersistence : browserSessionPersistence
+            );
 
             const staffCol = collection(db, `tenants/${selectedTenantId}/staff`);
             const loginNorm = loginId.trim().toLowerCase();
@@ -534,6 +537,10 @@ export const LoginPage: React.FC = () => {
                 };
 
                 loginCustomSession(appUser, tenantPlan, tenantPlanCode, tenantPaymentStatus);
+                persistLoginPrefs({
+                    companyName: tenantName || companyName,
+                    tenantId,
+                });
                 await refreshUser(auth.currentUser);
                 clearPendingStaffProfile();
             } catch (profileErr) {
@@ -581,8 +588,8 @@ export const LoginPage: React.FC = () => {
                 })();
             }
 
-            // 회사 저장 선택 옵션 최종 확인을 상태 업데이트로 일원화
-            setCompanyName(tenantName);
+            // 회사명·tenantId 상태 동기화 (화면 복원용)
+            setCompanyName(tenantName || companyName);
             setSelectedTenantId(tenantId);
 
             localStorage.setItem('ezprint_active_tab', 'kanban');
@@ -645,6 +652,11 @@ export const LoginPage: React.FC = () => {
 
         if (joinCode.trim().length < 6) {
             toast.error('회사 입장 코드는 6자 이상이어야 합니다.');
+            return;
+        }
+
+        if (password.trim().length < MIN_STAFF_PASSWORD_LENGTH) {
+            toast.error(`비밀번호는 ${MIN_STAFF_PASSWORD_LENGTH}자 이상 입력해 주세요.`);
             return;
         }
 
@@ -712,36 +724,55 @@ export const LoginPage: React.FC = () => {
                 return;
             }
 
-            // 3. Create document reference in users
-            const newUserRef = doc(collection(db, 'users'));
-            const newUserId = newUserRef.id;
+            // 3. Firebase Auth 계정 선생성 (Secondary App — 로그인 세션 유지 없음)
+            const staffRowsForAuth = staffSnap.docs
+              .map((d) => ({ id: d.id, ...d.data() } as import('../types').Staff))
+              .filter((s) => s.isDeleted !== true && s.active !== false);
 
-            // 4. Save to global users collection
-            await setDoc(newUserRef, {
-                uid: newUserId,
-                id: newUserId,
-                tenantId: tenantId,
+            const authProvision = await provisionStaffAuthAccount({
                 loginId: normalizedLoginId,
                 password: normalizedPassword,
+                tenantId,
+                staffName: staffName.trim(),
+                staffRole,
+                existingStaffInTenant: staffRowsForAuth,
+            });
+
+            if (!authProvision.ok) {
+                toast.error(authProvision.message);
+                setIsStaffSigningUp(false);
+                return;
+            }
+
+            const firebaseUid = authProvision.uid;
+            const authEmail = normalizeStaffLoginEmail(normalizedLoginId);
+
+            // 4. users / staff — Firebase UID 단일 SSOT
+            await setDoc(doc(db, 'users', firebaseUid), {
+                uid: firebaseUid,
+                id: firebaseUid,
+                email: authEmail,
+                tenantId: tenantId,
+                loginId: normalizedLoginId,
+                role: 'staff',
                 userName: staffName.trim(),
                 name: staffName.trim(),
-                role: 'staff',
                 position: staffRole,
                 contactInfo: formattedPhone,
                 createdAt: new Date().toISOString()
             });
 
-            // 5. Save to tenants/{tenantId}/staff collection
-            const staffRef = doc(db, `tenants/${tenantId}/staff`, newUserId);
+            // 5. tenants/{tenantId}/staff
+            const staffRef = doc(db, `tenants/${tenantId}/staff`, firebaseUid);
             await setDoc(staffRef, {
-                id: newUserId,
-                uid: newUserId,
+                id: firebaseUid,
+                uid: firebaseUid,
                 name: staffName.trim(),
                 role: staffRole,
                 phone: formattedPhone,
                 avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${staffName.trim()}`,
                 active: true,
-                email: '',
+                email: authEmail,
                 loginId: normalizedLoginId,
                 password: normalizedPassword,
                 joinDate: new Date().toISOString()
@@ -1255,7 +1286,7 @@ export const LoginPage: React.FC = () => {
                                             type="password" 
                                             value={password}
                                             onChange={(e) => setPassword(e.target.value)}
-                                            placeholder="비밀번호 (4자 이상)"
+                                            placeholder={`비밀번호 (${MIN_STAFF_PASSWORD_LENGTH}자 이상)`}
                                             className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
                                             required
                                         />
@@ -1273,7 +1304,7 @@ export const LoginPage: React.FC = () => {
                                         <option value="인쇄기장" className="bg-slate-950 text-slate-200">인쇄기장</option>
                                         <option value="후가공" className="bg-slate-950 text-slate-200">후가공</option>
                                         <option value="배송" className="bg-slate-950 text-slate-200">배송</option>
-                                        <option value="관리자" className="bg-slate-950 text-slate-200">관리부서</option>
+                                        <option value="관리부서" className="bg-slate-950 text-slate-200">관리부서</option>
                                         <option value="실장" className="bg-slate-950 text-slate-200">실장</option>
                                         <option value="부장" className="bg-slate-950 text-slate-200">부장</option>
                                         <option value="과장" className="bg-slate-950 text-slate-200">과장</option>
