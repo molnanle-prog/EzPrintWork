@@ -13,6 +13,11 @@ service cloud.firestore {
     function incoming() { return request.resource.data; }
     function existing() { return resource.data; }
 
+    function isPresenceSessionFields(data) {
+      return (!('activeSessionId' in data) || (data.activeSessionId is string && data.activeSessionId.size() <= 128))
+        && (!('activeSessionAt' in data) || (data.activeSessionAt is string && data.activeSessionAt.size() <= 40));
+    }
+
     function getProfile() {
       return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
@@ -246,7 +251,8 @@ service cloud.firestore {
         return data.isOnline is bool
           && data.lastActive is string
           && data.lastActive.size() <= 40
-          && (!('online' in data) || data.online is bool);
+          && (!('online' in data) || data.online is bool)
+          && isPresenceSessionFields(data);
       }
 
       function isOwnerOnboardingUpdate(data) {
@@ -332,6 +338,7 @@ service cloud.firestore {
           && data.isOnline is bool
           && data.lastActive is string
           && data.lastActive.size() <= 40
+          && isPresenceSessionFields(data)
           && (
             staffId == request.auth.uid
             || (resource != null && 'uid' in resource.data && resource.data.uid == request.auth.uid)

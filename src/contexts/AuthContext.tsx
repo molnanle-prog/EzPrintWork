@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, limit } from 'firebase/firestore';
@@ -14,6 +14,14 @@ import {
   clearPersistedStaffSession,
   writePersistedStaffSession,
 } from '../utils/persistedStaffSession';
+import { useDialog } from './DialogContext';
+import {
+  getLocalStaffSessionId,
+  setLocalStaffSessionId,
+  clearLocalStaffSessionId,
+  createStaffSessionId,
+  claimStaffSessionOnFirestore,
+} from '../utils/staffSession';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -73,6 +81,8 @@ export const determineTenantPlan = (tenantData: any): 'free' | 'pro' => {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { showAlert } = useDialog();
+  const sessionKickedRef = useRef(false);
   const [firebaseUser, setFirebaseUser] = useState<User | null>(null);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [tenantPlan, setTenantPlan] = useState<'free' | 'pro'>('free');
@@ -217,6 +227,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         setCurrentUser(updatedUser);
         dataService.setSyncUserRole(updatedUser.role);
+
+        if (updatedUser.loginId && updatedUser.tenantId) {
+          let sid = getLocalStaffSessionId();
+          if (!sid) {
+            sid = createStaffSessionId();
+            setLocalStaffSessionId(sid);
+            try {
+              const staffByUid = await getDocs(
+                query(
+                  collection(db, `tenants/${updatedUser.tenantId}/staff`),
+                  where('uid', '==', user.uid),
+                  limit(3)
+                )
+              );
+              let staffDocId = staffByUid.docs[0]?.id;
+              if (!staffDocId) {
+                const staffByLogin = await getDocs(
+                  query(
+                    collection(db, `tenants/${updatedUser.tenantId}/staff`),
+                    where('loginId', '==', updatedUser.loginId.toLowerCase()),
+                    limit(1)
+                  )
+                );
+                staffDocId = staffByLogin.docs[0]?.id;
+              }
+              if (staffDocId) {
+                await claimStaffSessionOnFirestore(db, {
+                  uid: user.uid,
+                  tenantId: updatedUser.tenantId,
+                  staffDocId,
+                  sessionId: sid,
+                });
+              }
+            } catch (sessionErr) {
+              console.warn('[StaffSession] auto-restore claim failed:', sessionErr);
+            }
+          }
+        }
         
         if (updatedUser.tenantId) {
           await assertStaffNotDeleted(updatedUser.tenantId, user);
@@ -664,15 +712,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     await setPresenceOffline();
     stopPresenceSession();
     clearPersistedStaffSession();
     clearSavedStaffCredentials();
+    clearLocalStaffSessionId();
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);
-  };
+  }, []);
+
+  // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료
+  useEffect(() => {
+    sessionKickedRef.current = false;
+    if (!firebaseUser?.uid || !currentUser?.loginId) return;
+
+    const localSid = getLocalStaffSessionId();
+    if (!localSid) return;
+
+    const userRef = doc(db, 'users', firebaseUser.uid);
+    const unsubscribe = onSnapshot(userRef, (snap) => {
+      if (!snap.exists() || sessionKickedRef.current) return;
+      const remoteSid = snap.data()?.activeSessionId as string | undefined;
+      if (remoteSid && remoteSid !== localSid) {
+        sessionKickedRef.current = true;
+        void (async () => {
+          await showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
+          await logout();
+        })();
+      }
+    }, (err) => {
+      console.warn('[StaffSession] session watch failed:', err);
+    });
+
+    return () => unsubscribe();
+  }, [firebaseUser?.uid, currentUser?.loginId, showAlert, logout]);
 
   console.log('AuthProvider State:', { hasFirebaseUser: !!firebaseUser, hasCurrentUser: !!currentUser, loading });
 

@@ -18,6 +18,14 @@ import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staff
 import { rememberStaffLoginTenant } from '../utils/resolveStaffTenantProfile';
 import { loadStaffLoginPreferences, saveStaffLoginPreferences } from '../utils/staffLoginPreferences';
 import { configureAuthPersistenceFromPreferences } from '../utils/authPersistence';
+import {
+    createStaffSessionId,
+    getLocalStaffSessionId,
+    setLocalStaffSessionId,
+    isRemoteStaffSessionActive,
+    claimStaffSessionOnFirestore,
+} from '../utils/staffSession';
+import { useDialog } from '../contexts/DialogContext';
 import type { AppUser } from '../types';
 
 const formatSearchError = (error: any): string => {
@@ -38,6 +46,7 @@ export const LoginPage: React.FC = () => {
     const navigate = useNavigate();
     const { theme } = useTheme();
     const { loginCustomSession, refreshUser, loading: authLoading, firebaseUser } = useAuth();
+    const { showConfirm } = useDialog();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
     const [joinCode, setJoinCode] = useState('');
@@ -83,7 +92,6 @@ export const LoginPage: React.FC = () => {
         if ((prefs.rememberCompany || prefs.keepLoggedIn) && prefs.companyName && prefs.tenantId) {
             setCompanyName(prefs.companyName);
             setSelectedTenantId(prefs.tenantId);
-            setHasSearchedLogin(true);
         }
         if (prefs.keepLoggedIn && prefs.loginId) {
             setLoginId(prefs.loginId);
@@ -392,6 +400,29 @@ export const LoginPage: React.FC = () => {
 
             const tenantId = selectedTenantId; // 서브컬렉션 소속이므로 selectedTenantId가 곧 tenantId가 됩니다.
 
+            let freshStaffData = userData;
+            try {
+                const freshSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
+                if (freshSnap.exists()) {
+                    freshStaffData = freshSnap.data();
+                }
+            } catch {
+                /* fresh staff lookup optional */
+            }
+
+            if (isRemoteStaffSessionActive(freshStaffData, getLocalStaffSessionId())) {
+                const proceed = await showConfirm(
+                    '현재 다른 곳에서 같은 아이디로 로그인되어 있습니다.\n기존 접속을 종료하고 여기에서 로그인하시겠습니까?'
+                );
+                if (!proceed) {
+                    setIsStaffLoggingIn(false);
+                    return;
+                }
+            }
+
+            const newSessionId = createStaffSessionId();
+            setLocalStaffSessionId(newSessionId);
+
             const tenantDocRef = doc(db, 'tenants', tenantId);
             const tenantDocSnap = await getDoc(tenantDocRef);
             let tenantName = '';
@@ -524,6 +555,17 @@ export const LoginPage: React.FC = () => {
                 const profileVerify = await getDocFromServer(doc(db, 'users', firebaseUid));
                 if (!profileVerify.exists() || profileVerify.data()?.tenantId !== tenantId) {
                     throw new Error('회사 소속 정보 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+                }
+
+                try {
+                    await claimStaffSessionOnFirestore(db, {
+                        uid: firebaseUid,
+                        tenantId,
+                        staffDocId: userDoc.id,
+                        sessionId: newSessionId,
+                    });
+                } catch (sessionErr) {
+                    console.warn('Staff session claim skipped (non-blocking):', sessionErr);
                 }
 
                 try {
@@ -1120,8 +1162,14 @@ export const LoginPage: React.FC = () => {
                                     </button>
                                 </div>
 
+                                {selectedTenantId && companyName.trim() && (
+                                    <div className="text-xs text-emerald-400 font-semibold pl-1">
+                                        ✓ {companyName} 선택됨
+                                    </div>
+                                )}
+
                                 {/* 회사 검색 결과 드롭다운 */}
-                                {hasSearchedLogin && (
+                                {hasSearchedLogin && !selectedTenantId && (
                                     <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 border border-slate-800 rounded-2xl p-3 z-50 shadow-2xl space-y-2 max-h-48 overflow-y-auto">
                                         <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest pl-1 mb-1">회사 검색 결과</div>
                                         {loginCompanySearchResults.length === 0 ? (
