@@ -16,6 +16,40 @@ function log(message, color = colors.reset) {
   console.log(`${color}${message}${colors.reset}`);
 }
 
+function runCommandOptional(command, cwd) {
+  try {
+    execSync(command, { stdio: 'pipe', cwd, encoding: 'utf-8' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 로컬 GH_TOKEN 없을 때 — git tag push → GitHub Actions가 exe Release 자동 업로드 */
+function tryTriggerGithubActionsRelease(appVersion, projectRoot) {
+  const tag = `v${appVersion}`;
+  log(`* 로컬 GH_TOKEN 없음 → GitHub Actions 자동 업로드 경로 사용 (${tag})`, colors.cyan);
+  log('  (GitHub 서버가 토큰을 제공하므로 PC에 GH_TOKEN 설정 불필요)', colors.cyan);
+
+  const remoteHasTag = runCommandOptional(`git rev-parse refs/remotes/origin/${tag}`, projectRoot);
+  if (remoteHasTag) {
+    log(`✓ 원격 태그 ${tag} 이미 존재 — Actions Release 확인`, colors.green);
+    log(`  https://github.com/molnanle-prog/EzPrintWork/releases/tag/${tag}`, colors.cyan);
+    return;
+  }
+
+  log('* main 푸시 및 태그 생성으로 Actions 트리거 시도...', colors.yellow);
+  runCommandOptional('git push origin main', projectRoot);
+  runCommandOptional(`git tag -f ${tag} -m "EzPrintWork ${appVersion}"`, projectRoot);
+  if (runCommandOptional(`git push -f origin ${tag}`, projectRoot)) {
+    log(`✓ ${tag} 푸시 완료 — GitHub Actions가 exe를 자동 업로드합니다`, colors.green);
+    log('  https://github.com/molnanle-prog/EzPrintWork/actions', colors.cyan);
+  } else {
+    log(`* 태그 푸시 실패 — 수동: git tag ${tag} && git push origin ${tag}`, colors.yellow);
+    log('  또는 최초 1회: powershell scripts/setup-deploy-token.ps1', colors.yellow);
+  }
+}
+
 function runCommand(command, cwd, extraEnv = {}) {
   log(`\n> 실행 중: ${command}`, colors.cyan);
   try {
@@ -32,7 +66,6 @@ function runCommand(command, cwd, extraEnv = {}) {
     process.exit(1);
   }
 }
-
 
 function copyFolderSync(from, to) {
   if (fs.existsSync(to)) {
@@ -234,7 +267,7 @@ async function main() {
   if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
     log('   (DEPLOY_SKIP_ELECTRON=1 → PC exe 빌드 생략, GitHub Release 메타 사용)', colors.yellow);
   } else if (!ghToken) {
-    log('   (GH_TOKEN 없음 → exe 빌드 후 GitHub 업로드는 수동 필요)', colors.yellow);
+    log('   (로컬 GH_TOKEN 없음 → git tag push로 GitHub Actions 자동 Release)', colors.cyan);
   }
   log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
   if (deployExeDirect) {
@@ -278,8 +311,7 @@ async function main() {
         ELECTRON_BUILD_OUTPUT: releaseDirName,
       });
     } else {
-      log('* GitHub Release 업로드 생략 (GH_TOKEN 없음)', colors.yellow);
-      log('* 업로드: set GH_TOKEN=... && npm run publish:release', colors.yellow);
+      tryTriggerGithubActionsRelease(appVersion, currentDir);
     }
   }
 

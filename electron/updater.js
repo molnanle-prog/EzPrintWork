@@ -5,6 +5,28 @@ let mainWindow = null;
 let isManualUpdateCheck = false;
 let isUpdateDownloadActive = false;
 let installScheduled = false;
+let pendingUpdateVersion = null;
+let downloadCompleteFallbackTimer = null;
+
+function clearDownloadCompleteFallback() {
+    if (downloadCompleteFallbackTimer != null) {
+        clearTimeout(downloadCompleteFallbackTimer);
+        downloadCompleteFallbackTimer = null;
+    }
+}
+
+/** progress 100%인데 update-downloaded가 누락될 때 설치 강제 진행 */
+function scheduleDownloadCompleteFallback(version) {
+    if (installScheduled || !isUpdateDownloadActive) return;
+    clearDownloadCompleteFallback();
+    downloadCompleteFallbackTimer = setTimeout(() => {
+        if (installScheduled || !isUpdateDownloadActive) return;
+        console.warn('[AutoUpdater] update-downloaded 미수신 — 설치 강제 진행');
+        isUpdateDownloadActive = false;
+        sendUpdaterStatus({ phase: 'downloaded', version });
+        runQuitAndInstall(version);
+    }, 6000);
+}
 
 function sendUpdaterStatus(payload) {
     if (mainWindow && !mainWindow.isDestroyed()) {
@@ -44,7 +66,7 @@ function runQuitAndInstall(version) {
 function setupAutoUpdater(win) {
     mainWindow = win;
 
-    autoUpdater.autoDownload = true;
+    autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowDowngrade = false;
     autoUpdater.autoUpdaterCacheDirName = 'ezprintwork-updater';
@@ -59,15 +81,11 @@ function setupAutoUpdater(win) {
     });
 
     autoUpdater.on('update-available', (info) => {
+        pendingUpdateVersion = info.version;
         sendUpdaterStatus({
             phase: 'available',
             version: info.version,
             releaseDate: info.releaseDate,
-        });
-        sendUpdaterStatus({
-            phase: 'downloading',
-            version: info.version,
-            percent: 0,
         });
     });
 
@@ -80,6 +98,7 @@ function setupAutoUpdater(win) {
 
     autoUpdater.on('error', (err) => {
         const silent = !isManualUpdateCheck && !isUpdateDownloadActive && !installScheduled;
+        clearDownloadCompleteFallback();
         sendUpdaterStatus({
             phase: 'error',
             message: err?.message || String(err),
@@ -90,16 +109,23 @@ function setupAutoUpdater(win) {
     });
 
     autoUpdater.on('download-progress', (progress) => {
+        const version = pendingUpdateVersion || autoUpdater.updateInfo?.version;
         sendUpdaterStatus({
             phase: 'downloading',
+            version,
             percent: progress.percent,
             transferred: progress.transferred,
             total: progress.total,
         });
+        if (progress.percent >= 99.5) {
+            scheduleDownloadCompleteFallback(version || app.getVersion());
+        }
     });
 
     autoUpdater.on('update-downloaded', (info) => {
+        clearDownloadCompleteFallback();
         isUpdateDownloadActive = false;
+        pendingUpdateVersion = info.version;
         sendUpdaterStatus({
             phase: 'downloaded',
             version: info.version,
@@ -138,8 +164,17 @@ function setupAutoUpdater(win) {
         sendUpdaterStatus({ phase: 'downloading', percent: 0 });
         try {
             await autoUpdater.downloadUpdate();
+            clearDownloadCompleteFallback();
+            if (!installScheduled) {
+                const version =
+                    autoUpdater.updateInfo?.version || pendingUpdateVersion || app.getVersion();
+                isUpdateDownloadActive = false;
+                sendUpdaterStatus({ phase: 'downloaded', version });
+                runQuitAndInstall(version);
+            }
             return { ok: true };
         } catch (err) {
+            clearDownloadCompleteFallback();
             sendUpdaterStatus({
                 phase: 'error',
                 message: err?.message || String(err),
@@ -157,11 +192,19 @@ function setupAutoUpdater(win) {
 
     ipcMain.handle('get-app-version', () => app.getVersion());
 
-    setTimeout(() => {
+    const runInitialCheck = () => {
         autoUpdater.checkForUpdates().catch((err) => {
             console.warn('[AutoUpdater] check failed:', err?.message || err);
         });
-    }, 6000);
+    };
+
+    if (win && !win.isDestroyed()) {
+        win.webContents.once('did-finish-load', () => {
+            setTimeout(runInitialCheck, 1200);
+        });
+    } else {
+        setTimeout(runInitialCheck, 3000);
+    }
 }
 
 module.exports = { setupAutoUpdater };

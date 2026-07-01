@@ -14,14 +14,6 @@ export function hasElectronUpdater(): boolean {
 export function useElectronUpdater() {
     const { setDesktopNotice } = useUpdateNotice();
     const isDownloadingRef = useRef(false);
-    const downloadWatchdogRef = useRef<number | null>(null);
-
-    const clearDownloadWatchdog = useCallback(() => {
-        if (downloadWatchdogRef.current != null) {
-            window.clearTimeout(downloadWatchdogRef.current);
-            downloadWatchdogRef.current = null;
-        }
-    }, []);
 
     const installDesktopUpdate = useCallback(async () => {
         if (!window.electron?.updaterInstall) return;
@@ -33,28 +25,13 @@ export function useElectronUpdater() {
         await window.electron.updaterInstall();
     }, [setDesktopNotice]);
 
-    const startDesktopUpdate = useCallback(async () => {
-        if (!window.electron?.updaterDownload || isDownloadingRef.current) return;
-        isDownloadingRef.current = true;
-        setDesktopNotice({ kind: 'desktop', phase: 'downloading', percent: 0 });
-        const result = await window.electron.updaterDownload();
-        if (!result.ok) {
-            isDownloadingRef.current = false;
-            clearDownloadWatchdog();
-            setDesktopNotice({
-                kind: 'desktop',
-                phase: 'error',
-                message: result.error || '네트워크를 확인해 주세요.',
-            });
-        }
-    }, [setDesktopNotice, clearDownloadWatchdog]);
-
     useEffect(() => {
         if (!hasElectronUpdater() || !window.electron?.onUpdaterStatus) return;
 
         const unsubscribe = window.electron.onUpdaterStatus((status: ElectronUpdaterStatus) => {
             switch (status.phase) {
                 case 'available':
+                    isDownloadingRef.current = false;
                     setDesktopNotice({
                         kind: 'desktop',
                         phase: 'available',
@@ -70,28 +47,21 @@ export function useElectronUpdater() {
                         version: status.version,
                         percent: status.percent,
                     });
-                    clearDownloadWatchdog();
-                    if ((status.percent ?? 0) >= 99.5) {
-                        downloadWatchdogRef.current = window.setTimeout(() => {
-                            void installDesktopUpdate();
-                        }, 12000);
-                    }
                     break;
 
                 case 'downloaded':
                     isDownloadingRef.current = false;
-                    clearDownloadWatchdog();
                     setDesktopNotice({
                         kind: 'desktop',
-                        phase: 'downloaded',
+                        phase: 'installing',
                         version: status.version,
+                        message: '다운로드 완료 — 설치 프로그램을 실행합니다.',
                     });
                     void installDesktopUpdate();
                     break;
 
                 case 'installing':
                     isDownloadingRef.current = false;
-                    clearDownloadWatchdog();
                     setDesktopNotice({
                         kind: 'desktop',
                         phase: 'installing',
@@ -102,7 +72,6 @@ export function useElectronUpdater() {
 
                 case 'error':
                     isDownloadingRef.current = false;
-                    clearDownloadWatchdog();
                     if (status.silent) break;
                     setDesktopNotice({
                         kind: 'desktop',
@@ -113,7 +82,6 @@ export function useElectronUpdater() {
 
                 case 'none':
                     isDownloadingRef.current = false;
-                    clearDownloadWatchdog();
                     setDesktopNotice(null);
                     break;
 
@@ -122,13 +90,10 @@ export function useElectronUpdater() {
             }
         });
 
-        return () => {
-            clearDownloadWatchdog();
-            unsubscribe();
-        };
-    }, [setDesktopNotice, clearDownloadWatchdog, installDesktopUpdate]);
+        return () => unsubscribe();
+    }, [setDesktopNotice, installDesktopUpdate]);
 
-    return { installDesktopUpdate, startDesktopUpdate };
+    return { installDesktopUpdate };
 }
 
 /** 설정 화면 등 수동 확인 (Electron 전용) */
