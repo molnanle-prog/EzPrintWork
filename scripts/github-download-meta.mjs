@@ -66,6 +66,26 @@ export async function fetchGithubLatestRelease() {
   return githubGet(`/repos/${OWNER}/${REPO}/releases/latest`);
 }
 
+/** GitHub Actions Release 완료까지 대기 (로컬 exe ≠ CI exe 시 sha512 불일치 방지) */
+export async function waitForGithubRelease(
+  tag,
+  { maxAttempts = 40, intervalMs = 15_000, onWait } = {}
+) {
+  const normalized = tag.startsWith('v') ? tag : `v${tag}`;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const release = await fetchGithubReleaseByTag(normalized);
+    const exeAsset = release?.assets?.find((a) => a.name === SETUP_EXE);
+    if (release && exeAsset) {
+      return release;
+    }
+    if (onWait) onWait(attempt, maxAttempts);
+    if (attempt < maxAttempts) {
+      await new Promise((r) => setTimeout(r, intervalMs));
+    }
+  }
+  return null;
+}
+
 export async function writeDownloadMetaFromRelease(release, downloadsDir) {
   const tag = release.tag_name;
   const version = tag.replace(/^v/, '');

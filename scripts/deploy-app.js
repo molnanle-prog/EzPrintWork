@@ -349,11 +349,21 @@ async function main() {
 
       const {
         fetchGithubReleaseByTag,
+        waitForGithubRelease,
         writeDownloadMetaFromRelease,
       } = await import('./github-download-meta.mjs');
 
       const releaseTag = `v${appVersion}`;
       let githubRelease = await fetchGithubReleaseByTag(releaseTag);
+
+      if (!githubRelease && !ghToken) {
+        log(`* GitHub Actions Release 대기 중 (${releaseTag}, 최대 ~10분)...`, colors.cyan);
+        githubRelease = await waitForGithubRelease(releaseTag, {
+          onWait: (attempt, max) => {
+            log(`  … Release 미완료 (${attempt}/${max})`, colors.cyan);
+          },
+        });
+      }
 
       if (githubRelease) {
         await writeDownloadMetaFromRelease(githubRelease, downloadsDir);
@@ -379,32 +389,20 @@ async function main() {
           log('✓ latest.yml → ez-hub.kr/downloads/ (앱 자동업데이트용)', colors.green);
         }
       } else {
-        const versionGithubUrl =
-          `https://github.com/molnanle-prog/EzPrintWork/releases/download/${releaseTag}/${setupExeName}`;
         writeDownloadManifest({
           appVersion,
           setupExeName,
           setupBytes: sourceStat.size,
-          githubDownloadUrl: versionGithubUrl,
-          githubVersionUrl: versionGithubUrl,
+          githubDownloadUrl: githubVersionUrl,
+          githubVersionUrl,
           downloadsDir,
           log,
           colors,
         });
 
-        const latestYmlSource = path.join(releaseDir, 'latest.yml');
-        if (fs.existsSync(latestYmlSource)) {
-          let yml = fs.readFileSync(latestYmlSource, 'utf-8');
-          yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
-          yml = yml.replace(/^(\s+- url: ).+$/m, `$1${versionGithubUrl}`);
-          yml = yml.replace(/^version: .+$/m, `version: ${appVersion}`);
-          fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
-          log(`✓ latest.yml → v${appVersion} (GitHub Release 업로드 대기)`, colors.yellow);
-        }
-
         log(
-          `* GitHub Release ${releaseTag} 아직 없음 — 웹 배포는 계속합니다. ` +
-          `PC 설치본: GH_TOKEN 후 npm run publish:release 또는 git tag ${releaseTag} && git push origin ${releaseTag}`,
+          `* GitHub Release ${releaseTag} 미완료 — latest.yml은 배포하지 않았습니다. ` +
+          `Actions 완료 후: npm run sync:downloads && firebase deploy --only hosting`,
           colors.yellow
         );
       }
