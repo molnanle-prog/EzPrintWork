@@ -75,10 +75,15 @@ export async function waitForGithubRelease(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const release = await fetchGithubReleaseByTag(normalized);
     const exeAsset = release?.assets?.find((a) => a.name === SETUP_EXE);
-    if (release && exeAsset) {
+    const ymlAsset = release?.assets?.find((a) => a.name === 'latest.yml');
+    if (release && exeAsset && ymlAsset) {
       return release;
     }
-    if (onWait) onWait(attempt, maxAttempts);
+    if (release && exeAsset && !ymlAsset && onWait) {
+      onWait(attempt, maxAttempts, 'exe-only');
+    } else if (onWait) {
+      onWait(attempt, maxAttempts);
+    }
     if (attempt < maxAttempts) {
       await new Promise((r) => setTimeout(r, intervalMs));
     }
@@ -108,15 +113,7 @@ export async function writeDownloadMetaFromRelease(release, downloadsDir) {
     yml = yml.replace(/^path: .+$/m, `path: ${SETUP_EXE}`);
     yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubLatestUrl}`);
   } else {
-    yml = [
-      `version: ${version}`,
-      'files:',
-      `  - url: ${githubLatestUrl}`,
-      `    size: ${exeAsset.size}`,
-      `path: ${SETUP_EXE}`,
-      `releaseDate: '${release.published_at || new Date().toISOString()}'`,
-      '',
-    ].join('\n');
+    throw new Error(`Release ${tag}에 latest.yml 없음 — electron-builder Release 자산 확인 필요`);
   }
   fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
 

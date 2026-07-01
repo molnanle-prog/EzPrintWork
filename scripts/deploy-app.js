@@ -462,7 +462,25 @@ async function main() {
     log('\n[4/5] 홈페이지 빌드 생략 (package.json 없음)', colors.yellow);
   }
 
-  // 4.5. Hosting 저장 한도 방지 — 오래된 릴리스 정리 (최신 3개만 유지, 실패해도 배포 계속)
+  // 4.1 GitHub latest.yml(sha512) 재동기화 — exe보다 yml 자산이 늦게 올라오는 경우 dist 보정
+  try {
+    const { syncDownloadMeta } = await import('./github-download-meta.mjs');
+    await syncDownloadMeta(`v${appVersion}`);
+    const distDownloadsDir = path.join(homepageDir, 'dist', 'downloads');
+    if (fs.existsSync(distDownloadsDir)) {
+      for (const name of ['latest.yml', 'download-manifest.json']) {
+        const src = path.join(downloadsDir, name);
+        if (fs.existsSync(src)) {
+          fs.copyFileSync(src, path.join(distDownloadsDir, name));
+        }
+      }
+    }
+    log('✓ latest.yml(sha512) GitHub 재동기화 → dist 반영', colors.green);
+  } catch (err) {
+    log(`* latest.yml 재동기화 실패: ${err.message}`, colors.yellow);
+  }
+
+  // 4.5. Hosting 저장 한도 방지
   log('\n[4.5/5] Firebase Hosting 오래된 배포본 정리 중...', colors.yellow);
   try {
     execSync('node scripts/cleanup_hosting_releases.mjs gen-lang-client-0746903005 3', { stdio: 'inherit', cwd: currentDir });
