@@ -433,10 +433,16 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     
     // --- 완료 상태 전환 여부 확인 ---
     let isStatusChangedToDelivery = false;
+    let isStatusChangedToCompleted = false;
     if (isNew && editedJob.status === 'DELIVERY') {
         isStatusChangedToDelivery = true;
     } else if (!isNew && job.status !== editedJob.status && editedJob.status === 'DELIVERY') {
         isStatusChangedToDelivery = true;
+    }
+    if (isNew && editedJob.status === 'COMPLETED') {
+        isStatusChangedToCompleted = true;
+    } else if (!isNew && job.status !== editedJob.status && editedJob.status === 'COMPLETED') {
+        isStatusChangedToCompleted = true;
     }
 
     if (isNew) {
@@ -527,6 +533,13 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
     } else {
         delete finalJob.assignedStaffId;
         finalJob.assignedStaffIds = [];
+    }
+
+    if (isStatusChangedToCompleted) {
+        finalJob.completedAt = new Date().toISOString();
+        finalJob.progress = 100;
+    } else if (!isNew && job.status === 'COMPLETED' && finalJob.status !== 'COMPLETED') {
+        finalJob.completedAt = undefined;
     }
 
     // --- 완료 알림 문자 발송 및 이력 자동 기록 트리거 ---
@@ -660,7 +673,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
           showAlert("사용자 정보가 없어 조기 완료를 처리할 수 없습니다.");
           return;
       }
-      if (await showConfirm(`'${editedJob.title}' 작업의 남은 단계를 모두 건너뛰고 '즉시 완료(납품)' 처리하시겠습니까?`)) {
+      if (await showConfirm(`'${editedJob.title}' 작업의 남은 단계를 모두 건너뛰고 '즉시 완료' 처리하시겠습니까?`)) {
           const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
           newHistory.push({
               timestamp: new Date().toISOString(),
@@ -671,7 +684,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
           const finalJob: Job = {
               ...editedJob,
-              status: 'DELIVERY',
+              status: 'COMPLETED',
               progress: 100,
               completedAt: new Date().toISOString(),
               history: newHistory
@@ -1856,7 +1869,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                 )}
 
                 {/* 3. 즉시 완료 (조기 패스) */}
-                {editedJob.status !== 'DELIVERY' && editedJob.status !== 'CANCELED' && (
+                {editedJob.status !== 'COMPLETED' && editedJob.status !== 'CANCELED' && (
                   <button 
                     onClick={handleFastCompleteJob} 
                     className="px-3 py-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8 flex-none" 

@@ -1,8 +1,9 @@
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
-    JobStatusDefinition, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
+    JobStatusDefinition, KanbanLayoutConfig, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
     JoinRequest, ProductProcessingSets, QuoteTemplateSettings
 } from '../types';
+import { normalizeKanbanLayoutConfig, normalizeStatusDefinition } from '../utils/kanbanLayout';
 import { toast } from 'sonner';
 import { 
     collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch,
@@ -114,7 +115,8 @@ const INITIAL_STATUS_DEFINITIONS: JobStatusDefinition[] = [
     { key: 'DESIGN', label: '디자인' },
     { key: 'PRINTING', label: '인쇄' },
     { key: 'POST_PROCESSING', label: '후가공' },
-    { key: 'DELIVERY', label: '납품/완료' }
+    { key: 'DELIVERY', label: '납품' },
+    { key: 'COMPLETED', label: '완료' },
 ];
 
 /** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
@@ -557,10 +559,15 @@ export class DataService {
             };
         }
 
-        for (const key of ['productDefinitions', 'statusDefinitions', 'processingDefinitions', 'pricing', 'roles', 'quoteTemplate'] as const) {
+        for (const key of ['productDefinitions', 'statusDefinitions', 'processingDefinitions', 'pricing', 'roles', 'quoteTemplate', 'kanbanLayout'] as const) {
             const fragment = docs.find(d => d.id === key);
             if (!fragment) continue;
-            main[key] = fragment[key] ?? fragment;
+            if (key === 'kanbanLayout') {
+                const { id: _id, splitPairs, ...rest } = fragment;
+                main.kanbanLayout = splitPairs ? { splitPairs, ...rest } : (fragment.kanbanLayout ?? fragment);
+            } else {
+                main[key] = fragment[key] ?? fragment;
+            }
         }
 
         return main;
@@ -598,6 +605,11 @@ export class DataService {
                 settingsObj.roles = { roles: mergedRoles };
                 changed = true;
             }
+        }
+
+        if (!settingsObj?.kanbanLayout?.splitPairs?.length) {
+            settingsObj.kanbanLayout = normalizeKanbanLayoutConfig(settingsObj.kanbanLayout);
+            // 메모리 기본값만 — Firestore에 기본 레이아웃 강제 저장하지 않음 (사용자 설정 덮어쓰기 방지)
         }
 
         return changed;
@@ -1141,6 +1153,7 @@ export class DataService {
         'processingDefinitions',
         'pricing',
         'roles',
+        'kanbanLayout',
     ] as const;
 
     /** 직원도 저장 가능 — settings/main 병합 시 rules 거부되므로 조각 문서만 씀 */
@@ -1520,7 +1533,50 @@ export class DataService {
     }
     async savePricingConfig(config: PricingConfig) { await this.updateSetting('pricing', config); }
     async saveProductDefinitions(definitions: JobTypeDefinition[]) { await this.updateSetting('productDefinitions', { definitions }); }
-    async saveStatusDefinitions(definitions: JobStatusDefinition[]) { await this.updateSetting('statusDefinitions', { definitions }); }
+    async saveStatusDefinitions(definitions: JobStatusDefinition[]) {
+        await this.updateSetting('statusDefinitions', { definitions });
+    }
+    async saveKanbanLayoutConfig(config: KanbanLayoutConfig) {
+        await this.updateSetting('kanbanLayout', config);
+    }
+    /** 단계 + 칸반 레이아웃을 한 번에 메모리·Firestore에 저장 (스냅샷 레이스로 레이아웃 유실 방지) */
+    async saveStatusDefinitionsAndKanbanLayout(
+        definitions: JobStatusDefinition[],
+        layout: KanbanLayoutConfig
+    ) {
+        const settings = { ...(this.getSettingsObj() || {}) };
+        settings.statusDefinitions = { definitions };
+        settings.kanbanLayout = layout;
+        this.data['settings'] = [settings];
+        this.notify();
+
+        if (!this.tenantId) return;
+
+        try {
+            const mainPayload = stripUndefinedForFirestore({
+                statusDefinitions: settings.statusDefinitions,
+                kanbanLayout: settings.kanbanLayout,
+            });
+            const mainRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+            await setDoc(mainRef, mainPayload, { merge: true });
+
+            const statusFragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'statusDefinitions');
+            await setDoc(
+                statusFragmentRef,
+                stripUndefinedForFirestore({ definitions }),
+                { merge: true }
+            );
+
+            const layoutFragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'kanbanLayout');
+            await setDoc(layoutFragmentRef, stripUndefinedForFirestore(layout), { merge: true });
+        } catch (e) {
+            console.error('[Firestore] saveStatusDefinitionsAndKanbanLayout failed:', e);
+            this.notifyFirestoreWriteError('작업 단계·칸반 레이아웃', e);
+            throw e;
+        }
+
+        this.updateTenantActivity().catch(() => {});
+    }
     async saveSmsConfig(config: any) { await this.updateSetting('smsConfig', config); }
     async saveRoles(roles: string[]) { await this.updateSetting('roles', { roles }); }
     async addRole(role: string) {
@@ -1599,7 +1655,14 @@ export class DataService {
     // --- Getters (Real-time data access) ---
     getSettingsObj() { return this.data['settings']?.[0] || {}; }
     getAllJobs(): Job[] { return (this.data['jobs'] || []) as Job[]; }
-    getActiveJobs(): Job[] { return this.getAllJobs().filter(j => j.status !== 'DELIVERY' && j.status !== 'CANCELED' && j.status !== 'QUOTE'); }
+    getActiveJobs(): Job[] {
+        return this.getAllJobs().filter(
+            (j) =>
+                j.status !== 'COMPLETED' &&
+                j.status !== 'CANCELED' &&
+                j.status !== 'QUOTE'
+        );
+    }
     getJobsByMonth(year: number, month: number): Job[] {
         const startDate = new Date(year, month, 1);
         const endDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
@@ -1622,11 +1685,14 @@ export class DataService {
 
     getStatusDefinitions(): JobStatusDefinition[] {
         const raw = this.getSettingsObj()['statusDefinitions']?.definitions;
-        if (!raw?.length) {
-            return INITIAL_STATUS_DEFINITIONS.map((s) => ({ ...s, isVisible: s.isVisible !== false }));
-        }
-        // 저장된 목록 그대로 사용 — 삭제한 단계를 INITIAL 병합으로 되살리지 않음
-        return raw.map((s: JobStatusDefinition) => ({ ...s, isVisible: s.isVisible !== false }));
+        const base = raw?.length
+            ? raw.map((s: JobStatusDefinition) => ({ ...s, isVisible: s.isVisible !== false }))
+            : INITIAL_STATUS_DEFINITIONS.map((s) => ({ ...s, isVisible: s.isVisible !== false }));
+        const { definitions } = mergeStatusDefinitionsWithInitial(base);
+        return definitions.map((s) => normalizeStatusDefinition(s));
+    }
+    getKanbanLayoutConfig(): KanbanLayoutConfig {
+        return normalizeKanbanLayoutConfig(this.getSettingsObj()['kanbanLayout']);
     }
     getProductDefinitions(): JobTypeDefinition[] {
         const raw = this.getSettingsObj()['productDefinitions']?.definitions || INITIAL_PRODUCT_DEFINITIONS;

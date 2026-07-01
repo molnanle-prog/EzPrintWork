@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
 import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
@@ -17,6 +17,7 @@ import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
 import { rememberStaffLoginTenant } from '../utils/resolveStaffTenantProfile';
 import { loadStaffLoginPreferences, saveStaffLoginPreferences } from '../utils/staffLoginPreferences';
+import { configureAuthPersistenceFromPreferences } from '../utils/authPersistence';
 import type { AppUser } from '../types';
 
 const formatSearchError = (error: any): string => {
@@ -36,7 +37,7 @@ const formatSearchError = (error: any): string => {
 export const LoginPage: React.FC = () => {
     const navigate = useNavigate();
     const { theme } = useTheme();
-    const { loginCustomSession, refreshUser } = useAuth();
+    const { loginCustomSession, refreshUser, loading: authLoading, firebaseUser } = useAuth();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
     const [joinCode, setJoinCode] = useState('');
@@ -59,6 +60,8 @@ export const LoginPage: React.FC = () => {
             keepLoggedIn: boolean;
             companyName: string;
             tenantId: string;
+            loginId: string;
+            loginPassword: string;
         }>
     ) => {
         saveStaffLoginPreferences({
@@ -66,8 +69,12 @@ export const LoginPage: React.FC = () => {
             keepLoggedIn: overrides?.keepLoggedIn ?? keepLoggedIn,
             companyName: overrides?.companyName ?? companyName,
             tenantId: overrides?.tenantId ?? selectedTenantId,
+            loginId: overrides?.loginId ?? loginId,
+            loginPassword: overrides?.loginPassword ?? password,
         });
     };
+
+    const autoLoginAttemptedRef = useRef(false);
 
     useEffect(() => {
         setIsElectron(typeof window !== 'undefined' && !!window.electron);
@@ -76,6 +83,13 @@ export const LoginPage: React.FC = () => {
         if ((prefs.rememberCompany || prefs.keepLoggedIn) && prefs.companyName && prefs.tenantId) {
             setCompanyName(prefs.companyName);
             setSelectedTenantId(prefs.tenantId);
+            setHasSearchedLogin(true);
+        }
+        if (prefs.keepLoggedIn && prefs.loginId) {
+            setLoginId(prefs.loginId);
+        }
+        if (prefs.keepLoggedIn && prefs.loginPassword) {
+            setPassword(prefs.loginPassword);
         }
         setRememberCompany(prefs.rememberCompany);
         setKeepLoggedIn(prefs.keepLoggedIn);
@@ -327,6 +341,8 @@ export const LoginPage: React.FC = () => {
             persistLoginPrefs({
                 companyName: companyName.trim() || companyName,
                 tenantId: selectedTenantId,
+                loginId: loginId.trim().toLowerCase(),
+                loginPassword: password,
             });
 
             await setPersistence(
@@ -534,12 +550,15 @@ export const LoginPage: React.FC = () => {
                     avatarUrl: userData.avatarUrl || '',
                     tenantId,
                     role: appRole,
+                    loginId: rawLoginId,
                 };
 
                 loginCustomSession(appUser, tenantPlan, tenantPlanCode, tenantPaymentStatus);
                 persistLoginPrefs({
                     companyName: tenantName || companyName,
                     tenantId,
+                    loginId: rawLoginId,
+                    loginPassword: password,
                 });
                 await refreshUser(auth.currentUser);
                 clearPendingStaffProfile();
@@ -636,6 +655,42 @@ export const LoginPage: React.FC = () => {
             setIsStaffLoggingIn(false);
         }
     };
+
+    useEffect(() => {
+        if (!authLoading && firebaseUser) {
+            navigate('/', { replace: true });
+        }
+    }, [authLoading, firebaseUser, navigate]);
+
+    useEffect(() => {
+        if (authLoading || firebaseUser || isStaffLoggingIn || autoLoginAttemptedRef.current) return;
+        if (!keepLoggedIn || !selectedTenantId || !loginId.trim() || !password.trim()) return;
+
+        autoLoginAttemptedRef.current = true;
+
+        (async () => {
+            try {
+                await configureAuthPersistenceFromPreferences();
+                if (auth.currentUser) {
+                    navigate('/', { replace: true });
+                    return;
+                }
+            } catch {
+                /* persistence 실패 시에도 저장된 자격으로 재로그인 시도 */
+            }
+
+            void handleStaffLogin({ preventDefault: () => {} } as React.FormEvent);
+        })();
+    }, [
+        authLoading,
+        firebaseUser,
+        isStaffLoggingIn,
+        keepLoggedIn,
+        selectedTenantId,
+        loginId,
+        password,
+        navigate,
+    ]);
 
     const handleStaffSignup = async (e: React.FormEvent) => {
         e.preventDefault();

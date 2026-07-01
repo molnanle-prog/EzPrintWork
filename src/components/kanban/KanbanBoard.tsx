@@ -29,6 +29,9 @@ import {
   getStaffIdForUser,
 } from '../../utils/staffMatch';
 import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
+import { buildKanbanColumnSlots, getKeysInKanbanSlots } from '../../utils/kanbanLayout';
+import { KanbanSplitColumn } from './KanbanSplitColumn';
+import type { KanbanLayoutConfig } from '../../types';
 
 interface KanbanBoardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -36,7 +39,6 @@ interface KanbanBoardProps {
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) => {
   const [displayJobs, setDisplayJobs] = useState<Job[]>([]);
-  const [quoteBoardJobs, setQuoteBoardJobs] = useState<Job[]>([]);
   const [activeJobsStats, setActiveJobsStats] = useState<Job[]>([]); 
   const [staff, setStaff] = useState<Staff[]>([]);
   const [allStatusDefinitions, setAllStatusDefinitions] = useState<JobStatusDefinition[]>([]);
@@ -49,6 +51,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     return localStorage.getItem('ezprint_tv_mode') === 'true';
   });
+  const [kanbanLayout, setKanbanLayout] = useState<KanbanLayoutConfig>(() => db.getKanbanLayoutConfig());
   
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
@@ -89,22 +92,20 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     const allJobs = db.getAllJobs();
     const activeJobs = db.getActiveJobs(); 
     const statuses = db.getStatusDefinitions();
+    const layout = db.getKanbanLayoutConfig();
     
-    // 1. Data-level visibility (from settings)
-    // QUOTE (견적) 상태는 독자적인 칸반 컬럼으로 나열되지 않으므로 강제 배제시킵니다.
-    const dbVisibleStatuses = statuses.filter(s => s.isVisible !== false && s.key !== 'QUOTE');
-    setAllStatusDefinitions(dbVisibleStatuses);
+    setAllStatusDefinitions(statuses.filter((s) => s.isVisible !== false));
+    setKanbanLayout(layout);
     
-    // 2. User-level visibility (from local UI filter)
-    const userFiltered = dbVisibleStatuses.filter(s => !hiddenStatusKeys.includes(s.key));
-    setVisibleStatusDefinitions(userFiltered);
+    const slots = buildKanbanColumnSlots(statuses, layout, hiddenStatusKeys);
+    const slotKeys = getKeysInKanbanSlots(slots);
+    setVisibleStatusDefinitions(statuses.filter((s) => slotKeys.includes(s.key)));
     const filteredJobs = filterJobsForOperationalBoard(allJobs, {
       selectedDate,
       includeCanceled: filterCanceled,
     });
 
     setDisplayJobs(filteredJobs);
-    setQuoteBoardJobs(allJobs.filter((j) => j.status === 'QUOTE'));
     setActiveJobsStats(activeJobs);
     setStaff(db.getStaff());
   };
@@ -120,9 +121,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
   useEffect(() => {
     localStorage.setItem('ezprint_hidden_columns', JSON.stringify(hiddenStatusKeys));
-    const userFiltered = allStatusDefinitions.filter(s => !hiddenStatusKeys.includes(s.key));
-    setVisibleStatusDefinitions(userFiltered);
-  }, [hiddenStatusKeys, allStatusDefinitions]);
+    const statuses = db.getStatusDefinitions();
+    const slots = buildKanbanColumnSlots(statuses, kanbanLayout, hiddenStatusKeys);
+    const slotKeys = getKeysInKanbanSlots(slots);
+    setVisibleStatusDefinitions(statuses.filter((s) => slotKeys.includes(s.key)));
+  }, [hiddenStatusKeys, allStatusDefinitions, kanbanLayout]);
 
   const toggleStatusVisibility = (key: string) => {
     setHiddenStatusKeys(prev => {
@@ -221,10 +224,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     
     updatedJob.history = newHistory;
     
-    if (newStatusKey === 'DELIVERY' && draggedJob.status !== 'DELIVERY') {
+    if (newStatusKey === 'COMPLETED' && draggedJob.status !== 'COMPLETED') {
         updatedJob.completedAt = new Date().toISOString();
         updatedJob.progress = 100;
-    } else if (newStatusKey !== 'DELIVERY' && draggedJob.status === 'DELIVERY') {
+    } else if (newStatusKey !== 'COMPLETED' && draggedJob.status === 'COMPLETED') {
         updatedJob.completedAt = undefined;
         updatedJob.progress = getProgressForStatus(newStatusKey);
     } else {
@@ -495,6 +498,50 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
 
   const adStatusKey = getAdStatusKey();
 
+  const kanbanSlots = useMemo(
+    () => buildKanbanColumnSlots(db.getStatusDefinitions(), kanbanLayout, hiddenStatusKeys),
+    [allStatusDefinitions, kanbanLayout, hiddenStatusKeys]
+  );
+
+  const statusDefByKey = useMemo(() => {
+    const map = new Map<string, JobStatusDefinition>();
+    db.getStatusDefinitions().forEach((s) => map.set(s.key, s));
+    return map;
+  }, [allStatusDefinitions]);
+
+  const handleSplitTopPercentCommit = async (topKey: string, bottomKey: string, percent: number) => {
+    const nextPairs = kanbanLayout.splitPairs.map((p) =>
+      p.topKey === topKey && p.bottomKey === bottomKey
+        ? { ...p, splitTopPercent: percent }
+        : p
+    );
+    const nextLayout = { splitPairs: nextPairs };
+    setKanbanLayout(nextLayout);
+    try {
+      await db.saveKanbanLayoutConfig(nextLayout);
+    } catch (error) {
+      showAlert(getErrorMessage(error));
+    }
+  };
+
+  const renderKanbanColumn = (statusDef: JobStatusDefinition) => (
+    <div key={statusDef.key} className="h-full flex-1 min-w-[200px] transition-all duration-300">
+      <KanbanColumn
+        statusDef={statusDef}
+        jobs={getJobsForStatus(statusDef.key)}
+        getStaffName={getStaffName}
+        onSelectJob={handleSelectJob}
+        onRightClickJob={handleRightClickJob}
+        onStatusChange={updateJobStatus}
+        currentUserId={currentStaffId ?? currentUser?.id}
+        resolveIsMyJob={resolveIsMyJob}
+        isCompact={statusDef.key === 'COMPLETED' || visibleStatusDefinitions.length > 5}
+        showAd={showsAds && statusDef.key === adStatusKey}
+        isTvMode={isTvMode}
+      />
+    </div>
+  );
+
   const emptyJob: Job = {
     id: '',
     title: '',
@@ -747,30 +794,38 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         onDragEnd={handleDragEnd}
       >
       <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0">
-        <div 
-            className="flex gap-1.5 h-full py-1.5 px-0 w-full"
-        >
-          {visibleStatusDefinitions.map((statusDef) => (
-            <div 
-                key={statusDef.key} 
-                className="h-full flex-1 min-w-[200px] transition-all duration-300"
-            >
-                <KanbanColumn
-                    statusDef={statusDef}
-                    jobs={getJobsForStatus(statusDef.key)}
-                    quoteJobs={statusDef.key === 'RECEIVED' ? quoteBoardJobs : undefined}
-                    getStaffName={getStaffName}
-                    onSelectJob={handleSelectJob}
-                    onRightClickJob={handleRightClickJob}
-                    onStatusChange={updateJobStatus}
-                    currentUserId={currentStaffId ?? currentUser?.id}
-                    resolveIsMyJob={resolveIsMyJob}
-                    isCompact={statusDef.key === 'DELIVERY' || visibleStatusDefinitions.length > 5}
-                    showAd={showsAds && statusDef.key === adStatusKey}
-                    isTvMode={isTvMode}
-                />
-            </div>
-          ))}
+        <div className="flex gap-1.5 h-full py-1.5 px-0 w-full min-w-0">
+          {kanbanSlots.map((slot) => {
+            if (slot.type === 'single') {
+              const def = statusDefByKey.get(slot.statusKey);
+              if (!def) return null;
+              return renderKanbanColumn(def);
+            }
+            const topDef = statusDefByKey.get(slot.topKey);
+            const bottomDef = statusDefByKey.get(slot.bottomKey);
+            if (!topDef || !bottomDef) return null;
+            return (
+              <KanbanSplitColumn
+                key={`split-${slot.topKey}-${slot.bottomKey}`}
+                topDef={topDef}
+                bottomDef={bottomDef}
+                topJobs={getJobsForStatus(slot.topKey)}
+                bottomJobs={getJobsForStatus(slot.bottomKey)}
+                splitTopPercent={slot.splitTopPercent}
+                bottomCompact={slot.bottomCompact}
+                onSplitTopPercentCommit={(percent) =>
+                  handleSplitTopPercentCommit(slot.topKey, slot.bottomKey, percent)
+                }
+                getStaffName={getStaffName}
+                onSelectJob={handleSelectJob}
+                onRightClickJob={handleRightClickJob}
+                onStatusChange={updateJobStatus}
+                currentUserId={currentStaffId ?? currentUser?.id}
+                resolveIsMyJob={resolveIsMyJob}
+                isTvMode={isTvMode}
+              />
+            );
+          })}
         </div>
       </div>
 
@@ -778,6 +833,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         {activeDragJobId ? (() => {
           const dragJob = db.getAllJobs().find((j) => j.id === activeDragJobId);
           if (!dragJob) return null;
+          const dragCompactTray =
+            dragJob.status === 'QUOTE' ||
+            kanbanLayout.splitPairs.some(
+              (p) => p.bottomKey === dragJob.status && p.bottomCompact !== false
+            );
           return (
             <div className="opacity-90 rotate-2 scale-105 shadow-2xl pointer-events-none w-[280px]">
               <KanbanCard
@@ -787,7 +847,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 onSelect={() => {}}
                 onStatusChange={() => {}}
                 isMyJob={resolveIsMyJob(dragJob)}
-                isCompact={dragJob.status === 'DELIVERY' || visibleStatusDefinitions.length > 5}
+                isCompact={!dragCompactTray && visibleStatusDefinitions.length > 5}
+                isCompactTray={dragCompactTray && dragJob.status !== 'QUOTE'}
                 isQuoteTray={dragJob.status === 'QUOTE'}
                 currentUserId={currentStaffId ?? currentUser?.id}
                 isTvMode={isTvMode}

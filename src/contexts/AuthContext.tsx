@@ -1,14 +1,19 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { auth, db } from '../services/firebase';
+import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
 import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
-import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
+import { isStaffKeepLoggedIn, clearSavedStaffCredentials } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
 import { resolveStaffTenantProfile, upsertStaffUserProfile } from '../utils/resolveStaffTenantProfile';
+import { configureAuthPersistenceFromPreferences } from '../utils/authPersistence';
+import {
+  clearPersistedStaffSession,
+  writePersistedStaffSession,
+} from '../utils/persistedStaffSession';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -199,7 +204,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         
         const updatedUser = {
           ...userData,
-          ...socialProfileData
+          ...socialProfileData,
+          loginId:
+            (userData as AppUser & { loginId?: string }).loginId
+            || (user.email?.endsWith('@ez-hub.kr') ? user.email.split('@')[0].toLowerCase() : undefined),
         };
 
         // Firestore에 소셜 최신 프로필 자동 동기화 (비동기 수행)
@@ -214,7 +222,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await assertStaffNotDeleted(updatedUser.tenantId, user);
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
-              applyTenantSnapshot(tenantDoc.data());
+              const tenantData = tenantDoc.data();
+              applyTenantSnapshot(tenantData);
+              if (isStaffKeepLoggedIn()) {
+                const plan = determineTenantPlan(tenantData);
+                const planCode = String(tenantData?.plan || 'free');
+                const paymentStatus = String(tenantData?.paymentStatus || 'UNPAID').toUpperCase();
+                writePersistedStaffSession(updatedUser, plan, planCode, paymentStatus);
+              }
           }
           await dataService.setTenantWhenReady(updatedUser.tenantId, user.uid);
 
@@ -438,7 +453,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
 
       try {
-        const customRaw = sessionStorage.getItem('customUser');
+        const customRaw =
+          sessionStorage.getItem('customUser') || localStorage.getItem('customUser');
         if (customRaw) {
           const customUser = JSON.parse(customRaw) as AppUser;
           if (customUser?.tenantId) {
@@ -491,13 +507,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const keepLoggedIn = isStaffKeepLoggedIn();
     const code = planCode || (plan === 'pro' ? 'pro' : 'free');
     if (keepLoggedIn) {
-      localStorage.setItem('customUser', JSON.stringify(user));
-      localStorage.setItem('customTenantPlan', plan);
-      localStorage.setItem('customTenantPlanCode', code);
+      writePersistedStaffSession(user, plan, code, paymentStatus);
     } else {
-      localStorage.removeItem('customUser');
-      localStorage.removeItem('customTenantPlan');
-      localStorage.removeItem('customTenantPlanCode');
+      clearPersistedStaffSession();
     }
     sessionStorage.setItem('customUser', JSON.stringify(user));
     sessionStorage.setItem('customTenantPlan', plan);
@@ -545,78 +557,118 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.tenantId]);
 
+  // 로그인 중 온라인 상태를 Firestore에 기록 (관리 프로그램 연동)
   useEffect(() => {
-    // [앱 기동 시 강력한 보안 안전장치]
-    // 사용자가 '자동 로그인 유지'를 수동으로 켜지 않았다면, 
-    // 로컬 디렉토리 캐시나 쿠키가 남아 있어도 안전을 위해 세션을 무조건 파괴하고 초기 로그인 창으로 진입시킵니다.
-    const keepLoggedIn = isStaffKeepLoggedIn();
-    if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
-      console.log("[AuthSecurity] Keep-login is not active. Cleaning up persistent custom session caches.");
-      localStorage.removeItem('customUser');
-      localStorage.removeItem('customTenantPlan');
-      localStorage.removeItem('customTenantPlanCode');
-      // sessionStorage customUser는 새로고침 직후 Firebase 프로필 복구 전까지 유지
-    }
-
-    if (DEV_BYPASS_LOGIN) {
-      const mockUser = {
-        uid: 'dev-admin-uid',
-        email: 'admin@ezprintwork.local',
-        displayName: '시스템 관리자',
-        photoURL: 'https://ui-avatars.com/api/?name=Admin&background=020617&color=fff'
-      } as User;
-
-      const mockProfile: AppUser = {
-        uid: 'dev-admin-uid',
-        id: 'dev-admin-uid',
-        email: 'admin@ezprintwork.local',
-        displayName: '시스템 관리자',
-        name: '시스템 관리자',
-        photoURL: 'https://ui-avatars.com/api/?name=Admin&background=020617&color=fff',
-        avatarUrl: 'https://ui-avatars.com/api/?name=Admin&background=020617&color=fff',
-        tenantId: 'dev-tenant-id',
-        role: 'admin'
-      };
-      
-      setFirebaseUser(mockUser);
-      setCurrentUser(mockProfile);
-      setTenantPlan('free');
-      dataService.setTenant('dev-tenant-id');
-      setLoading(false);
+    if (!currentUser?.tenantId || !firebaseUser?.uid) {
+      stopPresenceSession();
       return;
     }
 
-    console.log("AuthProvider - Initializing...");
-    getRedirectResult(auth).catch((err) => {
-      console.error('Google redirect sign-in failed:', err);
+    const loginId = currentUser.loginId
+      || (firebaseUser.email?.endsWith('@ez-hub.kr') ? firebaseUser.email.split('@')[0] : undefined);
+
+    startPresenceSession({
+      uid: firebaseUser.uid,
+      tenantId: currentUser.tenantId,
+      email: currentUser.email || firebaseUser.email,
+      loginId,
+      name: currentUser.name || currentUser.displayName,
     });
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      console.log("Auth State Changed:", user ? user.uid : "null");
-      setFirebaseUser(user);
-      if (user) {
-        await fetchUserProfile(user);
-      } else {
-        const keepLoggedIn = isStaffKeepLoggedIn();
-        if (!keepLoggedIn) {
-          sessionStorage.removeItem('customUser');
-          localStorage.removeItem('customUser');
-          localStorage.removeItem('customTenantPlan');
-          localStorage.removeItem('customTenantPlanCode');
-        }
-        setCurrentUser(null);
+    return () => {
+      void setPresenceOffline({
+        uid: firebaseUser.uid,
+        tenantId: currentUser.tenantId!,
+        email: currentUser.email || firebaseUser.email,
+        loginId,
+        name: currentUser.name || currentUser.displayName,
+      });
+      stopPresenceSession();
+    };
+  }, [currentUser?.tenantId, currentUser?.email, currentUser?.name, currentUser?.displayName, firebaseUser?.uid, firebaseUser?.email]);
+
+  useEffect(() => {
+    let unsubscribe: (() => void) | undefined;
+    let cancelled = false;
+
+    const initAuth = async () => {
+      const keepLoggedIn = isStaffKeepLoggedIn();
+
+      if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
+        console.log("[AuthSecurity] Keep-login is not active. Cleaning up persistent custom session caches.");
+        clearPersistedStaffSession();
       }
-      setLoading(false);
-    });
 
-    return () => unsubscribe();
+      if (DEV_BYPASS_LOGIN) {
+        const mockUser = {
+          uid: 'dev-admin-uid',
+          email: 'admin@ezprintwork.local',
+          displayName: '시스템 관리자',
+          photoURL: 'https://ui-avatars.com/api/?name=Admin&background=020617&color=fff'
+        } as User;
+
+        const mockProfile: AppUser = {
+          uid: 'dev-admin-uid',
+          id: 'dev-admin-uid',
+          email: 'admin@ezprintwork.local',
+          displayName: '시스템 관리자',
+          name: '시스템 관리자',
+          photoURL: 'https://ui-avatars.com/api/?name=Admin&background=020617&color=fff',
+          avatarUrl: 'https://ui-avatars.com/api/?name=Admin&background=020617&color=fff',
+          tenantId: 'dev-tenant-id',
+          role: 'admin'
+        };
+        
+        setFirebaseUser(mockUser);
+        setCurrentUser(mockProfile);
+        setTenantPlan('free');
+        dataService.setTenant('dev-tenant-id');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        await configureAuthPersistenceFromPreferences();
+      } catch (err) {
+        console.warn('[Auth] Failed to configure auth persistence:', err);
+      }
+
+      if (cancelled) return;
+
+      console.log("AuthProvider - Initializing...");
+      getRedirectResult(auth).catch((err) => {
+        console.error('Google redirect sign-in failed:', err);
+      });
+
+      unsubscribe = onAuthStateChanged(auth, async (user) => {
+        console.log("Auth State Changed:", user ? user.uid : "null");
+        setFirebaseUser(user);
+        if (user) {
+          await fetchUserProfile(user);
+        } else {
+          const stillKeepLoggedIn = isStaffKeepLoggedIn();
+          if (!stillKeepLoggedIn) {
+            clearPersistedStaffSession();
+          }
+          setCurrentUser(null);
+        }
+        setLoading(false);
+      });
+    };
+
+    void initAuth();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
   }, []);
 
   const logout = async () => {
-    localStorage.removeItem('customUser');
-    localStorage.removeItem('customTenantPlan');
-    sessionStorage.removeItem('customUser');
-    sessionStorage.removeItem('customTenantPlan');
+    await setPresenceOffline();
+    stopPresenceSession();
+    clearPersistedStaffSession();
+    clearSavedStaffCredentials();
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);

@@ -1,6 +1,18 @@
 import { Job } from '../types';
+import { isLegacyCompletedDelivery } from './kanbanLayout';
 
-/** 칸반·상황판 공통 — 완료(DELIVERY) 건 표시 규칙 */
+function shouldShowArchivedCompletedJob(job: Job, selectedDate: string): boolean {
+  if (job.paymentStatus !== '결제완료') return true;
+
+  const completedAt = job.completedAt ? new Date(job.completedAt) : new Date(job.createdAt);
+  const diffDays = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60 * 24);
+  if (diffDays <= 3) return true;
+
+  const completedDateStr = completedAt.toISOString().split('T')[0];
+  return completedDateStr === selectedDate;
+}
+
+/** 칸반·상황판 공통 — 완료·보관 건 표시 규칙 */
 export function filterJobsForOperationalBoard(
   jobs: Job[],
   options?: { selectedDate?: string; includeCanceled?: boolean }
@@ -11,17 +23,16 @@ export function filterJobsForOperationalBoard(
   return jobs.filter((job) => {
     if (job.status === 'CANCELED') return includeCanceled;
     if (job.status === 'QUOTE') return false;
-    if (job.status !== 'DELIVERY') return true;
 
-    if (job.paymentStatus !== '결제완료') return true;
+    if (job.status === 'COMPLETED') {
+      return shouldShowArchivedCompletedJob(job, selectedDate);
+    }
 
-    const completedAt = job.completedAt ? new Date(job.completedAt) : new Date(job.createdAt);
-    const diffDays = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60 * 24);
-    if (diffDays <= 3) return true;
+    // 레거시: 예전 DELIVERY=완료 데이터
+    if (isLegacyCompletedDelivery(job)) {
+      return shouldShowArchivedCompletedJob(job, selectedDate);
+    }
 
-    const completedDateStr = completedAt.toISOString().split('T')[0];
-    if (completedDateStr === selectedDate) return true;
-
-    return false;
+    return true;
   });
 }

@@ -10,8 +10,9 @@ import { COLUMN_DROPPABLE_PREFIX } from './kanbanCollisionDetection';
 
 export { COLUMN_DROPPABLE_PREFIX };
 
-interface QuoteTraySectionProps {
-  quoteJobs: Job[];
+export interface CompactTraySectionProps {
+  statusDef: JobStatusDefinition;
+  jobs: Job[];
   getStaffName: (job?: Job) => string;
   onSelectJob: (job: Job) => void;
   onRightClickJob?: (job: Job) => void;
@@ -19,10 +20,12 @@ interface QuoteTraySectionProps {
   currentUserId?: string;
   resolveIsMyJob?: (job: Job) => boolean;
   isTvMode?: boolean;
+  fillHeight?: boolean;
 }
 
-const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
-  quoteJobs,
+export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
+  statusDef,
+  jobs,
   getStaffName,
   onSelectJob,
   onRightClickJob,
@@ -30,28 +33,23 @@ const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
   currentUserId,
   resolveIsMyJob,
   isTvMode = false,
+  fillHeight = false,
 }) => {
   const { theme } = useTheme();
-  const droppableId = `${COLUMN_DROPPABLE_PREFIX}QUOTE`;
+  const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
   const { setNodeRef, isOver } = useDroppable({ id: droppableId });
 
-  const sortedQuoteJobs = [...quoteJobs].sort((a, b) => {
+  const sortedJobs = [...jobs].sort((a, b) => {
     if (a.order !== b.order) return a.order - b.order;
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
-  const quoteJobIds = sortedQuoteJobs.map((job) => job.id);
+  const jobIds = sortedJobs.map((job) => job.id);
 
   return (
-    <div
-      className={`p-2 border-t flex-none ${
-        theme === 'trello'
-          ? 'border-[#2c3e56] bg-[#182535]/80'
-          : 'border-slate-200 dark:border-slate-700 bg-slate-50/80 dark:bg-slate-900/60'
-      }`}
-    >
-      <div className="flex items-center justify-between mb-1.5 px-1">
+    <div className={`flex flex-col ${fillHeight ? 'h-full min-h-0' : 'flex-none'}`}>
+      <div className="flex items-center justify-between mb-1.5 px-1 shrink-0">
         <span className="text-[10px] lg:text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
-          📋 견적 문의 보관 상자
+          {statusDef.label}
         </span>
         <span
           className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
@@ -60,14 +58,14 @@ const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
               : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
           }`}
         >
-          {quoteJobs.length}
+          {jobs.length}
         </span>
       </div>
 
       <div
         ref={setNodeRef}
-        data-kanban-column="QUOTE"
-        className={`min-h-[88px] max-h-[220px] overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 flex flex-col gap-1.5 transition-colors ${
+        data-kanban-column={statusDef.key}
+        className={`${fillHeight ? 'flex-1 min-h-0' : 'min-h-[88px] max-h-[220px]'} overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 flex flex-col gap-1.5 transition-colors ${
           isOver
             ? theme === 'trello'
               ? 'border-indigo-400 bg-indigo-950/30 ring-2 ring-indigo-400/40'
@@ -77,13 +75,15 @@ const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
               : 'border-slate-300 dark:border-slate-600 bg-white/50 dark:bg-slate-900/40'
         }`}
       >
-        <SortableContext items={quoteJobIds} strategy={verticalListSortingStrategy}>
-          {sortedQuoteJobs.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none">
-              견적 문의를 여기로 끌어다 놓으세요
+        <SortableContext items={jobIds} strategy={verticalListSortingStrategy}>
+          {sortedJobs.length === 0 ? (
+            <div className="flex-1 flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2">
+              {statusDef.key === 'QUOTE'
+                ? '견적 문의를 여기로 끌어다 놓으세요'
+                : `${statusDef.label} 작업을 여기로 끌어다 놓으세요`}
             </div>
           ) : (
-            sortedQuoteJobs.map((job) => (
+            sortedJobs.map((job) => (
               <KanbanCard
                 key={job.id}
                 job={job}
@@ -95,15 +95,17 @@ const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
                 isMyJob={resolveIsMyJob ? resolveIsMyJob(job) : false}
                 currentUserId={currentUserId}
                 isTvMode={isTvMode}
-                isQuoteTray
+                isCompactTray
               />
             ))
           )}
         </SortableContext>
 
-        {isOver && sortedQuoteJobs.length > 0 && (
+        {isOver && sortedJobs.length > 0 && (
           <div className="h-8 shrink-0 rounded border border-dashed border-indigo-400 bg-indigo-50/50 dark:bg-indigo-900/20 flex items-center justify-center pointer-events-none">
-            <span className="text-indigo-500 dark:text-indigo-300 text-[10px] font-bold">견적 상자로 이동</span>
+            <span className="text-indigo-500 dark:text-indigo-300 text-[10px] font-bold">
+              {statusDef.label}(으)로 이동
+            </span>
           </div>
         )}
       </div>
@@ -111,11 +113,9 @@ const QuoteTraySection: React.FC<QuoteTraySectionProps> = ({
   );
 };
 
-
 interface KanbanColumnProps {
   statusDef: JobStatusDefinition;
   jobs: Job[];
-  quoteJobs?: Job[];
   getStaffName: (job?: Job) => string;
   onSelectJob: (job: Job) => void;
   onRightClickJob?: (job: Job) => void;
@@ -125,12 +125,13 @@ interface KanbanColumnProps {
   isCompact?: boolean;
   showAd?: boolean;
   isTvMode?: boolean;
+  /** 상·하 분할 칸 내부에 넣을 때 외곽 테두리 제거 */
+  embedded?: boolean;
 }
 
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({ 
   statusDef, 
   jobs, 
-  quoteJobs,
   getStaffName, 
   onSelectJob, 
   onRightClickJob,
@@ -139,9 +140,11 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   resolveIsMyJob,
   isCompact = false,
   showAd = false,
-  isTvMode = false
+  isTvMode = false,
+  embedded = false,
 }) => {
   const { theme } = useTheme();
+
   const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
   const { setNodeRef, isOver } = useDroppable({ id: droppableId });
 
@@ -153,6 +156,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
       case 'PRINTING': return 'bg-amber-500';
       case 'POST_PROCESSING': return 'bg-emerald-500';
       case 'DELIVERY': return 'bg-blue-600';
+      case 'COMPLETED': return 'bg-slate-500';
       default: return 'bg-slate-500';
     }
   };
@@ -166,13 +170,14 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
 
   return (
     <div 
-      className={`flex-1 flex flex-col h-full rounded-xl border transition-colors duration-200
-        ${theme === 'trello'
+      className={`flex flex-col h-full min-h-0 transition-colors duration-200
+        ${embedded ? 'flex-1 rounded-none border-0 bg-transparent shadow-none' : `flex-1 rounded-xl border ${
+        theme === 'trello'
           ? (isOver ? 'bg-[#24364e] border-[#384c66] shadow-sm' : 'bg-[#1d2d44] border-[#2c3e56] shadow-none')
           : (isOver 
               ? 'bg-blue-100/80 dark:bg-blue-900/50 border-blue-400 ring-2 ring-blue-300 ring-inset' 
               : 'bg-slate-100/80 dark:bg-slate-800/80 border-slate-200/60 dark:border-slate-700')
-        }
+        }`}
       `}
     >
       <div className={`p-1.5 lg:p-2 flex items-center justify-between rounded-t-xl sticky top-0 z-10 ${theme === "trello" ? "bg-transparent border-b border-transparent" : "bg-white/50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 backdrop-blur-sm"}`}>
@@ -191,7 +196,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         className={`flex-1 min-h-0 flex flex-col ${isOver ? 'ring-2 ring-inset ring-blue-400/60 rounded-b-xl' : ''}`}
       >
         <SortableContext items={jobIds} strategy={verticalListSortingStrategy}>
-          <div className="p-1 lg:p-1.5 flex-1 overflow-y-auto flex flex-col gap-1.5 custom-scrollbar min-h-[160px]">
+          <div className={`p-1 lg:p-1.5 flex-1 overflow-y-auto flex flex-col gap-1.5 custom-scrollbar ${embedded ? 'min-h-[80px]' : 'min-h-[160px]'}`}>
             {jobs.length === 0 && isCompact && (
               <div className="text-center text-slate-400 text-xs py-4">
                 해당 날짜의 완료 내역이 없습니다.
@@ -224,20 +229,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         </SortableContext>
       </div>
 
-      {statusDef.key === 'RECEIVED' && quoteJobs !== undefined && (
-        <QuoteTraySection
-          quoteJobs={quoteJobs}
-          getStaffName={getStaffName}
-          onSelectJob={onSelectJob}
-          onRightClickJob={onRightClickJob}
-          onStatusChange={onStatusChange}
-          currentUserId={currentUserId}
-          resolveIsMyJob={resolveIsMyJob}
-          isTvMode={isTvMode}
-        />
-      )}
-
-      {showAd && (
+      {showAd && !embedded && (
         <div className="p-3 mt-auto flex-none">
           <AdBanner slot="kanban_column" type="dashed" size="300x250" format="rectangle" />
         </div>

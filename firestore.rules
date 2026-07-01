@@ -236,9 +236,18 @@ service cloud.firestore {
         || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && !privilegeEscalation(incoming()))
         || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && isOwnerOnboardingUpdate(incoming()))
         || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
+        || (isSignedIn() && request.auth.uid == userId && isPresenceSelfUpdate(incoming()))
         || isAdminUpdatingMember(incoming())
         || isAdminMemberProfileUpdate()
         || isAdminWritingStaffUser();
+
+      /** EzPrintWork 로그인·heartbeat — 본인 users 문서에 isOnline/lastActive 기록 */
+      function isPresenceSelfUpdate(data) {
+        return data.isOnline is bool
+          && data.lastActive is string
+          && data.lastActive.size() <= 40
+          && (!('online' in data) || data.online is bool);
+      }
 
       function isOwnerOnboardingUpdate(data) {
         return data.role == 'admin'
@@ -316,6 +325,20 @@ service cloud.firestore {
           && (!('active' in data) || data.active == true);
       }
 
+      /** EzPrintWork 로그인·heartbeat — 본인 staff 문서에 isOnline/lastActive 기록 */
+      function isStaffPresenceSelfUpdate(staffId, data) {
+        return isStaffEmailAuth()
+          && isValidId(staffId)
+          && data.isOnline is bool
+          && data.lastActive is string
+          && data.lastActive.size() <= 40
+          && (
+            staffId == request.auth.uid
+            || (resource != null && 'uid' in resource.data && resource.data.uid == request.auth.uid)
+            || ('uid' in data && data.uid == request.auth.uid)
+          );
+      }
+
       // STAFF — 로그인 전 loginId 조회 허용 (비밀번호는 앱에서 검증)
       match /staff/{staffId} {
         allow read: if isMember(tenantId) || isStaffPreAuthRead() || isStaffEmailAuth() || (!isSignedIn() && isReasonableListQuery());
@@ -324,7 +347,8 @@ service cloud.firestore {
           || (isTenantOwner(tenantId) && request.auth.uid == staffId && isValidId(staffId) && isValidStaff(incoming()));
         allow update: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
           || (!isSignedIn() && isStaffCredentialMigration(incoming()))
-          || (isStaffUidSelfLink(incoming()) && isValidId(staffId));
+          || (isStaffUidSelfLink(incoming()) && isValidId(staffId))
+          || (isStaffPresenceSelfUpdate(staffId, incoming()) && isValidId(staffId));
         allow delete: if isAdmin(tenantId);
       }
 

@@ -32,6 +32,7 @@ interface KanbanCardProps {
   isTvMode?: boolean;
   isDragOverlay?: boolean;
   isQuoteTray?: boolean;
+  isCompactTray?: boolean;
 }
 
 export const KanbanCard: React.FC<KanbanCardProps> = ({ 
@@ -47,10 +48,12 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   isTvMode = false,
   isDragOverlay = false,
   isQuoteTray = false,
+  isCompactTray = false,
 }) => {
   const { theme } = useTheme();
   const { currentUser } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
+  const isTrayView = isQuoteTray || isCompactTray;
 
   const {
     attributes,
@@ -88,7 +91,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   const due = new Date(job.dueDate);
   const diffTime = due.getTime() - now.getTime();
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-  const isDone = status === 'DELIVERY';
+  const isDone = status === 'COMPLETED';
   const subJobsList = job.subJobs || [];
   const subJobCount = subJobsList.length > 0 ? subJobsList.length : 1;
   const isMultiJob = subJobsList.length > 1;
@@ -340,10 +343,9 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     surface: 'kanban',
   });
 
+  // QUOTE / COMPACT TRAY VIEW (견적·완료 등 컴팩트 한 줄형)
   // ----------------------------------------------------------------------
-  // QUOTE TRAY VIEW (접수 하단 견적 보관 상자)
-  // ----------------------------------------------------------------------
-  if (isQuoteTray) {
+  if (isTrayView) {
     return (
       <div
         ref={setNodeRef}
