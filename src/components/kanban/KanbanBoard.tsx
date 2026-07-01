@@ -535,7 +535,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         onStatusChange={updateJobStatus}
         currentUserId={currentStaffId ?? currentUser?.id}
         resolveIsMyJob={resolveIsMyJob}
-        isCompact={statusDef.key === 'COMPLETED' || visibleStatusDefinitions.length > 5}
+        isCompact={false}
         showAd={showsAds && statusDef.key === adStatusKey}
         isTvMode={isTvMode}
       />
@@ -847,7 +847,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 onSelect={() => {}}
                 onStatusChange={() => {}}
                 isMyJob={resolveIsMyJob(dragJob)}
-                isCompact={!dragCompactTray && visibleStatusDefinitions.length > 5}
+                isCompact={false}
                 isCompactTray={dragCompactTray && dragJob.status !== 'QUOTE'}
                 isQuoteTray={dragJob.status === 'QUOTE'}
                 currentUserId={currentStaffId ?? currentUser?.id}

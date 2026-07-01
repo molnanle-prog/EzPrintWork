@@ -197,7 +197,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
       >
         <SortableContext items={jobIds} strategy={verticalListSortingStrategy}>
           <div className={`p-1 lg:p-1.5 flex-1 overflow-y-auto flex flex-col gap-1.5 custom-scrollbar ${embedded ? 'min-h-[80px]' : 'min-h-[160px]'}`}>
-            {jobs.length === 0 && isCompact && (
+            {jobs.length === 0 && statusDef.key === 'COMPLETED' && (
               <div className="text-center text-slate-400 text-xs py-4">
                 해당 날짜의 완료 내역이 없습니다.
               </div>
