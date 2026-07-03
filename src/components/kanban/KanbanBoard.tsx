@@ -100,9 +100,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     const slots = buildKanbanColumnSlots(statuses, layout, hiddenStatusKeys);
     const slotKeys = getKeysInKanbanSlots(slots);
     setVisibleStatusDefinitions(statuses.filter((s) => slotKeys.includes(s.key)));
+    const quoteInSplitTray = layout.splitPairs.some((p) => p.bottomKey === 'QUOTE');
     const filteredJobs = filterJobsForOperationalBoard(allJobs, {
       selectedDate,
       includeCanceled: filterCanceled,
+      includeStatusKeys: quoteInSplitTray ? ['QUOTE'] : [],
     });
 
     setDisplayJobs(filteredJobs);

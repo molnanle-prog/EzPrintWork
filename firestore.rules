@@ -245,6 +245,7 @@ service cloud.firestore {
         || isAdminUpdatingMember(incoming())
         || isAdminMemberProfileUpdate()
         || isAdminWritingStaffUser();
+      allow delete: if isSuperAdmin();
 
       /** EzPrintWork 로그인·heartbeat — 본인 users 문서에 isOnline/lastActive 기록 */
       function isPresenceSelfUpdate(data) {
@@ -292,6 +293,7 @@ service cloud.firestore {
       allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn();
       allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
       allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
+      allow delete: if isSuperAdmin();
 
       function isValidPlan(plan) {
         return plan in ['free', 'lite', 'pro', 'pro_plus', 'service']

@@ -3,7 +3,6 @@ import { Job, JobStatusDefinition } from '../../types';
 import { KanbanColumn } from './KanbanColumn';
 import { CompactTraySection } from './KanbanColumn';
 import { useTheme } from '../../contexts/ThemeContext';
-import { GripHorizontal } from 'lucide-react';
 import { clampSplitTopPercent } from '../../utils/kanbanLayout';
 
 interface KanbanSplitColumnProps {
@@ -118,16 +117,6 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
         />
       </div>
 
-      <div
-        className={`flex-none flex items-center justify-center h-1.5 cursor-row-resize select-none ${
-          dragging ? 'bg-blue-500/25' : 'hover:bg-blue-500/10'
-        }`}
-        onPointerDown={handlePointerDown}
-        title="드래그하여 상·하 비율 조절"
-      >
-        <GripHorizontal size={10} className="text-slate-400 opacity-60" />
-      </div>
-
       <div className="min-h-0 flex flex-col p-1" style={{ flex: `${bottomPercent} 1 0%` }}>
         {bottomCompact ? (
           <CompactTraySection
@@ -141,6 +130,11 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
             resolveIsMyJob={resolveIsMyJob}
             isTvMode={isTvMode}
             fillHeight
+            resizeHandle={{
+              dragging,
+              onPointerDown: handlePointerDown,
+              title: '드래그하여 상·하 비율 조절',
+            }}
           />
         ) : (
           <KanbanColumn
@@ -154,6 +148,11 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
             resolveIsMyJob={resolveIsMyJob}
             isTvMode={isTvMode}
             embedded
+            resizeHandle={{
+              dragging,
+              onPointerDown: handlePointerDown,
+              title: '드래그하여 상·하 비율 조절',
+            }}
           />
         )}
       </div>

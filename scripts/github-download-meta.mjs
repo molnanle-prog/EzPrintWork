@@ -18,9 +18,12 @@ const SETUP_EXE = 'EzPrintWork-Setup.exe';
 
 function githubGet(apiPath) {
   return new Promise((resolve, reject) => {
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'EzPrintWork-DownloadMeta' };
+    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+    if (token) headers.Authorization = `Bearer ${token}`;
     https.get(
       `https://api.github.com${apiPath}`,
-      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'EzPrintWork-DownloadMeta' } },
+      { headers },
       (res) => {
         let data = '';
         res.on('data', (c) => { data += c; });

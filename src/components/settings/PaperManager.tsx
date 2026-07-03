@@ -17,6 +17,7 @@ export const PaperManager: React.FC = () => {
   };
 
   useEffect(() => {
+    db.ensurePapersSync();
     loadPapers();
     // Subscribe to DB changes
     const unsubscribe = db.subscribe(() => {

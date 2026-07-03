@@ -23,9 +23,10 @@
       })();
     </script>
 
-    <!-- 배포 후 구버전 JS 자동 감지 → 1회 새로고침 -->
+    <!-- 배포 후 구버전 JS 자동 감지 → 1회 새로고침 (로컬 개발 제외) -->
     <script>
       (function () {
+        if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') return;
         var BUILD_KEY = 'ezpw_build_id';
         var GUARD_KEY = 'ezpw_reload_guard';
         try {
@@ -49,68 +50,6 @@
             .catch(function () {});
         } catch (e) {}
       })();
-    </script>
-
-    <!-- FIX: Re-added CDN and config for development preview -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script type="importmap">
-{
-  "imports": {
-    "react": "https://esm.sh/react@^19.2.3",
-    "react-dom/client": "https://esm.sh/react-dom@^19.2.3/client",
-    "lucide-react": "https://esm.sh/lucide-react@^0.562.0",
-    "html2canvas": "https://esm.sh/html2canvas@^1.4.1",
-    "jspdf": "https://esm.sh/jspdf@^2.5.1",
-    "tesseract.js": "https://esm.sh/tesseract.js@^5.0.4",
-    "react-dom/": "https://esm.sh/react-dom@^19.2.3/",
-    "react/": "https://esm.sh/react@^19.2.3/",
-    "vite": "https://esm.sh/vite@^7.3.1",
-    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
-    "@dnd-kit/core": "https://esm.sh/@dnd-kit/core@^6.1.0",
-    "@dnd-kit/sortable": "https://esm.sh/@dnd-kit/sortable@^8.0.0",
-    "@dnd-kit/utilities": "https://esm.sh/@dnd-kit/utilities@^3.2.2",
-    "firebase/app": "https://esm.sh/firebase@^10.8.0/app",
-    "firebase/auth": "https://esm.sh/firebase@^10.8.0/auth",
-    "firebase/firestore": "https://esm.sh/firebase@^10.8.0/firestore"
-  }
-}
-</script>
-    <script>
-      tailwind.config = {
-        darkMode: 'class',
-        theme: {
-          extend: {
-            colors: {
-              slate: {
-                850: '#1e293b',
-                900: '#0f172a',
-                950: '#020617',
-              }
-            },
-            keyframes: {
-              'fade-in': { '0%': { opacity: '0' }, '100%': { opacity: '1' } },
-              'zoom-in-95': { '0%': { opacity: '0', transform: 'scale(.95)' }, '100%': { opacity: '1', transform: 'scale(1)' } },
-              'slide-in-from-bottom-5': { '0%': { transform: 'translateY(20px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
-              'slide-in-from-right-10': { '0%': { transform: 'translateX(40px)', opacity: '0' }, '100%': { transform: 'translateX(0)', opacity: '1' } },
-              'slide-in-from-right-2': { '0%': { transform: 'translateX(8px)', opacity: '0' }, '100%': { transform: 'translateX(0)', opacity: '1' } },
-              'slide-in-from-top-1': { '0%': { transform: 'translateY(-4px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
-              'slide-in-from-top-2': { '0%': { transform: 'translateY(-8px)', opacity: '0' }, '100%': { transform: 'translateY(0)', opacity: '1' } },
-              'slide-in-from-left-2': { '0%': { transform: 'translateX(-8px)', opacity: '0' }, '100%': { transform: 'translateX(0)', opacity: '1' } },
-            },
-            animation: {
-              'in': 'fade-in 0.5s ease-out',
-              'in-fast': 'fade-in 0.2s ease-out',
-              'zoom-in-95': 'zoom-in-95 0.2s ease-out',
-              'slide-in-from-bottom-5': 'slide-in-from-bottom-5 0.3s ease-out',
-              'slide-in-from-right-10': 'slide-in-from-right-10 0.3s ease-out',
-              'slide-in-from-right-2': 'slide-in-from-right-2 0.3s ease-out',
-              'slide-in-from-top-1': 'slide-in-from-top-1 0.2s ease-out',
-              'slide-in-from-top-2': 'slide-in-from-top-2 0.2s ease-out',
-              'slide-in-from-left-2': 'slide-in-from-left-2 0.3s ease-out',
-            },
-          },
-        },
-      }
     </script>
   </head>
   <body>

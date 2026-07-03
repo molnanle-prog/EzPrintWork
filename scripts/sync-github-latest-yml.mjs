@@ -6,11 +6,18 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 const { resolveHomepageDir } = require('./resolve-homepage-dir.js');
+const { loadDeployEnv } = require('./load-deploy-env.js');
+
+loadDeployEnv(path.join(path.dirname(fileURLToPath(import.meta.url)), '..'));
+const GH_TOKEN = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || '';
+
 const downloadsDir = path.join(resolveHomepageDir(), 'public', 'downloads');
 
 function githubGet(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'EzPrintWork-Sync' } }, (res) => {
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'EzPrintWork-Sync' };
+    if (GH_TOKEN) headers.Authorization = `Bearer ${GH_TOKEN}`;
+    https.get(url, { headers }, (res) => {
       let data = '';
       res.on('data', (c) => { data += c; });
       res.on('end', () => {

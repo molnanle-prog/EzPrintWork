@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>견적 미리보기 새창 테스트</title>
+  <style>
+    body { font-family: sans-serif; padding: 2rem; background: #f1f5f9; }
+    button { padding: 12px 20px; font-size: 16px; cursor: pointer; border-radius: 8px; border: none; background: #2563eb; color: #fff; font-weight: 700; }
+    p { color: #475569; line-height: 1.6; }
+  </style>
+</head>
+<body>
+  <h1>견적서 미리보기 — 새 창 테스트</h1>
+  <p>아래 버튼을 누르면 견적 데이터를 localStorage에 넣고 <code>window.open</code>으로 미리보기 창을 엽니다.<br />로그인된 브라우저에서 테스트하세요.</p>
+  <button type="button" id="open">미리보기 새 창 열기</button>
+  <script>
+    const QUOTE_ID = 'preview-smoke-test';
+    const sampleQuote = {
+      id: QUOTE_ID,
+      title: '미리보기 테스트',
+      clientName: '테스트인쇄',
+      contactPerson: '홍길동',
+      clientPhone: '010-1234-5678',
+      items: '명함 500매 / 단면 4도',
+      totalAmount: 55000,
+      supplyAmount: 50000,
+      vatAmount: 5000,
+      vatIncluded: true,
+      date: new Date().toISOString().split('T')[0],
+      status: '대기',
+    };
+
+    document.getElementById('open').addEventListener('click', () => {
+      const key = 'quote-preview:' + QUOTE_ID;
+      localStorage.setItem(key, JSON.stringify(sampleQuote));
+      try { sessionStorage.setItem(key, JSON.stringify(sampleQuote)); } catch (_) {}
+
+      const base = location.origin + location.pathname.replace(/\/preview-smoke\.html$/, '/');
+      const url = base + '#/quote-preview/' + encodeURIComponent(QUOTE_ID);
+      const opened = window.open(url, '_blank', 'width=1280,height=900');
+      if (!opened) alert('팝업이 차단되었습니다. 팝업 허용 후 다시 시도해 주세요.');
+    });
+  </script>
+</body>
+</html>

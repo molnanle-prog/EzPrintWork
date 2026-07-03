@@ -32,8 +32,8 @@ type ClientSortKey = 'clientName' | 'pendingCount' | 'partialCount' | 'totalOuts
 const PAYMENT_STATUSES: PaymentStatus[] = ['결제대기', '일부결제', '결제완료', '취소'];
 
 const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
-  title: 180,
-  clientName: 120,
+  title: 210,
+  clientName: 150,
   contactPerson: 90,
   phone: 110,
   price: 168,
@@ -43,6 +43,8 @@ const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
 };
 
 const COLUMN_WIDTHS_STORAGE_KEY = 'ezprint_payment_column_widths';
+/** 체크박스 + 좌측 p-3 여백(다른 열과 동일) */
+const SELECT_COLUMN_WIDTH = 30;
 
 const JOB_COLUMNS: { key: ColumnKey; label: string; sortable: boolean; align?: 'center' }[] = [
   { key: 'title', label: '작업', sortable: true },
@@ -188,6 +190,8 @@ export const PaymentReceivableManager: React.FC = () => {
   const [clientSortKey, setClientSortKey] = useState<ClientSortKey>('totalOutstanding');
   const [clientSortDir, setClientSortDir] = useState<SortDir>('desc');
   const [expandedClients, setExpandedClients] = useState<Set<string>>(new Set());
+  const [selectedJobIds, setSelectedJobIds] = useState<Set<string>>(new Set());
+  const [bulkPaymentStatus, setBulkPaymentStatus] = useState<PaymentStatus>('결제완료');
   const resizingRef = useRef<{ col: ColumnKey; startX: number; startWidth: number } | null>(null);
   const columnWidthsRef = useRef(columnWidths);
 
@@ -201,6 +205,7 @@ export const PaymentReceivableManager: React.FC = () => {
   };
 
   useEffect(() => {
+    db.ensurePaymentJobsSync();
     reload();
     return db.subscribe(reload);
   }, []);
@@ -241,6 +246,14 @@ export const PaymentReceivableManager: React.FC = () => {
       })
       .sort((a, b) => compareJobs(a, b, sortKey, sortDir));
   }, [jobs, filter, search, sortKey, sortDir]);
+
+  useEffect(() => {
+    const visibleIds = new Set(filteredJobs.map((j) => j.id));
+    setSelectedJobIds((prev) => {
+      const next = new Set(Array.from(prev).filter((id) => visibleIds.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [filteredJobs]);
 
   const clientSummaries = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -380,6 +393,51 @@ export const PaymentReceivableManager: React.FC = () => {
     }
   };
 
+  const toggleJobSelection = (jobId: string) => {
+    setSelectedJobIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(jobId)) next.delete(jobId);
+      else next.add(jobId);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    const visibleIds = filteredJobs.map((j) => j.id);
+    const allSelected =
+      visibleIds.length > 0 && visibleIds.every((id) => selectedJobIds.has(id));
+    setSelectedJobIds((prev) => {
+      const next = new Set(prev);
+      if (allSelected) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const handleBulkPaymentChange = async () => {
+    const targets = jobs.filter((j) => selectedJobIds.has(j.id));
+    if (targets.length === 0) {
+      toast.error('일괄 변경할 작업을 먼저 선택해 주세요.');
+      return;
+    }
+    try {
+      await Promise.all(
+        targets.map((job) =>
+          job.paymentStatus === bulkPaymentStatus
+            ? Promise.resolve()
+            : db.updateJob({ ...job, paymentStatus: bulkPaymentStatus })
+        )
+      );
+      toast.success(`${targets.length}건 결제 상태를 "${bulkPaymentStatus}"(으)로 변경했습니다.`);
+      setSelectedJobIds(new Set());
+    } catch (e) {
+      toast.error(getErrorMessage(e));
+    }
+  };
+
   const filterTabs: { id: PaymentFilter; label: string }[] = [
     { id: 'outstanding', label: '미수·미결제' },
     { id: '결제대기', label: '결제대기' },
@@ -389,7 +447,11 @@ export const PaymentReceivableManager: React.FC = () => {
     { id: 'byClient', label: '고객사별 종합' },
   ];
 
-  const tableMinWidth = Object.values(columnWidths).reduce((s, w) => s + w, 0);
+  const tableMinWidth = Object.values(columnWidths).reduce((s, w) => s + w, 0) + SELECT_COLUMN_WIDTH;
+  const selectedCount = selectedJobIds.size;
+  const visibleAllSelected =
+    filteredJobs.length > 0 && filteredJobs.every((j) => selectedJobIds.has(j.id));
+  const visibleSomeSelected = filteredJobs.some((j) => selectedJobIds.has(j.id));
 
   const renderJobRow = (job: Job, nested = false) => {
     const contactPhone = getJobContactPhone(job);
@@ -402,23 +464,32 @@ export const PaymentReceivableManager: React.FC = () => {
         }`}
         onClick={() => setSelectedJob(job)}
       >
-        <td className={`p-3 ${nested ? 'pl-8' : ''}`} style={{ width: columnWidths.title }}>
+        <td className="pl-3 pr-0 py-1.5 text-center" style={{ width: SELECT_COLUMN_WIDTH }} onClick={(e) => e.stopPropagation()}>
+          <input
+            type="checkbox"
+            checked={selectedJobIds.has(job.id)}
+            onChange={() => toggleJobSelection(job.id)}
+            className="w-4 h-4 accent-blue-600 cursor-pointer"
+            aria-label={`${job.title} 선택`}
+          />
+        </td>
+        <td className={`px-3 py-1.5 ${nested ? 'pl-8' : ''}`} style={{ width: columnWidths.title }}>
           <p className="text-sm font-bold text-slate-800 dark:text-slate-100 line-clamp-1">{job.title}</p>
           <p className="text-[10px] text-slate-400 font-mono">{formatJobNumber(job)}</p>
         </td>
-        <td className="p-3" style={{ width: columnWidths.clientName }}>
+        <td className="px-3 py-1.5" style={{ width: columnWidths.clientName }}>
           <div className="flex items-center gap-1.5 text-sm text-slate-700 dark:text-slate-200">
             <Building2 size={14} className="text-slate-400 shrink-0" />
             <span className="line-clamp-1">{job.clientName}</span>
           </div>
         </td>
-        <td className="p-3" style={{ width: columnWidths.contactPerson }}>
+        <td className="px-3 py-1.5" style={{ width: columnWidths.contactPerson }}>
           <div className="flex items-center gap-1.5 text-xs text-slate-700 dark:text-slate-200">
             <User size={13} className="text-slate-400 shrink-0" />
             <span className="line-clamp-2 font-medium">{getJobContactPerson(job)}</span>
           </div>
         </td>
-        <td className="p-3" style={{ width: columnWidths.phone }}>
+        <td className="px-3 py-1.5" style={{ width: columnWidths.phone }}>
           {hasPhone ? (
             <a
               href={phoneDialHref(contactPhone)}
@@ -431,7 +502,7 @@ export const PaymentReceivableManager: React.FC = () => {
             <span className="text-[11px] text-slate-400">번호 없음</span>
           )}
         </td>
-        <td className="p-3" style={{ width: columnWidths.price }}>
+        <td className="px-3 py-1.5" style={{ width: columnWidths.price }}>
           <p className="text-sm font-black text-slate-800 dark:text-slate-100 tabular-nums whitespace-nowrap">
             {(job.price || 0).toLocaleString()}원
             <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">
@@ -439,7 +510,7 @@ export const PaymentReceivableManager: React.FC = () => {
             </span>
           </p>
         </td>
-        <td className="p-3" style={{ width: columnWidths.paymentStatus }} onClick={(e) => e.stopPropagation()}>
+        <td className="px-3 py-1.5" style={{ width: columnWidths.paymentStatus }} onClick={(e) => e.stopPropagation()}>
           <select
             value={job.paymentStatus || '결제대기'}
             onChange={(e) => handlePaymentChange(job, e.target.value as PaymentStatus)}
@@ -454,13 +525,13 @@ export const PaymentReceivableManager: React.FC = () => {
             ))}
           </select>
         </td>
-        <td className="p-3 text-xs text-slate-500" style={{ width: columnWidths.dueDate }}>
+        <td className="px-3 py-1.5 text-xs text-slate-500" style={{ width: columnWidths.dueDate }}>
           <div className="flex items-center gap-1">
             <Calendar size={12} />
             {job.dueDate ? new Date(job.dueDate).toLocaleDateString() : '-'}
           </div>
         </td>
-        <td className="p-3" style={{ width: columnWidths.contact }} onClick={(e) => e.stopPropagation()}>
+        <td className="px-3 py-1.5" style={{ width: columnWidths.contact }} onClick={(e) => e.stopPropagation()}>
           <div className="flex items-center justify-center gap-1">
             <button
               type="button"
@@ -528,44 +599,95 @@ export const PaymentReceivableManager: React.FC = () => {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mt-4">
-          <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 dark:border-red-900/50 p-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+          <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 dark:border-red-900/50 px-3 py-2">
             <p className="text-[10px] font-bold text-red-600 uppercase tracking-wide flex items-center gap-1">
               <AlertCircle size={12} /> 미수·미결제
             </p>
-            <p className="text-xl font-black text-red-700 dark:text-red-300 mt-1">{stats.outstandingCount}건</p>
-            <p className="text-xs font-bold text-red-600/80 tabular-nums">{stats.outstandingAmount.toLocaleString()}원</p>
+            <div className="mt-1 flex items-baseline justify-between gap-2">
+              <p className="text-xl font-black text-red-700 dark:text-red-300 leading-none">{stats.outstandingCount}건</p>
+              <p className="text-xl font-black text-red-600/80 tabular-nums leading-none">
+                {stats.outstandingAmount.toLocaleString()}원
+              </p>
+            </div>
           </div>
-          <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/40 p-3">
+          <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/40 px-3 py-2">
             <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1">
               <Wallet size={12} /> 일부결제
             </p>
-            <p className="text-xl font-black text-amber-800 dark:text-amber-200 mt-1">{stats.partialCount}건</p>
+            <div className="mt-1 flex items-baseline justify-between gap-2">
+              <p className="text-xl font-black text-amber-800 dark:text-amber-200 leading-none">{stats.partialCount}건</p>
+            </div>
           </div>
-          <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-900/50 p-3 col-span-2 lg:col-span-2">
+          <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-900/50 px-3 py-2">
             <p className="text-[10px] font-bold text-blue-600 uppercase tracking-wide flex items-center gap-1">
               <CheckCircle2 size={12} /> 결제완료 합계
             </p>
-            <p className="text-xl font-black text-blue-800 dark:text-blue-200 mt-1">{stats.paidCount}건</p>
-            <p className="text-xs font-bold text-blue-600/80 tabular-nums">{stats.paidAmount.toLocaleString()}원</p>
+            <div className="mt-1 flex items-baseline justify-between gap-2">
+              <p className="text-xl font-black text-blue-800 dark:text-blue-200 leading-none">{stats.paidCount}건</p>
+              <p className="text-xl font-black text-blue-600/80 tabular-nums leading-none">
+                {stats.paidAmount.toLocaleString()}원
+              </p>
+            </div>
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-2 mt-4">
-          {filterTabs.map((tab) => (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setFilter(tab.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
-                filter === tab.id
-                  ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
-                  : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-300'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mt-4">
+          <div className="flex flex-wrap gap-2">
+            {filterTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setFilter(tab.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                  filter === tab.id
+                    ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {filter !== 'byClient' && (
+            <div className="flex flex-wrap items-center gap-2 ml-auto">
+              <span className="text-xs font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">
+                선택 {selectedCount}건
+              </span>
+              <button
+                type="button"
+                onClick={toggleSelectAllVisible}
+                className="text-xs font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-blue-300 whitespace-nowrap"
+              >
+                {visibleAllSelected ? '현재 목록 전체 해제' : '현재 목록 전체 선택'}
+              </button>
+              <select
+                value={bulkPaymentStatus}
+                onChange={(e) => setBulkPaymentStatus(e.target.value as PaymentStatus)}
+                className="text-xs font-bold px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+              >
+                {PAYMENT_STATUSES.map((s) => (
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleBulkPaymentChange}
+                disabled={selectedCount === 0}
+                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white whitespace-nowrap"
+              >
+                선택 일괄 변경
+              </button>
+              {visibleSomeSelected && !visibleAllSelected && (
+                <span className="text-[11px] text-slate-500 dark:text-slate-400 whitespace-nowrap">
+                  현재 검색/필터 목록 기준
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -685,12 +807,22 @@ export const PaymentReceivableManager: React.FC = () => {
             style={{ minWidth: tableMinWidth, tableLayout: 'fixed' }}
           >
             <colgroup>
+              <col style={{ width: SELECT_COLUMN_WIDTH }} />
               {JOB_COLUMNS.map((col) => (
                 <col key={col.key} style={{ width: columnWidths[col.key] }} />
               ))}
             </colgroup>
             <thead className="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
               <tr>
+                <th className="pl-3 pr-0 py-1.5 text-center" style={{ width: SELECT_COLUMN_WIDTH }}>
+                  <input
+                    type="checkbox"
+                    checked={visibleAllSelected}
+                    onChange={toggleSelectAllVisible}
+                    className="w-4 h-4 accent-blue-600 cursor-pointer"
+                    aria-label="현재 목록 전체 선택"
+                  />
+                </th>
                 {JOB_COLUMNS.map((col) => (
                   <th
                     key={col.key}
@@ -701,7 +833,7 @@ export const PaymentReceivableManager: React.FC = () => {
                       <button
                         type="button"
                         onClick={() => handleSort(col.key as SortKey)}
-                        className={`w-full flex items-center gap-1 px-3 py-3 text-xs font-bold transition-colors ${
+                        className={`w-full flex items-center gap-1 px-3 py-1.5 text-xs font-bold transition-colors ${
                           col.align === 'center' ? 'justify-center' : 'text-left'
                         } ${
                           sortKey === col.key
@@ -713,7 +845,7 @@ export const PaymentReceivableManager: React.FC = () => {
                         <SortIcon active={sortKey === col.key} dir={sortDir} />
                       </button>
                     ) : (
-                      <span className="block px-3 py-3 text-xs font-bold text-slate-500">{col.label}</span>
+                      <span className="block px-3 py-1.5 text-xs font-bold text-slate-500">{col.label}</span>
                     )}
                     <div
                       role="separator"
@@ -728,7 +860,7 @@ export const PaymentReceivableManager: React.FC = () => {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
               {filteredJobs.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-10 text-center text-slate-400 text-sm">
+                  <td colSpan={9} className="p-10 text-center text-slate-400 text-sm">
                     해당 조건의 작업이 없습니다.
                   </td>
                 </tr>

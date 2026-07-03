@@ -348,6 +348,9 @@ export interface IElectronAPI {
   onFileChange: (callback: (path: string) => void) => void;
   openExternal: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
+  getDocumentsPath: () => Promise<string>;
+  getUserDataPath?: () => Promise<string | null>;
+  checkDirectoryStatus?: (path: string) => Promise<{ success: boolean; message?: string; error?: string }>;
   
   dbConnect: (dbPath: string) => Promise<{ success: boolean; error?: string }>;
   dbQuery: (sql: string, params?: any[]) => Promise<{ success: boolean; data?: any; error?: string }>;
@@ -370,7 +373,6 @@ export interface IElectronAPI {
   updaterInstall?: () => Promise<{ ok: boolean }>;
   onUpdaterStatus?: (callback: (payload: ElectronUpdaterStatus) => void) => () => void;
   createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; error?: string }>;
-  getUserDataPath: () => Promise<string>;
   findLegacyDbFiles: () => Promise<{ name: string; path: string; size: string; mtime: string }[]>;
   minimize: () => void;
   maximize: () => void;

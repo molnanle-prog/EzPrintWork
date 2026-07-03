@@ -109,6 +109,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
 
   const loadData = () => {
     setJobs(filterJobsForOperationalBoard(db.getAllJobs()));
+    db.ensureInstructionsSync();
     setInstructions(db.getInstructions());
     setStaff(db.getStaff());
     setStatusDefinitions(db.getStatusDefinitions());

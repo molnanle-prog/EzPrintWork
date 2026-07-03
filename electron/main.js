@@ -17,6 +17,7 @@ function createWindow() {
     const win = new BrowserWindow({
         width: 1300,
         height: 900,
+        show: false,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
@@ -25,6 +26,11 @@ function createWindow() {
         title: "EzPrintWork",
         autoHideMenuBar: true,
         frame: false // 타이틀바 및 브라우저 기본 프레임을 숨겨 프로그램 창처럼 구현
+    });
+
+    win.once('ready-to-show', () => {
+        win.show();
+        win.focus();
     });
 
     // 웹 UI(JS/CSS) 캐시만 갱신 — localStorage·IndexedDB는 유지
@@ -36,6 +42,8 @@ function createWindow() {
 
     if (process.env.ELECTRON_START_URL) {
         win.loadURL(process.env.ELECTRON_START_URL);
+    } else if (process.defaultApp || !app.isPackaged) {
+        win.loadURL('http://localhost:5173/');
     } else {
         win.loadURL('https://ez-hub.kr/ezpw/');
     }
@@ -256,6 +264,16 @@ ipcMain.handle('check-directory-status', async (event, dirPath) => {
     return await checkDirectoryStatus(dirPath);
 });
 
+// 7.0. 앱 사용자 데이터 폴더 (네트워크 장애 시 보관 섀도 복사)
+ipcMain.handle('get-user-data-path', async () => {
+    try {
+        return app.getPath('userData');
+    } catch (e) {
+        console.error('userData 경로 획득 중 오류:', e);
+        return null;
+    }
+});
+
 // 7. 문서 폴더 경로 가져오기 (백업용)
 ipcMain.handle('get-documents-path', async () => {
     try {
@@ -327,6 +345,11 @@ ipcMain.on('window-maximize', () => {
 ipcMain.on('window-close', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.close();
+});
+
+ipcMain.on('window-lower', () => {
+    const win = BrowserWindow.getFocusedWindow();
+    if (win) win.lower();
 });
 
 function resolveShortcutIconPath() {

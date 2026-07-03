@@ -53,7 +53,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   const { theme } = useTheme();
   const { currentUser } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
-  const isTrayView = isQuoteTray || isCompactTray;
+  const isTrayView = isCompactTray;
 
   const {
     attributes,
@@ -343,7 +343,77 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     surface: 'kanban',
   });
 
-  // QUOTE / COMPACT TRAY VIEW (견적·완료 등 컴팩트 한 줄형)
+  // QUOTE TRAY — 견적 하단 3열 타일 (제목 일부 노출 + 호버 확장)
+  // ----------------------------------------------------------------------
+  if (isQuoteTray) {
+    return (
+      <div
+        ref={setNodeRef}
+        data-job-id={job.id}
+        style={sortableStyle}
+        {...sortableProps}
+        onMouseEnter={() => setIsHovered(true)}
+        onMouseLeave={() => setIsHovered(false)}
+        className={`kanban-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-all cursor-grab active:cursor-grabbing group ${
+          isHovered ? 'z-30 shadow-lg ring-2 ring-indigo-400/80' : 'z-0 shadow-sm'
+        } ${
+          theme === 'trello'
+            ? 'bg-[#24364e] border-[#384c66] hover:border-indigo-400'
+            : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-indigo-400'
+        }`}
+        onClick={handleCardClick}
+        onContextMenu={handleCardContextMenu}
+        title={!isHovered ? `${job.title}\n${job.clientName}` : undefined}
+      >
+        <div className={`kanban-card-title font-bold text-slate-800 dark:text-slate-100 leading-snug ${isHovered ? 'text-[11px] whitespace-normal' : 'text-[10px] line-clamp-2'}`}>
+          {job.title}
+        </div>
+        {isHovered ? (
+          <div className="mt-1 space-y-0.5">
+            <div className="kanban-card-subtitle text-[10px] text-slate-600 dark:text-slate-300 truncate" title={job.clientName}>
+              {job.clientName || '고객명 없음'}
+            </div>
+            <div className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-300">
+              {job.price ? `${job.price.toLocaleString()}원` : '미정'}
+            </div>
+            {staffName && (
+              <div className="text-[9px] text-slate-500 dark:text-slate-400 truncate">{staffName}</div>
+            )}
+            <div className="flex items-center justify-end gap-0.5 pt-0.5">
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatusChange(job, 'prev');
+                }}
+                className="text-slate-400 hover:text-red-500 p-0.5"
+                title="이전 단계"
+              >
+                <ArrowLeft size={12} />
+              </button>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatusChange(job, 'next');
+                }}
+                className="text-slate-400 hover:text-emerald-500 p-0.5"
+                title="다음 단계"
+              >
+                <ArrowRight size={12} />
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="text-[9px] font-mono font-bold text-indigo-600 dark:text-indigo-400 truncate mt-0.5">
+            {job.price ? `${job.price.toLocaleString()}원` : '미정'}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // COMPACT TRAY VIEW (완료 등 한 줄형)
   // ----------------------------------------------------------------------
   if (isTrayView) {
     return (

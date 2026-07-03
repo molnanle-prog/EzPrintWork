@@ -8,31 +8,35 @@ import { db } from '../services/dataService';
 import { db as firestore } from '../services/firebase';
 import { QuotePreviewPanel } from '../components/quotes/QuotePreviewPanel';
 import { readCachedQuoteForPreview } from '../utils/quotePreviewStorage';
+import { useAuth } from '../contexts/AuthContext';
 
 export const QuotePreviewPage: React.FC = () => {
   const { quoteId } = useParams<{ quoteId: string }>();
+  const { currentUser } = useAuth();
   const [quote, setQuote] = useState<Quote | null>(() =>
     quoteId ? readCachedQuoteForPreview(quoteId) : null
   );
-  const [syncStatus, setSyncStatus] = useState(db.getSyncStatus());
-  const [fetchDone, setFetchDone] = useState(false);
+  const [fetchDone, setFetchDone] = useState(!!quote);
 
   const loadQuote = useCallback(async () => {
     if (!quoteId) return;
 
     const fromCache = readCachedQuoteForPreview(quoteId);
+    if (fromCache) {
+      setQuote(fromCache);
+      setFetchDone(true);
+      return;
+    }
+
     const fromMemory = db.getQuotes().find((q) => q.id === quoteId) ?? null;
     if (fromMemory) {
       setQuote(fromMemory);
       setFetchDone(true);
       return;
     }
-    if (fromCache) {
-      setQuote(fromCache);
-    }
 
-    const tenantId = db.getTenantId();
-    if (tenantId && db.getSyncStatus() === 'synced') {
+    const tenantId = currentUser?.tenantId ?? db.getTenantId();
+    if (tenantId) {
       try {
         const snap = await getDoc(doc(firestore, 'tenants', tenantId, 'quotes', quoteId));
         if (snap.exists()) {
@@ -43,14 +47,12 @@ export const QuotePreviewPage: React.FC = () => {
       }
     }
     setFetchDone(true);
-  }, [quoteId]);
+  }, [quoteId, currentUser?.tenantId]);
 
   useEffect(() => {
     if (!quoteId) return;
-
     void loadQuote();
     const unsubscribe = db.subscribe(() => {
-      setSyncStatus(db.getSyncStatus());
       void loadQuote();
     });
     return unsubscribe;
@@ -60,9 +62,7 @@ export const QuotePreviewPage: React.FC = () => {
     window.close();
   };
 
-  const waitingSync = syncStatus !== 'synced' && !quote;
-
-  if (waitingSync || (!fetchDone && !quote)) {
+  if (!fetchDone && !quote) {
     return (
       <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-200 gap-3">
         <Loader2 className="animate-spin text-blue-600" size={32} />

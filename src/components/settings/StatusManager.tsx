@@ -173,13 +173,13 @@ export const StatusManager: React.FC = () => {
     const nextLayout = {
       splitPairs: kanbanLayout.splitPairs.filter((p) => p.topKey !== key && p.bottomKey !== key),
     };
+    const removedKeys = [...new Set([...db.getStatusDefinitionRemovedKeys(), key])];
 
     try {
       if (jobsInStatus > 0) {
         await db.migrateJobsFromStatus(key, fallback.key);
       }
-      await db.saveStatusDefinitions(updated);
-      await db.saveKanbanLayoutConfig(nextLayout);
+      await db.saveStatusDefinitionsAndKanbanLayout(updated, nextLayout, removedKeys);
       setStatuses(updated);
       setKanbanLayout(nextLayout);
       await showAlert(
@@ -206,7 +206,7 @@ export const StatusManager: React.FC = () => {
         if (next) layout = normalizeKanbanLayoutConfig(next);
       }
 
-      await db.saveStatusDefinitionsAndKanbanLayout(statuses, layout);
+      await db.saveStatusDefinitionsAndKanbanLayout(statuses, layout, db.getStatusDefinitionRemovedKeys());
       setKanbanLayout(layout);
       setSelectedKeys([]);
 

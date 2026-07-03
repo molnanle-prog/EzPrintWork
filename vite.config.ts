@@ -61,5 +61,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
   },
+  server: {
+    host: 'localhost',
+    port: 5173,
+    open: true,
+  },
 });
 

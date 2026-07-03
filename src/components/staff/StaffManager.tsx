@@ -31,12 +31,12 @@ const isStaffMainOwner = (staff: Staff, ownerId: string | null): boolean =>
 // Firebase Secondary Auth imports for silent user creation/management
 import { initializeApp, getApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, updatePassword, signOut } from 'firebase/auth';
-import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { firebaseConfig, db as firestore } from '../../services/firebase';
 import { toast } from 'sonner';
 
 export const StaffManager: React.FC = () => {
-  const { tenantPlan, maxStaff, currentUser, tenantOwnerId, isTenantOwner } = useAuth();
+  const { tenantPlan, maxStaff, currentUser, tenantOwnerId, isTenantOwner, canManageStaff } = useAuth();
   const [staffList, setStaffList] = useState<Staff[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -60,7 +60,6 @@ export const StaffManager: React.FC = () => {
 
   useEffect(() => {
     loadStaff();
-    // Subscribe to DB changes to ensure UI updates immediately after delete/add
     const unsubscribe = db.subscribe(loadStaff);
     return () => unsubscribe();
   }, []);
@@ -83,7 +82,7 @@ export const StaffManager: React.FC = () => {
     const confirm = await showConfirm(
       currentlyAdmin
         ? `'${staff.name}' 직원의 사내 관리자 권한을 해제하시겠습니까?`
-        : `'${staff.name}' 직원에게 사내 관리자 권한을 추가하시겠습니까?\n\n메인 관리자는 그대로 유지되며, 관리자는 여러 명이 될 수 있습니다.`
+        : `'${staff.name}' 직원에게 사내 관리자 권한을 추가하시겠습니까?\n\n사내 관리자는 직원 관리(등록·수정·비활성), 회사 설정, 작업·견적 관리 등을 이용할 수 있습니다.\n메인 관리자(대표)는 그대로 유지되며, 사내 관리자는 여러 명이 될 수 있습니다.`
     );
     if (!confirm) return;
 
@@ -95,6 +94,16 @@ export const StaffManager: React.FC = () => {
         await setDoc(doc(firestore, 'users', staff.uid), {
           role: currentlyAdmin ? 'staff' : 'admin',
         }, { merge: true });
+      } else if (staff.loginId) {
+        const loginNorm = staff.loginId.trim().toLowerCase();
+        const usersSnap = await getDocs(
+          query(collection(firestore, 'users'), where('loginId', '==', loginNorm), limit(5))
+        );
+        for (const userDoc of usersSnap.docs) {
+          await setDoc(doc(firestore, 'users', userDoc.id), {
+            role: currentlyAdmin ? 'staff' : 'admin',
+          }, { merge: true });
+        }
       }
 
       try {
@@ -476,6 +485,14 @@ export const StaffManager: React.FC = () => {
           }
       }
   };
+
+  if (!canManageStaff) {
+    return (
+      <div className="p-8 text-center text-slate-500 dark:text-slate-400">
+        직원 관리 메뉴는 메인·사내 관리자만 이용할 수 있습니다.
+      </div>
+    );
+  }
 
   return (
     <>

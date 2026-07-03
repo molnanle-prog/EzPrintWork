@@ -1,4 +1,4 @@
-/** 직원 로그인 화면 — 선택 회사 저장 / 자동 로그인 유지 */
+/** 직원 로그인 화면 — 선택 회사 저장 / 아이디·비밀번호 저장 (자동 로그인 없음) */
 
 export const STAFF_LOGIN_PREFS = {
   rememberCompany: 'rememberCompany',
@@ -61,6 +61,20 @@ export function clearSavedStaffCredentials(): void {
   localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginPassword);
 }
 
+/** 아이디·비밀번호 저장 해제 (localStorage 키 keepLoggedIn — 하위 호환) */
+export function disableStaffAutoLoginPrefs(): void {
+  const prefs = loadStaffLoginPreferences();
+  saveStaffLoginPreferences({
+    ...prefs,
+    keepLoggedIn: false,
+    loginId: '',
+    loginPassword: '',
+  });
+}
+
 export function isStaffKeepLoggedIn(): boolean {
   return localStorage.getItem(STAFF_LOGIN_PREFS.keepLoggedIn) === 'true';
 }
+
+/** 아이디·비밀번호 저장 여부 (자동 로그인과 무관) */
+export const isStaffCredentialsSaved = isStaffKeepLoggedIn;

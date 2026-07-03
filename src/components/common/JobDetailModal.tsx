@@ -168,7 +168,7 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
     );
 };
 
-export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onClose, onUpdate, onNavigateToQuote, isNew = false, initialViewMode }) => {
+function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNew = false, initialViewMode }: JobDetailModalProps) {
   const initialSubJobs: JobItem[] = job.subJobs && job.subJobs.length > 0 
     ? job.subJobs 
     : [{ id: '1', type: job.type || '책자', specs: job.specs }];
@@ -248,7 +248,9 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       setPastJobs([]);
       return;
     }
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
+      await db.ensureColdArchiveLoaded();
+      await db.ensureClientHistoryJobs(editedJob.clientName);
       setPastJobs(db.getJobsByClient(editedJob.clientName));
     }, 500);
     return () => clearTimeout(timer);
@@ -1745,11 +1747,11 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
 
                     {isBooklet ? (
                         <div className="mb-2.5 space-y-3">
-                            <label className="text-xs font-semibold text-slate-500 flex items-center gap-1 mb-1"><Scissors size={12}/> 후가공 옵션 (책자 분류)</label>
+                            <label className="text-xs font-semibold flex items-center gap-1 mb-1 booklet-processing-heading text-[#0f172a]"><Scissors size={12}/> 후가공 옵션 (책자 분류)</label>
                             
                             {/* 1. 제본/공통 후가공 */}
-                            <div className="p-2.5 bg-slate-50/50 dark:bg-slate-900/50 rounded-lg border border-slate-200 dark:border-slate-700">
-                                <span className="text-xs font-bold text-slate-500 dark:text-slate-300 mb-1.5 block">제본 및 공통 후가공</span>
+                            <div className="p-2.5 rounded-lg border-2 border-slate-400 bg-[#e2e8f0] booklet-processing-common-box">
+                                <span className="text-xs font-bold mb-1.5 block booklet-processing-section-title text-[#0f172a]">제본 및 공통 후가공</span>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
                                     {getFilteredProcessingOptions('common').map((opt) => (
                                         <label key={`common-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${currentSpecs.processing.includes(opt) ? 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-600 text-blue-700 dark:text-blue-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
@@ -1761,8 +1763,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             </div>
 
                             {/* 2. 표지 후가공 */}
-                            <div className="p-2.5 bg-blue-50/20 dark:bg-blue-950/20 rounded-lg border border-blue-100 dark:border-blue-900">
-                                <span className="text-xs font-bold text-blue-600 dark:text-blue-300 mb-1.5 block">표지 전용 후가공</span>
+                            <div className="p-2.5 rounded-lg border-2 border-blue-500 bg-[#bfdbfe] booklet-processing-cover-box">
+                                <span className="text-xs font-bold mb-1.5 block booklet-processing-cover-title text-[#1e3a8a]">표지 전용 후가공</span>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
                                     {getFilteredProcessingOptions('cover').map((opt) => (
                                         <label key={`cover-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingCover || []).includes(opt) ? 'bg-blue-100 dark:bg-blue-900/50 border-blue-300 dark:border-blue-500 text-blue-800 dark:text-blue-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
@@ -1774,8 +1776,8 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
                             </div>
 
                             {/* 3. 내지 후가공 */}
-                            <div className="p-2.5 bg-emerald-50/20 dark:bg-emerald-950/20 rounded-lg border border-emerald-100 dark:border-emerald-900">
-                                <span className="text-xs font-bold text-emerald-600 dark:text-emerald-300 mb-1.5 block">내지 전용 후가공</span>
+                            <div className="p-2.5 rounded-lg border-2 border-emerald-500 bg-[#a7f3d0] booklet-processing-inner-box">
+                                <span className="text-xs font-bold mb-1.5 block booklet-processing-inner-title text-[#14532d]">내지 전용 후가공</span>
                                 <div className="grid grid-cols-2 md:grid-cols-4 gap-1.5">
                                     {getFilteredProcessingOptions('inner').map((opt) => (
                                         <label key={`inner-${opt}`} className={`flex items-center gap-1.5 p-1.5 rounded border cursor-pointer transition-all text-xs ${(currentSpecs.processingInner || []).includes(opt) ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-600 text-emerald-800 dark:text-emerald-100 font-medium' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
@@ -1915,4 +1917,7 @@ export const JobDetailModal: React.FC<JobDetailModalProps> = ({ job, staff, onCl
       {showPrintModal && (<JobOrderPreviewModal job={editedJob} onClose={() => setShowPrintModal(false)} />)}
     </>
   );
-};
+}
+
+export { JobDetailModal };
+export default JobDetailModal;

@@ -49,6 +49,7 @@ export const ChatWidget: React.FC = () => {
 
 
   useEffect(() => {
+    db.ensureMessagesSync();
     // Initial Load
     setStaff(db.getStaff());
     const initialMsgs = db.getMessages();

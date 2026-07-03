@@ -255,6 +255,10 @@ async function main() {
   const releaseDir = path.join(currentDir, process.env.ELECTRON_BUILD_OUTPUT || 'release');
   const releaseDirName = path.basename(releaseDir);
   const deployExeDirect = process.env.DEPLOY_SETUP_ZIP !== '1';
+  // PC 자동업데이트: GitHub Release + latest.yml(sha512) 동기화 필수 (DEPLOY_FAST=1 일 때만 생략)
+  const fastDeploy = process.env.DEPLOY_FAST === '1';
+  const waitForGithubReleaseEnabled = !fastDeploy && process.env.DEPLOY_WAIT_RELEASE !== '0';
+  const enableHostingCleanup = process.env.DEPLOY_CLEANUP_HOSTING === '1';
   const MIN_SETUP_BYTES = 15 * 1024 * 1024;
   const GITHUB_EXE_URL = 'https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/EzPrintWork-Setup.exe';
   const appVersion = require(path.join(currentDir, 'package.json')).version;
@@ -263,13 +267,19 @@ async function main() {
   log('===================================================', colors.bold + colors.green);
   log('   🚀 EzPrintWork 통합 배포 (웹 + 홈페이지 + 업데이트)', colors.bold + colors.green);
   log('===================================================', colors.bold + colors.green);
-  log('   배포 범위: 웹앱 + 홈페이지 + latest.yml + manifest', colors.cyan);
+  log('   배포 범위: 웹앱 + 홈페이지 + GitHub Release + latest.yml(sha512)', colors.cyan);
   if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
     log('   (DEPLOY_SKIP_ELECTRON=1 → PC exe 빌드 생략, GitHub Release 메타 사용)', colors.yellow);
   } else if (!ghToken) {
-    log('   (로컬 GH_TOKEN 없음 → git tag push로 GitHub Actions 자동 Release)', colors.cyan);
+    log('   (GH_TOKEN 없음 → Actions Release 대기. 권장: scripts/setup-deploy-token.ps1)', colors.yellow);
+  } else {
+    log('   (GH_TOKEN → Release 업로드 + latest.yml GitHub 자산 동기화)', colors.green);
   }
   log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
+  log(
+    `* Release대기=${waitForGithubReleaseEnabled ? 'ON' : 'OFF'} / Hosting정리=${enableHostingCleanup ? 'ON' : 'OFF'}${fastDeploy ? ' (DEPLOY_FAST=1)' : ''}`,
+    colors.cyan
+  );
   if (deployExeDirect) {
     log('* exe 다운로드: GitHub Releases (Firebase Spark exe 호스팅 불가)', colors.green);
     log(`* ${GITHUB_EXE_URL}`, colors.cyan);
@@ -356,54 +366,25 @@ async function main() {
       const releaseTag = `v${appVersion}`;
       let githubRelease = await fetchGithubReleaseByTag(releaseTag);
 
-      if (!githubRelease && !ghToken) {
+      if (!githubRelease && !ghToken && waitForGithubReleaseEnabled) {
         log(`* GitHub Actions Release 대기 중 (${releaseTag}, 최대 ~10분)...`, colors.cyan);
         githubRelease = await waitForGithubRelease(releaseTag, {
           onWait: (attempt, max) => {
             log(`  … Release 미완료 (${attempt}/${max})`, colors.cyan);
           },
         });
+      } else if (!githubRelease && !ghToken && !waitForGithubReleaseEnabled) {
+        log('* 빠른 배포 모드: GitHub Release 대기 생략', colors.yellow);
       }
 
       if (githubRelease) {
         await writeDownloadMetaFromRelease(githubRelease, downloadsDir);
-        log(`✓ GitHub Release ${releaseTag} ↔ download-meta 동기화`, colors.green);
-      } else if (ghToken) {
-        writeDownloadManifest({
-          appVersion,
-          setupExeName,
-          setupBytes: sourceStat.size,
-          githubDownloadUrl,
-          githubVersionUrl,
-          downloadsDir,
-          log,
-          colors,
-        });
-
-        const latestYmlSource = path.join(releaseDir, 'latest.yml');
-        if (fs.existsSync(latestYmlSource)) {
-          let yml = fs.readFileSync(latestYmlSource, 'utf-8');
-          yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
-          yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
-          fs.writeFileSync(path.join(downloadsDir, 'latest.yml'), yml);
-          log('✓ latest.yml → ez-hub.kr/downloads/ (앱 자동업데이트용)', colors.green);
-        }
+        log(`✓ GitHub Release ${releaseTag} ↔ latest.yml(sha512) 동기화`, colors.green);
       } else {
-        writeDownloadManifest({
-          appVersion,
-          setupExeName,
-          setupBytes: sourceStat.size,
-          githubDownloadUrl: githubVersionUrl,
-          githubVersionUrl,
-          downloadsDir,
-          log,
-          colors,
-        });
-
-        log(
-          `* GitHub Release ${releaseTag} 미완료 — latest.yml은 배포하지 않았습니다. ` +
-          `Actions 완료 후: npm run sync:downloads && firebase deploy --only hosting`,
-          colors.yellow
+        throw new Error(
+          `GitHub Release ${releaseTag} 미완료 — sha512 불일치 방지를 위해 Hosting 배포를 중단합니다.\n` +
+          `  → GH_TOKEN 설정 후: npm run release:all\n` +
+          `  → 또는 Actions 완료 후: npm run sync:downloads && firebase deploy --only hosting`
         );
       }
 
@@ -477,15 +458,24 @@ async function main() {
     }
     log('✓ latest.yml(sha512) GitHub 재동기화 → dist 반영', colors.green);
   } catch (err) {
-    log(`* latest.yml 재동기화 실패: ${err.message}`, colors.yellow);
+    if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
+      log(`* latest.yml 재동기화 실패: ${err.message}`, colors.yellow);
+    } else {
+      log(`[에러] latest.yml 재동기화 실패: ${err.message}`, colors.red);
+      process.exit(1);
+    }
   }
 
   // 4.5. Hosting 저장 한도 방지
-  log('\n[4.5/5] Firebase Hosting 오래된 배포본 정리 중...', colors.yellow);
-  try {
-    execSync('node scripts/cleanup_hosting_releases.mjs gen-lang-client-0746903005 3', { stdio: 'inherit', cwd: currentDir });
-  } catch (e) {
-    log('* 경고: Hosting 릴리스 정리 실패 — 배포는 계속 시도합니다.', colors.yellow);
+  if (enableHostingCleanup) {
+    log('\n[4.5/5] Firebase Hosting 오래된 배포본 정리 중...', colors.yellow);
+    try {
+      execSync('node scripts/cleanup_hosting_releases.mjs gen-lang-client-0746903005 3', { stdio: 'inherit', cwd: currentDir });
+    } catch (e) {
+      log('* 경고: Hosting 릴리스 정리 실패 — 배포는 계속 시도합니다.', colors.yellow);
+    }
+  } else {
+    log('\n[4.5/5] 빠른 배포 모드: Hosting 릴리스 정리 생략', colors.yellow);
   }
 
   // 5. 구글 파이어베이스 호스팅 업로드

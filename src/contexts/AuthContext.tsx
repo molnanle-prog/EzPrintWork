@@ -5,10 +5,15 @@ import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, g
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
-import { isTenantOwnerUser, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
+import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, isStaffAdminRole, CompanyPermissionContext } from '../utils/adminAccess';
 import { isStaffKeepLoggedIn, clearSavedStaffCredentials } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
-import { resolveStaffTenantProfile, upsertStaffUserProfile } from '../utils/resolveStaffTenantProfile';
+import { lookupStaffRecordRole } from '../utils/resolveStaffTenantProfile';
+import {
+  abortIncompleteStaffLogin,
+  healStaffProfileFromRecords,
+  isStaffInternalEmail,
+} from '../utils/staffLoginRecovery';
 import { configureAuthPersistenceFromPreferences } from '../utils/authPersistence';
 import {
   clearPersistedStaffSession,
@@ -17,10 +22,10 @@ import {
 import { useDialog } from './DialogContext';
 import {
   getLocalStaffSessionId,
-  setLocalStaffSessionId,
+  getLocalStaffSessionClaimedAt,
   clearLocalStaffSessionId,
-  createStaffSessionId,
-  claimStaffSessionOnFirestore,
+  isRemoteSessionNewerThanLocal,
+  releaseStaffSessionOnFirestore,
 } from '../utils/staffSession';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
@@ -90,6 +95,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [maxStaff, setMaxStaff] = useState<number>(1);
   const [tenantPaymentStatus, setTenantPaymentStatus] = useState<string>('UNPAID');
   const [tenantOwnerId, setTenantOwnerId] = useState<string | null>(null);
+  const [staffRecordRole, setStaffRecordRole] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
   const applyTenantSnapshot = (tenantData: any) => {
@@ -103,16 +109,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const isTenantOwner = isTenantOwnerUser(currentUser?.uid, tenantOwnerId);
-  const isSiteAdmin = currentUser?.role === 'admin' && !isTenantOwner;
-  const canAccessAdminSettings = isTenantOwner || currentUser?.role === 'admin';
-  const canAccessRootSettings = isTenantOwner || currentUser?.email === 'molnanle@gmail.com';
-
   const permissionCtx: CompanyPermissionContext = {
     userUid: currentUser?.uid,
     userRole: currentUser?.role,
     tenantOwnerId,
     userEmail: currentUser?.email,
+    staffRecordRole,
   };
+  const hasAdminAccess = hasCompanyAdminAccess(permissionCtx) || currentUser?.email === 'molnanle@gmail.com';
+  const isSiteAdmin = hasAdminAccess && !isTenantOwner;
+  const canAccessAdminSettings = hasAdminAccess;
+  const canAccessRootSettings = isTenantOwner || currentUser?.email === 'molnanle@gmail.com';
   const canManageCompanyFlag = canManageCompany(permissionCtx);
   const canDeletePermanentlyFlag = canDeletePermanently(permissionCtx);
   const canManageStaffFlag = canManageStaff(permissionCtx);
@@ -123,8 +130,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   /** determineTenantPlan과 동일 — 광고형(AD)만 true */
   const showsAds = tenantPlan === 'free';
 
-  const assertStaffNotDeleted = async (tenantId: string, user: User) => {
-    const staffByUid = await getDoc(doc(db, `tenants/${tenantId}/staff`, user.uid));
+  const assertStaffNotDeleted = async (tenantId: string, user: User, loginId?: string | null) => {
+    const staffCol = collection(db, `tenants/${tenantId}/staff`);
+    const loginNorm =
+      loginId?.trim().toLowerCase()
+      || (user.email?.endsWith('@ez-hub.kr') ? user.email.split('@')[0].trim().toLowerCase() : '');
+
+    if (loginNorm) {
+      const byLogin = await getDocs(
+        query(staffCol, where('loginId', '==', loginNorm), limit(10))
+      );
+      const activeByLogin = byLogin.docs.find((d) => {
+        const s = d.data();
+        return s.isDeleted !== true && s.active !== false;
+      });
+      if (activeByLogin) return;
+      if (byLogin.docs.length > 0) {
+        throw new Error('DELETED_STAFF');
+      }
+    }
+
+    const staffByUid = await getDoc(doc(staffCol, user.uid));
     if (staffByUid.exists()) {
       const s = staffByUid.data();
       if (s.isDeleted === true || s.active === false) {
@@ -133,30 +159,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       return;
     }
     if (user.email) {
-      const q = query(
-        collection(db, `tenants/${tenantId}/staff`),
-        where('email', '==', user.email.trim().toLowerCase()),
-        limit(1)
+      const snap = await getDocs(
+        query(staffCol, where('email', '==', user.email.trim().toLowerCase()), limit(5))
       );
-      const snap = await getDocs(q);
+      const activeByEmail = snap.docs.find((d) => {
+        const s = d.data();
+        return s.isDeleted !== true && s.active !== false;
+      });
+      if (activeByEmail) return;
       if (!snap.empty) {
-        const s = snap.docs[0].data();
-        if (s.isDeleted === true || s.active === false) {
-          throw new Error('DELETED_STAFF');
-        }
+        throw new Error('DELETED_STAFF');
       }
     }
   };
 
   const healStaffUserProfile = async (user: User, userData?: AppUser | null): Promise<AppUser | null> => {
-    const resolved = await resolveStaffTenantProfile(user);
+    const resolved = await healStaffProfileFromRecords(user);
     if (!resolved) return null;
-
-    const saved = await upsertStaffUserProfile(user, resolved);
-    if (!saved) {
-      console.warn('[StaffHeal] users profile write verification failed');
-      return null;
-    }
 
     return {
       uid: user.uid,
@@ -202,7 +221,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (userDoc.exists()) {
         let userData = userDoc.data() as AppUser;
         if ((userData as any).active === false) {
-          throw new Error('DELETED_STAFF');
+          const healedInactive = await healStaffUserProfile(user, userData);
+          if (healedInactive) {
+            userData = healedInactive;
+          } else {
+            throw new Error('DELETED_STAFF');
+          }
         }
 
         if (!userData.tenantId) {
@@ -212,12 +236,35 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
         
+        const loginId =
+            (userData as AppUser & { loginId?: string }).loginId
+            || (user.email?.endsWith('@ez-hub.kr') ? user.email.split('@')[0].toLowerCase() : undefined);
+
+        let effectiveRole = userData.role;
+        let resolvedStaffRole: string | null = null;
+        if (userData.tenantId) {
+          resolvedStaffRole = await lookupStaffRecordRole(userData.tenantId, user.uid, loginId);
+          setStaffRecordRole(resolvedStaffRole);
+          const tenantOwnerSnap = await getDoc(doc(db, 'tenants', userData.tenantId));
+          const ownerId = tenantOwnerSnap.exists() ? String(tenantOwnerSnap.data()?.ownerId || '') : '';
+          const isMainOwner = isTenantOwnerUser(user.uid, ownerId);
+          if (isStaffAdminRole(resolvedStaffRole) && !isMainOwner) {
+            effectiveRole = 'admin';
+          } else if (!isStaffAdminRole(resolvedStaffRole) && !isMainOwner && effectiveRole === 'admin') {
+            effectiveRole = 'staff';
+          }
+          if (effectiveRole !== userData.role) {
+            await setDoc(doc(db, 'users', user.uid), { role: effectiveRole }, { merge: true });
+          }
+        } else {
+          setStaffRecordRole(null);
+        }
+
         const updatedUser = {
           ...userData,
           ...socialProfileData,
-          loginId:
-            (userData as AppUser & { loginId?: string }).loginId
-            || (user.email?.endsWith('@ez-hub.kr') ? user.email.split('@')[0].toLowerCase() : undefined),
+          role: effectiveRole,
+          loginId,
         };
 
         // Firestore에 소셜 최신 프로필 자동 동기화 (비동기 수행)
@@ -227,47 +274,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         setCurrentUser(updatedUser);
         dataService.setSyncUserRole(updatedUser.role);
-
-        if (updatedUser.loginId && updatedUser.tenantId) {
-          let sid = getLocalStaffSessionId();
-          if (!sid) {
-            sid = createStaffSessionId();
-            setLocalStaffSessionId(sid);
-            try {
-              const staffByUid = await getDocs(
-                query(
-                  collection(db, `tenants/${updatedUser.tenantId}/staff`),
-                  where('uid', '==', user.uid),
-                  limit(3)
-                )
-              );
-              let staffDocId = staffByUid.docs[0]?.id;
-              if (!staffDocId) {
-                const staffByLogin = await getDocs(
-                  query(
-                    collection(db, `tenants/${updatedUser.tenantId}/staff`),
-                    where('loginId', '==', updatedUser.loginId.toLowerCase()),
-                    limit(1)
-                  )
-                );
-                staffDocId = staffByLogin.docs[0]?.id;
-              }
-              if (staffDocId) {
-                await claimStaffSessionOnFirestore(db, {
-                  uid: user.uid,
-                  tenantId: updatedUser.tenantId,
-                  staffDocId,
-                  sessionId: sid,
-                });
-              }
-            } catch (sessionErr) {
-              console.warn('[StaffSession] auto-restore claim failed:', sessionErr);
-            }
-          }
-        }
         
         if (updatedUser.tenantId) {
-          await assertStaffNotDeleted(updatedUser.tenantId, user);
+          await assertStaffNotDeleted(updatedUser.tenantId, user, loginId);
           const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
           if (tenantDoc.exists()) {
               const tenantData = tenantDoc.data();
@@ -282,28 +291,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           await dataService.setTenantWhenReady(updatedUser.tenantId, user.uid);
 
           // [SSOT 대표자 직원 동기화 자가 치유]
-          // 만약 대표자(admin) 역할이지만 테넌트의 직원 목록(staff) 서브컬렉션에 자신의 정보가 등재되어 있지 않은 경우,
-          // 별도의 계정 추가 없이 자신의 계정 하나로 완벽히 대표와 직원 역할을 겸임할 수 있도록 자가 치유 동기화를 수행합니다.
+          // 테넌트 owner만 staff 문서 자동 생성. 사내 관리자는 기존 staff에 uid만 연결(중복 생성 방지).
           if (updatedUser.role === 'admin') {
             try {
-              const staffDocRef = doc(db, `tenants/${updatedUser.tenantId}/staff`, user.uid);
+              const tenantOwnerId = tenantDoc.exists() ? String(tenantDoc.data()?.ownerId || '') : '';
+              const isMainOwner = !!tenantOwnerId && tenantOwnerId === user.uid;
+              const staffCol = collection(db, `tenants/${updatedUser.tenantId}/staff`);
+              const staffDocRef = doc(staffCol, user.uid);
               const staffDoc = await getDoc(staffDocRef);
-              if (!staffDoc.exists()) {
-                await setDoc(staffDocRef, {
-                  id: user.uid,
-                  uid: user.uid,
-                  name: updatedUser.name || (updatedUser as any).userName || user.displayName || '대표자',
-                  role: (updatedUser as any).position || '대표자',
-                  phone: (updatedUser as any).contactInfo || '',
-                  phoneCompany: (updatedUser as any).contactInfo || '',
-                  avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(updatedUser.name || '대표자')}`,
-                  active: true,
-                  email: user.email || updatedUser.email || '',
-                  loginId: (updatedUser as any).loginId || user.email || '',
-                  password: (updatedUser as any).password || '',
-                  joinDate: (updatedUser as any).createdAt || new Date().toISOString()
-                }, { merge: true });
-                console.log(`[AuthSelfHealing] Automatically created missing staff record for admin: ${user.uid}`);
+
+              if (staffDoc.exists()) {
+                /* already linked at uid */
+              } else {
+                const loginIdNorm = String(
+                  (updatedUser as any).loginId
+                  || (user.email?.endsWith('@ez-hub.kr') ? user.email.split('@')[0] : '')
+                  || ''
+                ).trim().toLowerCase();
+
+                let existingStaffId: string | null = null;
+                if (loginIdNorm) {
+                  const byLogin = await getDocs(
+                    query(staffCol, where('loginId', '==', loginIdNorm), limit(5))
+                  );
+                  for (const d of byLogin.docs) {
+                    const s = d.data();
+                    if (s.isDeleted === true) continue;
+                    existingStaffId = d.id;
+                    break;
+                  }
+                }
+
+                if (existingStaffId) {
+                  await setDoc(
+                    doc(staffCol, existingStaffId),
+                    { uid: user.uid, active: true },
+                    { merge: true }
+                  );
+                  console.log(`[AuthSelfHealing] Linked existing staff ${existingStaffId} to uid ${user.uid}`);
+                } else if (isMainOwner) {
+                  await setDoc(staffDocRef, {
+                    id: user.uid,
+                    uid: user.uid,
+                    name: updatedUser.name || (updatedUser as any).userName || user.displayName || '대표자',
+                    role: (updatedUser as any).position || '대표자',
+                    phone: (updatedUser as any).contactInfo || '',
+                    phoneCompany: (updatedUser as any).contactInfo || '',
+                    avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(updatedUser.name || '대표자')}`,
+                    active: true,
+                    email: user.email || updatedUser.email || '',
+                    loginId: (updatedUser as any).loginId || user.email || '',
+                    password: (updatedUser as any).password || '',
+                    joinDate: (updatedUser as any).createdAt || new Date().toISOString()
+                  }, { merge: true });
+                  console.log(`[AuthSelfHealing] Automatically created missing staff record for tenant owner: ${user.uid}`);
+                }
               }
             } catch (staffSyncErr) {
               console.warn("[AuthSelfHealing] Failed to sync admin as staff:", staffSyncErr);
@@ -467,6 +509,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (error) {
       if (error instanceof Error && error.message === 'DELETED_STAFF') {
+        try {
+          const customRaw =
+            sessionStorage.getItem('customUser') || localStorage.getItem('customUser');
+          if (customRaw) {
+            const customUser = JSON.parse(customRaw) as AppUser;
+            if (customUser?.tenantId && customUser.uid === user.uid) {
+              setCurrentUser(customUser);
+              dataService.setSyncUserRole(customUser.role);
+              await dataService.setTenantWhenReady(customUser.tenantId, user.uid);
+              return;
+            }
+          }
+        } catch {
+          /* ignore */
+        }
+        const healedDeleted = await healStaffUserProfile(user);
+        if (healedDeleted?.tenantId) {
+          setCurrentUser(healedDeleted);
+          dataService.setSyncUserRole(healedDeleted.role);
+          await dataService.setTenantWhenReady(healedDeleted.tenantId, user.uid);
+          return;
+        }
         console.warn('[Auth] Deleted staff account blocked from login');
         await signOut(auth);
         setCurrentUser(null);
@@ -536,7 +600,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      // 프로필 조회 실패 시에도 흰 화면 방지 — Firebase 기본 정보로 폴백 (직원 @ez-hub.kr 등)
+      // 직원 계정(@ez-hub.kr·loginId 보유) 소속 복구 실패 — 로그아웃으로 루프 방지
+      let hasStaffLoginId = false;
+      try {
+        const snap = await getDoc(doc(db, 'users', user.uid));
+        hasStaffLoginId = !!snap.data()?.loginId;
+      } catch {
+        /* ignore */
+      }
+      if (isStaffInternalEmail(user.email) || hasStaffLoginId) {
+        console.warn('[Auth] Staff profile incomplete — aborting session to prevent login loop');
+        await abortIncompleteStaffLogin();
+        setCurrentUser(null);
+        return;
+      }
+
       setCurrentUser({
         uid: user.uid,
         id: user.uid,
@@ -624,11 +702,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     });
 
     return () => {
-      void setPresenceOffline({
+      void releaseStaffSessionOnFirestore(db, {
         uid: firebaseUser.uid,
         tenantId: currentUser.tenantId!,
         email: currentUser.email || firebaseUser.email,
-        loginId,
         name: currentUser.name || currentUser.displayName,
       });
       stopPresenceSession();
@@ -640,6 +717,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let cancelled = false;
 
     const initAuth = async () => {
+      const authReadyTimer = window.setTimeout(() => {
+        console.warn('[Auth] 초기화 지연 — 로딩 화면 강제 해제');
+        setLoading(false);
+      }, 12000);
+
+      const clearAuthReadyTimer = () => {
+        window.clearTimeout(authReadyTimer);
+      };
       const keepLoggedIn = isStaffKeepLoggedIn();
 
       if (!DEV_BYPASS_LOGIN && !keepLoggedIn) {
@@ -671,6 +756,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         setCurrentUser(mockProfile);
         setTenantPlan('free');
         dataService.setTenant('dev-tenant-id');
+        clearAuthReadyTimer();
         setLoading(false);
         return;
       }
@@ -691,16 +777,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubscribe = onAuthStateChanged(auth, async (user) => {
         console.log("Auth State Changed:", user ? user.uid : "null");
         setFirebaseUser(user);
-        if (user) {
-          await fetchUserProfile(user);
-        } else {
-          const stillKeepLoggedIn = isStaffKeepLoggedIn();
-          if (!stillKeepLoggedIn) {
-            clearPersistedStaffSession();
+        try {
+          if (user) {
+            await fetchUserProfile(user);
+          } else {
+            const stillKeepLoggedIn = isStaffKeepLoggedIn();
+            if (!stillKeepLoggedIn) {
+              clearPersistedStaffSession();
+            }
+            setCurrentUser(null);
           }
-          setCurrentUser(null);
+        } catch (err) {
+          console.error('[Auth] onAuthStateChanged handler failed:', err);
+        } finally {
+          clearAuthReadyTimer();
+          setLoading(false);
         }
-        setLoading(false);
       });
     };
 
@@ -713,15 +805,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const logout = useCallback(async () => {
-    await setPresenceOffline();
+    const uid = firebaseUser?.uid;
+    const tenantId = currentUser?.tenantId;
+    const email = currentUser?.email || firebaseUser?.email;
+    const name = currentUser?.name || currentUser?.displayName || firebaseUser?.displayName;
+
     stopPresenceSession();
+    if (uid && tenantId) {
+      try {
+        await releaseStaffSessionOnFirestore(db, { uid, tenantId, email, name });
+      } catch (err) {
+        console.warn('[StaffSession] release on logout failed:', err);
+        await setPresenceOffline();
+      }
+    } else {
+      await setPresenceOffline();
+    }
     clearPersistedStaffSession();
     clearSavedStaffCredentials();
     clearLocalStaffSessionId();
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);
-  }, []);
+  }, [firebaseUser?.uid, firebaseUser?.email, firebaseUser?.displayName, currentUser?.tenantId, currentUser?.email, currentUser?.name, currentUser?.displayName]);
 
   // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료
   useEffect(() => {
@@ -729,19 +835,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!firebaseUser?.uid || !currentUser?.loginId) return;
 
     const localSid = getLocalStaffSessionId();
+    const localClaimedAt = getLocalStaffSessionClaimedAt();
     if (!localSid) return;
 
     const userRef = doc(db, 'users', firebaseUser.uid);
     const unsubscribe = onSnapshot(userRef, (snap) => {
       if (!snap.exists() || sessionKickedRef.current) return;
-      const remoteSid = snap.data()?.activeSessionId as string | undefined;
-      if (remoteSid && remoteSid !== localSid) {
-        sessionKickedRef.current = true;
-        void (async () => {
-          await showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
-          await logout();
-        })();
-      }
+      const data = snap.data();
+      if (!isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
+
+      sessionKickedRef.current = true;
+      void (async () => {
+        await showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
+        await logout();
+      })();
     }, (err) => {
       console.warn('[StaffSession] session watch failed:', err);
     });

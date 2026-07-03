@@ -17,13 +17,17 @@ export const CompletedJobSearchModal: React.FC<CompletedJobSearchModalProps> = (
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
 
   useEffect(() => {
-    // FIX: Load status definitions
     setStatusDefinitions(db.getStatusDefinitions());
+    void db.ensureColdArchiveLoaded();
+  }, []);
+
+  useEffect(() => {
     if (query.length >= 2) {
-       const allFound = db.searchJobs(query);
-       setResults(allFound); 
+      void db.ensureColdArchiveLoaded().then(() => {
+        setResults(db.searchJobs(query));
+      });
     } else {
-        setResults([]);
+      setResults([]);
     }
   }, [query]);
 

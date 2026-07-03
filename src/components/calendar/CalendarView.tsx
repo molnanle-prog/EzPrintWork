@@ -124,10 +124,12 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
     return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
   }, []);
 
-  const loadData = () => {
-    // Load ample range to cover overlap
+  const loadData = async () => {
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
+    await db.ensureColdArchiveLoaded();
+    await db.ensureCalendarJobsSync(year, month);
+    db.ensureLeavesSync();
     // Load surrounding months to handle overlapping jobs correctly
     const currentMonthJobs = db.getJobsByMonth(year, month);
     const prevMonthJobs = db.getJobsByMonth(year, month - 1);

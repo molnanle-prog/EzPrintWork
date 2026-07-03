@@ -10,8 +10,14 @@ export const CalendarPage: React.FC = () => {
     const [jobs, setJobs] = useState<any[]>([]);
 
     useEffect(() => {
-        setJobs(db.getAllJobs());
-    }, []);
+        const load = async () => {
+            const year = currentMonth.getFullYear();
+            const month = currentMonth.getMonth();
+            await db.ensureCalendarJobsSync(year, month);
+            setJobs(db.getAllJobs());
+        };
+        void load();
+    }, [currentMonth]);
 
     const renderHeader = () => {
         return (

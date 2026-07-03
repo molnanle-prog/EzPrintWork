@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore, doc, getDocFromCache, getDocFromServer, setDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, setDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 export const firebaseConfig = {
   "projectId": "gen-lang-client-0746903005",
@@ -54,25 +54,42 @@ const presenceFields = (online: boolean) => ({
   ...(online ? { lastLogin: presenceNow(), lastCheckIn: presenceNow() } : { lastLogout: presenceNow() }),
 });
 
+/** 실제 staff 문서 ID만 반환 — loginId/uid를 문서 ID로 착각해 유령 카드를 만들지 않음 */
 async function resolvePresenceStaffDocIds(user: PresenceUser): Promise<string[]> {
-  const ids = new Set<string>([user.uid]);
-  const loginId = user.loginId?.trim().toLowerCase();
-  if (loginId) ids.add(loginId);
+  const ids = new Set<string>();
+  const staffCol = collection(db, `tenants/${user.tenantId}/staff`);
 
   try {
-    const byUid = await getDocs(query(collection(db, `tenants/${user.tenantId}/staff`), where('uid', '==', user.uid), limit(5)));
+    const uidDoc = await getDocFromServer(doc(db, `tenants/${user.tenantId}/staff`, user.uid));
+    if (uidDoc.exists()) ids.add(user.uid);
+  } catch (err) {
+    console.warn('[Presence] staff uid doc lookup failed:', err);
+  }
+
+  try {
+    const byUid = await getDocs(query(staffCol, where('uid', '==', user.uid), limit(10)));
     byUid.docs.forEach((d) => ids.add(d.id));
   } catch (err) {
-    console.warn('[Presence] staff uid lookup failed:', err);
+    console.warn('[Presence] staff uid query failed:', err);
+  }
+
+  const loginId = user.loginId?.trim().toLowerCase();
+  if (loginId) {
+    try {
+      const byLogin = await getDocs(query(staffCol, where('loginId', '==', loginId), limit(10)));
+      byLogin.docs.forEach((d) => ids.add(d.id));
+    } catch (err) {
+      console.warn('[Presence] staff loginId query failed:', err);
+    }
   }
 
   const email = user.email?.trim().toLowerCase();
   if (email) {
     try {
-      const byEmail = await getDocs(query(collection(db, `tenants/${user.tenantId}/staff`), where('email', '==', email), limit(5)));
+      const byEmail = await getDocs(query(staffCol, where('email', '==', email), limit(10)));
       byEmail.docs.forEach((d) => ids.add(d.id));
     } catch (err) {
-      console.warn('[Presence] staff email lookup failed:', err);
+      console.warn('[Presence] staff email query failed:', err);
     }
   }
 
@@ -90,7 +107,7 @@ async function writePresence(user: PresenceUser, online: boolean): Promise<void>
     tasks.push(
       setDoc(
         doc(db, `tenants/${user.tenantId}/staff`, staffId),
-        { uid: user.uid, ...(user.name ? { name: user.name } : {}), ...fields },
+        { uid: user.uid, ...fields },
         { merge: true }
       ).then(() => undefined)
     );
@@ -126,9 +143,14 @@ export async function setPresenceOffline(user?: PresenceUser | null): Promise<vo
 
 const onPresencePageHide = () => { void setPresenceOffline(); };
 
+const onPresenceBeforeUnload = () => { void setPresenceOffline(); };
+
 const onPresenceVisibility = () => {
-  if (presenceActiveUser && document.visibilityState === 'visible') {
+  if (!presenceActiveUser) return;
+  if (document.visibilityState === 'visible') {
     void setPresenceOnline(presenceActiveUser);
+  } else {
+    void setPresenceOffline(presenceActiveUser);
   }
 };
 
@@ -143,6 +165,7 @@ export function startPresenceSession(user: PresenceUser): void {
   }, PRESENCE_HEARTBEAT_MS);
   document.addEventListener('visibilitychange', onPresenceVisibility);
   window.addEventListener('pagehide', onPresencePageHide);
+  window.addEventListener('beforeunload', onPresenceBeforeUnload);
 }
 
 export function stopPresenceSession(): void {
@@ -152,5 +175,6 @@ export function stopPresenceSession(): void {
   }
   document.removeEventListener('visibilitychange', onPresenceVisibility);
   window.removeEventListener('pagehide', onPresencePageHide);
+  window.removeEventListener('beforeunload', onPresenceBeforeUnload);
   presenceActiveUser = null;
 }

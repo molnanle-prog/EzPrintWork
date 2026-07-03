@@ -334,6 +334,81 @@ html.trello .job-urgency-very-urgent:not(.kanban-card) {
   border-color: #f87171 !important;
 }
 
+/* 책자 후가공 섹션 — 모든 테마에서 제목·배경 대비 고정 (다크/트렐로 연한 글자 방지) */
+.booklet-processing-heading,
+.booklet-processing-section-title,
+.booklet-processing-cover-title,
+.booklet-processing-inner-title {
+  font-weight: 700 !important;
+  opacity: 1 !important;
+}
+
+.booklet-processing-heading {
+  color: #0f172a !important;
+}
+
+.booklet-processing-section-title {
+  color: #0f172a !important;
+}
+
+.booklet-processing-cover-title {
+  color: #1e3a8a !important;
+}
+
+.booklet-processing-inner-title {
+  color: #14532d !important;
+}
+
+.booklet-processing-common-box {
+  background-color: #e2e8f0 !important;
+  border-color: #64748b !important;
+}
+
+.booklet-processing-cover-box {
+  background-color: #bfdbfe !important;
+  border-color: #3b82f6 !important;
+}
+
+.booklet-processing-inner-box {
+  background-color: #a7f3d0 !important;
+  border-color: #10b981 !important;
+}
+
+html.trello .booklet-processing-heading,
+html.dark .booklet-processing-heading,
+html.trello .booklet-processing-section-title,
+html.dark .booklet-processing-section-title {
+  color: #0f172a !important;
+}
+
+html.trello .booklet-processing-cover-title,
+html.dark .booklet-processing-cover-title {
+  color: #1e3a8a !important;
+}
+
+html.trello .booklet-processing-inner-title,
+html.dark .booklet-processing-inner-title {
+  color: #14532d !important;
+}
+
+html.trello .booklet-processing-common-box,
+html.dark .booklet-processing-common-box {
+  background-color: #e2e8f0 !important;
+  border-color: #64748b !important;
+}
+
+html.trello .booklet-processing-cover-box,
+html.dark .booklet-processing-cover-box {
+  background-color: #bfdbfe !important;
+  border-color: #3b82f6 !important;
+}
+
+html.trello .booklet-processing-inner-box,
+html.dark .booklet-processing-inner-box {
+  background-color: #a7f3d0 !important;
+  border-color: #10b981 !important;
+}
+
 /* 유동 테두리: 배경 위에서도 레이어가 보이도록 */
 [class*="flowing-border"] {
   overflow: visible;

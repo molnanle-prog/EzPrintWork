@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// EzPrintWork — 견적서 헤더 등 테넌트 이미지
+// EzPrintWork — 견적서 헤더 등 테넌트 이미지 + 작업 이력 보관(읽기 미러)
 service firebase.storage {
   match /b/{bucket}/o {
     function isTenantMember(tenantId) {
@@ -15,6 +15,13 @@ service firebase.storage {
       allow write: if isTenantMember(tenantId)
         && request.resource.size < 3 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');
+    }
+
+    match /tenants/{tenantId}/archive/{fileName} {
+      allow read: if isTenantMember(tenantId);
+      allow write: if isTenantMember(tenantId)
+        && request.resource.size < 100 * 1024 * 1024
+        && request.resource.contentType == 'application/json';
     }
   }
 }

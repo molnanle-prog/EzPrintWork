@@ -27,6 +27,38 @@ export function readStaffLoginTenant(): string | null {
   return sessionStorage.getItem(STAFF_LOGIN_TENANT_KEY);
 }
 
+/** 로그인 사용자의 staff 문서 role 조회 (사내 관리자 권한 보정용) */
+export async function lookupStaffRecordRole(
+  tenantId: string,
+  uid: string,
+  loginId?: string | null
+): Promise<string | null> {
+  const staffCol = collection(db, `tenants/${tenantId}/staff`);
+  try {
+    const uidDoc = await getDoc(doc(staffCol, uid));
+    if (uidDoc.exists() && uidDoc.data().isDeleted !== true) {
+      return String(uidDoc.data().role || uidDoc.data().position || '');
+    }
+  } catch (err) {
+    console.warn('[StaffRole] uid lookup failed:', err);
+  }
+
+  const normalizedLogin = loginId?.trim().toLowerCase();
+  if (normalizedLogin) {
+    try {
+      const snap = await getDocs(query(staffCol, where('loginId', '==', normalizedLogin), limit(5)));
+      for (const d of snap.docs) {
+        const data = d.data();
+        if (data.isDeleted !== true) return String(data.role || data.position || '');
+      }
+    } catch (err) {
+      console.warn('[StaffRole] loginId lookup failed:', err);
+    }
+  }
+
+  return null;
+}
+
 export async function resolveStaffTenantProfile(user: User): Promise<ResolvedStaffProfile | null> {
   const email = user.email?.trim().toLowerCase();
   if (!email) return null;
@@ -147,6 +179,7 @@ export async function upsertStaffUserProfile(
     tenantId: profile.tenantId,
     role: profile.role,
     loginId: profile.loginId,
+    active: true,
   };
 
   await setDoc(doc(db, 'users', user.uid), payload, { merge: true });

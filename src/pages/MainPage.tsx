@@ -10,13 +10,17 @@ import { ClientManager } from '../components/settings/ClientManager';
 import { PaperManager } from '../components/settings/PaperManager';
 import { ActionLogPage } from './ActionLogPage';
 import { PaymentReceivableManager } from '../components/payments/PaymentReceivableManager';
+import { ArchiveSetupWizard } from '../components/auth/ArchiveSetupWizard';
 import { db } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
+import { isArchiveSetupDone } from '../utils/archiveStorage';
 
 type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'logs' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
 
 export const MainPage: React.FC = () => {
-    const { currentUser } = useAuth();
+    const { currentUser, canAccessRootSettings } = useAuth();
+    const isElectron = typeof window !== 'undefined' && !!window.electron;
+    const [showArchiveWizard, setShowArchiveWizard] = useState(false);
     const [activeTab, setActiveTab] = useState<ViewType>(() => {
         const savedTab = localStorage.getItem('ezprint_active_tab') as ViewType;
         const isStaff = currentUser?.role === 'staff';
@@ -30,6 +34,13 @@ export const MainPage: React.FC = () => {
     useEffect(() => {
         localStorage.setItem('ezprint_active_tab', activeTab);
     }, [activeTab]);
+
+    useEffect(() => {
+        if (!isElectron || !canAccessRootSettings) return;
+        if (!isArchiveSetupDone()) {
+            setShowArchiveWizard(true);
+        }
+    }, [isElectron, canAccessRootSettings]);
 
     const handleNavigateToQuote = (quoteId?: string) => {
         setActiveTab('quotes');
@@ -52,8 +63,13 @@ export const MainPage: React.FC = () => {
     };
 
     return (
-        <Layout activeTab={activeTab} onTabChange={(tab: any) => setActiveTab(tab)}>
-            {renderContent()}
-        </Layout>
+        <>
+            {showArchiveWizard && (
+                <ArchiveSetupWizard onComplete={() => setShowArchiveWizard(false)} />
+            )}
+            <Layout activeTab={activeTab} onTabChange={(tab: any) => setActiveTab(tab)}>
+                {renderContent()}
+            </Layout>
+        </>
     );
 };

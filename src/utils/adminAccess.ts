@@ -2,7 +2,7 @@
  * 회사(테넌트) 권한 모델
  *
  * - 메인 관리자 (Tenant Owner): tenants.ownerId — 요금제·백업 포함 전체 회사 관리
- * - 사내 관리자 (Company Admin): users.role === 'admin' — 직원·마스터 데이터·삭제·정리
+ * - 사내 관리자 (Company Admin): staff/users role admin — 직원 관리·마스터 데이터·삭제·정리
  * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·상품/후가공·거래처 등록·수정
  */
 
@@ -36,8 +36,8 @@ export function resolveAppRoleFromStaff(staffRole?: string | null): 'admin' | 's
     return isStaffAdminRole(staffRole) ? 'admin' : 'staff';
 }
 
-/** 메인 관리자 전용 설정 (요금제·백업) */
-export const ROOT_SETTINGS_TAB_IDS = ['plan', 'backup'] as const;
+/** 메인 관리자 전용 설정 (요금제·아카이브·백업) */
+export const ROOT_SETTINGS_TAB_IDS = ['plan', 'archive', 'backup'] as const;
 
 export type RootSettingsTabId = (typeof ROOT_SETTINGS_TAB_IDS)[number];
 
@@ -50,16 +50,27 @@ export type CompanyPermissionContext = {
     userRole?: string | null;
     tenantOwnerId?: string | null;
     userEmail?: string | null;
+    /** tenants/{id}/staff 에 기록된 본인 role (users.role 보정용) */
+    staffRecordRole?: string | null;
 };
+
+/** users.role 또는 staff 문서 role 기준 사내/메인 관리자 여부 */
+export function hasCompanyAdminAccess(ctx: CompanyPermissionContext): boolean {
+    if (!ctx.userUid) return false;
+    if (isTenantOwnerUser(ctx.userUid, ctx.tenantOwnerId)) return true;
+    if (ctx.userRole === 'admin') return true;
+    if (isStaffAdminRole(ctx.staffRecordRole) && !isTenantOwnerUser(ctx.userUid, ctx.tenantOwnerId)) {
+        return true;
+    }
+    return false;
+}
 
 /** 메인 + 사내 관리자 — 설정·직원·마스터 데이터·영구 삭제 */
 export function canManageCompany(ctx: CompanyPermissionContext): boolean {
-    if (!ctx.userUid) return false;
-    if (isTenantOwnerUser(ctx.userUid, ctx.tenantOwnerId)) return true;
-    return ctx.userRole === 'admin';
+    return hasCompanyAdminAccess(ctx);
 }
 
-/** 메인 관리자 전용 — 요금제·백업 */
+/** 메인 관리자 전용 — 요금제·아카이브·백업 */
 export function canManageTenantRoot(ctx: CompanyPermissionContext): boolean {
     if (!ctx.userUid) return false;
     if (isTenantOwnerUser(ctx.userUid, ctx.tenantOwnerId)) return true;

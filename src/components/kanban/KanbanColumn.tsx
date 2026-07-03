@@ -5,10 +5,24 @@ import { KanbanCard } from './KanbanCard';
 import { useTheme } from '../../contexts/ThemeContext';
 import { AdBanner } from '../common/AdBanner';
 import { useDroppable } from '@dnd-kit/core';
-import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable';
+import { SortableContext, rectSortingStrategy, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { COLUMN_DROPPABLE_PREFIX } from './kanbanCollisionDetection';
+import { GripHorizontal } from 'lucide-react';
 
 export { COLUMN_DROPPABLE_PREFIX };
+
+const getStatusDotColor = (statusKey: string) => {
+  switch (statusKey) {
+    case 'QUOTE': return 'bg-indigo-500';
+    case 'RECEIVED': return 'bg-red-500';
+    case 'DESIGN': return 'bg-orange-500';
+    case 'PRINTING': return 'bg-amber-500';
+    case 'POST_PROCESSING': return 'bg-emerald-500';
+    case 'DELIVERY': return 'bg-blue-600';
+    case 'COMPLETED': return 'bg-slate-500';
+    default: return 'bg-slate-500';
+  }
+};
 
 export interface CompactTraySectionProps {
   statusDef: JobStatusDefinition;
@@ -21,6 +35,11 @@ export interface CompactTraySectionProps {
   resolveIsMyJob?: (job: Job) => boolean;
   isTvMode?: boolean;
   fillHeight?: boolean;
+  resizeHandle?: {
+    dragging: boolean;
+    onPointerDown: (e: React.PointerEvent) => void;
+    title?: string;
+  };
 }
 
 export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
@@ -34,6 +53,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
   resolveIsMyJob,
   isTvMode = false,
   fillHeight = false,
+  resizeHandle,
 }) => {
   const { theme } = useTheme();
   const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
@@ -44,28 +64,64 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
   const jobIds = sortedJobs.map((job) => job.id);
+  const isQuoteTray = statusDef.key === 'QUOTE';
+  const isCompletedTray = statusDef.key === 'COMPLETED';
+  // 완료 칸도 견적 칸처럼 큰 헤더를 사용해 가독성을 맞춘다.
+  const useLargeHeader = isQuoteTray || isCompletedTray;
 
   return (
     <div className={`flex flex-col ${fillHeight ? 'h-full min-h-0' : 'flex-none'}`}>
-      <div className="flex items-center justify-between mb-1.5 px-1 shrink-0">
-        <span className="text-[10px] lg:text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
-          {statusDef.label}
-        </span>
-        <span
-          className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
-            theme === 'trello'
-              ? 'bg-[#2c3e56] text-slate-300'
-              : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
-          }`}
-        >
-          {jobs.length}
-        </span>
-      </div>
+      {useLargeHeader ? (
+        <div className={`relative p-1.5 lg:p-2 flex items-center justify-between shrink-0 ${theme === 'trello' ? 'border-b border-transparent' : 'border-b border-slate-200/80 dark:border-slate-700/80'}`}>
+          <h3 className={`font-medium flex items-center gap-2 ${theme === 'trello' ? 'text-slate-300 font-bold' : 'text-slate-700 dark:text-slate-200'} ${isTvMode ? 'text-[19px] lg:text-[22px]' : 'text-[15px] lg:text-[17px]'}`}>
+            <div className={`rounded-full shadow-sm ${isTvMode ? 'w-3 h-3' : 'w-2 h-2'} ${getStatusDotColor(statusDef.key)}`} />
+            {statusDef.label}
+          </h3>
+          {resizeHandle && (
+            <button
+              type="button"
+              onPointerDown={resizeHandle.onPointerDown}
+              title={resizeHandle.title || '드래그하여 상·하 비율 조절'}
+              className={`absolute left-1/2 -translate-x-1/2 px-1.5 py-1 rounded cursor-row-resize ${
+                resizeHandle.dragging
+                  ? 'bg-blue-500/25 text-blue-200'
+                  : theme === 'trello'
+                    ? 'hover:bg-[#334a67] text-slate-400'
+                    : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400'
+              }`}
+            >
+              <GripHorizontal size={14} />
+            </button>
+          )}
+          <div className="flex items-center gap-1.5">
+            <span className={`rounded-full font-medium shadow-sm ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-transparent font-bold' : 'bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600'} ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5' : 'text-[10px] px-2 py-0.5'}`}>
+              {jobs.length}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between mb-1.5 px-1 shrink-0">
+          <span className="text-[10px] lg:text-[11px] font-black text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
+            {statusDef.label}
+          </span>
+          <span
+            className={`text-[10px] px-1.5 py-0.5 rounded-full font-extrabold ${
+              theme === 'trello'
+                ? 'bg-[#2c3e56] text-slate-300'
+                : 'bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            {jobs.length}
+          </span>
+        </div>
+      )}
 
       <div
         ref={setNodeRef}
         data-kanban-column={statusDef.key}
-        className={`${fillHeight ? 'flex-1 min-h-0' : 'min-h-[88px] max-h-[220px]'} overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 flex flex-col gap-1.5 transition-colors ${
+        className={`${fillHeight ? 'flex-1 min-h-0' : isQuoteTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors ${
+          isQuoteTray ? 'overflow-x-hidden' : 'flex flex-col gap-1.5'
+        } ${
           isOver
             ? theme === 'trello'
               ? 'border-indigo-400 bg-indigo-950/30 ring-2 ring-indigo-400/40'
@@ -75,29 +131,32 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
               : 'border-slate-300 dark:border-slate-600 bg-white/50 dark:bg-slate-900/40'
         }`}
       >
-        <SortableContext items={jobIds} strategy={verticalListSortingStrategy}>
+        <SortableContext items={jobIds} strategy={isQuoteTray ? rectSortingStrategy : verticalListSortingStrategy}>
           {sortedJobs.length === 0 ? (
-            <div className="flex-1 flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2">
+            <div className={`flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2 ${isQuoteTray ? 'min-h-[72px]' : 'flex-1'}`}>
               {statusDef.key === 'QUOTE'
                 ? '견적 문의를 여기로 끌어다 놓으세요'
                 : `${statusDef.label} 작업을 여기로 끌어다 놓으세요`}
             </div>
           ) : (
-            sortedJobs.map((job) => (
-              <KanbanCard
-                key={job.id}
-                job={job}
-                status={job.status}
-                staffName={getStaffName(job)}
-                onSelect={onSelectJob}
-                onRightClick={onRightClickJob}
-                onStatusChange={onStatusChange}
-                isMyJob={resolveIsMyJob ? resolveIsMyJob(job) : false}
-                currentUserId={currentUserId}
-                isTvMode={isTvMode}
-                isCompactTray
-              />
-            ))
+            <div className={isQuoteTray ? 'grid grid-cols-2 lg:grid-cols-3 gap-1.5 auto-rows-min' : 'flex flex-col gap-1.5'}>
+              {sortedJobs.map((job) => (
+                <KanbanCard
+                  key={job.id}
+                  job={job}
+                  status={job.status}
+                  staffName={getStaffName(job)}
+                  onSelect={onSelectJob}
+                  onRightClick={onRightClickJob}
+                  onStatusChange={onStatusChange}
+                  isMyJob={resolveIsMyJob ? resolveIsMyJob(job) : false}
+                  currentUserId={currentUserId}
+                  isTvMode={isTvMode}
+                  isCompactTray={!isQuoteTray}
+                  isQuoteTray={isQuoteTray}
+                />
+              ))}
+            </div>
           )}
         </SortableContext>
 
@@ -127,6 +186,11 @@ interface KanbanColumnProps {
   isTvMode?: boolean;
   /** 상·하 분할 칸 내부에 넣을 때 외곽 테두리 제거 */
   embedded?: boolean;
+  resizeHandle?: {
+    dragging: boolean;
+    onPointerDown: (e: React.PointerEvent) => void;
+    title?: string;
+  };
 }
 
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({ 
@@ -142,24 +206,14 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   showAd = false,
   isTvMode = false,
   embedded = false,
+  resizeHandle,
 }) => {
   const { theme } = useTheme();
 
   const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
   const { setNodeRef, isOver } = useDroppable({ id: droppableId });
 
-  const getColorForStatus = (statusKey: string) => {
-    switch (statusKey) {
-      case 'QUOTE': return 'bg-indigo-500';
-      case 'RECEIVED': return 'bg-red-500';
-      case 'DESIGN': return 'bg-orange-500';
-      case 'PRINTING': return 'bg-amber-500';
-      case 'POST_PROCESSING': return 'bg-emerald-500';
-      case 'DELIVERY': return 'bg-blue-600';
-      case 'COMPLETED': return 'bg-slate-500';
-      default: return 'bg-slate-500';
-    }
-  };
+  const getColorForStatus = (statusKey: string) => getStatusDotColor(statusKey);
 
   const sortedJobs = [...jobs].sort((a, b) => {
     if (a.order !== b.order) return a.order - b.order;
@@ -180,14 +234,32 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         }`}
       `}
     >
-      <div className={`p-1.5 lg:p-2 flex items-center justify-between rounded-t-xl sticky top-0 z-10 ${theme === "trello" ? "bg-transparent border-b border-transparent" : "bg-white/50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 backdrop-blur-sm"}`}>
+      <div className={`relative p-1.5 lg:p-2 flex items-center justify-between rounded-t-xl sticky top-0 z-10 ${theme === "trello" ? "bg-transparent border-b border-transparent" : "bg-white/50 dark:bg-slate-800/50 border-b border-slate-200 dark:border-slate-700 backdrop-blur-sm"}`}>
         <h3 className={`font-medium flex items-center gap-2 ${theme === "trello" ? "text-slate-300 font-bold" : "text-slate-700 dark:text-slate-200"} ${isTvMode ? 'text-[19px] lg:text-[22px] font-medium' : 'text-[15px] lg:text-[17px]'}`}>
           <div className={`rounded-full shadow-sm ${isTvMode ? 'w-3 h-3' : 'w-2 h-2'} ${getColorForStatus(statusDef.key)}`} />
           {statusDef.label}
         </h3>
-        <span className={`rounded-full font-medium shadow-sm ${theme === "trello" ? "bg-[#2c3e56] text-slate-300 border-transparent shadow-none font-bold" : "bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600"} ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5 font-medium' : 'text-[10px] px-2 py-0.5'}`}>
-          {jobs.length}
-        </span>
+        {resizeHandle && (
+          <button
+            type="button"
+            onPointerDown={resizeHandle.onPointerDown}
+            title={resizeHandle.title || '드래그하여 상·하 비율 조절'}
+            className={`absolute left-1/2 -translate-x-1/2 px-1.5 py-1 rounded cursor-row-resize ${
+              resizeHandle.dragging
+                ? 'bg-blue-500/25 text-blue-200'
+                : theme === 'trello'
+                  ? 'hover:bg-[#334a67] text-slate-400'
+                  : 'hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-400'
+            }`}
+          >
+            <GripHorizontal size={14} />
+          </button>
+        )}
+        <div className="flex items-center gap-1.5">
+          <span className={`rounded-full font-medium shadow-sm ${theme === "trello" ? "bg-[#2c3e56] text-slate-300 border-transparent shadow-none font-bold" : "bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600"} ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5 font-medium' : 'text-[10px] px-2 py-0.5'}`}>
+            {jobs.length}
+          </span>
+        </div>
       </div>
       
       <div

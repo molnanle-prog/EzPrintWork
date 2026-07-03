@@ -29,6 +29,7 @@ export const QuoteManager: React.FC = () => {
 
 
   useEffect(() => {
+    db.ensureQuotesSync();
     loadQuotes();
     const unsubscribe = db.subscribe(loadQuotes);
     return () => unsubscribe();

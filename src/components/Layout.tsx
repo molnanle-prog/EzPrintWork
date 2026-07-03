@@ -176,7 +176,10 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   });
   
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
-  const [isPinned, setIsPinned] = useState(false);
+  const [isPinned, setIsPinned] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('ezprint_widget_mode') === 'true';
+  });
   const [opacity, setOpacity] = useState(1);
   const sidebarRef = useRef<HTMLElement>(null);
 
@@ -229,9 +232,24 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     { id: 'payments', label: '결제상황', icon: CreditCard },
   ];
 
-  // Window Controls (Mock for Web)
-  const togglePin = () => setIsPinned(!isPinned);
-  const toggleOpacity = () => setOpacity(opacity === 1 ? 0.9 : 1);
+  // Window Controls
+  const togglePin = () => {
+    setIsPinned((prev) => {
+      const next = !prev;
+      localStorage.setItem('ezprint_widget_mode', next ? 'true' : 'false');
+      toast.info(next ? '위젯 모드 — 하단 탭만 표시됩니다.' : '일반 모드로 돌아왔습니다.');
+      return next;
+    });
+  };
+  const toggleOpacity = () => setOpacity((prev) => (prev === 1 ? 0.88 : 1));
+  const sendWindowToBack = () => {
+    if (isElectron && window.electron?.lower) {
+      window.electron.lower();
+      toast.success('다른 창 뒤로 보냈습니다. 작업표시줄에서 다시 열 수 있습니다.');
+      return;
+    }
+    toast.info('이 기능은 PC 전용 앱에서 사용할 수 있습니다.');
+  };
 
   const containerClass = isPinned 
     ? "flex flex-col h-screen bg-slate-900/95 border-2 border-blue-500 overflow-hidden transition-all duration-300 shadow-2xl"
@@ -242,7 +260,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     : `hidden lg:flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-xl z-50 transition-all duration-300 relative ${isSidebarExpanded ? 'w-72' : 'w-14'}`;
 
   return (
-    <div className={containerClass} style={{ opacity: isPinned ? opacity : 1 }}>
+    <div className={containerClass} style={{ opacity: opacity < 1 ? opacity : 1 }}>
       
       {/* Title Bar */}
       <div 
@@ -261,7 +279,35 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             className="flex items-center h-full text-slate-400" 
             style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
           >
-              <button 
+              {isElectron && (
+                <>
+                  <button
+                    type="button"
+                    onClick={toggleOpacity}
+                    className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                    title="창 투명도"
+                  >
+                    <Eye size={14} className={opacity < 1 ? 'text-blue-400' : ''} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={togglePin}
+                    className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                    title={isPinned ? '위젯 모드 해제' : '위젯 모드 (컴팩트)'}
+                  >
+                    <Pin size={14} className={isPinned ? 'text-yellow-400 fill-yellow-400/20' : ''} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={sendWindowToBack}
+                    className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-amber-300 transition-colors"
+                    title="다른 창 맨 뒤로 (최하단 고정)"
+                  >
+                    <ArrowDownToLine size={14} />
+                  </button>
+                </>
+              )}
+              <button
                 onClick={() => {
                     if (isElectron && window.electron?.minimize) {
                         window.electron.minimize();

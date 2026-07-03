@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
 import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
@@ -13,11 +13,12 @@ import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
 import { normalizeStaffLoginEmail, provisionStaffAuthAccount, MIN_STAFF_PASSWORD_LENGTH } from '../utils/staffAuthProvision';
+import { signInStaffWithFirebaseAuth } from '../utils/staffFirebaseSignIn';
 import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
 import { rememberStaffLoginTenant } from '../utils/resolveStaffTenantProfile';
-import { loadStaffLoginPreferences, saveStaffLoginPreferences } from '../utils/staffLoginPreferences';
-import { configureAuthPersistenceFromPreferences } from '../utils/authPersistence';
+import { loadStaffLoginPreferences, saveStaffLoginPreferences, disableStaffAutoLoginPrefs } from '../utils/staffLoginPreferences';
+import { abortIncompleteStaffLogin, retryStaffProfileUpsert } from '../utils/staffLoginRecovery';
 import {
     createStaffSessionId,
     getLocalStaffSessionId,
@@ -45,7 +46,7 @@ const formatSearchError = (error: any): string => {
 export const LoginPage: React.FC = () => {
     const navigate = useNavigate();
     const { theme } = useTheme();
-    const { loginCustomSession, refreshUser, loading: authLoading, firebaseUser } = useAuth();
+    const { loginCustomSession, loading: authLoading, currentUser } = useAuth();
     const { showConfirm } = useDialog();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
@@ -56,7 +57,7 @@ export const LoginPage: React.FC = () => {
 
     const [selectedTenantId, setSelectedTenantId] = useState('');
     const [rememberCompany, setRememberCompany] = useState(false);
-    const [keepLoggedIn, setKeepLoggedIn] = useState(false);
+    const [saveCredentials, setSaveCredentials] = useState(false);
     const [isSearchingLoginCompany, setIsSearchingLoginCompany] = useState(false);
     const [hasSearchedLogin, setHasSearchedLogin] = useState(false);
     const [loginCompanySearchResults, setLoginCompanySearchResults] = useState<{ id: string; name: string }[]>([]);
@@ -75,15 +76,13 @@ export const LoginPage: React.FC = () => {
     ) => {
         saveStaffLoginPreferences({
             rememberCompany: overrides?.rememberCompany ?? rememberCompany,
-            keepLoggedIn: overrides?.keepLoggedIn ?? keepLoggedIn,
+            keepLoggedIn: overrides?.keepLoggedIn ?? saveCredentials,
             companyName: overrides?.companyName ?? companyName,
             tenantId: overrides?.tenantId ?? selectedTenantId,
             loginId: overrides?.loginId ?? loginId,
             loginPassword: overrides?.loginPassword ?? password,
         });
     };
-
-    const autoLoginAttemptedRef = useRef(false);
 
     useEffect(() => {
         setIsElectron(typeof window !== 'undefined' && !!window.electron);
@@ -100,7 +99,7 @@ export const LoginPage: React.FC = () => {
             setPassword(prefs.loginPassword);
         }
         setRememberCompany(prefs.rememberCompany);
-        setKeepLoggedIn(prefs.keepLoggedIn);
+        setSaveCredentials(prefs.keepLoggedIn);
     }, []);
 
     useEffect(() => {
@@ -307,24 +306,24 @@ export const LoginPage: React.FC = () => {
 
     const handleToggleRememberCompany = (checked: boolean) => {
         setRememberCompany(checked);
-        const nextKeep = checked ? keepLoggedIn : false;
+        const nextKeep = checked ? saveCredentials : false;
         if (!checked) {
-            setKeepLoggedIn(false);
+            setSaveCredentials(false);
         }
         persistLoginPrefs({ rememberCompany: checked, keepLoggedIn: nextKeep });
     };
 
-    const handleToggleKeepLoggedIn = (checked: boolean) => {
-        setKeepLoggedIn(checked);
+    const handleToggleSaveCredentials = (checked: boolean) => {
+        setSaveCredentials(checked);
         const nextRemember = checked ? true : rememberCompany;
         if (checked) {
             setRememberCompany(true);
         }
         persistLoginPrefs({ rememberCompany: nextRemember, keepLoggedIn: checked });
         if (checked) {
-            toast.info('자동 로그인 상태 유지가 켜졌습니다. 공용 PC인 경우 보안을 위해 꺼주시기 바랍니다.');
+            toast.info('아이디·비밀번호가 저장됩니다. 다음에도 직원 로그인 버튼을 눌러 주세요.');
         } else {
-            toast.success('자동 로그인 상태 유지가 꺼졌습니다. 프로그램 재부팅 시 초기화됩니다.');
+            toast.success('저장된 아이디·비밀번호가 삭제되었습니다.');
         }
     };
 
@@ -355,7 +354,7 @@ export const LoginPage: React.FC = () => {
 
             await setPersistence(
                 auth,
-                keepLoggedIn ? browserLocalPersistence : browserSessionPersistence
+                saveCredentials ? browserLocalPersistence : browserSessionPersistence
             );
 
             const staffCol = collection(db, `tenants/${selectedTenantId}/staff`);
@@ -421,7 +420,7 @@ export const LoginPage: React.FC = () => {
             }
 
             const newSessionId = createStaffSessionId();
-            setLocalStaffSessionId(newSessionId);
+            setLocalStaffSessionId(newSessionId, saveCredentials);
 
             const tenantDocRef = doc(db, 'tenants', tenantId);
             const tenantDocSnap = await getDoc(tenantDocRef);
@@ -446,69 +445,30 @@ export const LoginPage: React.FC = () => {
                 name: staffDisplayName,
                 role: resolvedRole,
                 staffDocId: userDoc.id,
-                email: primaryAuthEmail,
+                email: legacyAuthEmail || primaryAuthEmail,
             });
             rememberStaffLoginTenant(tenantId);
 
-            const passwordsToTry = [...new Set([
-                password.trim(),
-                password.trim().toLowerCase(),
-                userData.password?.trim(),
-                userData.password?.trim().toLowerCase(),
-            ].filter(Boolean))] as string[];
+            const authResult = await signInStaffWithFirebaseAuth(
+                auth,
+                {
+                    loginId: rawLoginId,
+                    email: userData.email,
+                    password: userData.password,
+                    uid: userData.uid,
+                },
+                loginId.trim(),
+                password
+            );
 
-            let signedIn = false;
-            let lastAuthError: any = null;
-            let authEmail = primaryAuthEmail;
-            const authEmailsToTry = [...new Set([primaryAuthEmail, legacyAuthEmail].filter(Boolean))] as string[];
-
-            for (const emailCandidate of authEmailsToTry) {
-                for (const pwd of passwordsToTry) {
-                    try {
-                        await signInWithEmailAndPassword(auth, emailCandidate, pwd);
-                        signedIn = true;
-                        authEmail = emailCandidate;
-                        break;
-                    } catch (authErr) {
-                        lastAuthError = authErr;
-                    }
-                }
-                if (signedIn) break;
-            }
-
-            if (!signedIn) {
-                for (const emailCandidate of authEmailsToTry) {
-                    for (const pwd of passwordsToTry) {
-                        try {
-                            await createUserWithEmailAndPassword(auth, emailCandidate, pwd);
-                            signedIn = true;
-                            authEmail = emailCandidate;
-                            break;
-                        } catch (createErr: any) {
-                            lastAuthError = createErr;
-                            if (createErr?.code === 'auth/email-already-in-use') {
-                                try {
-                                    await signInWithEmailAndPassword(auth, emailCandidate, pwd);
-                                    signedIn = true;
-                                    authEmail = emailCandidate;
-                                    break;
-                                } catch (retryErr) {
-                                    lastAuthError = retryErr;
-                                }
-                            }
-                        }
-                    }
-                    if (signedIn) break;
-                }
-            }
-
-            if (!signedIn) {
-                console.error('Staff Firebase auth failed:', lastAuthError);
+            if (!authResult) {
                 clearPendingStaffProfile();
                 toast.error('Firebase 로그인 연동에 실패했습니다. 관리자에게 직원 정보 재저장을 요청하세요.');
                 setIsStaffLoggingIn(false);
                 return;
             }
+
+            const { authEmail } = authResult;
 
             setPendingStaffProfile({
                 tenantId,
@@ -540,33 +500,25 @@ export const LoginPage: React.FC = () => {
 
                 const appRole = resolveAppRoleFromStaff(latestStaffRole);
 
-                await setDoc(doc(db, 'users', firebaseUid), {
-                    uid: firebaseUid,
-                    id: firebaseUid,
-                    email: auth.currentUser?.email || authEmail,
-                    displayName: staffDisplayName,
-                    name: staffDisplayName,
+                const staffProfile = {
                     tenantId,
                     role: appRole,
+                    name: staffDisplayName,
                     loginId: rawLoginId,
-                }, { merge: true });
+                    staffDocId: userDoc.id,
+                };
 
-                const { getDocFromServer } = await import('firebase/firestore');
-                const profileVerify = await getDocFromServer(doc(db, 'users', firebaseUid));
-                if (!profileVerify.exists() || profileVerify.data()?.tenantId !== tenantId) {
-                    throw new Error('회사 소속 정보 저장에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+                const profileSaved = await retryStaffProfileUpsert(auth.currentUser!, staffProfile);
+                if (!profileSaved) {
+                    throw new Error('회사 소속 정보 저장에 실패했습니다.');
                 }
 
-                try {
-                    await claimStaffSessionOnFirestore(db, {
-                        uid: firebaseUid,
-                        tenantId,
-                        staffDocId: userDoc.id,
-                        sessionId: newSessionId,
-                    });
-                } catch (sessionErr) {
-                    console.warn('Staff session claim skipped (non-blocking):', sessionErr);
-                }
+                await claimStaffSessionOnFirestore(db, {
+                    uid: firebaseUid,
+                    tenantId,
+                    staffDocId: userDoc.id,
+                    sessionId: newSessionId,
+                });
 
                 try {
                     await setDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id), {
@@ -602,12 +554,15 @@ export const LoginPage: React.FC = () => {
                     loginId: rawLoginId,
                     loginPassword: password,
                 });
-                await refreshUser(auth.currentUser);
                 clearPendingStaffProfile();
             } catch (profileErr) {
                 console.error('Staff users profile upsert failed:', profileErr);
-                clearPendingStaffProfile();
-                toast.error('직원 프로필 연동에 실패했습니다. 잠시 후 다시 시도해 주세요.');
+                await abortIncompleteStaffLogin();
+                setSaveCredentials(false);
+                disableStaffAutoLoginPrefs();
+                toast.error(
+                    '직원 프로필 연동에 실패했습니다. 저장된 로그인 정보를 해제했으니, 회사 선택 후 다시 로그인해 주세요.'
+                );
                 setIsStaffLoggingIn(false);
                 return;
             }
@@ -699,40 +654,10 @@ export const LoginPage: React.FC = () => {
     };
 
     useEffect(() => {
-        if (!authLoading && firebaseUser) {
+        if (!authLoading && currentUser?.tenantId) {
             navigate('/', { replace: true });
         }
-    }, [authLoading, firebaseUser, navigate]);
-
-    useEffect(() => {
-        if (authLoading || firebaseUser || isStaffLoggingIn || autoLoginAttemptedRef.current) return;
-        if (!keepLoggedIn || !selectedTenantId || !loginId.trim() || !password.trim()) return;
-
-        autoLoginAttemptedRef.current = true;
-
-        (async () => {
-            try {
-                await configureAuthPersistenceFromPreferences();
-                if (auth.currentUser) {
-                    navigate('/', { replace: true });
-                    return;
-                }
-            } catch {
-                /* persistence 실패 시에도 저장된 자격으로 재로그인 시도 */
-            }
-
-            void handleStaffLogin({ preventDefault: () => {} } as React.FormEvent);
-        })();
-    }, [
-        authLoading,
-        firebaseUser,
-        isStaffLoggingIn,
-        keepLoggedIn,
-        selectedTenantId,
-        loginId,
-        password,
-        navigate,
-    ]);
+    }, [authLoading, currentUser?.tenantId, navigate]);
 
     const handleStaffSignup = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -1099,7 +1024,7 @@ export const LoginPage: React.FC = () => {
                                 <div className="flex justify-between items-center pl-1">
                                     <label className="text-xs font-bold text-slate-400 block">소속 회사 선택 *</label>
                                     
-                                    {/* "선택회사 저장" 및 "자동 로그인 유지" 체크박스 */}
+                                    {/* "선택회사 저장" 및 "아이디·비밀번호 저장" 체크박스 */}
                                     <div className="flex items-center gap-3">
                                         <div className="flex items-center gap-1.5">
                                             <input 
@@ -1117,13 +1042,13 @@ export const LoginPage: React.FC = () => {
                                         <div className="flex items-center gap-1.5">
                                             <input 
                                                 type="checkbox"
-                                                id="keepLoggedInCheckbox"
-                                                checked={keepLoggedIn}
-                                                onChange={(e) => handleToggleKeepLoggedIn(e.target.checked)}
+                                                id="saveCredentialsCheckbox"
+                                                checked={saveCredentials}
+                                                onChange={(e) => handleToggleSaveCredentials(e.target.checked)}
                                                 className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
                                             />
-                                            <label htmlFor="keepLoggedInCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
-                                                자동 로그인 유지
+                                            <label htmlFor="saveCredentialsCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
+                                                아이디·비밀번호 저장
                                             </label>
                                         </div>
                                     </div>

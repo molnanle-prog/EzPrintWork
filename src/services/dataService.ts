@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db as firestore, auth, storage } from './firebase';
+import { jobArchiveService } from './jobArchiveService';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
 import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
 import { formatJobNumber } from '../utils/jobNumber';
@@ -118,6 +119,17 @@ const INITIAL_STATUS_DEFINITIONS: JobStatusDefinition[] = [
     { key: 'DELIVERY', label: '납품' },
     { key: 'COMPLETED', label: '완료' },
 ];
+
+/** 로그인 직후 동기화 — 소량·필수 데이터만 (읽기 비용 절감) */
+const CORE_STARTUP_COLLECTIONS = ['staff', 'clients', 'settings'] as const;
+/** 화면 진입 시에만 구독 — quotes/messages 등 */
+const LAZY_SYNC_COLLECTIONS = ['quotes', 'messages', 'leaves', 'papers', 'instructions'] as const;
+const ARCHIVED_JOB_STATUSES = ['COMPLETED', 'CANCELED'] as const;
+const OUTSTANDING_PAYMENT_STATUSES = ['결제대기', '일부결제'] as const;
+/** 칸반 완료 칸: 결제완료 건은 최근 N일만 실시간 구독 */
+const KANBAN_RECENT_PAID_COMPLETED_DAYS = 4;
+/** Firestore 운영 데이터는 최근 1년(365일)만 유지 */
+const HOT_WINDOW_DAYS = 365;
 
 /** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
 const COMBINED_PAPER_WEIGHT_PATTERN = /\/|표지.*내지|내지.*표지/i;
@@ -285,14 +297,16 @@ export function mergeProcessingDefinitionsWithInitial(
 }
 
 export function mergeStatusDefinitionsWithInitial(
-    definitions: JobStatusDefinition[]
+    definitions: JobStatusDefinition[],
+    removedKeys?: Iterable<string>
 ): { definitions: JobStatusDefinition[]; changed: boolean } {
+    const removed = removedKeys ? new Set(removedKeys) : new Set<string>();
     const byKey = new Map(definitions.map((d) => [d.key, d]));
     let changed = false;
     const result: JobStatusDefinition[] = [...definitions];
 
     for (const template of INITIAL_STATUS_DEFINITIONS) {
-        if (!byKey.has(template.key)) {
+        if (!byKey.has(template.key) && !removed.has(template.key)) {
             result.push({ ...template });
             changed = true;
         }
@@ -467,6 +481,23 @@ export class DataService {
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
     private syncUserRole: 'admin' | 'staff' | 'superadmin' | null = null;
+    /** jobs 분할 동기화 — 전체 컬렉션 구독 대신 범위별 구독 */
+    private operationalJobs: Job[] = [];
+    private kanbanCompletedJobs: Job[] = [];
+    private supplementaryJobs: Job[] = [];
+    private lazyUnsubs = new Map<string, () => void>();
+    private activeLazyCollections = new Set<string>();
+    private paymentJobsUnsub: (() => void) | null = null;
+    private paymentCompletedJobsUnsub: (() => void) | null = null;
+    private calendarMonthsLoaded = new Set<string>();
+    private clientHistoryLoaded = new Set<string>();
+    private startupSyncPending = 0;
+    private startupUnitsCompleted = new Set<string>();
+    private paymentJobsWanted = false;
+    private jobsFullFallbackActive = false;
+    private archivedJobs: Job[] = [];
+    private archiveLoaded = false;
+    private archiveInitializing = false;
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
@@ -529,10 +560,20 @@ export class DataService {
         this.tenantId = tenantId;
         this.lastSyncError = null;
         this.quotesBootstrappedForTenant = null;
+        this.operationalJobs = [];
+        this.kanbanCompletedJobs = [];
+        this.supplementaryJobs = [];
+        this.calendarMonthsLoaded.clear();
+        this.clientHistoryLoaded.clear();
+        this.paymentJobsWanted = false;
+        this.jobsFullFallbackActive = false;
+        this.archivedJobs = [];
+        this.archiveLoaded = false;
+        this.archiveInitializing = false;
+        this.stopPaymentJobsSync();
+        this.stopAllLazySync();
         this.startSyncing();
     }
-
-    /** 분산된 settings/* 문서를 메모리에서 하나로 합침 (Firestore 추가 쓰기 없음) */
     private mergeSettingsDocs(docs: { id: string; [key: string]: any }[]): Record<string, any> {
         const main: Record<string, any> = {};
         const companyDoc = docs.find(d => d.id === 'companyInfo');
@@ -664,10 +705,673 @@ export class DataService {
         }
     }
 
+    private getHotWindowCutoffDate(): Date {
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - HOT_WINDOW_DAYS);
+        return cutoff;
+    }
+
+    private getJobActivityDate(job: Job): Date {
+        const candidates = [job.completedAt, (job as any).updatedAt, job.dueDate, job.createdAt]
+            .filter(Boolean)
+            .map((v) => new Date(v as string))
+            .filter((d) => Number.isFinite(d.getTime()));
+        if (candidates.length === 0) return new Date(job.createdAt);
+        return new Date(Math.max(...candidates.map((d) => d.getTime())));
+    }
+
+    private isArchiveCandidate(job: Job): boolean {
+        if (!ARCHIVED_JOB_STATUSES.includes(job.status as (typeof ARCHIVED_JOB_STATUSES)[number])) {
+            return false;
+        }
+        const activityAt = this.getJobActivityDate(job);
+        return activityAt.getTime() < this.getHotWindowCutoffDate().getTime();
+    }
+
+    private rebuildArchiveMergedJobs() {
+        const map = new Map<string, Job>();
+        for (const job of this.archivedJobs) map.set(job.id, job);
+        for (const job of (this.data['jobs'] || [])) map.set(job.id, job as Job);
+        this.data['jobs'] = Array.from(map.values());
+    }
+
+    private isJobInHotCache(id: string): boolean {
+        return (
+            this.operationalJobs.some((j) => j.id === id) ||
+            this.kanbanCompletedJobs.some((j) => j.id === id) ||
+            this.supplementaryJobs.some((j) => j.id === id)
+        );
+    }
+
+    private isArchivedOnlyJob(id: string): boolean {
+        return this.archivedJobs.some((j) => j.id === id) && !this.isJobInHotCache(id);
+    }
+
+    private async loadArchivedJobs(): Promise<void> {
+        if (!this.tenantId) {
+            this.archivedJobs = [];
+            this.archiveLoaded = true;
+            return;
+        }
+        try {
+            this.archivedJobs = await jobArchiveService.readArchivedJobs(this.tenantId);
+        } catch (error) {
+            console.warn('[DataService] archived jobs load failed:', error);
+            this.archivedJobs = [];
+        } finally {
+            this.archiveLoaded = true;
+            this.rebuildArchiveMergedJobs();
+        }
+    }
+
+    private async runHotColdArchival(): Promise<void> {
+        if (!this.tenantId || !this.getIsElectron() || !this.isSyncAdmin()) return;
+        const dayKey = new Date().toISOString().split('T')[0];
+        const markerKey = `ezpw_archive_last_run_${this.tenantId}`;
+        if (localStorage.getItem(markerKey) === dayKey) return;
+
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const cutoffIso = this.getHotWindowCutoffDate().toISOString();
+        const legacyQuery = query(
+            jobsCol,
+            where('status', 'in', [...ARCHIVED_JOB_STATUSES]),
+            where('createdAt', '<=', cutoffIso)
+        );
+        const snapshot = await getDocs(legacyQuery);
+        const candidates: Job[] = [];
+        snapshot.forEach((docSnap) => {
+            candidates.push({ ...(docSnap.data() as Job), id: docSnap.id });
+        });
+        const toArchive = candidates.filter((job) => this.isArchiveCandidate(job));
+        if (toArchive.length === 0) {
+            localStorage.setItem(markerKey, dayKey);
+            return;
+        }
+
+        const writeResult = await jobArchiveService.appendJobs(this.tenantId, toArchive);
+        if (!writeResult.success) {
+            console.warn(
+                '[DataService] archive skipped — Firestore 유지 (NAS/Storage 미러 반영 전에는 삭제하지 않음)'
+            );
+            return;
+        }
+
+        const quoteIds = new Set<string>();
+        for (const job of toArchive) {
+            if (job.linkedQuoteId) quoteIds.add(job.linkedQuoteId);
+        }
+
+        for (let index = 0; index < toArchive.length; index += 400) {
+            const chunk = toArchive.slice(index, index + 400);
+            const batch = writeBatch(firestore);
+            for (const job of chunk) {
+                batch.delete(doc(firestore, 'tenants', this.tenantId, 'jobs', job.id));
+            }
+            await batch.commit();
+        }
+
+        for (const quoteId of quoteIds) {
+            try {
+                await deleteDoc(doc(firestore, 'tenants', this.tenantId, 'quotes', quoteId));
+            } catch {
+                // 견적은 없을 수도 있어 무시
+            }
+        }
+
+        localStorage.setItem(markerKey, dayKey);
+        await this.loadArchivedJobs();
+    }
+
+    private async initializeArchiveLayer(): Promise<void> {
+        if (this.archiveInitializing) return;
+        this.archiveInitializing = true;
+        try {
+            await this.loadArchivedJobs();
+            if (this.tenantId && this.getIsElectron() && this.isSyncAdmin()) {
+                await jobArchiveService.flushPendingQueue(this.tenantId);
+                await this.runHotColdArchival();
+                await this.loadArchivedJobs();
+            }
+        } catch (error) {
+            console.warn('[DataService] archive initialization failed:', error);
+        } finally {
+            this.archiveInitializing = false;
+            this.notify();
+        }
+    }
+
+    /** 웹/태블릿·검색 화면 — 콜드(1년+) 이력 로드 보장 */
+    async ensureColdArchiveLoaded(): Promise<void> {
+        if (this.archiveLoaded) return;
+        await this.loadArchivedJobs();
+        this.notify();
+    }
+
+    private rebuildMergedJobs() {
+        const map = new Map<string, Job>();
+        // supplementary → kanban → operational 순: 운영 중 작업(operational)이 최우선
+        for (const job of [...this.supplementaryJobs, ...this.kanbanCompletedJobs, ...this.operationalJobs]) {
+            map.set(job.id, job);
+        }
+        this.data['jobs'] = Array.from(map.values());
+        this.rebuildArchiveMergedJobs();
+    }
+
+    private placeJobInLocalCache(job: Job) {
+        this.operationalJobs = this.operationalJobs.filter((j) => j.id !== job.id);
+        this.kanbanCompletedJobs = this.kanbanCompletedJobs.filter((j) => j.id !== job.id);
+        this.supplementaryJobs = this.supplementaryJobs.filter((j) => j.id !== job.id);
+
+        if (!ARCHIVED_JOB_STATUSES.includes(job.status as (typeof ARCHIVED_JOB_STATUSES)[number])) {
+            this.operationalJobs.push(job);
+            return;
+        }
+
+        if (job.status !== 'COMPLETED') return;
+
+        if (OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as (typeof OUTSTANDING_PAYMENT_STATUSES)[number])) {
+            this.supplementaryJobs.push(job);
+            return;
+        }
+
+        if (job.paymentStatus === '결제완료') {
+            const completedAt = job.completedAt ? new Date(job.completedAt) : new Date(job.createdAt);
+            const cutoff = new Date();
+            cutoff.setDate(cutoff.getDate() - KANBAN_RECENT_PAID_COMPLETED_DAYS);
+            if (completedAt.getTime() >= cutoff.getTime()) {
+                this.kanbanCompletedJobs.push(job);
+            }
+        }
+    }
+
+    private removeJobFromLocalCache(id: string) {
+        this.operationalJobs = this.operationalJobs.filter((j) => j.id !== id);
+        this.kanbanCompletedJobs = this.kanbanCompletedJobs.filter((j) => j.id !== id);
+        this.supplementaryJobs = this.supplementaryJobs.filter((j) => j.id !== id);
+        this.rebuildMergedJobs();
+    }
+
+    private markStartupSyncUnitDone(unitId: string) {
+        if (this.startupUnitsCompleted.has(unitId)) return;
+        this.startupUnitsCompleted.add(unitId);
+        this.startupSyncPending -= 1;
+        if (this.startupSyncPending <= 0) {
+            this.syncStatus = 'synced';
+            if (this.getIsElectron()) {
+                this.runDailyAutoBackup().catch((err) => console.error('Auto backup error:', err));
+            }
+            void this.initializeArchiveLayer();
+            this.updateTenantActivity().catch(() => {});
+            this.restoreActiveLazySync();
+            if (this.paymentJobsWanted) this.ensurePaymentJobsSync();
+            void this.maybeBootstrapQuotes();
+            this.notify();
+        }
+    }
+
+    private stopAllLazySync() {
+        for (const unsub of this.lazyUnsubs.values()) unsub();
+        this.lazyUnsubs.clear();
+        this.activeLazyCollections.clear();
+    }
+
+    private stopPaymentJobsSync() {
+        if (this.paymentJobsUnsub) {
+            this.paymentJobsUnsub();
+            this.paymentJobsUnsub = null;
+        }
+        if (this.paymentCompletedJobsUnsub) {
+            this.paymentCompletedJobsUnsub();
+            this.paymentCompletedJobsUnsub = null;
+        }
+    }
+
+    private clearLazyListenersOnly() {
+        for (const unsub of this.lazyUnsubs.values()) unsub();
+        this.lazyUnsubs.clear();
+    }
+
+    private restoreActiveLazySync() {
+        for (const col of this.activeLazyCollections) {
+            this.ensureLazyCollectionSync(col);
+        }
+    }
+
+    private handleCollectionData(colName: string, list: any[]) {
+        if (colName === 'settings') {
+            if (list.length === 0) {
+                this.data['settings'] = [this.getDefaultSettings('EzPrintWork')];
+            } else if (list.length === 1 && list[0].id === 'main' && list[0].companyInfo) {
+                this.data['settings'] = list;
+            } else {
+                this.data['settings'] = [this.mergeSettingsDocs(list)];
+            }
+
+            const settingsObj = this.data['settings']?.[0];
+            if (settingsObj && this.applySettingsDefaultsMerge(settingsObj)) {
+                this.persistSettingsDefaultsMerge(settingsObj).catch((err) =>
+                    console.error('[DataService] Settings defaults merge failed:', err)
+                );
+            }
+            return;
+        }
+
+        this.data[colName] = list;
+    }
+
+    private async handleJobsMigrationAndPersist(currentJobs: any[]): Promise<any[]> {
+        const jobsToWrite: any[] = [];
+        const migratedJobs = currentJobs.map((job: any) => {
+            let jobChanged = false;
+            if (job.type === '무선제본책자') {
+                job.type = '책자';
+                jobChanged = true;
+            }
+            if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type)) {
+                job.type = '카탈로그';
+                jobChanged = true;
+            }
+            if (LEGACY_SIGNAGE_TYPE_NAMES.includes(job.type)) {
+                job.type = '실사';
+                jobChanged = true;
+            }
+
+            const migrateSpecs = (specs: any) => {
+                if (!specs) return false;
+                let changed = false;
+                if (!specs.innerPages) {
+                    specs.innerPages = [{
+                        id: 'inner-1',
+                        paperType: specs.paperTypeInner || '모조지(백색)',
+                        paperWeight: specs.paperWeightInner || '80g',
+                        printColor: specs.printColorInner || '단면 1도(흑백)',
+                        pagesCount: '0',
+                        hasDivider: false,
+                        dividerColor: '',
+                        dividerQuantity: ''
+                    }];
+                    changed = true;
+                }
+                if (!specs.processingCover) {
+                    const coverKeywords = ['코팅', '박', '형압', '에폭시', '하드커버'];
+                    const commonKeywords = ['제본'];
+                    const currentProcessing = specs.processing || [];
+
+                    const coverProc: string[] = [];
+                    const innerProc: string[] = [];
+                    const commonProc: string[] = [];
+
+                    currentProcessing.forEach((p: string) => {
+                        if (coverKeywords.some((kw) => p.includes(kw))) {
+                            coverProc.push(p);
+                        } else if (commonKeywords.some((kw) => p.includes(kw))) {
+                            commonProc.push(p);
+                        } else {
+                            innerProc.push(p);
+                        }
+                    });
+
+                    specs.processingCover = coverProc;
+                    specs.processingInner = innerProc;
+                    specs.processing = commonProc;
+                    changed = true;
+                }
+                return changed;
+            };
+
+            if (job.specs && migrateSpecs(job.specs)) jobChanged = true;
+
+            if (job.subJobs && job.subJobs.length > 0) {
+                job.subJobs = job.subJobs.map((sj: any) => {
+                    if (sj.type === '무선제본책자') {
+                        sj.type = '책자';
+                        jobChanged = true;
+                    }
+                    if (LEGACY_CATALOG_TYPE_NAMES.includes(sj.type)) {
+                        sj.type = '카탈로그';
+                        jobChanged = true;
+                    }
+                    if (LEGACY_SIGNAGE_TYPE_NAMES.includes(sj.type)) {
+                        sj.type = '실사';
+                        jobChanged = true;
+                    }
+                    if (sj.specs && migrateSpecs(sj.specs)) jobChanged = true;
+                    return sj;
+                });
+            }
+
+            if (jobChanged) jobsToWrite.push(job);
+            return job;
+        });
+
+        if (jobsToWrite.length > 0 && this.tenantId) {
+            await Promise.all(
+                jobsToWrite.map((job) =>
+                    setDoc(doc(firestore, 'tenants', this.tenantId!, 'jobs', job.id), job)
+                )
+            );
+        }
+        return migratedJobs;
+    }
+
+    private onOperationalJobsSnapshot = async (snapshot: any) => {
+        const list: Job[] = [];
+        snapshot.forEach((docSnap: any) => {
+            list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+        });
+        this.operationalJobs = await this.handleJobsMigrationAndPersist(list);
+        this.rebuildMergedJobs();
+        this.notify();
+    };
+
+    private onKanbanCompletedJobsSnapshot = async (snapshot: any) => {
+        const list: Job[] = [];
+        snapshot.forEach((docSnap: any) => {
+            list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+        });
+        this.kanbanCompletedJobs = await this.handleJobsMigrationAndPersist(list);
+        this.rebuildMergedJobs();
+        this.notify();
+    };
+
+    private mergeSupplementaryJobs(incoming: Job[], replacePredicate: (job: Job) => boolean) {
+        const kept = this.supplementaryJobs.filter((job) => !replacePredicate(job));
+        const map = new Map<string, Job>();
+        for (const job of kept) map.set(job.id, job);
+        for (const job of incoming) map.set(job.id, job);
+        this.supplementaryJobs = Array.from(map.values());
+        this.rebuildMergedJobs();
+    }
+
+    private subscribeJobsFullCollectionFallback(jobsCol: ReturnType<typeof collection>) {
+        if (this.jobsFullFallbackActive || !this.tenantId) return;
+        this.jobsFullFallbackActive = true;
+        console.warn(
+            '[DataService] jobs 범위 쿼리 실패 — 전체 jobs 구독으로 전환합니다. ' +
+            '최적화 적용: firebase deploy --only firestore:indexes'
+        );
+
+        const unsub = onSnapshot(jobsCol, async (snapshot) => {
+            const list: Job[] = [];
+            snapshot.forEach((docSnap) => {
+                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+            });
+            const migrated = await this.handleJobsMigrationAndPersist(list);
+            this.operationalJobs = [];
+            this.kanbanCompletedJobs = [];
+            this.supplementaryJobs = [];
+            for (const job of migrated) {
+                this.placeJobInLocalCache(job);
+            }
+            this.rebuildMergedJobs();
+            this.notify();
+        }, (error) => {
+            console.error('[Firestore Sync Error] jobs full fallback failed:', error);
+            const code = error?.code || 'unknown';
+            this.lastSyncError = code;
+            this.syncStatus = 'disconnected';
+            this.notify();
+        });
+
+        this.unsubscribeList.push(unsub);
+    }
+
+    private subscribeJobsQueries() {
+        if (!this.tenantId) return;
+
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const recentPaidCutoff = new Date();
+        recentPaidCutoff.setDate(recentPaidCutoff.getDate() - KANBAN_RECENT_PAID_COMPLETED_DAYS);
+        const recentPaidCutoffIso = recentPaidCutoff.toISOString();
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+
+        const operationalQuery = query(jobsCol, where('status', 'not-in', [...ARCHIVED_JOB_STATUSES]));
+        const outstandingCompletedQuery = query(
+            jobsCol,
+            where('status', '==', 'COMPLETED'),
+            where('paymentStatus', 'in', [...OUTSTANDING_PAYMENT_STATUSES]),
+            where('createdAt', '>=', hotCutoffIso)
+        );
+        const recentPaidCompletedQuery = query(
+            jobsCol,
+            where('status', '==', 'COMPLETED'),
+            where('paymentStatus', '==', '결제완료'),
+            where('completedAt', '>=', recentPaidCutoffIso),
+            where('createdAt', '>=', hotCutoffIso)
+        );
+
+        const onJobsError = (unitId: string) => (error: any) => {
+            console.error(`[Firestore Sync Error] jobs query failed (${unitId}):`, error);
+            const code = error?.code || 'unknown';
+            this.lastSyncError = code;
+            this.markStartupSyncUnitDone(unitId);
+
+            if (unitId === 'jobs-operational') {
+                this.subscribeJobsFullCollectionFallback(jobsCol);
+            }
+
+            if (code === 'unavailable' || code === 'permission-denied') {
+                this.scheduleReconnect();
+                if (code !== 'permission-denied') this.syncStatus = 'disconnected';
+            } else if (!this.jobsFullFallbackActive) {
+                this.syncStatus = 'disconnected';
+            }
+            this.notify();
+        };
+
+        const unsubOperational = onSnapshot(operationalQuery, (snapshot) => {
+            void this.onOperationalJobsSnapshot(snapshot);
+            this.markStartupSyncUnitDone('jobs-operational');
+        }, onJobsError('jobs-operational'));
+
+        const markCompletedListenerReady = (unitId: string) => {
+            this.markStartupSyncUnitDone(unitId);
+        };
+
+        const unsubOutstandingCompleted = onSnapshot(outstandingCompletedQuery, (snapshot) => {
+            const list: Job[] = [];
+            snapshot.forEach((docSnap) => {
+                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+            });
+            void this.handleJobsMigrationAndPersist(list).then((migrated) => {
+                this.mergeSupplementaryJobs(migrated, (job) =>
+                    job.status === 'COMPLETED' &&
+                    OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number])
+                );
+                this.notify();
+            });
+            markCompletedListenerReady('jobs-completed-outstanding');
+        }, onJobsError('jobs-completed-outstanding'));
+
+        const unsubRecentPaid = onSnapshot(recentPaidCompletedQuery, (snapshot) => {
+            const list: Job[] = [];
+            snapshot.forEach((docSnap) => {
+                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+            });
+            void this.handleJobsMigrationAndPersist(list).then((migrated) => {
+                this.kanbanCompletedJobs = migrated;
+                this.rebuildMergedJobs();
+                this.notify();
+            });
+            markCompletedListenerReady('jobs-completed-recent-paid');
+        }, onJobsError('jobs-completed-recent-paid'));
+
+        this.unsubscribeList.push(unsubOperational, unsubOutstandingCompleted, unsubRecentPaid);
+    }
+
+    private ensureLazyCollectionSync(colName: string) {
+        if (!this.tenantId) return;
+        if (this.lazyUnsubs.has(colName)) return;
+
+        this.activeLazyCollections.add(colName);
+        const colRef = collection(firestore, 'tenants', this.tenantId, colName);
+        const unsub = onSnapshot(colRef, (snapshot) => {
+            const list: any[] = [];
+            snapshot.forEach((docSnap) => {
+                list.push({ ...docSnap.data(), id: docSnap.id });
+            });
+            this.handleCollectionData(colName, list);
+            this.notify();
+        }, (error) => {
+            console.error(`[Firestore Sync Error] lazy onSnapshot failed for ${colName}:`, error);
+        });
+        this.lazyUnsubs.set(colName, unsub);
+    }
+
+    /** 견적서 화면·미리보기 진입 시 호출 */
+    ensureQuotesSync() {
+        this.ensureLazyCollectionSync('quotes');
+    }
+
+    /** 채팅 위젯 마운트 시 호출 */
+    ensureMessagesSync() {
+        this.ensureLazyCollectionSync('messages');
+    }
+
+    /** 캘린더·휴가 화면 진입 시 호출 */
+    ensureLeavesSync() {
+        this.ensureLazyCollectionSync('leaves');
+    }
+
+    /** 용지 관리 화면 진입 시 호출 */
+    ensurePapersSync() {
+        this.ensureLazyCollectionSync('papers');
+    }
+
+    /** 상황판 진입 시 호출 */
+    ensureInstructionsSync() {
+        this.ensureLazyCollectionSync('instructions');
+    }
+
+    private monthCacheKey(year: number, month: number) {
+        return `${year}-${month}`;
+    }
+
+    /** 캘린더 월 이동 시 — 해당 월±1 완료 작업만 추가 로드 (읽기 최소화) */
+    async ensureCalendarJobsSync(year: number, month: number) {
+        if (!this.tenantId) return;
+
+        const monthsToLoad: { year: number; month: number }[] = [];
+        for (const offset of [-1, 0, 1]) {
+            const d = new Date(year, month + offset, 1);
+            const key = this.monthCacheKey(d.getFullYear(), d.getMonth());
+            if (!this.calendarMonthsLoaded.has(key)) {
+                monthsToLoad.push({ year: d.getFullYear(), month: d.getMonth() });
+            }
+        }
+        if (monthsToLoad.length === 0) return;
+
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const loaded: Job[] = [];
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+
+        for (const { year: y, month: m } of monthsToLoad) {
+            const startIso = new Date(y, m, 1).toISOString().split('T')[0];
+            const endIso = new Date(y, m + 1, 0).toISOString().split('T')[0];
+            const monthQuery = query(
+                jobsCol,
+                where('status', '==', 'COMPLETED'),
+                where('createdAt', '>=', hotCutoffIso),
+                where('dueDate', '>=', startIso),
+                where('dueDate', '<=', endIso)
+            );
+            try {
+                const snap = await getDocs(monthQuery);
+                snap.forEach((docSnap) => {
+                    loaded.push({ ...docSnap.data(), id: docSnap.id } as Job);
+                });
+                this.calendarMonthsLoaded.add(this.monthCacheKey(y, m));
+            } catch (e) {
+                console.warn('[ensureCalendarJobsSync] month load failed', y, m, e);
+            }
+        }
+
+        if (loaded.length > 0) {
+            this.mergeSupplementaryJobs(loaded, () => false);
+            this.notify();
+        }
+    }
+
+    /** 미수금 관리 — 미결제·일부결제 작업만 추가 구독 */
+    ensurePaymentJobsSync() {
+        if (!this.tenantId) return;
+        this.paymentJobsWanted = true;
+        if (this.paymentJobsUnsub && this.paymentCompletedJobsUnsub) return;
+
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const paymentQuery = query(
+            jobsCol,
+            where('paymentStatus', 'in', [...OUTSTANDING_PAYMENT_STATUSES])
+        );
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+        const completedPaidHotQuery = query(
+            jobsCol,
+            where('status', '==', 'COMPLETED'),
+            where('paymentStatus', '==', '결제완료'),
+            where('createdAt', '>=', hotCutoffIso)
+        );
+
+        this.paymentJobsUnsub = onSnapshot(paymentQuery, (snapshot) => {
+            const list: Job[] = [];
+            snapshot.forEach((docSnap) => {
+                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+            });
+            this.mergeSupplementaryJobs(list, (job) =>
+                OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number])
+            );
+            this.notify();
+        }, (err) => {
+            console.warn('[ensurePaymentJobsSync] skipped:', err);
+        });
+
+        this.paymentCompletedJobsUnsub = onSnapshot(completedPaidHotQuery, (snapshot) => {
+            const list: Job[] = [];
+            snapshot.forEach((docSnap) => {
+                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
+            });
+            this.mergeSupplementaryJobs(list, (job) =>
+                job.status === 'COMPLETED' &&
+                job.paymentStatus === '결제완료'
+            );
+            this.notify();
+        }, (err) => {
+            console.warn('[ensurePaymentJobsSync:completed-paid] skipped:', err);
+        });
+    }
+
+    /** 작업 상세 — 동일 고객 과거 작업 (필요 시 1회 조회) */
+    async ensureClientHistoryJobs(clientName: string) {
+        if (!this.tenantId || !clientName.trim()) return;
+        const key = clientName.trim();
+        if (this.clientHistoryLoaded.has(key)) return;
+
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+        const clientQuery = query(
+            jobsCol,
+            where('clientName', '==', key),
+            where('createdAt', '>=', hotCutoffIso)
+        );
+        try {
+            const snap = await getDocs(clientQuery);
+            const loaded: Job[] = [];
+            snap.forEach((docSnap) => {
+                loaded.push({ ...docSnap.data(), id: docSnap.id } as Job);
+            });
+            this.clientHistoryLoaded.add(key);
+            if (loaded.length > 0) {
+                this.mergeSupplementaryJobs(loaded, () => false);
+                this.notify();
+            }
+        } catch (e) {
+            console.warn('[ensureClientHistoryJobs] failed:', key, e);
+        }
+    }
+
     private async startSyncing() {
         if (!this.tenantId) return;
 
-        this.unsubscribeList.forEach(unsub => unsub());
+        this.unsubscribeList.forEach((unsub) => unsub());
         this.unsubscribeList = [];
         if (this.joinRequestsUnsub) {
             this.joinRequestsUnsub();
@@ -679,42 +1383,30 @@ export class DataService {
             this.reconnectTimer = null;
         }
 
-        const collections = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'settings'];
-
+        this.clearLazyListenersOnly();
+        this.stopPaymentJobsSync();
+        this.startupUnitsCompleted.clear();
         this.syncStatus = 'connecting';
+        this.operationalJobs = [];
+        this.kanbanCompletedJobs = [];
+        this.rebuildMergedJobs();
         this.notify();
 
-        let loadedCount = 0;
-        collections.forEach(colName => {
+        // staff + clients + settings(3) + jobs 3쿼리 = 6
+        this.startupSyncPending = CORE_STARTUP_COLLECTIONS.length + 3;
+
+        CORE_STARTUP_COLLECTIONS.forEach((colName) => {
             const colRef = collection(firestore, 'tenants', this.tenantId!, colName);
             const unsub = onSnapshot(colRef, async (snapshot) => {
                 const list: any[] = [];
-                snapshot.forEach(docSnap => {
+                snapshot.forEach((docSnap) => {
                     list.push({ ...docSnap.data(), id: docSnap.id });
                 });
 
-                if (colName === 'settings') {
-                    if (list.length === 0) {
-                        // 직원은 settings 초기 문서 생성 권한 없음 — 읽기 실패만 방지
-                        this.data['settings'] = [this.getDefaultSettings('EzPrintWork')];
-                    } else if (list.length === 1 && list[0].id === 'main' && list[0].companyInfo) {
-                        this.data['settings'] = list;
-                    } else {
-                        this.data['settings'] = [this.mergeSettingsDocs(list)];
-                    }
+                this.handleCollectionData(colName, list);
 
-                    const settingsObj = this.data['settings']?.[0];
-                    if (settingsObj && this.applySettingsDefaultsMerge(settingsObj)) {
-                        this.persistSettingsDefaultsMerge(settingsObj).catch((err) =>
-                            console.error('[DataService] Settings defaults merge failed:', err)
-                        );
-                    }
-                } else {
-                    this.data[colName] = list;
-                }
-
-                // 춘천인쇄 등 실제 테넌트 접근 시 dev-admin 시드 계정 자동 삭제
                 if (colName === 'staff') {
+                    this.scheduleStaffDedupe();
                     const companyName = this.getCompanyInfo()?.name?.trim();
                     const isChuncheonTenant =
                         this.tenantId === 'tenant-or73mu1cz' ||
@@ -727,121 +1419,19 @@ export class DataService {
                             try {
                                 await deleteDoc(doc(firestore, 'tenants', this.tenantId!, 'staff', 'dev-admin'));
                             } catch (e) {
-                                console.error("Failed to delete dev-admin from Firestore:", e);
+                                console.error('Failed to delete dev-admin from Firestore:', e);
                             }
                         }
                     }
                 }
 
-                // 데이터 정비: jobs 스키마 보정 (메모리만, 변경된 job만 Firestore에 1건씩 저장)
-                if (colName === 'jobs') {
-                    const currentJobs = this.data['jobs'] || [];
-                    const jobsToWrite: any[] = [];
-                    const migratedJobs = currentJobs.map((job: any) => {
-                        let jobChanged = false;
-                        if (job.type === '무선제본책자') {
-                            job.type = '책자';
-                            jobChanged = true;
-                        }
-                        if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type)) {
-                            job.type = '카탈로그';
-                            jobChanged = true;
-                        }
-                        if (LEGACY_SIGNAGE_TYPE_NAMES.includes(job.type)) {
-                            job.type = '실사';
-                            jobChanged = true;
-                        }
-                        
-                        const migrateSpecs = (specs: any) => {
-                            if (!specs) return false;
-                            let changed = false;
-                            if (!specs.innerPages) {
-                                specs.innerPages = [{
-                                    id: 'inner-1',
-                                    paperType: specs.paperTypeInner || '모조지(백색)',
-                                    paperWeight: specs.paperWeightInner || '80g',
-                                    printColor: specs.printColorInner || '단면 1도(흑백)',
-                                    pagesCount: '0',
-                                    hasDivider: false,
-                                    dividerColor: '',
-                                    dividerQuantity: ''
-                                }];
-                                changed = true;
-                            }
-                            if (!specs.processingCover) {
-                                const coverKeywords = ['코팅', '박', '형압', '에폭시', '하드커버'];
-                                const commonKeywords = ['제본'];
-                                const currentProcessing = specs.processing || [];
-                                
-                                const coverProc: string[] = [];
-                                const innerProc: string[] = [];
-                                const commonProc: string[] = [];
-
-                                currentProcessing.forEach((p: string) => {
-                                    if (coverKeywords.some(kw => p.includes(kw))) {
-                                        coverProc.push(p);
-                                    } else if (commonKeywords.some(kw => p.includes(kw))) {
-                                        commonProc.push(p);
-                                    } else {
-                                        innerProc.push(p);
-                                    }
-                                });
-
-                                specs.processingCover = coverProc;
-                                specs.processingInner = innerProc;
-                                specs.processing = commonProc;
-                                changed = true;
-                            }
-                            return changed;
-                        };
-
-                        if (job.specs && migrateSpecs(job.specs)) jobChanged = true;
-
-                        if (job.subJobs && job.subJobs.length > 0) {
-                            job.subJobs = job.subJobs.map((sj: any) => {
-                                if (sj.type === '무선제본책자') {
-                                    sj.type = '책자';
-                                    jobChanged = true;
-                                }
-                                if (LEGACY_CATALOG_TYPE_NAMES.includes(sj.type)) {
-                                    sj.type = '카탈로그';
-                                    jobChanged = true;
-                                }
-                                if (LEGACY_SIGNAGE_TYPE_NAMES.includes(sj.type)) {
-                                    sj.type = '실사';
-                                    jobChanged = true;
-                                }
-                                if (sj.specs && migrateSpecs(sj.specs)) jobChanged = true;
-                                return sj;
-                            });
-                        }
-                        
-                        if (jobChanged) jobsToWrite.push(job);
-                        return job;
-                    });
-
-                    this.data['jobs'] = migratedJobs;
-                    if (jobsToWrite.length > 0) {
-                        await Promise.all(jobsToWrite.map(job =>
-                            setDoc(doc(firestore, 'tenants', this.tenantId!, 'jobs', job.id), job)
-                        ));
-                    }
-                }
-
-                loadedCount++;
-                if (loadedCount >= collections.length) {
-                    this.syncStatus = 'synced';
-                    if (this.getIsElectron()) {
-                        this.runDailyAutoBackup().catch(err => console.error("Auto backup error:", err));
-                    }
-                    this.updateTenantActivity().catch(() => {});
-                    void this.maybeBootstrapQuotes();
-                }
+                this.markStartupSyncUnitDone(colName);
                 this.notify();
             }, (error: any) => {
                 console.error(`[Firestore Sync Error] onSnapshot failed for ${colName}:`, error);
                 const code = error?.code || 'unknown';
                 this.lastSyncError = code;
+                this.markStartupSyncUnitDone(colName);
                 if (code === 'unavailable' || code === 'permission-denied') {
                     this.scheduleReconnect();
                     if (code !== 'permission-denied') {
@@ -855,6 +1445,8 @@ export class DataService {
 
             this.unsubscribeList.push(unsub);
         });
+
+        this.subscribeJobsQueries();
 
         this.subscribeJoinRequests();
         this.isReady = true;
@@ -1064,9 +1656,20 @@ export class DataService {
 
     private async addEntity(col: string, entity: any) {
         const id = entity.id || this.generateId();
-        const newEntity = { ...entity, id, createdAt: entity.createdAt || new Date().toISOString() };
-        
-        this.data[col] = [...(this.data[col] || []).filter(e => e.id !== id), newEntity];
+        const now = new Date().toISOString();
+        const newEntity = {
+            ...entity,
+            id,
+            createdAt: entity.createdAt || now,
+            ...(col === 'jobs' ? { updatedAt: entity.updatedAt || now } : {}),
+        };
+
+        if (col === 'jobs') {
+            this.placeJobInLocalCache(newEntity as Job);
+            this.rebuildMergedJobs();
+        } else {
+            this.data[col] = [...(this.data[col] || []).filter((e) => e.id !== id), newEntity];
+        }
         this.notify();
         
         if (this.tenantId) {
@@ -1087,8 +1690,17 @@ export class DataService {
     }
 
     private patchLocalEntity(col: string, id: string, entity: any): any | null {
+        if (col === 'jobs') {
+            const existing = this.getAllJobs().find((j) => j.id === id);
+            if (!existing) return null;
+            const updated = { ...existing, ...entity, updatedAt: new Date().toISOString() };
+            this.placeJobInLocalCache(updated);
+            this.rebuildMergedJobs();
+            return updated;
+        }
+
         const list = this.data[col] || [];
-        const index = list.findIndex(e => e.id === id);
+        const index = list.findIndex((e) => e.id === id);
         if (index === -1) return null;
 
         const updated = { ...list[index], ...entity, updatedAt: new Date().toISOString() };
@@ -1113,6 +1725,18 @@ export class DataService {
     }
 
     private async updateEntity(col: string, id: string, entity: any) {
+        if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
+            const existing = this.archivedJobs.find((j) => j.id === id);
+            if (!existing || !this.tenantId) return;
+            const updated = { ...existing, ...entity, updatedAt: new Date().toISOString() } as Job;
+            const ok = await jobArchiveService.upsertArchivedJob(this.tenantId, updated);
+            if (!ok) throw new Error('보관 이력 업데이트에 실패했습니다.');
+            this.archivedJobs = this.archivedJobs.map((j) => (j.id === id ? updated : j));
+            this.rebuildArchiveMergedJobs();
+            this.notify();
+            return;
+        }
+
         const updated = this.patchLocalEntity(col, id, entity);
         if (!updated) return;
 
@@ -1126,9 +1750,26 @@ export class DataService {
     }
 
     private async deleteEntity(col: string, id: string) {
-        const list = this.data[col] || [];
-        const previous = list;
-        this.data[col] = list.filter(e => e.id !== id);
+        if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
+            if (!this.tenantId) return;
+            const ok = await jobArchiveService.removeArchivedJob(this.tenantId, id);
+            if (!ok) throw new Error('보관 이력 삭제에 실패했습니다.');
+            this.archivedJobs = this.archivedJobs.filter((j) => j.id !== id);
+            this.rebuildArchiveMergedJobs();
+            this.notify();
+            return;
+        }
+
+        const previous =
+            col === 'jobs'
+                ? this.getAllJobs()
+                : this.data[col] || [];
+
+        if (col === 'jobs') {
+            this.removeJobFromLocalCache(id);
+        } else {
+            this.data[col] = (this.data[col] || []).filter((e) => e.id !== id);
+        }
         this.notify();
         
         if (this.tenantId) {
@@ -1136,7 +1777,17 @@ export class DataService {
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await deleteDoc(docRef);
             } catch (e) {
-                this.data[col] = previous;
+                if (col === 'jobs') {
+                    this.operationalJobs = [];
+                    this.kanbanCompletedJobs = [];
+                    this.supplementaryJobs = [];
+                    for (const job of previous as Job[]) {
+                        this.placeJobInLocalCache(job);
+                    }
+                    this.rebuildMergedJobs();
+                } else {
+                    this.data[col] = previous;
+                }
                 this.notify();
                 console.error(`[Firestore deleteEntity Error] Failed to delete ${col}/${id}:`, e);
                 this.notifyFirestoreWriteError('삭제', e);
@@ -1219,6 +1870,7 @@ export class DataService {
     // --- Public Business Methods ---
     async addJob(job: Job) {
         await this.addEntity('jobs', job);
+        this.ensureQuotesSync();
         await this.ensureQuoteForJob(job);
     }
     async updateJob(job: Job) {
@@ -1298,6 +1950,88 @@ export class DataService {
                 console.warn('[deleteStaff] users 문서 비활성화 실패:', e);
             }
         }
+    }
+
+    /** loginId·이름·uid 기준 중복 staff soft-delete (관리자 전용) */
+    private staffDedupeTimer: ReturnType<typeof setTimeout> | null = null;
+    scheduleStaffDedupe() {
+        if (!this.tenantId || !this.isSyncAdmin()) return;
+        if (this.staffDedupeTimer) clearTimeout(this.staffDedupeTimer);
+        this.staffDedupeTimer = setTimeout(() => {
+            this.staffDedupeTimer = null;
+            void this.dedupeStaffDuplicates();
+        }, 800);
+    }
+
+    async dedupeStaffDuplicates(): Promise<number> {
+        if (!this.tenantId || !this.isSyncAdmin()) return 0;
+
+        const score = (s: Staff) => {
+            let n = 0;
+            if (s.active !== false) n += 10;
+            if (!s.isDeleted) n += 10;
+            if (s.loginId) n += 5;
+            if (s.password) n += 3;
+            if (s.uid) n += 3;
+            if (s.extensionNumber) n += 2;
+            if (s.phone || s.phoneCompany || s.phoneOffice) n += 2;
+            if (s.joinDate) n += 1;
+            return n;
+        };
+
+        const markDuplicates = (groups: Map<string, Staff[]>, toRemove: Set<string>) => {
+            for (const group of groups.values()) {
+                if (group.length <= 1) continue;
+                const sorted = [...group].sort((a, b) => score(b) - score(a));
+                sorted.slice(1).forEach((s) => toRemove.add(s.id));
+            }
+        };
+
+        const rows = (this.data['staff'] || []).filter((s: Staff) => !s.isDeleted) as Staff[];
+        const toRemove = new Set<string>();
+
+        const byLogin = new Map<string, Staff[]>();
+        for (const s of rows) {
+            const key = s.loginId?.trim().toLowerCase();
+            if (!key) continue;
+            if (!byLogin.has(key)) byLogin.set(key, []);
+            byLogin.get(key)!.push(s);
+        }
+        markDuplicates(byLogin, toRemove);
+
+        const byUid = new Map<string, Staff[]>();
+        for (const s of rows) {
+            if (toRemove.has(s.id)) continue;
+            const key = s.uid?.trim();
+            if (!key) continue;
+            if (!byUid.has(key)) byUid.set(key, []);
+            byUid.get(key)!.push(s);
+        }
+        markDuplicates(byUid, toRemove);
+
+        const byName = new Map<string, Staff[]>();
+        for (const s of rows) {
+            if (toRemove.has(s.id)) continue;
+            const key = s.name?.trim();
+            if (!key) continue;
+            if (!byName.has(key)) byName.set(key, []);
+            byName.get(key)!.push(s);
+        }
+        markDuplicates(byName, toRemove);
+
+        let removed = 0;
+        for (const id of toRemove) {
+            try {
+                await this.deleteStaff(id);
+                removed += 1;
+            } catch (e) {
+                console.warn('[dedupeStaffDuplicates] failed:', id, e);
+            }
+        }
+        if (removed > 0) {
+            console.log(`[dedupeStaffDuplicates] removed ${removed} duplicate staff record(s)`);
+        }
+        return removed;
     }
     
     getJoinRequests(): JoinRequest[] {
@@ -1426,6 +2160,8 @@ export class DataService {
 
         this.quotesBootstrapInProgress = true;
         try {
+            this.ensureQuotesSync();
+            await new Promise((r) => setTimeout(r, 400));
             await this.bootstrapQuotesFromJobs();
             this.quotesBootstrappedForTenant = this.tenantId;
         } catch (e) {
@@ -1533,8 +2269,13 @@ export class DataService {
     }
     async savePricingConfig(config: PricingConfig) { await this.updateSetting('pricing', config); }
     async saveProductDefinitions(definitions: JobTypeDefinition[]) { await this.updateSetting('productDefinitions', { definitions }); }
-    async saveStatusDefinitions(definitions: JobStatusDefinition[]) {
-        await this.updateSetting('statusDefinitions', { definitions });
+    async saveStatusDefinitions(definitions: JobStatusDefinition[], removedKeys?: string[]) {
+        const existing = this.getSettingsObj()['statusDefinitions'];
+        const payload = {
+            definitions,
+            removedKeys: removedKeys ?? existing?.removedKeys ?? [],
+        };
+        await this.updateSetting('statusDefinitions', payload);
     }
     async saveKanbanLayoutConfig(config: KanbanLayoutConfig) {
         await this.updateSetting('kanbanLayout', config);
@@ -1542,10 +2283,15 @@ export class DataService {
     /** 단계 + 칸반 레이아웃을 한 번에 메모리·Firestore에 저장 (스냅샷 레이스로 레이아웃 유실 방지) */
     async saveStatusDefinitionsAndKanbanLayout(
         definitions: JobStatusDefinition[],
-        layout: KanbanLayoutConfig
+        layout: KanbanLayoutConfig,
+        removedKeys?: string[]
     ) {
+        const existing = this.getSettingsObj()['statusDefinitions'];
         const settings = { ...(this.getSettingsObj() || {}) };
-        settings.statusDefinitions = { definitions };
+        settings.statusDefinitions = {
+            definitions,
+            removedKeys: removedKeys ?? existing?.removedKeys ?? [],
+        };
         settings.kanbanLayout = layout;
         this.data['settings'] = [settings];
         this.notify();
@@ -1563,7 +2309,10 @@ export class DataService {
             const statusFragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'statusDefinitions');
             await setDoc(
                 statusFragmentRef,
-                stripUndefinedForFirestore({ definitions }),
+                stripUndefinedForFirestore({
+                    definitions,
+                    removedKeys: settings.statusDefinitions.removedKeys,
+                }),
                 { merge: true }
             );
 
@@ -1683,12 +2432,18 @@ export class DataService {
     getLeaves(): StaffLeave[] { return (this.data['leaves'] || []) as StaffLeave[]; }
     getPapers(): PaperStock[] { return (this.data['papers'] || []) as PaperStock[]; }
 
+    getStatusDefinitionRemovedKeys(): string[] {
+        return this.getSettingsObj()['statusDefinitions']?.removedKeys ?? [];
+    }
+
     getStatusDefinitions(): JobStatusDefinition[] {
-        const raw = this.getSettingsObj()['statusDefinitions']?.definitions;
+        const settings = this.getSettingsObj()['statusDefinitions'];
+        const raw = settings?.definitions;
+        const removedKeys = settings?.removedKeys ?? [];
         const base = raw?.length
             ? raw.map((s: JobStatusDefinition) => ({ ...s, isVisible: s.isVisible !== false }))
             : INITIAL_STATUS_DEFINITIONS.map((s) => ({ ...s, isVisible: s.isVisible !== false }));
-        const { definitions } = mergeStatusDefinitionsWithInitial(base);
+        const { definitions } = mergeStatusDefinitionsWithInitial(base, removedKeys);
         return definitions.map((s) => normalizeStatusDefinition(s));
     }
     getKanbanLayoutConfig(): KanbanLayoutConfig {

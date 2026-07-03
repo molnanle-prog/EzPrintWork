@@ -225,11 +225,16 @@ export const BackupManager: React.FC = () => {
         <div className="space-y-6 max-w-4xl">
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 md:p-8 shadow-sm">
                 <h2 className="text-2xl font-black text-slate-800 dark:text-slate-100 mb-2">
-                    데이터 백업 및 복구
+                    재난 대비 백업 및 복구
                 </h2>
                 <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-                    업무 데이터는 클라우드에 실시간 저장됩니다. PC 백업은 JSON 파일로 보관·복원할 수 있습니다.
+                    이 화면은 운영 아카이브가 아니라 재난 대비용입니다.
+                    PC 포맷/재설치/예기치 않은 데이터 손실에 대비해 별도 백업 파일을 만들고 복구합니다.
                 </p>
+
+                <div className="mb-3 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+                    [재난 대비] 관리자 백업/복구 작업
+                </div>
 
                 {statusMessage && (
                     <div className={`mb-6 p-4 rounded-xl border flex items-start gap-3 ${
@@ -267,6 +272,7 @@ export const BackupManager: React.FC = () => {
                             type="button"
                             onClick={handleCreateLocalBackup}
                             disabled={isCreating}
+                            title="현재 시점의 전체 데이터를 백업 파일로 저장합니다. (재난 대비용)"
                             className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-bold py-3 rounded-xl flex items-center justify-center gap-2"
                         >
                             {isCreating ? <RefreshCw className="w-5 h-5 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
@@ -275,6 +281,7 @@ export const BackupManager: React.FC = () => {
                         <button
                             type="button"
                             onClick={handleDownloadLocal}
+                            title="브라우저/PC에서 즉시 JSON 백업 파일을 다운로드합니다."
                             className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 font-bold py-2.5 rounded-xl flex items-center justify-center gap-2 text-sm"
                         >
                             <Download className="w-4 h-4" />
@@ -290,6 +297,7 @@ export const BackupManager: React.FC = () => {
                                     <button
                                         type="button"
                                         onClick={handleSelectCustomFolder}
+                                        title="재난 대비 백업 파일이 저장될 폴더를 변경합니다."
                                         className="text-xs font-bold py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
                                     >
                                         폴더 변경
@@ -298,6 +306,7 @@ export const BackupManager: React.FC = () => {
                                         type="button"
                                         onClick={handleResetBackupFolder}
                                         disabled={!customBackupPath}
+                                        title="백업 저장 폴더를 내 문서 기본값으로 되돌립니다."
                                         className="text-xs font-bold py-2 rounded-lg bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 disabled:opacity-40"
                                     >
                                         기본값
@@ -306,6 +315,7 @@ export const BackupManager: React.FC = () => {
                                 <button
                                     type="button"
                                     onClick={handleOpenLocalFolder}
+                                    title="현재 백업 폴더를 탐색기에서 열어 파일을 확인합니다."
                                     className="w-full text-xs font-bold py-2 rounded-lg border border-emerald-300 dark:border-emerald-800 text-emerald-800 dark:text-emerald-300 flex items-center justify-center gap-1"
                                 >
                                     <HardDrive className="w-3.5 h-3.5" />
@@ -325,7 +335,10 @@ export const BackupManager: React.FC = () => {
                             저장해 둔 JSON 백업 파일을 선택하면 <strong>전체 복원</strong>됩니다.
                             현재 데이터는 백업 내용으로 교체됩니다.
                         </p>
-                        <label className="block w-full text-center bg-amber-600 hover:bg-amber-500 text-white py-3 rounded-xl font-bold cursor-pointer flex items-center justify-center gap-2">
+                        <label
+                            title="JSON 백업 파일을 선택해 현재 데이터 전체를 복원합니다."
+                            className="block w-full text-center bg-amber-600 hover:bg-amber-500 text-white py-3 rounded-xl font-bold cursor-pointer flex items-center justify-center gap-2"
+                        >
                             <Upload className="w-5 h-5" />
                             JSON 백업 파일 선택…
                             <input type="file" accept=".json" onChange={handleUploadLocal} className="hidden" />
@@ -368,6 +381,7 @@ export const BackupManager: React.FC = () => {
                                         type="button"
                                         onClick={() => handleRestoreFromCloud(item.name)}
                                         disabled={restoringFile !== null}
+                                        title="선택한 클라우드 백업으로 현재 데이터를 전체 복원합니다."
                                         className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold rounded-lg disabled:opacity-50"
                                     >
                                         {restoringFile === item.name ? '복원 중…' : '복원'}
@@ -376,7 +390,7 @@ export const BackupManager: React.FC = () => {
                                         type="button"
                                         onClick={() => handleDeleteBackup(item.name)}
                                         className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/20 rounded-lg"
-                                        title="삭제"
+                                        title="선택한 클라우드 백업 파일을 삭제합니다."
                                     >
                                         <Trash2 className="w-4 h-4" />
                                     </button>
