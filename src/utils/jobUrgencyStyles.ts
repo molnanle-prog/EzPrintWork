@@ -3,6 +3,11 @@ import type { Theme } from '../contexts/ThemeContext';
 
 export type JobUrgencySurface = 'kanban' | 'dashboard';
 
+/** 납기·우선순위 복합 티어 (색상 = 납기, 두께·ring = 우선순위) */
+export type UrgencyTier = 'safe' | 'notice' | 'warn' | 'critical' | 'overdue' | 'very-urgent';
+
+const DATE_TIERS: UrgencyTier[] = ['safe', 'notice', 'warn', 'critical', 'overdue'];
+
 export interface JobUrgencyStyleInput {
   theme: Theme;
   priority: Priority;
@@ -11,6 +16,63 @@ export interface JobUrgencyStyleInput {
   isMyJob?: boolean;
   isTvMode?: boolean;
   surface?: JobUrgencySurface;
+}
+
+/** 납기만 기준 티어 */
+export function resolveDateTier(daysRemaining: number): UrgencyTier {
+  if (daysRemaining <= 0) return 'overdue';
+  if (daysRemaining === 1) return 'critical';
+  if (daysRemaining <= 3) return 'warn';
+  if (daysRemaining <= 7) return 'notice';
+  return 'safe';
+}
+
+/** 납기 + 우선순위 부스트 복합 티어 */
+export function resolveEffectiveTier(daysRemaining: number, priority: Priority): UrgencyTier {
+  if (priority === Priority.VERY_URGENT) return 'very-urgent';
+
+  const dateTier = resolveDateTier(daysRemaining);
+  if (priority === Priority.URGENT) {
+    const idx = DATE_TIERS.indexOf(dateTier);
+    const boosted = Math.min(idx + 1, DATE_TIERS.length - 1);
+    return DATE_TIERS[boosted];
+  }
+  return dateTier;
+}
+
+export function formatDDayLabel(daysRemaining: number): string {
+  if (daysRemaining < 0) return `D+${Math.abs(daysRemaining)}`;
+  if (daysRemaining === 0) return 'D-Day';
+  return `D-${daysRemaining}`;
+}
+
+function getSurfaceBase(theme: Theme, surface: JobUrgencySurface): string {
+  if (surface === 'dashboard') {
+    return theme === 'trello'
+      ? 'job-urgency-surface-dashboard bg-[#1d2d44] border-[#2c3e56] text-slate-200'
+      : 'job-urgency-surface-dashboard border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700';
+  }
+  return theme === 'trello'
+    ? 'job-urgency-surface-kanban bg-white text-[#172b4d] shadow-[0_1px_1px_rgba(9,30,66,0.25),0_0_1px_rgba(9,30,66,0.31)]'
+    : 'job-urgency-surface-kanban bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700';
+}
+
+function getTierModifierClasses(tier: UrgencyTier, priority: Priority, isTvMode: boolean): string {
+  const parts = [`job-urgency-tier-${tier}`];
+
+  if (tier === 'very-urgent') {
+    parts.push('job-urgency-pulse');
+  } else if (tier === 'overdue') {
+    parts.push('job-urgency-overdue-blink');
+  }
+  if (priority === Priority.URGENT && tier !== 'very-urgent') {
+    parts.push('job-priority-urgent');
+  }
+  if (isTvMode && (tier === 'very-urgent' || tier === 'overdue')) {
+    parts.push('job-urgency-tv-emphasis');
+  }
+
+  return parts.join(' ');
 }
 
 /** D-Day·우선순위에 따른 카드/항목 테두리·배경 (모든 테마 공통) */
@@ -23,96 +85,24 @@ export function getJobUrgencyStyles({
   isTvMode = false,
   surface = 'kanban',
 }: JobUrgencyStyleInput): string {
-  const flowingRed = isTvMode ? 'flowing-border-red-lg' : 'flowing-border-red';
-  const flowingRedSm = 'flowing-border-red-sm';
-  const flowingOrangeSm = 'flowing-border-orange-sm';
-
-  const trelloKanbanBase =
-    'bg-white text-[#172b4d] shadow-[0_1px_1px_rgba(9,30,66,0.25),0_0_1px_rgba(9,30,66,0.31)]';
-  const trelloDashboardBase =
-    'bg-[#1d2d44] border-[#2c3e56] text-slate-200 hover:border-[#384c66]';
-
-  const lightDarkKanbanBase = 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700';
-  const lightDarkDashboardBase = 'border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700';
-
-  const base =
-    surface === 'dashboard'
-      ? theme === 'trello'
-        ? trelloDashboardBase
-        : lightDarkDashboardBase
-      : theme === 'trello'
-        ? trelloKanbanBase
-        : lightDarkKanbanBase;
+  const base = getSurfaceBase(theme, surface);
 
   if (isDone) {
-    return base;
+    return `${base} job-urgency-done`;
   }
 
-  let tierClass = '';
-
-  if (priority === Priority.VERY_URGENT) {
-    tierClass =
-      surface === 'kanban'
-        ? theme === 'trello'
-          ? `job-urgency-very-urgent ${flowingRed} bg-red-50 border-2 border-red-600 shadow-md ring-2 ring-red-200`
-          : `job-urgency-very-urgent ${flowingRed} bg-red-100 dark:bg-red-950/30 border-2 border-red-600 dark:border-red-500 shadow-md ring-2 ring-red-200 dark:ring-red-950/40`
-        : theme === 'trello'
-          ? `job-urgency-very-urgent ${flowingRedSm} bg-[#3d1f24] border-2 border-red-400 shadow-md`
-          : `job-urgency-very-urgent ${flowingRedSm} bg-red-50 dark:bg-red-900/20 border-2 border-red-500 dark:border-red-500 shadow-sm`;
-  } else if (priority === Priority.URGENT) {
-    tierClass =
-      surface === 'kanban'
-        ? theme === 'trello'
-          ? `job-urgency-urgent ${flowingOrangeSm} bg-orange-50 border-2 border-orange-500 shadow-md ring-1 ring-orange-200`
-          : `job-urgency-urgent bg-orange-100 dark:bg-orange-950/40 border-2 border-orange-500 dark:border-orange-400 shadow-sm ring-1 ring-orange-200 dark:ring-orange-950/30`
-        : theme === 'trello'
-          ? `job-urgency-urgent ${flowingOrangeSm} bg-[#3d2a1a] border-2 border-orange-400 shadow-sm`
-          : `job-urgency-urgent ${flowingOrangeSm} bg-orange-50 dark:bg-orange-900/15 border-2 border-orange-500 dark:border-orange-500 shadow-sm`;
-  } else if (daysRemaining <= 0) {
-    tierClass =
-      surface === 'kanban'
-        ? theme === 'trello'
-          ? 'job-urgency-overdue bg-red-50 border-2 border-red-500 ring-2 ring-red-200 shadow-md'
-          : 'job-urgency-overdue bg-red-100 dark:bg-red-950/70 border-2 border-red-500 dark:border-red-400 ring-2 ring-red-200 dark:ring-red-900/60 shadow-md'
-        : theme === 'trello'
-          ? `job-urgency-overdue ${flowingRedSm} bg-[#3d1f24] border-2 border-red-400 shadow-sm`
-          : `job-urgency-overdue ${flowingRedSm} bg-red-50 dark:bg-slate-800 border-2 border-red-500 dark:border-red-400 shadow-sm`;
-  } else if (daysRemaining === 1) {
-    tierClass =
-      surface === 'kanban'
-        ? theme === 'trello'
-          ? 'job-urgency-d1 bg-orange-50 border-2 border-orange-500 ring-1 ring-orange-200 shadow-sm'
-          : 'job-urgency-d1 bg-orange-100 dark:bg-orange-950/70 border-2 border-orange-500 dark:border-orange-400 ring-1 ring-orange-200 dark:ring-orange-950/20 shadow-sm'
-        : theme === 'trello'
-          ? `job-urgency-d1 ${flowingOrangeSm} bg-[#3d2a1a] border-2 border-orange-400 shadow-sm`
-          : `job-urgency-d1 ${flowingOrangeSm} bg-orange-50 dark:bg-orange-900/10 border-2 border-orange-500 dark:border-orange-400 shadow-sm`;
-  } else if (daysRemaining <= 3) {
-    tierClass =
-      surface === 'kanban'
-        ? theme === 'trello'
-          ? 'job-urgency-d3 bg-amber-50 border-2 border-amber-400 shadow-sm'
-          : 'job-urgency-d3 bg-amber-100 dark:bg-amber-950/50 border-2 border-amber-500 dark:border-amber-500 shadow-sm'
-        : theme === 'trello'
-          ? 'job-urgency-d3 bg-[#3d3520] border-2 border-amber-400 shadow-sm'
-          : 'job-urgency-d3 bg-amber-50 dark:bg-amber-950/20 border-2 border-amber-500 dark:border-amber-500 shadow-sm';
-  } else if (daysRemaining <= 7 && surface === 'kanban') {
-    tierClass =
-      theme === 'trello'
-        ? 'job-urgency-d7 bg-blue-50 border-2 border-blue-300 shadow-sm'
-        : 'job-urgency-d7 bg-blue-100 dark:bg-blue-950/50 border-2 border-blue-400 dark:border-blue-700 shadow-sm';
-  }
-
-  if (tierClass) {
-    return tierClass;
-  }
+  const tier = resolveEffectiveTier(daysRemaining, priority);
+  const tierClasses = getTierModifierClasses(tier, priority, isTvMode);
 
   if (isMyJob && surface === 'kanban') {
-    return theme === 'trello'
-      ? 'bg-white border-2 border-blue-400 ring-2 ring-blue-100 shadow-[0_1px_1px_rgba(9,30,66,0.25)]'
-      : 'bg-white dark:bg-slate-800 border-2 border-blue-400 dark:border-blue-600 ring-2 ring-blue-100 dark:ring-blue-900/40 shadow-blue-100 dark:shadow-none';
+    return `${base} ${tierClasses} job-my-assignee`;
   }
 
-  return base;
+  return `${base} ${tierClasses}`;
+}
+
+export function getDDayBadgeClasses(tier: UrgencyTier): string {
+  return `job-dday-badge job-dday-tier-${tier}`;
 }
 
 export function getJobUrgencyBadgeStyles(
@@ -120,24 +110,26 @@ export function getJobUrgencyBadgeStyles(
   priority: Priority,
   daysRemaining: number,
 ): string {
-  if (priority === Priority.VERY_URGENT) {
+  const tier = resolveEffectiveTier(daysRemaining, priority);
+
+  if (tier === 'very-urgent') {
     return theme === 'trello'
       ? 'bg-red-600 text-white border border-red-500 shadow-sm'
       : 'bg-red-600 text-white shadow-sm';
   }
-  if (priority === Priority.URGENT) {
+  if (priority === Priority.URGENT || tier === 'overdue' || tier === 'critical') {
     return theme === 'trello'
-      ? 'bg-orange-600/80 text-white border border-orange-500'
-      : 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300 border border-red-300 dark:border-red-800';
+      ? 'bg-orange-600/90 text-white border border-orange-500'
+      : 'bg-orange-100 dark:bg-orange-900/40 text-orange-800 dark:text-orange-200 border border-orange-300 dark:border-orange-700';
   }
-  if (daysRemaining <= 3) {
+  if (tier === 'warn' || tier === 'notice') {
     return theme === 'trello'
       ? 'bg-[#2c3e56] text-amber-300 border border-amber-500/60'
-      : 'bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300';
+      : 'bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-300 dark:border-amber-700';
   }
   return theme === 'trello'
     ? 'bg-[#2c3e56] text-slate-300 border border-[#384c66]'
-    : 'bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300';
+    : 'bg-slate-100 dark:bg-slate-600 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-500';
 }
 
 export function getJobUrgencyDateTextStyles(
@@ -145,8 +137,10 @@ export function getJobUrgencyDateTextStyles(
   isDone: boolean,
 ): string {
   if (isDone) return '';
-  if (daysRemaining < 0) return 'text-slate-800 dark:text-slate-200 font-extrabold';
-  if (daysRemaining <= 1) return 'text-red-600 dark:text-red-400 font-bold';
-  if (daysRemaining <= 3) return 'text-orange-600 dark:text-orange-400 font-bold';
-  return '';
+  const tier = resolveDateTier(daysRemaining);
+  if (tier === 'overdue') return 'text-red-700 dark:text-red-300 font-extrabold';
+  if (tier === 'critical') return 'text-orange-700 dark:text-orange-300 font-bold';
+  if (tier === 'warn') return 'text-amber-700 dark:text-amber-300 font-bold';
+  if (tier === 'notice') return 'text-blue-700 dark:text-blue-300 font-semibold';
+  return 'text-slate-600 dark:text-slate-400';
 }

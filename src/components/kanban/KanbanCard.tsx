@@ -17,7 +17,12 @@ import {
 } from '../../utils/staffMatch';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { getJobUrgencyStyles } from '../../utils/jobUrgencyStyles';
+import {
+  getJobUrgencyStyles,
+  resolveEffectiveTier,
+  formatDDayLabel,
+  getDDayBadgeClasses,
+} from '../../utils/jobUrgencyStyles';
 
 interface KanbanCardProps {
   job: Job;
@@ -92,6 +97,9 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   const diffTime = due.getTime() - now.getTime();
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   const isDone = status === 'COMPLETED';
+  const urgencyTier = resolveEffectiveTier(daysRemaining, job.priority);
+  const ddayLabel = formatDDayLabel(daysRemaining);
+  const ddayBadgeClass = getDDayBadgeClasses(urgencyTier);
   const subJobsList = job.subJobs || [];
   const subJobCount = subJobsList.length > 0 ? subJobsList.length : 1;
   const isMultiJob = subJobsList.length > 1;
@@ -555,6 +563,12 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         {/* 1. Header: Badges */}
         <div className="flex justify-between items-start pointer-events-none">
           <div className="flex gap-2 flex-wrap items-center">
+             {!isDone && (
+               <span className={ddayBadgeClass} title="납기 D-Day">
+                 {job.priority === Priority.VERY_URGENT && <AlertTriangle size={10} className="inline mr-0.5 -mt-px" />}
+                 {ddayLabel}
+               </span>
+             )}
              {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
              
              {/* Priority Badge */}
@@ -636,12 +650,11 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                 {staffName}
             </span>
           </div>
-          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-3 py-1 rounded-lg border-2 border-slate-100 dark:border-slate-800 shrink-0 font-normal text-xs ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-200 dark:border-red-900/60' : ''}`}>
-            {job.priority === Priority.VERY_URGENT && <AlertTriangle size={13} className="text-red-500" />}
-            <span className="font-mono text-xs">
-              {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}
+          {!isDone && (
+            <span className={ddayBadgeClass} title="납기 D-Day">
+              {ddayLabel}
             </span>
-          </div>
+          )}
         </div>
       </div>
     );
@@ -712,6 +725,12 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       {/* 1. Header: Badges & Gripper */}
       <div className="flex justify-between items-center pointer-events-none">
         <div className="flex gap-1.5 flex-wrap items-center min-w-0 flex-1">
+           {!isDone && (
+             <span className={ddayBadgeClass} title="납기 D-Day">
+               {job.priority === Priority.VERY_URGENT && <AlertTriangle size={9} className="inline mr-0.5 -mt-px" />}
+               {ddayLabel}
+             </span>
+           )}
            {isMyJob && <span className="text-[10px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
            
            {/* Priority Badge */}
@@ -812,12 +831,11 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                 {staffName}
             </span>
           </div>
-          <div className={`flex items-center gap-1 bg-slate-50 dark:bg-slate-900 px-2 py-0.5 rounded-md border border-slate-100 dark:border-slate-800 shrink-0 font-normal ${daysRemaining <= 3 ? 'text-red-600 dark:text-red-400 bg-red-50/50 dark:bg-red-950/10 border-red-100 dark:border-red-900/60' : ''}`}>
-            {job.priority === Priority.VERY_URGENT && <AlertTriangle size={11} className="text-red-500" />}
-            <span className="font-mono text-[10px]">
-              {daysRemaining < 0 ? `+${Math.abs(daysRemaining)}` : `D-${daysRemaining}`}
+          {!isDone && (
+            <span className={ddayBadgeClass} title="납기 D-Day">
+              {ddayLabel}
             </span>
-          </div>
+          )}
         </div>
       </div>
     </div>

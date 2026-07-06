@@ -2,8 +2,7 @@
 import React from 'react';
 import { Quote } from '../../types';
 import { db } from '../../services/dataService';
-import { getQuoteJobNumber, formatQuoteClientLabel } from '../../utils/quoteJobSync';
-import { calcQuoteTotals } from '../../utils/quoteCalculator';
+import { getQuoteJobNumber, formatQuoteClientLabel, resolveQuoteJob, resolveQuoteLinesForDisplay } from '../../utils/quoteJobSync';
 import { formatKoreanWonAmount } from '../../utils/koreanAmount';
 
 interface QuoteDocumentProps {
@@ -13,14 +12,17 @@ interface QuoteDocumentProps {
 }
 
 const MIN_TABLE_ROWS = 5;
-const SPEC_PREVIEW_MAX = 36;
+const SPEC_PREVIEW_MAX = 72;
 
 function getSpecPreview(description?: string): string {
   const text = (description || '').trim();
   if (!text) return '';
+  if (text.includes('표지:') || text.includes('내지')) {
+    return text.length > SPEC_PREVIEW_MAX ? `${text.slice(0, SPEC_PREVIEW_MAX)}…` : text;
+  }
   const tokens = text.split(/[\/,|]/).map((part) => part.trim()).filter(Boolean);
   const base = tokens.length > 0 ? tokens.slice(0, 2).join(' / ') : text;
-  return base.length > SPEC_PREVIEW_MAX ? `${base.slice(0, SPEC_PREVIEW_MAX)}...` : base;
+  return base.length > SPEC_PREVIEW_MAX ? `${base.slice(0, SPEC_PREVIEW_MAX)}…` : base;
 }
 
 export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentType = 'quote', id }) => {
@@ -28,9 +30,10 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
   const template = db.getQuoteTemplate();
   const headerHeightMm = template.headerHeightMm ?? 17;
   const jobs = db.getAllJobs();
+  const linkedJob = resolveQuoteJob(quote, jobs);
   const clientLabel = formatQuoteClientLabel(quote, jobs);
 
-  const lines = quote.lines && quote.lines.length > 0
+  const rawLines = quote.lines && quote.lines.length > 0
     ? quote.lines
     : [{
         id: 'legacy',
@@ -41,15 +44,11 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
         amount: quote.totalAmount,
       }];
 
-  const vatIncluded = quote.vatIncluded ?? false;
-  const supplySum = lines.reduce((s, l) => s + (l.amount || 0), 0);
-  const totals = calcQuoteTotals(
-    quote.supplyAmount ?? supplySum,
-    vatIncluded
-  );
-  const supplyPrice = quote.supplyAmount ?? totals.supplyAmount;
-  const tax = vatIncluded ? (quote.vatAmount ?? totals.vatAmount) : 0;
-  const grandTotal = quote.totalAmount ?? totals.totalAmount;
+  const { lines, amounts } = resolveQuoteLinesForDisplay(rawLines, quote, linkedJob);
+  const vatIncluded = amounts.vatIncluded;
+  const supplyPrice = amounts.supplyAmount;
+  const tax = amounts.vatAmount;
+  const grandTotal = amounts.totalAmount;
 
   const today = new Date(quote.date).toLocaleDateString('ko-KR', {
     year: 'numeric',

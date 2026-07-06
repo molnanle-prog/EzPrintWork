@@ -275,63 +275,240 @@ html.trello .kanban-card .kanban-card-meta {
   font-weight: 500;
 }
 
-/* ===== 긴급·D-Day 테두리/배경 — light·trello에서도 확실히 보이도록 보강 ===== */
-html.light .job-urgency-overdue,
-html.trello .kanban-card.job-urgency-overdue {
-  background-color: #fee2e2 !important;
-  border-color: #dc2626 !important;
+/* ===== 납기·우선순위 티어 (light / dark / trello) ===== */
+html.light {
+  --urgency-safe-border: #94a3b8;
+  --urgency-safe-bg: #f8fafc;
+  --urgency-notice-border: #3b82f6;
+  --urgency-notice-bg: #eff6ff;
+  --urgency-warn-border: #d97706;
+  --urgency-warn-bg: #fffbeb;
+  --urgency-critical-border: #ea580c;
+  --urgency-critical-bg: #fff7ed;
+  --urgency-overdue-border: #dc2626;
+  --urgency-overdue-bg: #fef2f2;
+  --urgency-very-border: #b91c1c;
+  --urgency-very-bg: #fee2e2;
+  --urgency-priority-ring: rgba(234, 88, 12, 0.45);
+  --urgency-dday-safe: #475569;
+  --urgency-dday-notice: #1d4ed8;
+  --urgency-dday-warn: #b45309;
+  --urgency-dday-critical: #c2410c;
+  --urgency-dday-overdue: #b91c1c;
+  --urgency-dday-very: #ffffff;
 }
 
-html.light .job-urgency-d1,
-html.trello .kanban-card.job-urgency-d1 {
-  background-color: #ffedd5 !important;
-  border-color: #ea580c !important;
+html.dark {
+  --urgency-safe-border: #64748b;
+  --urgency-safe-bg: rgba(30, 41, 59, 0.85);
+  --urgency-notice-border: #60a5fa;
+  --urgency-notice-bg: rgba(30, 58, 138, 0.35);
+  --urgency-warn-border: #fbbf24;
+  --urgency-warn-bg: rgba(120, 53, 15, 0.35);
+  --urgency-critical-border: #fb923c;
+  --urgency-critical-bg: rgba(124, 45, 18, 0.4);
+  --urgency-overdue-border: #f87171;
+  --urgency-overdue-bg: rgba(127, 29, 29, 0.45);
+  --urgency-very-border: #ef4444;
+  --urgency-very-bg: rgba(127, 29, 29, 0.55);
+  --urgency-priority-ring: rgba(251, 146, 60, 0.5);
+  --urgency-dday-safe: #cbd5e1;
+  --urgency-dday-notice: #93c5fd;
+  --urgency-dday-warn: #fcd34d;
+  --urgency-dday-critical: #fdba74;
+  --urgency-dday-overdue: #fca5a5;
+  --urgency-dday-very: #ffffff;
 }
 
-html.light .job-urgency-d3,
-html.trello .kanban-card.job-urgency-d3 {
-  background-color: #fef3c7 !important;
-  border-color: #d97706 !important;
+html.trello {
+  --urgency-safe-border: #94a3b8;
+  --urgency-safe-bg: #ffffff;
+  --urgency-notice-border: #2563eb;
+  --urgency-notice-bg: #eff6ff;
+  --urgency-warn-border: #d97706;
+  --urgency-warn-bg: #fffbeb;
+  --urgency-critical-border: #ea580c;
+  --urgency-critical-bg: #fff7ed;
+  --urgency-overdue-border: #dc2626;
+  --urgency-overdue-bg: #fef2f2;
+  --urgency-very-border: #b91c1c;
+  --urgency-very-bg: #fee2e2;
+  --urgency-priority-ring: rgba(234, 88, 12, 0.45);
+  --urgency-dday-safe: #475569;
+  --urgency-dday-notice: #1d4ed8;
+  --urgency-dday-warn: #b45309;
+  --urgency-dday-critical: #c2410c;
+  --urgency-dday-overdue: #b91c1c;
+  --urgency-dday-very: #ffffff;
 }
 
-html.light .job-urgency-d7,
-html.trello .kanban-card.job-urgency-d7 {
-  background-color: #dbeafe !important;
-  border-color: #3b82f6 !important;
+/* trello 대시보드(어두운 표면) */
+html.trello .job-urgency-surface-dashboard.job-urgency-tier-safe {
+  --urgency-safe-bg: #243447;
+  --urgency-safe-border: #5e6c84;
+}
+html.trello .job-urgency-surface-dashboard.job-urgency-tier-notice {
+  --urgency-notice-bg: #1e3a5f;
+  --urgency-notice-border: #60a5fa;
+}
+html.trello .job-urgency-surface-dashboard.job-urgency-tier-warn {
+  --urgency-warn-bg: #3d3520;
+  --urgency-warn-border: #fbbf24;
+}
+html.trello .job-urgency-surface-dashboard.job-urgency-tier-critical {
+  --urgency-critical-bg: #4a3018;
+  --urgency-critical-border: #fb923c;
+}
+html.trello .job-urgency-surface-dashboard.job-urgency-tier-overdue,
+html.trello .job-urgency-surface-dashboard.job-urgency-tier-very-urgent {
+  --urgency-overdue-bg: #4a1f24;
+  --urgency-overdue-border: #f87171;
+  --urgency-very-bg: #4a1f24;
+  --urgency-very-border: #f87171;
 }
 
-html.light .job-urgency-very-urgent,
-html.trello .kanban-card.job-urgency-very-urgent {
-  background-color: #fecaca !important;
-  border-color: #dc2626 !important;
+.kanban-card.job-urgency-tier-safe,
+.job-urgency-tier-safe:not(.kanban-card) {
+  border-width: 2px !important;
+  border-style: solid !important;
+  border-color: var(--urgency-safe-border) !important;
+  background-color: var(--urgency-safe-bg) !important;
 }
 
-html.light .job-urgency-urgent,
-html.trello .kanban-card.job-urgency-urgent {
-  background-color: #ffedd5 !important;
-  border-color: #ea580c !important;
+.kanban-card.job-urgency-tier-notice,
+.job-urgency-tier-notice:not(.kanban-card) {
+  border-width: 2px !important;
+  border-style: solid !important;
+  border-color: var(--urgency-notice-border) !important;
+  background-color: var(--urgency-notice-bg) !important;
 }
 
-/* 상황판(trello 다크 카드) 긴급 강조 */
-html.trello .job-urgency-overdue:not(.kanban-card) {
-  background-color: #4a1f24 !important;
-  border-color: #f87171 !important;
+.kanban-card.job-urgency-tier-warn,
+.job-urgency-tier-warn:not(.kanban-card) {
+  border-width: 2px !important;
+  border-style: solid !important;
+  border-color: var(--urgency-warn-border) !important;
+  background-color: var(--urgency-warn-bg) !important;
 }
 
-html.trello .job-urgency-d1:not(.kanban-card),
-html.trello .job-urgency-urgent:not(.kanban-card) {
-  background-color: #4a3018 !important;
-  border-color: #fb923c !important;
+.kanban-card.job-urgency-tier-critical,
+.job-urgency-tier-critical:not(.kanban-card) {
+  border-width: 2px !important;
+  border-style: solid !important;
+  border-color: var(--urgency-critical-border) !important;
+  background-color: var(--urgency-critical-bg) !important;
 }
 
-html.trello .job-urgency-d3:not(.kanban-card) {
-  background-color: #4a3d18 !important;
-  border-color: #fbbf24 !important;
+.kanban-card.job-urgency-tier-overdue,
+.job-urgency-tier-overdue:not(.kanban-card) {
+  border-width: 2px !important;
+  border-style: solid !important;
+  border-color: var(--urgency-overdue-border) !important;
+  background-color: var(--urgency-overdue-bg) !important;
 }
 
-html.trello .job-urgency-very-urgent:not(.kanban-card) {
-  background-color: #4a1f24 !important;
-  border-color: #f87171 !important;
+.kanban-card.job-urgency-tier-very-urgent,
+.job-urgency-tier-very-urgent:not(.kanban-card) {
+  border-width: 3px !important;
+  border-style: solid !important;
+  border-color: var(--urgency-very-border) !important;
+  background-color: var(--urgency-very-bg) !important;
+  box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.25);
+}
+
+.job-priority-urgent {
+  border-width: 3px !important;
+  box-shadow: 0 0 0 1px var(--urgency-priority-ring) !important;
+}
+
+.job-my-assignee {
+  box-shadow: 0 0 0 1px rgba(59, 130, 246, 0.35), inset 0 0 0 1px rgba(59, 130, 246, 0.15);
+}
+
+.job-urgency-done {
+  opacity: 0.72;
+  filter: grayscale(0.35);
+}
+
+.job-urgency-tv-emphasis {
+  border-width: 4px !important;
+}
+
+@keyframes urgency-tier-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(220, 38, 38, 0.2); }
+  50% { box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.45); }
+}
+
+.job-urgency-pulse {
+  animation: urgency-tier-pulse 2s ease-in-out infinite;
+}
+
+/* 지난 납기 — 카드 전체 느린 점멸 (3.5초, 매우긴급보다 부드럽게) */
+@keyframes urgency-overdue-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.58;
+  }
+}
+
+.kanban-card.job-urgency-overdue-blink,
+.job-urgency-overdue-blink {
+  animation: urgency-overdue-blink 3.5s ease-in-out infinite;
+  will-change: opacity;
+  transition: none !important;
+}
+
+/* D-Day 뱃지 */
+.job-dday-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  font-size: 10px;
+  line-height: 1;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+
+.job-dday-tier-safe {
+  color: var(--urgency-dday-safe);
+  background: rgba(148, 163, 184, 0.15);
+  border-color: var(--urgency-safe-border);
+}
+
+.job-dday-tier-notice {
+  color: var(--urgency-dday-notice);
+  background: rgba(59, 130, 246, 0.12);
+  border-color: var(--urgency-notice-border);
+}
+
+.job-dday-tier-warn {
+  color: var(--urgency-dday-warn);
+  background: rgba(217, 119, 6, 0.12);
+  border-color: var(--urgency-warn-border);
+}
+
+.job-dday-tier-critical {
+  color: var(--urgency-dday-critical);
+  background: rgba(234, 88, 12, 0.12);
+  border-color: var(--urgency-critical-border);
+}
+
+.job-dday-tier-overdue {
+  color: var(--urgency-dday-overdue);
+  background: rgba(220, 38, 38, 0.12);
+  border-color: var(--urgency-overdue-border);
+}
+
+.job-dday-tier-very-urgent {
+  color: var(--urgency-dday-very);
+  background: #dc2626;
+  border-color: #b91c1c;
 }
 
 /* 책자 후가공 섹션 — 모든 테마에서 제목·배경 대비 고정 (다크/트렐로 연한 글자 방지) */
