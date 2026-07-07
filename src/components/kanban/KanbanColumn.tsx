@@ -73,7 +73,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
     <div className={`flex flex-col ${fillHeight ? 'h-full min-h-0' : 'flex-none'}`}>
       {useLargeHeader ? (
         <div className={`relative p-1.5 lg:p-2 flex items-center justify-between shrink-0 ${theme === 'trello' ? 'border-b border-transparent' : 'border-b border-slate-200/80 dark:border-slate-700/80'}`}>
-          <h3 className={`font-medium flex items-center gap-2 ${theme === 'trello' ? 'text-slate-300 font-bold' : 'text-slate-700 dark:text-slate-200'} ${isTvMode ? 'text-[19px] lg:text-[22px]' : 'text-[15px] lg:text-[17px]'}`}>
+          <h3 className={`font-medium flex items-center gap-2 ${theme === 'trello' ? 'text-slate-100 font-bold' : 'text-slate-700 dark:text-slate-200'} ${isTvMode ? 'text-[19px] lg:text-[22px]' : 'text-[15px] lg:text-[17px]'}`}>
             <div className={`rounded-full shadow-sm ${isTvMode ? 'w-3 h-3' : 'w-2 h-2'} ${getStatusDotColor(statusDef.key)}`} />
             {statusDef.label}
           </h3>
@@ -94,7 +94,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
             </button>
           )}
           <div className="flex items-center gap-1.5">
-            <span className={`rounded-full font-medium shadow-sm ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-transparent font-bold' : 'bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600'} ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5' : 'text-[10px] px-2 py-0.5'}`}>
+            <span className={`rounded-full font-medium shadow-sm ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-100 border-transparent font-bold' : 'bg-white dark:bg-slate-700 text-slate-500 dark:text-slate-300 border border-slate-200 dark:border-slate-600'} ${isTvMode ? 'text-[13px] lg:text-[14px] px-3 py-0.5' : 'text-[10px] px-2 py-0.5'}`}>
               {jobs.length}
             </span>
           </div>
@@ -119,7 +119,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
       <div
         ref={setNodeRef}
         data-kanban-column={statusDef.key}
-        className={`${fillHeight ? 'flex-1 min-h-0' : isQuoteTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors ${
+        className={`${fillHeight ? 'flex-1 min-h-0' : isQuoteTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors kanban-tray-zone ${
           isQuoteTray ? 'overflow-x-hidden' : 'flex flex-col gap-1.5'
         } ${
           isOver
@@ -133,7 +133,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
       >
         <SortableContext items={jobIds} strategy={isQuoteTray ? rectSortingStrategy : verticalListSortingStrategy}>
           {sortedJobs.length === 0 ? (
-            <div className={`flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2 ${isQuoteTray ? 'min-h-[72px]' : 'flex-1'}`}>
+            <div className={`kanban-tray-empty flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2 ${isQuoteTray ? 'min-h-[72px]' : 'flex-1'}`}>
               {statusDef.key === 'QUOTE'
                 ? '견적 문의를 여기로 끌어다 놓으세요'
                 : `${statusDef.label} 작업을 여기로 끌어다 놓으세요`}

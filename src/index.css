@@ -275,6 +275,43 @@ html.trello .kanban-card .kanban-card-meta {
   font-weight: 500;
 }
 
+/* 트렐로 하단 트레이(견적·납품완료) — 어두운 카드 배경용 밝은 글자 */
+html.trello .kanban-tray-card .kanban-card-title {
+  color: #f8fafc !important;
+  font-weight: 700;
+}
+
+html.trello .kanban-tray-card .kanban-card-subtitle {
+  color: #cbd5e1 !important;
+  font-weight: 500;
+}
+
+html.trello .kanban-tray-card .kanban-tray-price {
+  color: #e0e7ff !important;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+html.trello .kanban-tray-card .kanban-tray-meta {
+  color: #94a3b8 !important;
+}
+
+html.trello .kanban-tray-card .kanban-tray-icon {
+  color: #94a3b8 !important;
+}
+
+html.trello .kanban-tray-card .kanban-tray-icon:hover {
+  color: #e2e8f0 !important;
+}
+
+html.trello .kanban-tray-zone .kanban-tray-empty {
+  color: #94a3b8 !important;
+}
+
+html.dark .kanban-tray-card .kanban-tray-price {
+  color: #a5b4fc !important;
+}
+
 /* ===== 납기·우선순위 티어 (light / dark / trello) ===== */
 html.light {
   --urgency-safe-border: #94a3b8;

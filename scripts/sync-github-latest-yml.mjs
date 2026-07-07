@@ -47,7 +47,7 @@ function fetchRaw(url, redirects = 0) {
 
 const version = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../package.json'), 'utf-8')).version;
 const tag = `v${version}`;
-const ghUrl = 'https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/EzPrintWork-Setup.exe';
+const ghUrl = `https://github.com/molnanle-prog/EzPrintWork/releases/download/${tag}/EzPrintWork-Setup.exe`;
 
 const release = await githubGet(`https://api.github.com/repos/molnanle-prog/EzPrintWork/releases/tags/${tag}`);
 const ymlAsset = release.assets.find((a) => a.name === 'latest.yml');

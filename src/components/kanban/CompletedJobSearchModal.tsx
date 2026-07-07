@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 // FIX: Removed JobStatus, added JobStatusDefinition
 import { Job, JobStatusDefinition } from '../../types';
 import { db } from '../../services/dataService';
-import { X, Search, Calendar, User, FileText, ArrowRight } from 'lucide-react';
+import { X, Search, Calendar, User, FileText, ArrowRight, Loader2 } from 'lucide-react';
 
 interface CompletedJobSearchModalProps {
   onClose: () => void;
@@ -13,6 +13,7 @@ interface CompletedJobSearchModalProps {
 export const CompletedJobSearchModal: React.FC<CompletedJobSearchModalProps> = ({ onClose, onSelectJob }) => {
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<Job[]>([]);
+  const [searching, setSearching] = useState(false);
   // FIX: Add state for status definitions to show labels
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
 
@@ -22,13 +23,23 @@ export const CompletedJobSearchModal: React.FC<CompletedJobSearchModalProps> = (
   }, []);
 
   useEffect(() => {
-    if (query.length >= 2) {
-      void db.ensureColdArchiveLoaded().then(() => {
-        setResults(db.searchJobs(query));
-      });
-    } else {
+    if (query.length < 2) {
       setResults([]);
+      setSearching(false);
+      return;
     }
+
+    let cancelled = false;
+    setSearching(true);
+    void db.searchJobsAsync(query).then((hits) => {
+      if (!cancelled) setResults(hits);
+    }).finally(() => {
+      if (!cancelled) setSearching(false);
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [query]);
 
   // FIX: Helper to get status label
@@ -52,27 +63,33 @@ export const CompletedJobSearchModal: React.FC<CompletedJobSearchModalProps> = (
                     <input 
                         autoFocus
                         className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 font-bold text-slate-900 placeholder-slate-400"
-                        placeholder="고객명, 작업명, 전화번호로 검색..."
+                        placeholder="고객명, 작업명, 작업번호, 전화번호로 검색..."
                         value={query}
                         onChange={e => setQuery(e.target.value)}
                     />
                 </div>
             </div>
             <div className="flex-1 overflow-y-auto p-2 space-y-2 bg-slate-50 custom-scrollbar">
-                {results.length === 0 && query.length > 0 && (
+                {searching && (
+                    <div className="text-center text-slate-400 py-10 flex flex-col items-center gap-2">
+                        <Loader2 size={28} className="animate-spin text-blue-500" />
+                        <span>지난 작업 이력을 불러오는 중...</span>
+                    </div>
+                )}
+                {!searching && results.length === 0 && query.length >= 2 && (
                     <div className="text-center text-slate-400 py-10">검색 결과가 없습니다.</div>
                 )}
-                {results.length === 0 && query.length === 0 && (
+                {!searching && results.length === 0 && query.length === 0 && (
                      <div className="text-center text-slate-400 py-10 flex flex-col items-center gap-2">
                         <Search size={32} className="opacity-20" />
                         <span>2글자 이상 입력하여 검색하세요.</span>
-                        <span className="text-xs text-slate-300">완료된 작업을 포함한 모든 이력을 검색합니다.</span>
+                        <span className="text-xs text-slate-300">칸반에 없는 완료·지난 작업(최근 1년·아카이브)까지 검색합니다.</span>
                      </div>
                 )}
                 {results.map(job => (
                     <div 
                         key={job.id} 
-                        onClick={() => onSelectJob(job)}
+                        onClick={() => { onSelectJob(job); onClose(); }}
                         className="bg-white p-4 rounded-lg border border-slate-200 hover:border-blue-400 hover:shadow-md cursor-pointer transition-all group"
                     >
                         <div className="flex justify-between items-start mb-2">

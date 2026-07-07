@@ -9,7 +9,9 @@ import { TenantGuard } from './components/auth/TenantGuard';
 import { Toaster } from 'sonner';
 import { AutoUpdateProvider } from './components/common/AutoUpdateProvider';
 import { isQuotePreviewRoute } from './utils/quotePreviewStorage';
+import { isRemoteViewRoute } from './utils/remoteView';
 import { db } from './services/dataService';
+import { RemoteSituationPage } from './pages/RemoteSituationPage';
 
 const LoadingScreen = () => (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 gap-6">
@@ -26,13 +28,15 @@ const LoadingScreen = () => (
 function AppRoutes() {
     const { isAuthenticated, loading, currentUser } = useAuth();
     const previewOnly = isQuotePreviewRoute();
+    const remoteOnly = isRemoteViewRoute();
 
     useEffect(() => {
+        if (remoteOnly) return;
         if (currentUser?.tenantId && currentUser.uid) {
             db.setSyncUserRole(currentUser.role);
             void db.setTenantWhenReady(currentUser.tenantId, currentUser.uid);
         }
-    }, [currentUser?.tenantId, currentUser?.uid, currentUser?.role]);
+    }, [currentUser?.tenantId, currentUser?.uid, currentUser?.role, remoteOnly]);
 
     if (loading) {
         return <LoadingScreen />;
@@ -57,7 +61,12 @@ function AppRoutes() {
                         />
                         <Route path="*" element={<Navigate to="/login" replace />} />
                     </Routes>
-                    <Toaster richColors position="top-right" />
+                    <Toaster
+                        richColors
+                        position="top-right"
+                        offset={{ top: 52, right: 16 }}
+                        mobileOffset={{ top: 52, right: 12, left: 12 }}
+                    />
                 </div>
             </Router>
         );
@@ -77,6 +86,14 @@ function AppRoutes() {
                             element={isAuthenticated && !currentUser?.tenantId ? <OnboardingPage /> : <Navigate to="/" />}
                         />
                         <Route
+                            path="/remote"
+                            element={
+                                <TenantGuard>
+                                    <RemoteSituationPage />
+                                </TenantGuard>
+                            }
+                        />
+                        <Route
                             path="/"
                             element={
                                 <TenantGuard>
@@ -94,7 +111,12 @@ function AppRoutes() {
                         />
                         <Route path="*" element={<Navigate to="/" />} />
                     </Routes>
-                    <Toaster richColors position="top-right" />
+                    <Toaster
+                        richColors
+                        position="top-right"
+                        offset={{ top: 52, right: 16 }}
+                        mobileOffset={{ top: 52, right: 12, left: 12 }}
+                    />
                 </div>
             </Router>
         </AutoUpdateProvider>

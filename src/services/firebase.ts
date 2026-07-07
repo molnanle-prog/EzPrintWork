@@ -18,20 +18,7 @@ export const auth = getAuth(app);
 export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 export const storage = getStorage(app);
 
-// Connection test
-async function testConnection() {
-  try {
-    const testDoc = doc(db, '_connection_test_', 'ping');
-    await getDocFromServer(testDoc).catch(() => {});
-    console.log("Firebase initialized successfully");
-  } catch (error) {
-    console.error("Firebase connection test failed:", error);
-  }
-}
-
-// testConnection();
-
-const PRESENCE_HEARTBEAT_MS = 45_000;
+const PRESENCE_STAFF_CACHE_TTL_MS = 30 * 60_000;
 
 export type PresenceUser = {
   uid: string;
@@ -41,9 +28,9 @@ export type PresenceUser = {
   name?: string | null;
 };
 
-let presenceHeartbeat: ReturnType<typeof setInterval> | null = null;
 let presenceActiveUser: PresenceUser | null = null;
 let presenceLastPayload: PresenceUser | null = null;
+let cachedStaffDocIds: { tenantId: string; uid: string; ids: string[]; at: number } | null = null;
 
 const presenceNow = () => new Date().toISOString();
 
@@ -54,8 +41,18 @@ const presenceFields = (online: boolean) => ({
   ...(online ? { lastLogin: presenceNow(), lastCheckIn: presenceNow() } : { lastLogout: presenceNow() }),
 });
 
-/** 실제 staff 문서 ID만 반환 — loginId/uid를 문서 ID로 착각해 유령 카드를 만들지 않음 */
+/** 로그인 시 1회 staff 문서 ID 확인 후 캐시 — heartbeat마다 반복 조회 금지 */
 async function resolvePresenceStaffDocIds(user: PresenceUser): Promise<string[]> {
+  const now = Date.now();
+  if (
+    cachedStaffDocIds &&
+    cachedStaffDocIds.tenantId === user.tenantId &&
+    cachedStaffDocIds.uid === user.uid &&
+    now - cachedStaffDocIds.at < PRESENCE_STAFF_CACHE_TTL_MS
+  ) {
+    return cachedStaffDocIds.ids;
+  }
+
   const ids = new Set<string>();
   const staffCol = collection(db, `tenants/${user.tenantId}/staff`);
 
@@ -66,34 +63,28 @@ async function resolvePresenceStaffDocIds(user: PresenceUser): Promise<string[]>
     console.warn('[Presence] staff uid doc lookup failed:', err);
   }
 
-  try {
-    const byUid = await getDocs(query(staffCol, where('uid', '==', user.uid), limit(10)));
-    byUid.docs.forEach((d) => ids.add(d.id));
-  } catch (err) {
-    console.warn('[Presence] staff uid query failed:', err);
+  if (ids.size === 0) {
+    try {
+      const byUid = await getDocs(query(staffCol, where('uid', '==', user.uid), limit(3)));
+      byUid.docs.forEach((d) => ids.add(d.id));
+    } catch (err) {
+      console.warn('[Presence] staff uid query failed:', err);
+    }
   }
 
   const loginId = user.loginId?.trim().toLowerCase();
-  if (loginId) {
+  if (ids.size === 0 && loginId) {
     try {
-      const byLogin = await getDocs(query(staffCol, where('loginId', '==', loginId), limit(10)));
+      const byLogin = await getDocs(query(staffCol, where('loginId', '==', loginId), limit(3)));
       byLogin.docs.forEach((d) => ids.add(d.id));
     } catch (err) {
       console.warn('[Presence] staff loginId query failed:', err);
     }
   }
 
-  const email = user.email?.trim().toLowerCase();
-  if (email) {
-    try {
-      const byEmail = await getDocs(query(staffCol, where('email', '==', email), limit(10)));
-      byEmail.docs.forEach((d) => ids.add(d.id));
-    } catch (err) {
-      console.warn('[Presence] staff email query failed:', err);
-    }
-  }
-
-  return [...ids];
+  const resolved = [...ids];
+  cachedStaffDocIds = { tenantId: user.tenantId, uid: user.uid, ids: resolved, at: now };
+  return resolved;
 }
 
 async function writePresence(user: PresenceUser, online: boolean): Promise<void> {
@@ -145,36 +136,18 @@ const onPresencePageHide = () => { void setPresenceOffline(); };
 
 const onPresenceBeforeUnload = () => { void setPresenceOffline(); };
 
-const onPresenceVisibility = () => {
-  if (!presenceActiveUser) return;
-  if (document.visibilityState === 'visible') {
-    void setPresenceOnline(presenceActiveUser);
-  } else {
-    void setPresenceOffline(presenceActiveUser);
-  }
-};
-
 export function startPresenceSession(user: PresenceUser): void {
   stopPresenceSession();
   presenceActiveUser = user;
+  cachedStaffDocIds = null;
   void setPresenceOnline(user);
-  presenceHeartbeat = setInterval(() => {
-    if (presenceActiveUser && document.visibilityState === 'visible') {
-      void setPresenceOnline(presenceActiveUser);
-    }
-  }, PRESENCE_HEARTBEAT_MS);
-  document.addEventListener('visibilitychange', onPresenceVisibility);
   window.addEventListener('pagehide', onPresencePageHide);
   window.addEventListener('beforeunload', onPresenceBeforeUnload);
 }
 
 export function stopPresenceSession(): void {
-  if (presenceHeartbeat) {
-    clearInterval(presenceHeartbeat);
-    presenceHeartbeat = null;
-  }
-  document.removeEventListener('visibilitychange', onPresenceVisibility);
   window.removeEventListener('pagehide', onPresencePageHide);
   window.removeEventListener('beforeunload', onPresenceBeforeUnload);
   presenceActiveUser = null;
+  cachedStaffDocIds = null;
 }

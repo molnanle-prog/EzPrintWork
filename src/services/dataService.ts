@@ -12,9 +12,12 @@ import {
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db as firestore, auth, storage } from './firebase';
 import { jobArchiveService } from './jobArchiveService';
+import { situationMirrorService } from './situationMirrorService';
+import { localDbBridge } from './localDbBridge';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
 import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
 import { formatJobNumber } from '../utils/jobNumber';
+import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
 import { APP_VERSION } from '../utils/autoUpdate';
 // --- Utility Functions (From Original) ---
@@ -130,6 +133,9 @@ const OUTSTANDING_PAYMENT_STATUSES = ['결제대기', '일부결제'] as const;
 const KANBAN_RECENT_PAID_COMPLETED_DAYS = 4;
 /** Firestore 운영 데이터는 최근 1년(365일)만 유지 */
 const HOT_WINDOW_DAYS = 365;
+const LIVE_MIRROR_PUSH_DEBOUNCE_MS = 250;
+const APP_MIRROR_POLL_MS = 1000;
+const WEB_MIRROR_POLL_MS = 2000;
 
 /** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
 const COMBINED_PAPER_WEIGHT_PATTERN = /\/|표지.*내지|내지.*표지/i;
@@ -476,31 +482,46 @@ export class DataService {
     private reconnectTimer: any = null;
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
-    private joinRequestsUnsub: (() => void) | null = null;
+    private syncPulseUnsub: (() => void) | null = null;
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
     private syncUserRole: 'admin' | 'staff' | 'superadmin' | null = null;
-    /** jobs 분할 동기화 — 전체 컬렉션 구독 대신 범위별 구독 */
+    /** jobs 핫 캐시 — 로그인 1회 pull + pulse 시 변경분만 getDoc */
     private operationalJobs: Job[] = [];
     private kanbanCompletedJobs: Job[] = [];
     private supplementaryJobs: Job[] = [];
-    private lazyUnsubs = new Map<string, () => void>();
     private activeLazyCollections = new Set<string>();
-    private paymentJobsUnsub: (() => void) | null = null;
-    private paymentCompletedJobsUnsub: (() => void) | null = null;
+    private lazyCollectionsLoaded = new Set<string>();
     private calendarMonthsLoaded = new Set<string>();
     private clientHistoryLoaded = new Set<string>();
-    private startupSyncPending = 0;
-    private startupUnitsCompleted = new Set<string>();
     private paymentJobsWanted = false;
-    private jobsFullFallbackActive = false;
+    private paymentJobsLoaded = false;
+    /** 원격 pulse echo 방지 — 본인이 쓴 직후 스냅샷 1회 무시 */
+    private localPulseMarkers = new Map<string, string>();
+    private lastAppliedJobRevAt: string | null = null;
+    private lastAppliedStaffAt: string | null = null;
+    private lastAppliedClientsAt: string | null = null;
+    private lastAppliedSettingsAt: string | null = null;
+    private lastLocalJobWriteAt = 0;
+    private pulseHandling = false;
+    private liveMirrorPushTimer: ReturnType<typeof setTimeout> | null = null;
+    private cloudDegraded = false;
+    private localOperationalReady = false;
+    private lastNasMirrorAt: string | null = null;
+    private nasPollTimer: ReturnType<typeof setInterval> | null = null;
     private archivedJobs: Job[] = [];
     private archiveLoaded = false;
     private archiveInitializing = false;
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
+    isCloudDegraded() { return this.cloudDegraded; }
+    hasLocalOperationalData() { return this.localOperationalReady; }
+    /** Electron — 업무 DB는 SQLite, Firestore는 회원·직원만 */
+    isLocalPrimaryMode(): boolean {
+        return this.getIsElectron() && localDbBridge.isAvailable();
+    }
 
     setSyncUserRole(role: 'admin' | 'staff' | 'superadmin' | null) {
         this.syncUserRole = role;
@@ -566,12 +587,21 @@ export class DataService {
         this.calendarMonthsLoaded.clear();
         this.clientHistoryLoaded.clear();
         this.paymentJobsWanted = false;
-        this.jobsFullFallbackActive = false;
+        this.paymentJobsLoaded = false;
+        this.lazyCollectionsLoaded.clear();
+        this.localPulseMarkers.clear();
+        this.lastAppliedJobRevAt = null;
+        this.lastAppliedStaffAt = null;
+        this.lastAppliedClientsAt = null;
+        this.lastAppliedSettingsAt = null;
+        this.cloudDegraded = false;
+        this.localOperationalReady = false;
+        this.lastNasMirrorAt = null;
+        this.stopNasMirrorPolling();
         this.archivedJobs = [];
         this.archiveLoaded = false;
         this.archiveInitializing = false;
-        this.stopPaymentJobsSync();
-        this.stopAllLazySync();
+        this.stopSyncPulse();
         this.startSyncing();
     }
     private mergeSettingsDocs(docs: { id: string; [key: string]: any }[]): Record<string, any> {
@@ -847,6 +877,57 @@ export class DataService {
         this.notify();
     }
 
+    /**
+     * 검색 전용 — 거래처·제목 등 부분 일치만 소량 조회 (1년 전체 일괄 로드 금지).
+     */
+    private async fetchJobsBySearchQuery(q: string): Promise<Job[]> {
+        if (!this.tenantId) return [];
+        const trimmed = q.trim();
+        if (trimmed.length < 2) return [];
+
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+        const map = new Map<string, Job>();
+        const upper = trimmed + '\uf8ff';
+
+        const runQuery = async (field: 'clientName' | 'title' | 'contactPerson', cap: number) => {
+            try {
+                const snap = await getDocs(
+                    query(
+                        jobsCol,
+                        where('createdAt', '>=', hotCutoffIso),
+                        where(field, '>=', trimmed),
+                        where(field, '<=', upper),
+                        limit(cap)
+                    )
+                );
+                snap.forEach((docSnap) => {
+                    map.set(docSnap.id, { ...docSnap.data(), id: docSnap.id } as Job);
+                });
+            } catch (error) {
+                console.warn(`[DataService] search query failed (${field}):`, error);
+            }
+        };
+
+        await Promise.all([
+            runQuery('clientName', 30),
+            runQuery('title', 30),
+            runQuery('contactPerson', 20),
+        ]);
+
+        const results = Array.from(map.values());
+        if (results.length > 0) {
+            this.mergeSupplementaryJobs(results, () => false);
+            this.notify();
+        }
+        return results;
+    }
+
+    /** @deprecated 1년 일괄 로드는 읽기 한도를 급증시킴 — fetchJobsBySearchQuery 사용 */
+    async ensureSearchableHotJobsLoaded(): Promise<void> {
+        return;
+    }
+
     private rebuildMergedJobs() {
         const map = new Map<string, Job>();
         // supplementary → kanban → operational 순: 운영 중 작업(operational)이 최우선
@@ -891,49 +972,605 @@ export class DataService {
         this.rebuildMergedJobs();
     }
 
-    private markStartupSyncUnitDone(unitId: string) {
-        if (this.startupUnitsCompleted.has(unitId)) return;
-        this.startupUnitsCompleted.add(unitId);
-        this.startupSyncPending -= 1;
-        if (this.startupSyncPending <= 0) {
-            this.syncStatus = 'synced';
-            if (this.getIsElectron()) {
-                this.runDailyAutoBackup().catch((err) => console.error('Auto backup error:', err));
+    private finishSessionPull() {
+        this.syncStatus = 'synced';
+        if (this.getIsElectron()) {
+            this.runDailyAutoBackup().catch((err) => console.error('Auto backup error:', err));
+        }
+        void this.initializeArchiveLayer();
+        this.updateTenantActivity().catch(() => {});
+        void this.restoreActiveLazyPulls();
+        if (this.paymentJobsWanted) void this.ensurePaymentJobsSync();
+        void this.maybeBootstrapQuotes();
+        void this.pushLiveMirrors();
+        this.notify();
+    }
+
+    /** NAS + Storage 즉시 미러 — Firestore 읽기 없음 */
+    private scheduleLiveMirrorPush() {
+        if (!this.tenantId) return;
+        if (this.liveMirrorPushTimer) clearTimeout(this.liveMirrorPushTimer);
+        this.liveMirrorPushTimer = setTimeout(() => {
+            this.liveMirrorPushTimer = null;
+            void this.pushLiveMirrors();
+        }, LIVE_MIRROR_PUSH_DEBOUNCE_MS);
+    }
+
+    async pushLiveMirrors(): Promise<void> {
+        if (!this.tenantId) return;
+        const tenantId = this.tenantId;
+        const jobs = this.getAllJobs();
+        const staff = (this.data['staff'] || []) as Staff[];
+        const clients = (this.data['clients'] || []) as Client[];
+        const settings = this.getSettingsObj();
+        let published = false;
+
+        try {
+            published = (await jobArchiveService.syncLiveJobsMirror(tenantId, jobs)) || published;
+        } catch (e) {
+            console.warn('[DataService] live jobs mirror failed:', e);
+        }
+
+        try {
+            const payload = situationMirrorService.buildPayload(tenantId, {
+                jobs,
+                clients,
+                settings,
+                companyName: this.getCompanyInfo()?.name,
+                kanbanLayout: this.getSettingsObj()?.kanbanLayout,
+                statusDefinitions: this.getStatusDefinitions(),
+                staff,
+            });
+            published = (await situationMirrorService.publish(tenantId, payload)) || published;
+        } catch (e) {
+            console.warn('[DataService] situation mirror failed:', e);
+        }
+
+        if (published) {
+            await this.bumpMirrorSyncPulse();
+        }
+    }
+
+    private stopNasMirrorPolling() {
+        if (this.nasPollTimer) {
+            clearInterval(this.nasPollTimer);
+            this.nasPollTimer = null;
+        }
+    }
+
+    private applyImportedJobs(jobs: Job[]) {
+        this.operationalJobs = [];
+        this.kanbanCompletedJobs = [];
+        this.supplementaryJobs = [];
+        for (const job of this.handleJobsMigrationInMemory(jobs)) {
+            this.placeJobInLocalCache(job);
+        }
+        this.rebuildMergedJobs();
+    }
+
+    private async loadLocalPrimaryData(): Promise<boolean> {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) return false;
+        const bundle = await localDbBridge.loadTenant(this.tenantId);
+        const hasData =
+            bundle.jobCount > 0 || bundle.clients.length > 0 || !!bundle.settings;
+        if (!hasData) return false;
+
+        if (bundle.jobs.length > 0) this.applyImportedJobs(bundle.jobs);
+        if (bundle.clients.length > 0) this.data['clients'] = bundle.clients;
+        if (bundle.settings) {
+            this.data['settings'] = [bundle.settings];
+            this.applySettingsDefaultsMerge(bundle.settings);
+        }
+        this.notify();
+        return true;
+    }
+
+    private async persistAllToLocalDb(): Promise<void> {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) return;
+        const okJobs = await localDbBridge.saveJobs(this.tenantId, this.getAllJobs());
+        const okClients = await localDbBridge.saveClients(this.tenantId, (this.data['clients'] || []) as Client[]);
+        const okSettings = await localDbBridge.saveSettings(this.tenantId, this.getSettingsObj());
+        if (!okJobs || !okClients || !okSettings) {
+            throw new Error('local-db-full-save-failed');
+        }
+    }
+
+    private async tryHydrateFromMirrors(): Promise<boolean> {
+        if (!this.tenantId) return false;
+        try {
+            const situation = await situationMirrorService.read(this.tenantId, true);
+            if (situation) {
+                if (situation.jobs?.length) {
+                    this.applyImportedJobs(situation.jobs);
+                }
+                if (Array.isArray(situation.clients) && situation.clients.length > 0) {
+                    this.data['clients'] = situation.clients as Client[];
+                }
+                if (situation.settings && typeof situation.settings === 'object') {
+                    this.data['settings'] = [situation.settings as Record<string, unknown>];
+                    this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
+                }
+                if (situation.jobs?.length || (situation.clients?.length || 0) > 0 || !!situation.settings) {
+                    this.notify();
+                    return true;
+                }
             }
-            void this.initializeArchiveLayer();
-            this.updateTenantActivity().catch(() => {});
-            this.restoreActiveLazySync();
-            if (this.paymentJobsWanted) this.ensurePaymentJobsSync();
-            void this.maybeBootstrapQuotes();
+        } catch {
+            // ignore
+        }
+        try {
+            const archived = await jobArchiveService.readArchivedJobs(this.tenantId);
+            if (archived.length > 0) {
+                this.applyImportedJobs(archived);
+                this.notify();
+                return true;
+            }
+        } catch {
+            // ignore
+        }
+        return false;
+    }
+
+    private async pullOperationalCloudData() {
+        if (!this.tenantId) return;
+        await Promise.all([
+            this.pullCollectionDocs('clients'),
+            this.pullCollectionDocs('settings'),
+            this.pullJobsHot(),
+        ]);
+    }
+
+    private startNasMirrorPolling() {
+        if (!this.tenantId) return;
+        this.stopNasMirrorPolling();
+        const pollMs = this.getIsElectron() ? APP_MIRROR_POLL_MS : WEB_MIRROR_POLL_MS;
+        this.nasPollTimer = window.setInterval(() => {
+            void this.pollNasSituationMirror();
+        }, pollMs);
+        void this.pollNasSituationMirror();
+    }
+
+    private applySituationMirrorJobsPartial(jobs: Job[]) {
+        if (!jobs.length) return;
+        const current = this.getAllJobs();
+        const incoming = this.handleJobsMigrationInMemory(jobs).filter((job) => !!job?.id);
+        const incomingById = new Map<string, Job>();
+        for (const job of incoming) incomingById.set(job.id!, job);
+
+        // 보드에 보이는 범위(접수~완료 최근)만 authoritative하게 맞춰서 PC 간 화면 불일치 제거.
+        const boardIds = new Set(
+            filterJobsForOperationalBoard(current, { includeStatusKeys: ['QUOTE'] })
+                .map((job) => job.id)
+                .filter(Boolean)
+        );
+
+        const next: Job[] = [];
+        for (const job of current) {
+            if (!job?.id) continue;
+            if (!boardIds.has(job.id)) {
+                next.push(job);
+                continue;
+            }
+            const mirrored = incomingById.get(job.id);
+            if (mirrored) {
+                next.push({ ...job, ...mirrored });
+                incomingById.delete(job.id);
+            }
+            // boardIds에 있고 mirrored에 없으면 원격에서 빠진 것으로 간주하고 제거(수렴 목적)
+        }
+
+        for (const mirrored of incomingById.values()) {
+            next.push(mirrored);
+        }
+
+        this.applyImportedJobs(next);
+    }
+
+    private async pollNasSituationMirror() {
+        if (!this.tenantId || document.visibilityState !== 'visible') return;
+        try {
+            const situation = await situationMirrorService.read(this.tenantId, true);
+            if (!situation?.updatedAt || situation.updatedAt === this.lastNasMirrorAt) return;
+            this.lastNasMirrorAt = situation.updatedAt;
+            if (!situation.jobs?.length) return;
+            this.applySituationMirrorJobsPartial(situation.jobs);
             this.notify();
+        } catch (e) {
+            console.warn('[DataService] NAS mirror poll skipped:', e);
+        }
+    }
+
+    private isLocalOperationalCollection(col: string): boolean {
+        return col === 'jobs' || col === 'clients';
+    }
+
+    private async persistToLocalCollection(col: string, entity: any) {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) return;
+        if (col === 'jobs') {
+            const ok = await localDbBridge.upsertJob(this.tenantId, entity as Job);
+            if (!ok) throw new Error('local-db-job-upsert-failed');
+        } else if (col === 'clients') {
+            const ok = await localDbBridge.upsertClient(this.tenantId, entity);
+            if (!ok) throw new Error('local-db-client-upsert-failed');
+        }
+    }
+
+    private stopSyncPulse() {
+        if (this.syncPulseUnsub) {
+            this.syncPulseUnsub();
+            this.syncPulseUnsub = null;
         }
     }
 
     private stopAllLazySync() {
-        for (const unsub of this.lazyUnsubs.values()) unsub();
-        this.lazyUnsubs.clear();
         this.activeLazyCollections.clear();
+        this.lazyCollectionsLoaded.clear();
     }
 
     private stopPaymentJobsSync() {
-        if (this.paymentJobsUnsub) {
-            this.paymentJobsUnsub();
-            this.paymentJobsUnsub = null;
-        }
-        if (this.paymentCompletedJobsUnsub) {
-            this.paymentCompletedJobsUnsub();
-            this.paymentCompletedJobsUnsub = null;
-        }
+        this.paymentJobsLoaded = false;
     }
 
-    private clearLazyListenersOnly() {
-        for (const unsub of this.lazyUnsubs.values()) unsub();
-        this.lazyUnsubs.clear();
-    }
-
-    private restoreActiveLazySync() {
+    private async restoreActiveLazyPulls() {
         for (const col of this.activeLazyCollections) {
-            this.ensureLazyCollectionSync(col);
+            await this.pullLazyCollection(col, true);
+        }
+    }
+
+    private getSyncPulseRef() {
+        return doc(firestore, 'tenants', this.tenantId!, 'sync', 'pulse');
+    }
+
+    private markLocalPulse(field: string, at: string) {
+        this.localPulseMarkers.set(field, at);
+        window.setTimeout(() => {
+            if (this.localPulseMarkers.get(field) === at) {
+                this.localPulseMarkers.delete(field);
+            }
+        }, 2500);
+    }
+
+    private isLocalPulse(field: string, at?: string | null): boolean {
+        if (!at) return false;
+        return this.localPulseMarkers.get(field) === at;
+    }
+
+    private async bumpSyncPulse(patch: Record<string, unknown>) {
+        if (!this.tenantId) return;
+        if (this.isLocalPrimaryMode() && ('jobsAt' in patch || 'jobRev' in patch || 'jobBatchRev' in patch)) {
+            return;
+        }
+        const now = new Date().toISOString();
+        const payload: Record<string, unknown> = { ...patch, pulseAt: now };
+        for (const key of ['jobsAt', 'staffAt', 'clientsAt', 'settingsAt', 'quotesAt', 'messagesAt', 'leavesAt', 'papersAt', 'instructionsAt', 'mirrorAt'] as const) {
+            if (key in patch) this.markLocalPulse(key, String(patch[key]));
+        }
+        if (patch.jobRev && typeof patch.jobRev === 'object' && patch.jobRev !== null && 'at' in (patch.jobRev as object)) {
+            this.markLocalPulse('jobRev', String((patch.jobRev as { at: string }).at));
+        }
+        if (patch.jobBatchRev && typeof patch.jobBatchRev === 'object' && patch.jobBatchRev !== null && 'at' in (patch.jobBatchRev as object)) {
+            this.markLocalPulse('jobRev', String((patch.jobBatchRev as { at: string }).at));
+        }
+        try {
+            await setDoc(this.getSyncPulseRef(), stripUndefinedForFirestore(payload), { merge: true });
+        } catch (e) {
+            console.warn('[DataService] sync pulse bump failed:', e);
+        }
+    }
+
+    private async bumpMirrorSyncPulse() {
+        const now = new Date().toISOString();
+        await this.bumpSyncPulse({ mirrorAt: now });
+    }
+
+    private async bumpJobSyncPulse(jobId: string, op: 'upsert' | 'delete') {
+        const now = new Date().toISOString();
+        this.lastLocalJobWriteAt = Date.now();
+        await this.bumpSyncPulse({
+            jobsAt: now,
+            jobRev: { id: jobId, op, at: now },
+        });
+    }
+
+    private async bumpJobBatchSyncPulse(jobIds: string[]) {
+        if (jobIds.length === 0) return;
+        const now = new Date().toISOString();
+        this.lastLocalJobWriteAt = Date.now();
+        if (jobIds.length === 1) {
+            await this.bumpJobSyncPulse(jobIds[0], 'upsert');
+            return;
+        }
+        await this.bumpSyncPulse({
+            jobsAt: now,
+            jobBatchRev: { ids: jobIds, op: 'upsert', at: now },
+        });
+    }
+
+    private async pullCollectionDocs(colName: string) {
+        if (!this.tenantId) return;
+        const colRef = collection(firestore, 'tenants', this.tenantId, colName);
+        const snap = await getDocs(colRef);
+        const list: any[] = [];
+        snap.forEach((docSnap) => list.push({ ...docSnap.data(), id: docSnap.id }));
+        this.handleCollectionData(colName, list);
+
+        if (colName === 'staff') {
+            this.scheduleStaffDedupe();
+            const companyName = this.getCompanyInfo()?.name?.trim();
+            const isChuncheonTenant =
+                this.tenantId === 'tenant-or73mu1cz' || companyName === '춘천인쇄';
+            if (isChuncheonTenant) {
+                const originalLength = this.data['staff'].length;
+                this.data['staff'] = this.data['staff'].filter((s: any) => s.id !== 'dev-admin');
+                if (this.data['staff'].length !== originalLength) {
+                    try {
+                        await deleteDoc(doc(firestore, 'tenants', this.tenantId, 'staff', 'dev-admin'));
+                    } catch (e) {
+                        console.error('Failed to delete dev-admin from Firestore:', e);
+                    }
+                }
+            }
+        }
+    }
+
+    private async pullJoinRequests() {
+        if (!this.tenantId) return;
+        try {
+            const snap = await getDocs(collection(firestore, 'tenants', this.tenantId, 'joinRequests'));
+            const list: JoinRequest[] = [];
+            snap.forEach((docSnap) => list.push({ ...docSnap.data(), id: docSnap.id } as JoinRequest));
+            this.data['joinRequests'] = list;
+        } catch (err) {
+            console.warn('[DataService] joinRequests pull skipped:', err);
+            this.data['joinRequests'] = [];
+        }
+    }
+
+    private buildJobsHotQueries(jobsCol: ReturnType<typeof collection>) {
+        const recentPaidCutoff = new Date();
+        recentPaidCutoff.setDate(recentPaidCutoff.getDate() - KANBAN_RECENT_PAID_COMPLETED_DAYS);
+        const recentPaidCutoffIso = recentPaidCutoff.toISOString();
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+        return {
+            operationalQuery: query(jobsCol, where('status', 'not-in', [...ARCHIVED_JOB_STATUSES])),
+            outstandingCompletedQuery: query(
+                jobsCol,
+                where('status', '==', 'COMPLETED'),
+                where('paymentStatus', 'in', [...OUTSTANDING_PAYMENT_STATUSES]),
+                where('createdAt', '>=', hotCutoffIso)
+            ),
+            recentPaidCompletedQuery: query(
+                jobsCol,
+                where('status', '==', 'COMPLETED'),
+                where('paymentStatus', '==', '결제완료'),
+                where('completedAt', '>=', recentPaidCutoffIso),
+                where('createdAt', '>=', hotCutoffIso)
+            ),
+        };
+    }
+
+    private applyJobsHotPull(
+        operational: Job[],
+        outstanding: Job[],
+        recentPaid: Job[]
+    ) {
+        this.operationalJobs = this.handleJobsMigrationInMemory(operational);
+        this.kanbanCompletedJobs = this.handleJobsMigrationInMemory(recentPaid);
+        this.mergeSupplementaryJobs(this.handleJobsMigrationInMemory(outstanding), (job) =>
+            job.status === 'COMPLETED' &&
+            OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number])
+        );
+        this.rebuildMergedJobs();
+    }
+
+    private async pullJobsHot() {
+        if (!this.tenantId) return;
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const { operationalQuery, outstandingCompletedQuery, recentPaidCompletedQuery } =
+            this.buildJobsHotQueries(jobsCol);
+
+        try {
+            const [opSnap, outSnap, paidSnap] = await Promise.all([
+                getDocs(operationalQuery),
+                getDocs(outstandingCompletedQuery),
+                getDocs(recentPaidCompletedQuery),
+            ]);
+            const toList = (snap: typeof opSnap) => {
+                const list: Job[] = [];
+                snap.forEach((docSnap) => list.push({ ...docSnap.data(), id: docSnap.id } as Job));
+                return list;
+            };
+            this.applyJobsHotPull(toList(opSnap), toList(outSnap), toList(paidSnap));
+        } catch (error) {
+            console.error('[DataService] jobs hot pull failed:', error);
+            this.lastSyncError = (error as any)?.code || 'jobs-pull-failed';
+            throw error;
+        }
+    }
+
+    private async pullSessionData() {
+        if (!this.tenantId) return;
+        await this.pullCollectionDocs('staff');
+        await this.pullJoinRequests();
+        if (!this.isLocalPrimaryMode()) {
+            await this.pullOperationalCloudData();
+        }
+    }
+
+    private async applyRemoteJobDoc(jobId: string) {
+        if (!this.tenantId) return;
+        const snap = await getDoc(doc(firestore, 'tenants', this.tenantId, 'jobs', jobId));
+        if (!snap.exists()) {
+            this.removeJobFromLocalCache(jobId);
+            this.notify();
+            return;
+        }
+        const [job] = this.handleJobsMigrationInMemory([{ ...snap.data(), id: snap.id } as Job]);
+        this.placeJobInLocalCache(job);
+        this.rebuildMergedJobs();
+        this.notify();
+    }
+
+    private async handleSyncPulse(data: Record<string, unknown> | undefined) {
+        if (!this.tenantId || !data || this.pulseHandling) return;
+        this.pulseHandling = true;
+        try {
+            const mirrorAt = data.mirrorAt as string | undefined;
+            if (mirrorAt && mirrorAt !== this.lastNasMirrorAt && !this.isLocalPulse('mirrorAt', mirrorAt)) {
+                await this.pollNasSituationMirror();
+            }
+
+            const jobRev = data.jobRev as { id?: string; op?: string; at?: string } | undefined;
+            if (jobRev?.id && jobRev.at && jobRev.at !== this.lastAppliedJobRevAt) {
+                if (!this.isLocalPulse('jobRev', jobRev.at)) {
+                    this.lastAppliedJobRevAt = jobRev.at;
+                    const before = this.lastNasMirrorAt;
+                    await this.pollNasSituationMirror();
+                    const mirrorApplied = before !== this.lastNasMirrorAt;
+                    if (!mirrorApplied && !this.isLocalPrimaryMode()) {
+                        if (jobRev.op === 'delete') {
+                            this.removeJobFromLocalCache(jobRev.id);
+                            this.notify();
+                        } else {
+                            await this.applyRemoteJobDoc(jobRev.id);
+                        }
+                    }
+                    if (this.paymentJobsWanted) void this.pullPaymentJobs();
+                }
+            }
+
+            const jobBatchRev = data.jobBatchRev as { ids?: string[]; at?: string } | undefined;
+            if (jobBatchRev?.ids?.length && jobBatchRev.at && jobBatchRev.at !== this.lastAppliedJobRevAt) {
+                if (!this.isLocalPulse('jobRev', jobBatchRev.at)) {
+                    this.lastAppliedJobRevAt = jobBatchRev.at;
+                    const before = this.lastNasMirrorAt;
+                    await this.pollNasSituationMirror();
+                    const mirrorApplied = before !== this.lastNasMirrorAt;
+                    if (!mirrorApplied && !this.isLocalPrimaryMode()) {
+                        for (const id of jobBatchRev.ids) {
+                            await this.applyRemoteJobDoc(id);
+                        }
+                    }
+                    if (this.paymentJobsWanted) void this.pullPaymentJobs();
+                }
+            }
+
+            const staffAt = data.staffAt as string | undefined;
+            if (staffAt && staffAt !== this.lastAppliedStaffAt && !this.isLocalPulse('staffAt', staffAt)) {
+                this.lastAppliedStaffAt = staffAt;
+                await this.pullCollectionDocs('staff');
+                this.notify();
+            }
+
+            const clientsAt = data.clientsAt as string | undefined;
+            if (clientsAt && clientsAt !== this.lastAppliedClientsAt && !this.isLocalPulse('clientsAt', clientsAt)) {
+                this.lastAppliedClientsAt = clientsAt;
+                await this.pullCollectionDocs('clients');
+                this.notify();
+            }
+
+            const settingsAt = data.settingsAt as string | undefined;
+            if (settingsAt && settingsAt !== this.lastAppliedSettingsAt && !this.isLocalPulse('settingsAt', settingsAt)) {
+                this.lastAppliedSettingsAt = settingsAt;
+                await this.pullCollectionDocs('settings');
+                this.notify();
+            }
+
+            for (const col of LAZY_SYNC_COLLECTIONS) {
+                const key = `${col}At` as const;
+                const at = data[key] as string | undefined;
+                if (!at || !this.activeLazyCollections.has(col) || this.isLocalPulse(key, at)) continue;
+                await this.pullLazyCollection(col, true);
+            }
+        } catch (e) {
+            console.warn('[DataService] sync pulse handle failed:', e);
+        } finally {
+            this.pulseHandling = false;
+        }
+    }
+
+    private subscribeSyncPulse() {
+        if (!this.tenantId) return;
+        this.stopSyncPulse();
+        this.syncPulseUnsub = onSnapshot(
+            this.getSyncPulseRef(),
+            (snap) => {
+                void this.handleSyncPulse(snap.data() as Record<string, unknown> | undefined);
+            },
+            (err) => console.warn('[DataService] sync pulse listener failed:', err)
+        );
+    }
+
+    private async pullLazyCollection(colName: string, force = false) {
+        if (!this.tenantId) return;
+        if (!force && this.lazyCollectionsLoaded.has(colName)) return;
+        await this.pullCollectionDocs(colName);
+        this.lazyCollectionsLoaded.add(colName);
+        this.activeLazyCollections.add(colName);
+        this.notify();
+    }
+
+    private async pullPaymentJobs() {
+        if (!this.tenantId) return;
+        if (this.isLocalPrimaryMode()) {
+            const hotCutoff = this.getHotWindowCutoffDate();
+            const outstanding = this.getAllJobs().filter((job) =>
+                OUTSTANDING_PAYMENT_STATUSES.includes(
+                    job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number]
+                )
+            );
+            const paid = this.getAllJobs().filter((job) => {
+                if (job.status !== 'COMPLETED' || job.paymentStatus !== '결제완료') return false;
+                const created = new Date(job.createdAt);
+                return created.getTime() >= hotCutoff.getTime();
+            });
+            this.mergeSupplementaryJobs(outstanding, (job) =>
+                OUTSTANDING_PAYMENT_STATUSES.includes(
+                    job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number]
+                )
+            );
+            this.mergeSupplementaryJobs(paid, (job) =>
+                job.status === 'COMPLETED' && job.paymentStatus === '결제완료'
+            );
+            this.paymentJobsLoaded = true;
+            this.notify();
+            return;
+        }
+        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
+        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
+        const paymentQuery = query(
+            jobsCol,
+            where('paymentStatus', 'in', [...OUTSTANDING_PAYMENT_STATUSES])
+        );
+        const completedPaidHotQuery = query(
+            jobsCol,
+            where('status', '==', 'COMPLETED'),
+            where('paymentStatus', '==', '결제완료'),
+            where('createdAt', '>=', hotCutoffIso)
+        );
+        try {
+            const [outSnap, paidSnap] = await Promise.all([
+                getDocs(paymentQuery),
+                getDocs(completedPaidHotQuery),
+            ]);
+            const outstanding: Job[] = [];
+            const paid: Job[] = [];
+            outSnap.forEach((docSnap) =>
+                outstanding.push({ ...docSnap.data(), id: docSnap.id } as Job)
+            );
+            paidSnap.forEach((docSnap) => paid.push({ ...docSnap.data(), id: docSnap.id } as Job));
+            this.mergeSupplementaryJobs(outstanding, (job) =>
+                OUTSTANDING_PAYMENT_STATUSES.includes(
+                    job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number]
+                )
+            );
+            this.mergeSupplementaryJobs(paid, (job) =>
+                job.status === 'COMPLETED' && job.paymentStatus === '결제완료'
+            );
+            this.paymentJobsLoaded = true;
+            this.notify();
+        } catch (err) {
+            console.warn('[ensurePaymentJobsSync] pull skipped:', err);
         }
     }
 
@@ -959,120 +1596,21 @@ export class DataService {
         this.data[colName] = list;
     }
 
-    private async handleJobsMigrationAndPersist(currentJobs: any[]): Promise<any[]> {
-        const jobsToWrite: any[] = [];
-        const migratedJobs = currentJobs.map((job: any) => {
-            let jobChanged = false;
-            if (job.type === '무선제본책자') {
-                job.type = '책자';
-                jobChanged = true;
-            }
-            if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type)) {
-                job.type = '카탈로그';
-                jobChanged = true;
-            }
-            if (LEGACY_SIGNAGE_TYPE_NAMES.includes(job.type)) {
-                job.type = '실사';
-                jobChanged = true;
-            }
-
-            const migrateSpecs = (specs: any) => {
-                if (!specs) return false;
-                let changed = false;
-                if (!specs.innerPages) {
-                    specs.innerPages = [{
-                        id: 'inner-1',
-                        paperType: specs.paperTypeInner || '모조지(백색)',
-                        paperWeight: specs.paperWeightInner || '80g',
-                        printColor: specs.printColorInner || '단면 1도(흑백)',
-                        pagesCount: '0',
-                        hasDivider: false,
-                        dividerColor: '',
-                        dividerQuantity: ''
-                    }];
-                    changed = true;
-                }
-                if (!specs.processingCover) {
-                    const coverKeywords = ['코팅', '박', '형압', '에폭시', '하드커버'];
-                    const commonKeywords = ['제본'];
-                    const currentProcessing = specs.processing || [];
-
-                    const coverProc: string[] = [];
-                    const innerProc: string[] = [];
-                    const commonProc: string[] = [];
-
-                    currentProcessing.forEach((p: string) => {
-                        if (coverKeywords.some((kw) => p.includes(kw))) {
-                            coverProc.push(p);
-                        } else if (commonKeywords.some((kw) => p.includes(kw))) {
-                            commonProc.push(p);
-                        } else {
-                            innerProc.push(p);
-                        }
-                    });
-
-                    specs.processingCover = coverProc;
-                    specs.processingInner = innerProc;
-                    specs.processing = commonProc;
-                    changed = true;
-                }
-                return changed;
-            };
-
-            if (job.specs && migrateSpecs(job.specs)) jobChanged = true;
-
-            if (job.subJobs && job.subJobs.length > 0) {
-                job.subJobs = job.subJobs.map((sj: any) => {
-                    if (sj.type === '무선제본책자') {
-                        sj.type = '책자';
-                        jobChanged = true;
-                    }
-                    if (LEGACY_CATALOG_TYPE_NAMES.includes(sj.type)) {
-                        sj.type = '카탈로그';
-                        jobChanged = true;
-                    }
-                    if (LEGACY_SIGNAGE_TYPE_NAMES.includes(sj.type)) {
-                        sj.type = '실사';
-                        jobChanged = true;
-                    }
-                    if (sj.specs && migrateSpecs(sj.specs)) jobChanged = true;
-                    return sj;
-                });
-            }
-
-            if (jobChanged) jobsToWrite.push(job);
+    /** 메모리만 — 런타임 마이그레이션 쓰기는 읽기·쓰기 폭증 유발로 비활성화 */
+    private handleJobsMigrationInMemory(currentJobs: any[]): any[] {
+        return currentJobs.map((job: any) => {
+            if (job.type === '무선제본책자') job.type = '책자';
+            if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type)) job.type = '카탈로그';
+            if (LEGACY_SIGNAGE_TYPE_NAMES.includes(job.type)) job.type = '실사';
+            // specs/subJobs 레거시는 화면 표시용 메모리 정규화만 (Firestore 미쓰기)
             return job;
         });
-
-        if (jobsToWrite.length > 0 && this.tenantId) {
-            await Promise.all(
-                jobsToWrite.map((job) =>
-                    setDoc(doc(firestore, 'tenants', this.tenantId!, 'jobs', job.id), job)
-                )
-            );
-        }
-        return migratedJobs;
     }
 
-    private onOperationalJobsSnapshot = async (snapshot: any) => {
-        const list: Job[] = [];
-        snapshot.forEach((docSnap: any) => {
-            list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-        });
-        this.operationalJobs = await this.handleJobsMigrationAndPersist(list);
-        this.rebuildMergedJobs();
-        this.notify();
-    };
-
-    private onKanbanCompletedJobsSnapshot = async (snapshot: any) => {
-        const list: Job[] = [];
-        snapshot.forEach((docSnap: any) => {
-            list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-        });
-        this.kanbanCompletedJobs = await this.handleJobsMigrationAndPersist(list);
-        this.rebuildMergedJobs();
-        this.notify();
-    };
+    /** @deprecated handleJobsMigrationInMemory 사용 */
+    private async handleJobsMigrationAndPersist(currentJobs: any[]): Promise<any[]> {
+        return this.handleJobsMigrationInMemory(currentJobs);
+    }
 
     private mergeSupplementaryJobs(incoming: Job[], replacePredicate: (job: Job) => boolean) {
         const kept = this.supplementaryJobs.filter((job) => !replacePredicate(job));
@@ -1083,164 +1621,29 @@ export class DataService {
         this.rebuildMergedJobs();
     }
 
-    private subscribeJobsFullCollectionFallback(jobsCol: ReturnType<typeof collection>) {
-        if (this.jobsFullFallbackActive || !this.tenantId) return;
-        this.jobsFullFallbackActive = true;
-        console.warn(
-            '[DataService] jobs 범위 쿼리 실패 — 전체 jobs 구독으로 전환합니다. ' +
-            '최적화 적용: firebase deploy --only firestore:indexes'
-        );
-
-        const unsub = onSnapshot(jobsCol, async (snapshot) => {
-            const list: Job[] = [];
-            snapshot.forEach((docSnap) => {
-                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-            });
-            const migrated = await this.handleJobsMigrationAndPersist(list);
-            this.operationalJobs = [];
-            this.kanbanCompletedJobs = [];
-            this.supplementaryJobs = [];
-            for (const job of migrated) {
-                this.placeJobInLocalCache(job);
-            }
-            this.rebuildMergedJobs();
-            this.notify();
-        }, (error) => {
-            console.error('[Firestore Sync Error] jobs full fallback failed:', error);
-            const code = error?.code || 'unknown';
-            this.lastSyncError = code;
-            this.syncStatus = 'disconnected';
-            this.notify();
-        });
-
-        this.unsubscribeList.push(unsub);
-    }
-
-    private subscribeJobsQueries() {
-        if (!this.tenantId) return;
-
-        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
-        const recentPaidCutoff = new Date();
-        recentPaidCutoff.setDate(recentPaidCutoff.getDate() - KANBAN_RECENT_PAID_COMPLETED_DAYS);
-        const recentPaidCutoffIso = recentPaidCutoff.toISOString();
-        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
-
-        const operationalQuery = query(jobsCol, where('status', 'not-in', [...ARCHIVED_JOB_STATUSES]));
-        const outstandingCompletedQuery = query(
-            jobsCol,
-            where('status', '==', 'COMPLETED'),
-            where('paymentStatus', 'in', [...OUTSTANDING_PAYMENT_STATUSES]),
-            where('createdAt', '>=', hotCutoffIso)
-        );
-        const recentPaidCompletedQuery = query(
-            jobsCol,
-            where('status', '==', 'COMPLETED'),
-            where('paymentStatus', '==', '결제완료'),
-            where('completedAt', '>=', recentPaidCutoffIso),
-            where('createdAt', '>=', hotCutoffIso)
-        );
-
-        const onJobsError = (unitId: string) => (error: any) => {
-            console.error(`[Firestore Sync Error] jobs query failed (${unitId}):`, error);
-            const code = error?.code || 'unknown';
-            this.lastSyncError = code;
-            this.markStartupSyncUnitDone(unitId);
-
-            if (unitId === 'jobs-operational') {
-                this.subscribeJobsFullCollectionFallback(jobsCol);
-            }
-
-            if (code === 'unavailable' || code === 'permission-denied') {
-                this.scheduleReconnect();
-                if (code !== 'permission-denied') this.syncStatus = 'disconnected';
-            } else if (!this.jobsFullFallbackActive) {
-                this.syncStatus = 'disconnected';
-            }
-            this.notify();
-        };
-
-        const unsubOperational = onSnapshot(operationalQuery, (snapshot) => {
-            void this.onOperationalJobsSnapshot(snapshot);
-            this.markStartupSyncUnitDone('jobs-operational');
-        }, onJobsError('jobs-operational'));
-
-        const markCompletedListenerReady = (unitId: string) => {
-            this.markStartupSyncUnitDone(unitId);
-        };
-
-        const unsubOutstandingCompleted = onSnapshot(outstandingCompletedQuery, (snapshot) => {
-            const list: Job[] = [];
-            snapshot.forEach((docSnap) => {
-                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-            });
-            void this.handleJobsMigrationAndPersist(list).then((migrated) => {
-                this.mergeSupplementaryJobs(migrated, (job) =>
-                    job.status === 'COMPLETED' &&
-                    OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number])
-                );
-                this.notify();
-            });
-            markCompletedListenerReady('jobs-completed-outstanding');
-        }, onJobsError('jobs-completed-outstanding'));
-
-        const unsubRecentPaid = onSnapshot(recentPaidCompletedQuery, (snapshot) => {
-            const list: Job[] = [];
-            snapshot.forEach((docSnap) => {
-                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-            });
-            void this.handleJobsMigrationAndPersist(list).then((migrated) => {
-                this.kanbanCompletedJobs = migrated;
-                this.rebuildMergedJobs();
-                this.notify();
-            });
-            markCompletedListenerReady('jobs-completed-recent-paid');
-        }, onJobsError('jobs-completed-recent-paid'));
-
-        this.unsubscribeList.push(unsubOperational, unsubOutstandingCompleted, unsubRecentPaid);
-    }
-
-    private ensureLazyCollectionSync(colName: string) {
-        if (!this.tenantId) return;
-        if (this.lazyUnsubs.has(colName)) return;
-
-        this.activeLazyCollections.add(colName);
-        const colRef = collection(firestore, 'tenants', this.tenantId, colName);
-        const unsub = onSnapshot(colRef, (snapshot) => {
-            const list: any[] = [];
-            snapshot.forEach((docSnap) => {
-                list.push({ ...docSnap.data(), id: docSnap.id });
-            });
-            this.handleCollectionData(colName, list);
-            this.notify();
-        }, (error) => {
-            console.error(`[Firestore Sync Error] lazy onSnapshot failed for ${colName}:`, error);
-        });
-        this.lazyUnsubs.set(colName, unsub);
-    }
-
-    /** 견적서 화면·미리보기 진입 시 호출 */
+    /** 견적서 화면·미리보기 진입 시 호출 — 1회 pull */
     ensureQuotesSync() {
-        this.ensureLazyCollectionSync('quotes');
+        void this.pullLazyCollection('quotes');
     }
 
     /** 채팅 위젯 마운트 시 호출 */
     ensureMessagesSync() {
-        this.ensureLazyCollectionSync('messages');
+        void this.pullLazyCollection('messages');
     }
 
     /** 캘린더·휴가 화면 진입 시 호출 */
     ensureLeavesSync() {
-        this.ensureLazyCollectionSync('leaves');
+        void this.pullLazyCollection('leaves');
     }
 
     /** 용지 관리 화면 진입 시 호출 */
     ensurePapersSync() {
-        this.ensureLazyCollectionSync('papers');
+        void this.pullLazyCollection('papers');
     }
 
     /** 상황판 진입 시 호출 */
     ensureInstructionsSync() {
-        this.ensureLazyCollectionSync('instructions');
+        void this.pullLazyCollection('instructions');
     }
 
     private monthCacheKey(year: number, month: number) {
@@ -1292,51 +1695,12 @@ export class DataService {
         }
     }
 
-    /** 미수금 관리 — 미결제·일부결제 작업만 추가 구독 */
+    /** 미수금 관리 — 화면 진입 시 1회 pull, 이후 jobs pulse로 갱신 */
     ensurePaymentJobsSync() {
         if (!this.tenantId) return;
         this.paymentJobsWanted = true;
-        if (this.paymentJobsUnsub && this.paymentCompletedJobsUnsub) return;
-
-        const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
-        const paymentQuery = query(
-            jobsCol,
-            where('paymentStatus', 'in', [...OUTSTANDING_PAYMENT_STATUSES])
-        );
-        const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
-        const completedPaidHotQuery = query(
-            jobsCol,
-            where('status', '==', 'COMPLETED'),
-            where('paymentStatus', '==', '결제완료'),
-            where('createdAt', '>=', hotCutoffIso)
-        );
-
-        this.paymentJobsUnsub = onSnapshot(paymentQuery, (snapshot) => {
-            const list: Job[] = [];
-            snapshot.forEach((docSnap) => {
-                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-            });
-            this.mergeSupplementaryJobs(list, (job) =>
-                OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as typeof OUTSTANDING_PAYMENT_STATUSES[number])
-            );
-            this.notify();
-        }, (err) => {
-            console.warn('[ensurePaymentJobsSync] skipped:', err);
-        });
-
-        this.paymentCompletedJobsUnsub = onSnapshot(completedPaidHotQuery, (snapshot) => {
-            const list: Job[] = [];
-            snapshot.forEach((docSnap) => {
-                list.push({ ...docSnap.data(), id: docSnap.id } as Job);
-            });
-            this.mergeSupplementaryJobs(list, (job) =>
-                job.status === 'COMPLETED' &&
-                job.paymentStatus === '결제완료'
-            );
-            this.notify();
-        }, (err) => {
-            console.warn('[ensurePaymentJobsSync:completed-paid] skipped:', err);
-        });
+        if (this.paymentJobsLoaded) return;
+        void this.pullPaymentJobs();
     }
 
     /** 작업 상세 — 동일 고객 과거 작업 (필요 시 1회 조회) */
@@ -1344,6 +1708,11 @@ export class DataService {
         if (!this.tenantId || !clientName.trim()) return;
         const key = clientName.trim();
         if (this.clientHistoryLoaded.has(key)) return;
+
+        if (this.isLocalPrimaryMode()) {
+            this.clientHistoryLoaded.add(key);
+            return;
+        }
 
         const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
         const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
@@ -1373,104 +1742,106 @@ export class DataService {
 
         this.unsubscribeList.forEach((unsub) => unsub());
         this.unsubscribeList = [];
-        if (this.joinRequestsUnsub) {
-            this.joinRequestsUnsub();
-            this.joinRequestsUnsub = null;
-        }
+        this.stopSyncPulse();
+        this.stopNasMirrorPolling();
 
         if (this.reconnectTimer) {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
 
-        this.clearLazyListenersOnly();
         this.stopPaymentJobsSync();
-        this.startupUnitsCompleted.clear();
+        this.cloudDegraded = false;
+        this.localOperationalReady = false;
+        this.lastSyncError = null;
         this.syncStatus = 'connecting';
         this.operationalJobs = [];
         this.kanbanCompletedJobs = [];
+        this.supplementaryJobs = [];
         this.rebuildMergedJobs();
         this.notify();
 
-        // staff + clients + settings(3) + jobs 3쿼리 = 6
-        this.startupSyncPending = CORE_STARTUP_COLLECTIONS.length + 3;
+        const localPrimary = this.isLocalPrimaryMode();
 
-        CORE_STARTUP_COLLECTIONS.forEach((colName) => {
-            const colRef = collection(firestore, 'tenants', this.tenantId!, colName);
-            const unsub = onSnapshot(colRef, async (snapshot) => {
-                const list: any[] = [];
-                snapshot.forEach((docSnap) => {
-                    list.push({ ...docSnap.data(), id: docSnap.id });
-                });
+        if (localPrimary) {
+            const loaded = await this.loadLocalPrimaryData();
+            if (loaded) {
+                this.localOperationalReady = true;
+                this.syncStatus = 'synced';
+                this.isReady = true;
+                this.notify();
+            }
+        }
 
-                this.handleCollectionData(colName, list);
+        try {
+            await this.pullCollectionDocs('staff');
+            await this.pullJoinRequests();
+            this.subscribeSyncPulse();
 
-                if (colName === 'staff') {
-                    this.scheduleStaffDedupe();
-                    const companyName = this.getCompanyInfo()?.name?.trim();
-                    const isChuncheonTenant =
-                        this.tenantId === 'tenant-or73mu1cz' ||
-                        companyName === '춘천인쇄';
-                    if (isChuncheonTenant) {
-                        const originalLength = this.data['staff'].length;
-                        this.data['staff'] = this.data['staff'].filter((s: any) => s.id !== 'dev-admin');
-                        if (this.data['staff'].length !== originalLength) {
-                            console.log("[DataService] Chuncheon Print database accessed: Automatically deleted 'dev-admin' account.");
-                            try {
-                                await deleteDoc(doc(firestore, 'tenants', this.tenantId!, 'staff', 'dev-admin'));
-                            } catch (e) {
-                                console.error('Failed to delete dev-admin from Firestore:', e);
-                            }
+            if (!localPrimary) {
+                await this.pullOperationalCloudData();
+            } else {
+                if (!this.localOperationalReady) {
+                    try {
+                        await this.pullOperationalCloudData();
+                        await this.persistAllToLocalDb();
+                        this.localOperationalReady = true;
+                    } catch (migErr) {
+                        console.warn('[DataService] cloud migration pull failed, trying mirrors:', migErr);
+                        const hydrated = await this.tryHydrateFromMirrors();
+                        if (hydrated) {
+                            await this.persistAllToLocalDb();
+                            this.localOperationalReady = true;
+                        } else {
+                            throw migErr;
                         }
                     }
                 }
+            }
 
-                this.markStartupSyncUnitDone(colName);
-                this.notify();
-            }, (error: any) => {
-                console.error(`[Firestore Sync Error] onSnapshot failed for ${colName}:`, error);
-                const code = error?.code || 'unknown';
-                this.lastSyncError = code;
-                this.markStartupSyncUnitDone(colName);
-                if (code === 'unavailable' || code === 'permission-denied') {
-                    this.scheduleReconnect();
-                    if (code !== 'permission-denied') {
-                        this.syncStatus = 'disconnected';
-                    }
-                } else {
-                    this.syncStatus = 'disconnected';
+            this.startNasMirrorPolling();
+
+            this.isReady = true;
+            this.syncStatus = 'synced';
+            this.finishSessionPull();
+        } catch (error: any) {
+            console.error('[DataService] session sync failed:', error);
+            const code = error?.code || 'pull-failed';
+            this.lastSyncError = code;
+
+            if (
+                this.localOperationalReady &&
+                (code === 'resource-exhausted' || code === 'unavailable' || code === 'pull-failed')
+            ) {
+                this.cloudDegraded = true;
+                this.syncStatus = 'synced';
+                this.isReady = true;
+                this.startNasMirrorPolling();
+                this.finishSessionPull();
+                toast.warning('클라우드 연결/한도 문제 — 로컬 DB로 계속 사용합니다.', { duration: 5000 });
+                return;
+            }
+
+            if (!this.localOperationalReady && (code === 'resource-exhausted' || code === 'unavailable')) {
+                const hydrated = await this.tryHydrateFromMirrors();
+                if (hydrated) {
+                    this.localOperationalReady = true;
+                    this.cloudDegraded = true;
+                    this.syncStatus = 'synced';
+                    this.isReady = true;
+                    this.startNasMirrorPolling();
+                    this.finishSessionPull();
+                    toast.warning('Firestore 한도 초과 — 저장된 미러 데이터로 계속 사용합니다.', { duration: 6000 });
+                    return;
                 }
-                this.notify();
-            });
+            }
 
-            this.unsubscribeList.push(unsub);
-        });
-
-        this.subscribeJobsQueries();
-
-        this.subscribeJoinRequests();
-        this.isReady = true;
-        this.notify();
-    }
-
-    private subscribeJoinRequests() {
-        if (!this.tenantId) return;
-        if (this.joinRequestsUnsub) {
-            this.joinRequestsUnsub();
-            this.joinRequestsUnsub = null;
-        }
-        const colRef = collection(firestore, 'tenants', this.tenantId, 'joinRequests');
-        this.joinRequestsUnsub = onSnapshot(colRef, (snapshot) => {
-            const list: JoinRequest[] = [];
-            snapshot.forEach(docSnap => {
-                list.push({ ...docSnap.data(), id: docSnap.id } as JoinRequest);
-            });
-            this.data['joinRequests'] = list;
+            this.syncStatus = 'disconnected';
             this.notify();
-        }, (err) => {
-            console.warn('[DataService] joinRequests subscription skipped:', err);
-            this.data['joinRequests'] = [];
-        });
+            if (code === 'unavailable' || code === 'permission-denied') {
+                this.scheduleReconnect();
+            }
+        }
     }
 
     subscribe(listener: () => void) {
@@ -1618,7 +1989,7 @@ export class DataService {
     }
 
     async updateTenantActivity() {
-        if (!this.tenantId || !this.isSyncAdmin()) return;
+        if (!this.tenantId || !this.isSyncAdmin() || this.isLocalPrimaryMode()) return;
         try {
             const companyName = this.getCompanyInfo().name || 'EzPrintWork';
             const jobsCount = this.data['jobs']?.length || 0;
@@ -1673,12 +2044,24 @@ export class DataService {
         this.notify();
         
         if (this.tenantId) {
+            if (this.isLocalPrimaryMode() && this.isLocalOperationalCollection(col)) {
+                await this.persistToLocalCollection(col, newEntity);
+                this.scheduleLiveMirrorPush();
+                this.updateTenantActivity().catch(() => {});
+                return;
+            }
             try {
                 if (col === 'messages' && !newEntity.senderId && auth.currentUser) {
                     newEntity.senderId = auth.currentUser.uid;
                 }
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await setDoc(docRef, stripUndefinedForFirestore(newEntity));
+                if (col === 'jobs') {
+                    await this.bumpJobSyncPulse(id, 'upsert');
+                } else {
+                    const pulseField = this.collectionPulseField(col);
+                    if (pulseField) await this.bumpSyncPulse({ [pulseField]: now });
+                }
             } catch (e) {
                 console.error(`[Firestore addEntity Error] Failed to upload ${col}/${id}:`, e);
                 this.notifyFirestoreWriteError('데이터', e);
@@ -1687,6 +2070,7 @@ export class DataService {
         }
         
         this.updateTenantActivity().catch(() => {});
+        if (col === 'jobs') this.scheduleLiveMirrorPush();
     }
 
     private patchLocalEntity(col: string, id: string, entity: any): any | null {
@@ -1709,11 +2093,42 @@ export class DataService {
         return updated;
     }
 
-    private async persistEntity(col: string, id: string, updated: any) {
+    private collectionPulseField(col: string): string | null {
+        const map: Record<string, string> = {
+            staff: 'staffAt',
+            clients: 'clientsAt',
+            settings: 'settingsAt',
+            quotes: 'quotesAt',
+            messages: 'messagesAt',
+            leaves: 'leavesAt',
+            papers: 'papersAt',
+            instructions: 'instructionsAt',
+            joinRequests: 'joinRequestsAt',
+        };
+        return map[col] ?? null;
+    }
+
+    private async persistEntity(col: string, id: string, updated: any, options?: { skipPulse?: boolean }) {
+        if (this.tenantId && this.isLocalPrimaryMode() && this.isLocalOperationalCollection(col)) {
+            await this.persistToLocalCollection(col, updated);
+            this.scheduleLiveMirrorPush();
+            this.updateTenantActivity().catch(() => {});
+            return;
+        }
         if (this.tenantId) {
             try {
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await setDoc(docRef, stripUndefinedForFirestore(updated), { merge: true });
+                if (!options?.skipPulse) {
+                    if (col === 'jobs') {
+                        await this.bumpJobSyncPulse(id, 'upsert');
+                    } else {
+                        const pulseField = this.collectionPulseField(col);
+                        if (pulseField) {
+                            await this.bumpSyncPulse({ [pulseField]: new Date().toISOString() });
+                        }
+                    }
+                }
             } catch (e) {
                 console.error(`[Firestore updateEntity Error] Failed to update ${col}/${id}:`, e);
                 this.notifyFirestoreWriteError('데이터', e);
@@ -1722,6 +2137,7 @@ export class DataService {
         }
 
         this.updateTenantActivity().catch(() => {});
+        if (col === 'jobs') this.scheduleLiveMirrorPush();
     }
 
     private async updateEntity(col: string, id: string, entity: any) {
@@ -1773,9 +2189,29 @@ export class DataService {
         this.notify();
         
         if (this.tenantId) {
+            if (this.isLocalPrimaryMode() && col === 'jobs') {
+                const ok = await localDbBridge.deleteJob(this.tenantId, id);
+                if (!ok) throw new Error('local-db-job-delete-failed');
+                this.scheduleLiveMirrorPush();
+                this.updateTenantActivity().catch(() => {});
+                return;
+            }
+            if (this.isLocalPrimaryMode() && col === 'clients') {
+                const ok = await localDbBridge.deleteClient(this.tenantId, id);
+                if (!ok) throw new Error('local-db-client-delete-failed');
+                return;
+            }
             try {
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await deleteDoc(docRef);
+                if (col === 'jobs') {
+                    await this.bumpJobSyncPulse(id, 'delete');
+                } else {
+                    const pulseField = this.collectionPulseField(col);
+                    if (pulseField) {
+                        await this.bumpSyncPulse({ [pulseField]: new Date().toISOString() });
+                    }
+                }
             } catch (e) {
                 if (col === 'jobs') {
                     this.operationalJobs = [];
@@ -1796,6 +2232,7 @@ export class DataService {
         }
         
         this.updateTenantActivity().catch(() => {});
+        if (col === 'jobs') this.scheduleLiveMirrorPush();
     }
 
     private static readonly SETTINGS_FRAGMENT_IDS = [
@@ -1827,6 +2264,11 @@ export class DataService {
         settings[name] = data;
         this.data['settings'] = [settings];
         this.notify();
+        
+        if (this.tenantId && this.isLocalPrimaryMode()) {
+            await localDbBridge.saveSettings(this.tenantId, settings);
+            return;
+        }
         
         if (this.tenantId) {
             try {
@@ -1862,6 +2304,7 @@ export class DataService {
                 this.notifyFirestoreWriteError('설정', e);
                 throw e;
             }
+            await this.bumpSyncPulse({ settingsAt: new Date().toISOString() });
         }
         
         this.updateTenantActivity().catch(() => {});
@@ -1919,8 +2362,13 @@ export class DataService {
         this.notify();
 
         await Promise.all(
-            updates.map(({ id, updated }) => this.persistEntity('jobs', id, updated))
+            updates.map(({ id, updated }) =>
+                this.persistEntity('jobs', id, updated, { skipPulse: true })
+            )
         );
+
+        await this.bumpJobBatchSyncPulse(updates.map((u) => u.id));
+        this.scheduleLiveMirrorPush();
 
         await Promise.all(
             updates.map(async ({ updated }) => {
@@ -2548,12 +2996,49 @@ export class DataService {
     }
 
     searchJobs(q: string): Job[] {
-        const query = q.toLowerCase();
-        return this.getAllJobs().filter(job => 
-            job.title.toLowerCase().includes(query) || 
-            job.clientName.toLowerCase().includes(query) || 
-            (job.clientPhone && job.clientPhone.toLowerCase().includes(query)) ||
-            (job.specs?.paperType && job.specs.paperType.toLowerCase().includes(query))
+        const queryText = q.trim().toLowerCase();
+        if (!queryText) return [];
+        const digitsOnly = queryText.replace(/\D/g, '');
+
+        return this.getAllJobs().filter((job) => {
+            const fields = [
+                job.title,
+                job.clientName,
+                job.clientPhone,
+                job.contactPerson,
+                job.id,
+                formatJobNumber(job),
+                job.specs?.paperType,
+                job.specs?.size,
+                job.specs?.quantity,
+            ]
+                .filter(Boolean)
+                .join(' ')
+                .toLowerCase();
+
+            if (fields.includes(queryText)) return true;
+            if (digitsOnly.length >= 4) {
+                const phoneDigits = (job.clientPhone || '').replace(/\D/g, '');
+                if (phoneDigits.includes(digitsOnly)) return true;
+            }
+            return false;
+        });
+    }
+
+    /** 칸반에 없어도 최근 1년·아카이브 작업까지 포함해 검색 */
+    async searchJobsAsync(q: string): Promise<Job[]> {
+        const queryText = q.trim();
+        if (queryText.length < 2) return [];
+
+        if (this.isLocalPrimaryMode()) {
+            await this.ensureColdArchiveLoaded();
+        } else {
+            await Promise.all([this.ensureColdArchiveLoaded(), this.fetchJobsBySearchQuery(queryText)]);
+        }
+
+        const hits = this.searchJobs(queryText);
+        return hits.sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         );
     }
 

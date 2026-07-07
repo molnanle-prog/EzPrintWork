@@ -27,3 +27,11 @@ export function readCachedQuoteForPreview(quoteId: string): Quote | null {
 export function isQuotePreviewRoute(): boolean {
   return typeof window !== 'undefined' && window.location.hash.includes('/quote-preview/');
 }
+
+export function openQuotePreviewWindow(quote: Quote): boolean {
+  cacheQuoteForPreview(quote);
+  const base = window.location.href.split('#')[0];
+  const url = `${base}#/quote-preview/${encodeURIComponent(quote.id)}`;
+  const opened = window.open(url, '_blank', 'width=1280,height=900');
+  return !!opened;
+}

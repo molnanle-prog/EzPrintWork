@@ -43,6 +43,14 @@ const formatSearchError = (error: any): string => {
     return '회사 검색 중 오류가 발생했습니다.';
 };
 
+const consumePostLoginPath = (): string => {
+    if (sessionStorage.getItem('ezpw_remote_view') === '1') {
+        sessionStorage.removeItem('ezpw_remote_view');
+        return '/remote';
+    }
+    return '/';
+};
+
 export const LoginPage: React.FC = () => {
     const navigate = useNavigate();
     const { theme } = useTheme();
@@ -202,7 +210,7 @@ export const LoginPage: React.FC = () => {
             if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
-            navigate('/', { replace: true });
+            navigate(consumePostLoginPath(), { replace: true });
 
             // 구글 시트 대표자 로그인 웹훅 비동기 전송
             if (user) {
@@ -610,7 +618,7 @@ export const LoginPage: React.FC = () => {
 
             localStorage.setItem('ezprint_active_tab', 'kanban');
             toast.success(tenantName ? `[${tenantName}] 직원 로그인에 성공했습니다! 환영합니다.` : '직원 로그인에 성공했습니다! 환영합니다.');
-            navigate('/');
+            navigate(consumePostLoginPath());
 
             // 구글 시트 직원 로그인 웹훅 비동기 전송
             (async () => {
@@ -655,7 +663,7 @@ export const LoginPage: React.FC = () => {
 
     useEffect(() => {
         if (!authLoading && currentUser?.tenantId) {
-            navigate('/', { replace: true });
+            navigate(consumePostLoginPath(), { replace: true });
         }
     }, [authLoading, currentUser?.tenantId, navigate]);
 
@@ -1378,6 +1386,13 @@ export const LoginPage: React.FC = () => {
                     </div>
 
                     <div className="pt-4 flex flex-col gap-4 text-center">
+                        <a
+                            href="#/remote"
+                            onClick={() => sessionStorage.setItem('ezpw_remote_view', '1')}
+                            className="text-xs text-slate-500 hover:text-blue-400 font-bold transition-colors"
+                        >
+                            밖에서 상황만 보기 (읽기 전용 · Firestore 미사용)
+                        </a>
                         <div className="flex items-center justify-center gap-2 text-slate-600 text-xs font-bold uppercase tracking-widest">
                             <ShieldCheck size={14} className="text-emerald-500" />
                             Enterprise Security Active

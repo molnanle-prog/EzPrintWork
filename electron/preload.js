@@ -27,4 +27,12 @@ contextBridge.exposeInMainWorld('electron', {
         return () => ipcRenderer.removeListener('updater-status', handler);
     },
     createDesktopShortcut: () => ipcRenderer.invoke('create-desktop-shortcut'),
+    localDbLoad: (tenantId) => ipcRenderer.invoke('local-db-load', tenantId),
+    localDbSaveJobs: (tenantId, jobs) => ipcRenderer.invoke('local-db-save-jobs', { tenantId, jobs }),
+    localDbUpsertJob: (tenantId, job) => ipcRenderer.invoke('local-db-upsert-job', { tenantId, job }),
+    localDbDeleteJob: (tenantId, jobId) => ipcRenderer.invoke('local-db-delete-job', { tenantId, jobId }),
+    localDbSaveClients: (tenantId, clients) => ipcRenderer.invoke('local-db-save-clients', { tenantId, clients }),
+    localDbUpsertClient: (tenantId, client) => ipcRenderer.invoke('local-db-upsert-client', { tenantId, client }),
+    localDbDeleteClient: (tenantId, clientId) => ipcRenderer.invoke('local-db-delete-client', { tenantId, clientId }),
+    localDbSaveSettings: (tenantId, settings) => ipcRenderer.invoke('local-db-save-settings', { tenantId, settings }),
 });

@@ -362,7 +362,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         {...sortableProps}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
-        className={`kanban-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-all cursor-grab active:cursor-grabbing group ${
+        className={`kanban-card kanban-tray-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-all cursor-grab active:cursor-grabbing group ${
           isHovered ? 'z-30 shadow-lg ring-2 ring-indigo-400/80' : 'z-0 shadow-sm'
         } ${
           theme === 'trello'
@@ -381,11 +381,11 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             <div className="kanban-card-subtitle text-[10px] text-slate-600 dark:text-slate-300 truncate" title={job.clientName}>
               {job.clientName || '고객명 없음'}
             </div>
-            <div className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-300">
+            <div className="kanban-tray-price text-[10px] font-mono font-bold">
               {job.price ? `${job.price.toLocaleString()}원` : '미정'}
             </div>
             {staffName && (
-              <div className="text-[9px] text-slate-500 dark:text-slate-400 truncate">{staffName}</div>
+              <div className="kanban-tray-meta text-[9px] truncate">{staffName}</div>
             )}
             <div className="flex items-center justify-end gap-0.5 pt-0.5">
               <button
@@ -394,7 +394,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                   e.stopPropagation();
                   onStatusChange(job, 'prev');
                 }}
-                className="text-slate-400 hover:text-red-500 p-0.5"
+                className="kanban-tray-icon text-slate-400 hover:text-red-500 p-0.5"
                 title="이전 단계"
               >
                 <ArrowLeft size={12} />
@@ -405,7 +405,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                   e.stopPropagation();
                   onStatusChange(job, 'next');
                 }}
-                className="text-slate-400 hover:text-emerald-500 p-0.5"
+                className="kanban-tray-icon text-slate-400 hover:text-emerald-500 p-0.5"
                 title="다음 단계"
               >
                 <ArrowRight size={12} />
@@ -413,7 +413,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             </div>
           </div>
         ) : (
-          <div className="text-[9px] font-mono font-bold text-indigo-600 dark:text-indigo-400 truncate mt-0.5">
+          <div className="kanban-tray-price text-[9px] font-mono font-bold truncate mt-0.5">
             {job.price ? `${job.price.toLocaleString()}원` : '미정'}
           </div>
         )}
@@ -430,7 +430,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`kanban-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group ${
+        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group ${
           theme === 'trello'
             ? 'bg-[#24364e] border-[#384c66] hover:border-indigo-400'
             : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500'
@@ -440,7 +440,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       >
         <GripHorizontal
           size={14}
-          className="shrink-0 text-slate-300 dark:text-slate-600 group-hover:text-indigo-400"
+          className="kanban-tray-icon shrink-0 text-slate-300 dark:text-slate-600 group-hover:text-indigo-400"
         />
         <div className="flex-1 min-w-0">
           <div className="kanban-card-title text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate" title={job.title}>
@@ -450,7 +450,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             {job.clientName}
           </div>
         </div>
-        <span className="text-[10px] font-mono font-bold text-indigo-600 dark:text-indigo-400 shrink-0">
+        <span className="kanban-tray-price text-[10px] font-mono font-bold shrink-0">
           {job.price ? `${job.price.toLocaleString()}원` : '미정'}
         </span>
         <button
@@ -459,7 +459,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             e.stopPropagation();
             onStatusChange(job, 'prev');
           }}
-          className="shrink-0 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors p-0.5"
+          className="kanban-tray-icon shrink-0 text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors p-0.5"
           title="이전 단계"
         >
           <ArrowLeft size={14} />
@@ -470,7 +470,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             e.stopPropagation();
             onStatusChange(job, 'next');
           }}
-          className="shrink-0 text-slate-300 dark:text-slate-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors p-0.5"
+          className="kanban-tray-icon shrink-0 text-slate-300 dark:text-slate-600 hover:text-emerald-500 dark:hover:text-emerald-400 transition-colors p-0.5"
           title="다음 단계 (접수 등)"
         >
           <ArrowRight size={14} />

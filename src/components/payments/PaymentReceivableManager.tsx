@@ -20,6 +20,7 @@ import {
   ArrowUpDown,
 } from 'lucide-react';
 import { JobDetailModal } from '../common/JobDetailModal';
+import { PastJobSearchResults } from '../common/PastJobSearchResults';
 import { ClientContactModal } from '../common/ClientContactModal';
 import { toast } from 'sonner';
 
@@ -180,7 +181,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 export const PaymentReceivableManager: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
-  const [filter, setFilter] = useState<PaymentFilter>('outstanding');
+  const [filter, setFilter] = useState<PaymentFilter>('all');
   const [search, setSearch] = useState('');
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [contactingJob, setContactingJob] = useState<Job | null>(null);
@@ -439,11 +440,10 @@ export const PaymentReceivableManager: React.FC = () => {
   };
 
   const filterTabs: { id: PaymentFilter; label: string }[] = [
+    { id: 'all', label: '전체' },
     { id: 'outstanding', label: '미수·미결제' },
-    { id: '결제대기', label: '결제대기' },
     { id: '일부결제', label: '일부결제' },
     { id: '결제완료', label: '결제완료' },
-    { id: 'all', label: '전체' },
     { id: 'byClient', label: '고객사별 종합' },
   ];
 
@@ -593,11 +593,17 @@ export const PaymentReceivableManager: React.FC = () => {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={filter === 'byClient' ? '고객사·작업명 검색' : '고객사·담당자·작업명 검색'}
+              placeholder={filter === 'byClient' ? '고객사·작업명 검색 (지난 작업 포함)' : '거래처·작업명 검색 — 선택 시 상세 보기'}
               className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
         </div>
+
+        <PastJobSearchResults
+          query={search}
+          onSelectJob={(job) => setSelectedJob(job)}
+          className="mt-3"
+        />
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
           <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 dark:border-red-900/50 px-3 py-2">
@@ -891,6 +897,7 @@ export const PaymentReceivableManager: React.FC = () => {
           key={selectedJob.id}
           job={selectedJob}
           staff={staff}
+          initialViewMode="summary"
           onClose={() => setSelectedJob(null)}
           onUpdate={async (updated) => {
             try {

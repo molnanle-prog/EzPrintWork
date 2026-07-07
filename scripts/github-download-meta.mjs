@@ -103,8 +103,6 @@ export async function writeDownloadMetaFromRelease(release, downloadsDir) {
     throw new Error(`Release ${tag}에 ${SETUP_EXE} 없음`);
   }
 
-  const githubLatestUrl =
-    `https://github.com/${OWNER}/${REPO}/releases/latest/download/${SETUP_EXE}`;
   const githubVersionUrl =
     `https://github.com/${OWNER}/${REPO}/releases/download/${tag}/${SETUP_EXE}`;
 
@@ -114,7 +112,7 @@ export async function writeDownloadMetaFromRelease(release, downloadsDir) {
   if (ymlAsset) {
     yml = await fetchRaw(ymlAsset.browser_download_url);
     yml = yml.replace(/^path: .+$/m, `path: ${SETUP_EXE}`);
-    yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubLatestUrl}`);
+    yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubVersionUrl}`);
   } else {
     throw new Error(`Release ${tag}에 latest.yml 없음 — electron-builder Release 자산 확인 필요`);
   }
@@ -127,8 +125,8 @@ export async function writeDownloadMetaFromRelease(release, downloadsDir) {
     setupExeName: SETUP_EXE,
     setupBytes: exeAsset.size,
     exeBytes: exeAsset.size,
-    downloadUrl: githubLatestUrl,
-    latestDownloadUrl: githubLatestUrl,
+    downloadUrl: githubVersionUrl,
+    latestDownloadUrl: githubVersionUrl,
     githubReleaseUrl: `https://github.com/${OWNER}/${REPO}/releases/tag/${tag}`,
     githubReleaseLatest: `https://github.com/${OWNER}/${REPO}/releases/latest`,
     githubVersionDownloadUrl: githubVersionUrl,

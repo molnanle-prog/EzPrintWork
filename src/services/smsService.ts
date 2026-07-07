@@ -39,9 +39,61 @@ export const replaceTemplateVariables = (template: string, job: Job, companyName
     .replace(/{계좌정보}/g, bankAccount);
 };
 
-/**
- * 솔라피 API를 활용한 문자 발송 로직
- */
+async function buildSolapiAuthHeaders(apiKey: string, apiSecret: string): Promise<Record<string, string>> {
+  const date = new Date().toISOString();
+  const salt = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+  const signature = await getSolapiSignature(apiSecret, date + salt);
+  return {
+    Authorization: `HMAC-SHA256 apiKey=${apiKey}, date=${date}, salt=${salt}, signature=${signature}`,
+  };
+}
+
+export interface SolapiBalanceInfo {
+  balance: number;
+  balanceOnly?: number;
+  deposit?: number;
+  point: number;
+}
+
+/** 솔라피 계정 잔액 조회 (관리자 설정 화면 전용) */
+export const fetchSolapiBalance = async (
+  config: SmsConfig
+): Promise<{ success: boolean; data?: SolapiBalanceInfo; message?: string }> => {
+  const apiKey = config.apiKey;
+  const apiSecret = config.apiSecret;
+
+  if (!apiKey || !apiSecret) {
+    return { success: false, message: 'API Key와 Secret Key를 입력해 주세요.' };
+  }
+
+  try {
+    const authHeaders = await buildSolapiAuthHeaders(apiKey, apiSecret);
+    const response = await fetch('https://api.solapi.com/cash/v1/balance', {
+      method: 'GET',
+      headers: authHeaders,
+    });
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.errorMessage || result.message || `HTTP Error ${response.status}`);
+    }
+
+    return {
+      success: true,
+      data: {
+        balance: Number(result.balance) || 0,
+        balanceOnly: result.balanceOnly != null ? Number(result.balanceOnly) : undefined,
+        deposit: result.deposit != null ? Number(result.deposit) : undefined,
+        point: Number(result.point) || 0,
+      },
+    };
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : '잔액 조회 실패';
+    console.error('Solapi balance fetch failed:', err);
+    return { success: false, message };
+  }
+};
+
 export const sendSmsViaSolapi = async (
   to: string,
   text: string,
@@ -69,12 +121,12 @@ export const sendSmsViaSolapi = async (
   const salt = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
   
   try {
-    const signature = await getSolapiSignature(apiSecret, date + salt);
+    const authHeaders = await buildSolapiAuthHeaders(apiKey, apiSecret);
     const response = await fetch('https://api.solapi.com/messages/v4/send-many', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `HMAC-SHA256 apiKey=${apiKey}, date=${date}, salt=${salt}, signature=${signature}`
+        ...authHeaders,
       },
       body: JSON.stringify({
         messages: [

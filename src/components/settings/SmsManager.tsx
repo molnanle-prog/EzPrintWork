@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { SmsConfig } from '../../types';
-import { MessageSquare, Save, Smartphone, Server, CheckCircle2, Lock, HelpCircle, Send, AlertTriangle } from 'lucide-react';
+import { MessageSquare, Save, Smartphone, Server, CheckCircle2, Lock, HelpCircle, Send, AlertTriangle, Wallet, RefreshCw, Loader2 } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { sendSmsViaSolapi } from '../../services/smsService';
+import { fetchSolapiBalance, sendSmsViaSolapi, SolapiBalanceInfo } from '../../services/smsService';
 
 export const SmsManager: React.FC = () => {
   const [config, setConfig] = useState<SmsConfig>({
@@ -22,9 +22,12 @@ export const SmsManager: React.FC = () => {
   const [isTesting, setIsTesting] = useState(false);
   const [showPhoneGuide, setShowPhoneGuide] = useState(true);
   const [showApiGuide, setShowApiGuide] = useState(true);
+  const [solapiBalance, setSolapiBalance] = useState<SolapiBalanceInfo | null>(null);
+  const [balanceError, setBalanceError] = useState<string | null>(null);
+  const [isLoadingBalance, setIsLoadingBalance] = useState(false);
   
   const { showAlert, showConfirm } = useDialog();
-  const { currentUser } = useAuth(); // 권한 체크용
+  const { currentUser, canAccessAdminSettings } = useAuth();
  
   useEffect(() => {
     const savedConfig = db.getSmsConfig();
@@ -42,6 +45,39 @@ export const SmsManager: React.FC = () => {
       alimtalkTemplates: savedConfig.alimtalkTemplates || {}
     });
   }, []);
+
+  const canShowSolapiBalance =
+    canAccessAdminSettings &&
+    config.mode === 'api' &&
+    config.provider === 'solapi' &&
+    !!config.apiKey &&
+    !!config.apiSecret;
+
+  const loadSolapiBalance = async () => {
+    if (!canShowSolapiBalance) return;
+    setIsLoadingBalance(true);
+    setBalanceError(null);
+    try {
+      const res = await fetchSolapiBalance(config);
+      if (res.success && res.data) {
+        setSolapiBalance(res.data);
+      } else {
+        setSolapiBalance(null);
+        setBalanceError(res.message || '잔액을 불러오지 못했습니다.');
+      }
+    } finally {
+      setIsLoadingBalance(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canShowSolapiBalance) {
+      setSolapiBalance(null);
+      setBalanceError(null);
+      return;
+    }
+    void loadSolapiBalance();
+  }, [canShowSolapiBalance, config.apiKey, config.apiSecret, config.mode, config.provider]);
 
   const handleSave = async () => {
     // 권한 체크: 설정은 관리자만 가능
@@ -125,6 +161,63 @@ export const SmsManager: React.FC = () => {
           </span>
         )}
       </div>
+
+      {canShowSolapiBalance && (
+        <div className="mb-6 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/80 dark:bg-emerald-950/20 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p className="text-sm font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-2">
+                <Wallet size={16} />
+                솔라피 잔액 (관리자 전용)
+              </p>
+              <p className="text-xs text-emerald-800/80 dark:text-emerald-300/80 mt-1">
+                직원 문자 발송 실패 시 충전이 필요한지 확인할 수 있습니다. 일반 직원에게는 표시되지 않습니다.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadSolapiBalance()}
+              disabled={isLoadingBalance}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-900 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 disabled:opacity-50"
+            >
+              {isLoadingBalance ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              새로고침
+            </button>
+          </div>
+
+          {isLoadingBalance && !solapiBalance ? (
+            <p className="mt-3 text-sm text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
+              <Loader2 size={16} className="animate-spin" />
+              잔액 조회 중...
+            </p>
+          ) : balanceError ? (
+            <p className="mt-3 text-sm text-red-600 dark:text-red-400">{balanceError}</p>
+          ) : solapiBalance ? (
+            <div className="mt-3 flex flex-wrap items-end gap-4">
+              <div>
+                <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">사용 가능 잔액</p>
+                <p className="text-2xl font-black text-emerald-900 dark:text-emerald-100 tabular-nums">
+                  {solapiBalance.balance.toLocaleString()}원
+                </p>
+              </div>
+              {solapiBalance.point > 0 && (
+                <div>
+                  <p className="text-xs font-bold text-slate-500">포인트</p>
+                  <p className="text-lg font-bold text-slate-700 dark:text-slate-200 tabular-nums">
+                    {solapiBalance.point.toLocaleString()}P
+                  </p>
+                </div>
+              )}
+              {solapiBalance.balance < 5000 && (
+                <p className="text-xs font-bold text-red-600 dark:text-red-400 flex items-center gap-1">
+                  <AlertTriangle size={14} />
+                  잔액이 부족할 수 있습니다. 솔라피에서 충전해 주세요.
+                </p>
+              )}
+            </div>
+          ) : null}
+        </div>
+      )}
 
       <div className="space-y-8">
           

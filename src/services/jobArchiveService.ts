@@ -149,10 +149,11 @@ export class JobArchiveService {
         const readmePath = this.joinPath(root, ARCHIVE_README_NAME);
         const archivePath = this.joinPath(root, ARCHIVE_FILE_NAME);
         const readme = [
-            'EzPrintWork 이력 보관 폴더',
+            'EzPrintWork 작업 백업 폴더',
             '',
-            '이 폴더에는 1년이 지난 완료/취소 작업만 저장됩니다.',
-            `보관 파일: ${ARCHIVE_FILE_NAME}`,
+            '작업이 저장될 때마다 이 폴더에 즉시 백업됩니다.',
+            `- 상황판(외부 웹용): situation-mirror.json`,
+            `- 전체 작업 이력: ${ARCHIVE_FILE_NAME}`,
             '',
             '※ 이 폴더에 다른 파일을 넣지 마세요. 앱이 관리합니다.',
         ].join('\n');
@@ -329,6 +330,16 @@ export class JobArchiveService {
         const result = await this.appendJobs(tenantId, []);
         if (result.success) return pending.length;
         return 0;
+    }
+
+    /**
+     * 매장 PC — 작업 저장 시 NAS/Storage에 전체 작업 즉시 미러 (1년 대기 없음).
+     * Firestore 읽기 없음, 쓰기만 Storage/NAS.
+     */
+    async syncLiveJobsMirror(tenantId: string, jobs: Job[]): Promise<boolean> {
+        if (!tenantId) return false;
+        const result = await this.persistArchiveSnapshot(tenantId, jobs);
+        return result.success;
     }
 
     isConfiguredNasPath(): boolean {

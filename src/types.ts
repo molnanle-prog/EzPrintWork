@@ -374,6 +374,21 @@ export interface IElectronAPI {
   onUpdaterStatus?: (callback: (payload: ElectronUpdaterStatus) => void) => () => void;
   createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; error?: string }>;
   findLegacyDbFiles: () => Promise<{ name: string; path: string; size: string; mtime: string }[]>;
+  localDbLoad?: (tenantId: string) => Promise<{
+    success: boolean;
+    jobs?: unknown[];
+    clients?: unknown[];
+    settings?: Record<string, unknown> | null;
+    jobCount?: number;
+    error?: string;
+  }>;
+  localDbSaveJobs?: (tenantId: string, jobs: unknown[]) => Promise<{ success: boolean }>;
+  localDbUpsertJob?: (tenantId: string, job: unknown) => Promise<{ success: boolean }>;
+  localDbDeleteJob?: (tenantId: string, jobId: string) => Promise<{ success: boolean }>;
+  localDbSaveClients?: (tenantId: string, clients: unknown[]) => Promise<{ success: boolean }>;
+  localDbUpsertClient?: (tenantId: string, client: unknown) => Promise<{ success: boolean }>;
+  localDbDeleteClient?: (tenantId: string, clientId: string) => Promise<{ success: boolean }>;
+  localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;

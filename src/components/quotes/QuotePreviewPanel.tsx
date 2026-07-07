@@ -1,8 +1,10 @@
 
 import React, { useRef, useState } from 'react';
 import { Quote } from '../../types';
-import { X, Download, FileImage, FileText, Loader2 } from 'lucide-react';
+import { X, Download, FileText, Loader2, Printer } from 'lucide-react';
 import { QuoteDocument } from './QuoteDocument';
+import { db } from '../../services/dataService';
+import { getQuotePdfFileName } from '../../utils/quoteJobSync';
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 
@@ -16,7 +18,7 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
   const [documentType, setDocumentType] = useState<'quote' | 'statement'>('quote');
   const quoteRef = useRef<HTMLDivElement>(null);
 
-  const docLabel = documentType === 'statement' ? '명세표' : '견적서';
+  const docLabel = documentType === 'statement' ? '거래명세서' : '견적서';
 
   const renderComponentToCanvas = async (element: HTMLDivElement): Promise<HTMLCanvasElement> => {
     const clone = element.cloneNode(true) as HTMLElement;
@@ -44,29 +46,8 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
     }
   };
 
-  const handleOpenImage = async () => {
-    if (!quoteRef.current) return;
-    setIsProcessing(true);
-    try {
-      const canvas = await renderComponentToCanvas(quoteRef.current);
-      const image = canvas.toDataURL('image/jpeg', 1.0);
-      const newWindow = window.open();
-      if (newWindow) {
-        newWindow.document.write(`
-          <html>
-            <head><title>${docLabel} JPG 미리보기</title></head>
-            <body style="margin:0; text-align: center; background-color: #f0f0f0;">
-              <img src="${image}" style="max-width: 100%; height: auto;" alt="${docLabel} Preview"/>
-            </body>
-          </html>`);
-        newWindow.document.close();
-      }
-    } catch (err) {
-      console.error('이미지 생성 중 오류:', err);
-      alert('이미지 생성 중 오류가 발생했습니다.');
-    } finally {
-      setIsProcessing(false);
-    }
+  const handleDirectPrint = () => {
+    window.print();
   };
 
   const handleOpenPDF = async () => {
@@ -79,7 +60,8 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-      window.open(pdf.output('bloburl'), '_blank');
+      const fileName = getQuotePdfFileName(quote, db.getAllJobs(), documentType);
+      pdf.save(fileName);
     } catch (err) {
       console.error('PDF 생성 중 오류:', err);
       alert('PDF 생성 중 오류가 발생했습니다.');
@@ -90,7 +72,48 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
 
   return (
     <div className="h-screen w-screen bg-slate-100 flex flex-col overflow-hidden">
-      <div className="p-4 bg-slate-800 text-white flex justify-between items-center shadow-md z-10 flex-none">
+      <style>{`
+        @media print {
+          @page {
+            size: A4;
+            margin: 0;
+          }
+          body {
+            margin: 0 !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          body * {
+            visibility: hidden !important;
+          }
+          #print-capture-area, #print-capture-area * {
+            visibility: visible !important;
+          }
+          #print-capture-area {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 210mm !important;
+            min-height: 297mm !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            box-sizing: border-box !important;
+            background: white !important;
+            box-shadow: none !important;
+            border-radius: 0 !important;
+            zoom: 1 !important;
+          }
+          #print-capture-area .printable-document {
+            width: 210mm !important;
+            min-height: 297mm !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+          }
+        }
+      `}</style>
+
+      <div className="p-4 bg-slate-800 text-white flex justify-between items-center shadow-md z-10 flex-none print:hidden">
         <h3 className="font-bold text-lg flex items-center gap-2">
           <FileText className="text-blue-400" />
           {docLabel} 미리보기
@@ -115,16 +138,17 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
                   : 'bg-slate-700 text-slate-200 hover:bg-slate-600'
               }`}
             >
-              명세표
+              거래명세서
             </button>
           </div>
           <button
-            onClick={handleOpenImage}
+            onClick={handleDirectPrint}
             disabled={isProcessing}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-bold transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-sm font-bold transition-colors disabled:opacity-50"
+            title="윈도우 인쇄 창을 열어 화면과 동일하게 출력합니다"
           >
-            {isProcessing ? <Loader2 className="animate-spin" size={16} /> : <FileImage size={16} />}
-            JPG로 보기
+            <Printer size={16} />
+            프린트하기
           </button>
           <button
             onClick={handleOpenPDF}
@@ -144,8 +168,8 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto bg-slate-200 p-8 flex justify-center custom-scrollbar">
-        <div className="shadow-xl">
+      <div className="flex-1 overflow-auto bg-slate-200 p-8 flex justify-center custom-scrollbar print:p-0 print:bg-white print:overflow-visible">
+        <div id="print-capture-area" className="shadow-xl print:shadow-none">
           <div ref={quoteRef}>
             <QuoteDocument quote={quote} documentType={documentType} />
           </div>

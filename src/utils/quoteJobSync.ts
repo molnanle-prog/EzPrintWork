@@ -474,3 +474,20 @@ export function formatQuoteClientLabel(quote: Quote, jobs: Job[] = []): string {
   const contact = (quote.contactPerson || job?.contactPerson || '').trim();
   return contact ? `${clientName}(${contact})` : clientName;
 }
+
+function sanitizeFileNamePart(value: string): string {
+  return value.replace(/[\\/:*?"<>|]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** 견적서 PDF 저장 파일명 — 작업번호_거래처명.pdf */
+export function getQuotePdfFileName(
+  quote: Quote,
+  jobs: Job[] = [],
+  documentType: 'quote' | 'statement' = 'quote'
+): string {
+  const jobNo = sanitizeFileNamePart(getQuoteJobNumber(quote, jobs)) || '미연결';
+  const job = resolveQuoteJob(quote, jobs);
+  const clientName = sanitizeFileNamePart(quote.clientName || job?.clientName || '') || '거래처없음';
+  const docSuffix = documentType === 'statement' ? '_거래명세서' : '';
+  return `${jobNo}_${clientName}${docSuffix}.pdf`;
+}

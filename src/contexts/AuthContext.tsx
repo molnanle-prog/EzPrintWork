@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
-import { doc, getDoc, setDoc, deleteDoc, onSnapshot, collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
@@ -657,29 +657,32 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // [SSOT 실시간 요금제 동기화 엔진] 
-  // 테넌트 문서의 실시간 동적 상태 변화(onSnapshot)를 완벽히 감지하여,
-  // 대표님이 매니저 프로그램에서 요금제를 바꾸는 즉시 사용 중인 화면에 실시간(1초 이내) 갱신 적용합니다.
+  // 요금제 — 로그인 시 1회 조회 (onSnapshot 제거로 읽기 절감)
   useEffect(() => {
     if (!currentUser || !currentUser.tenantId) {
       return;
     }
-    
-    console.log(`[RealtimePlanSync] Subscribing to tenant: ${currentUser.tenantId}`);
+
     const tenantRef = doc(db, 'tenants', currentUser.tenantId);
-    
-    const unsubscribe = onSnapshot(tenantRef, (docSnap) => {
-      if (docSnap.exists()) {
-        applyTenantSnapshot(docSnap.data());
-        console.log(`[RealtimePlanSync] Tenant plan updated in real-time`);
+    let cancelled = false;
+
+    const refreshPlan = async () => {
+      try {
+        const snap = await getDoc(tenantRef);
+        if (!cancelled && snap.exists()) {
+          applyTenantSnapshot(snap.data());
+        }
+      } catch (err) {
+        console.warn('[TenantPlan] getDoc failed:', err);
       }
-    }, (err) => {
-      console.error("[RealtimePlanSync] Real-time subscription failed:", err);
-    });
-    
+    };
+
+    void refreshPlan();
+    const interval = window.setInterval(() => void refreshPlan(), 30 * 60 * 1000);
+
     return () => {
-      console.log(`[RealtimePlanSync] Unsubscribing from tenant: ${currentUser.tenantId}`);
-      unsubscribe();
+      cancelled = true;
+      window.clearInterval(interval);
     };
   }, [currentUser?.tenantId]);
 
@@ -839,21 +842,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (!localSid) return;
 
     const userRef = doc(db, 'users', firebaseUser.uid);
-    const unsubscribe = onSnapshot(userRef, (snap) => {
-      if (!snap.exists() || sessionKickedRef.current) return;
-      const data = snap.data();
-      if (!isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
 
-      sessionKickedRef.current = true;
-      void (async () => {
+    const checkRemoteSession = async () => {
+      try {
+        const snap = await getDoc(userRef);
+        if (!snap.exists() || sessionKickedRef.current) return;
+        const data = snap.data();
+        if (!isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
+
+        sessionKickedRef.current = true;
         await showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
         await logout();
-      })();
-    }, (err) => {
-      console.warn('[StaffSession] session watch failed:', err);
-    });
+      } catch (err) {
+        console.warn('[StaffSession] session watch failed:', err);
+      }
+    };
 
-    return () => unsubscribe();
+    void checkRemoteSession();
+    const intervalId = window.setInterval(() => void checkRemoteSession(), 45_000);
+
+    return () => window.clearInterval(intervalId);
   }, [firebaseUser?.uid, currentUser?.loginId, showAlert, logout]);
 
   console.log('AuthProvider State:', { hasFirebaseUser: !!firebaseUser, hasCurrentUser: !!currentUser, loading });

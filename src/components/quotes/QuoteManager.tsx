@@ -95,7 +95,7 @@ export const QuoteManager: React.FC = () => {
 
           <p className="hidden md:block text-sm text-slate-500 mt-1">
 
-            작업별 견적서를 확인하고 PDF·JPG로 저장할 수 있습니다.
+            작업별 견적서를 확인하고 인쇄·PDF로 저장할 수 있습니다.
 
           </p>
 

@@ -59,8 +59,8 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
   const statusLabel = quote.status === '승인' ? '승인됨' : quote.status === '거절' ? '거절됨' : '대기';
   const emptyRowCount = Math.max(MIN_TABLE_ROWS - lines.length, 0);
   const vatNote = vatIncluded ? '(부가세 포함)' : '(부가세 별도)';
-  const docTitle = documentType === 'statement' ? '명 세 표' : '견 적 서';
-  const docSubtitle = documentType === 'statement' ? 'STATEMENT' : 'ESTIMATE SHEET';
+  const docTitle = documentType === 'statement' ? '거 래 명 세 서' : '견 적 서';
+  const docSubtitle = documentType === 'statement' ? 'TRANSACTION STATEMENT' : 'ESTIMATE SHEET';
 
   return (
     <>

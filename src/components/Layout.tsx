@@ -21,17 +21,23 @@ interface LayoutProps {
 
 const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) => {
     const [status, setStatus] = useState(db.getSyncStatus());
+    const [cloudDegraded, setCloudDegraded] = useState(db.isCloudDegraded());
 
     useEffect(() => {
         const unsubscribe = db.subscribe(() => {
             setStatus(db.getSyncStatus());
+            setCloudDegraded(db.isCloudDegraded());
         });
         return () => unsubscribe();
     }, []);
 
     let icon, color, title;
 
-    switch (status) {
+    if (cloudDegraded && status === 'synced') {
+        icon = <CloudOff size={14} />;
+        color = 'text-amber-400';
+        title = '로컬 DB 사용 중 (클라우드 한도/연결 제한)';
+    } else switch (status) {
         case 'synced':
             icon = <CheckCircle2 size={14} />;
             color = 'text-emerald-400';
@@ -112,6 +118,13 @@ const ReconnectOverlay: React.FC = () => {
     };
 
     if (status !== 'disconnected') return null;
+
+    if (
+        db.hasLocalOperationalData() &&
+        (syncError === 'resource-exhausted' || syncError === 'unavailable' || syncError === 'pull-failed')
+    ) {
+        return null;
+    }
 
     const detail = getDisconnectDetail(syncError);
 
@@ -609,7 +622,13 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
       </div>
 
       {showSearchModal && (
-        <CompletedJobSearchModal onClose={() => setShowSearchModal(false)} onSelectJob={(job) => setSelectedSearchJob(job)} />
+        <CompletedJobSearchModal
+          onClose={() => setShowSearchModal(false)}
+          onSelectJob={(job) => {
+            setShowSearchModal(false);
+            setSelectedSearchJob(job);
+          }}
+        />
       )}
 
       <UpgradeModal 
@@ -622,6 +641,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             <JobDetailModal 
                 job={selectedSearchJob}
                 staff={staff}
+                initialViewMode="summary"
                 onClose={() => setSelectedSearchJob(null)}
                 onUpdate={handleJobUpdate}
                 onNavigateToQuote={() => onTabChange('quotes')}

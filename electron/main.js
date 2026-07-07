@@ -3,6 +3,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
+const localDb = require('./localDb');
 
 // 프로토콜 등록 (ezpw://)
 if (process.defaultApp) {
@@ -323,6 +324,80 @@ ipcMain.handle('find-legacy-db-files', async () => {
         console.error("레거시 파일 자동 검색 중 오류:", e);
     }
     return results;
+});
+
+// --- 로컬 SQLite (업무 DB — Firestore jobs 미사용) ---
+ipcMain.handle('local-db-load', async (_event, tenantId) => {
+    try {
+        if (!tenantId) return { success: false, error: 'no-tenant' };
+        const bundle = localDb.loadTenantBundle(tenantId);
+        return { success: true, ...bundle };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-save-jobs', async (_event, { tenantId, jobs }) => {
+    try {
+        const count = localDb.saveJobs(tenantId, jobs || []);
+        return { success: true, count };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-upsert-job', async (_event, { tenantId, job }) => {
+    try {
+        localDb.upsertJob(tenantId, job);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-delete-job', async (_event, { tenantId, jobId }) => {
+    try {
+        localDb.deleteJob(tenantId, jobId);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-save-clients', async (_event, { tenantId, clients }) => {
+    try {
+        const count = localDb.saveClients(tenantId, clients || []);
+        return { success: true, count };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-upsert-client', async (_event, { tenantId, client }) => {
+    try {
+        localDb.upsertClient(tenantId, client);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-delete-client', async (_event, { tenantId, clientId }) => {
+    try {
+        localDb.deleteClient(tenantId, clientId);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-save-settings', async (_event, { tenantId, settings }) => {
+    try {
+        localDb.saveSettings(tenantId, settings);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
 });
 
 // 8. 창 제어 (최소화, 최대화, 닫기)

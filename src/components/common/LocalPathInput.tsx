@@ -27,7 +27,8 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
   const { showAlert } = useDialog();
 
   const handleOpenPath = async () => {
-    if (!value) {
+    const targetPath = (value || '').trim();
+    if (!targetPath) {
       showAlert("열 수 있는 경로가 없습니다.");
       return;
     }
@@ -36,7 +37,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
     
     const isMobileOrTablet = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     if (isMobileOrTablet) {
-        let smbPath = value.replace(/\\/g, '/');
+        let smbPath = targetPath.replace(/\\/g, '/');
         if (smbPath.startsWith('//')) {
             smbPath = 'smb:' + smbPath;
         } else if (/^[A-Za-z]:/.test(smbPath)) {
@@ -51,9 +52,9 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
     }
 
     if (isElectron && typeof window.electron.openPath === 'function') {
-        window.electron.openPath(value);
+        window.electron.openPath(targetPath);
     } else {
-        window.location.href = `ezpw://open?path=${encodeURIComponent(value)}`;
+        window.location.href = `ezpw://open?path=${encodeURIComponent(targetPath)}`;
         setTimeout(() => {
             promptDesktopAppDownload();
         }, 2000);
@@ -99,16 +100,16 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
           title={value} 
         />
         <button 
-          onClick={handleSelectPath} 
+          onClick={handleOpenPath} 
           className="p-1.5 rounded border bg-slate-100 border-slate-200 text-slate-600 hover:bg-blue-50 hover:text-blue-600" 
-          title="찾기 (탐색기 열기)"
+          title="연결된 경로 열기"
         >
           <Search size={14} />
         </button>
         <button 
-          onClick={handleOpenPath} 
+          onClick={handleSelectPath} 
           className="p-1.5 rounded border bg-blue-600 border-blue-600 text-white hover:bg-blue-700 transition-colors" 
-          title="열기 (폴더로 이동)"
+          title="경로 찾기 (탐색기에서 선택)"
         >
           <FolderOpen size={14} />
         </button>

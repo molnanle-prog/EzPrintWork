@@ -502,6 +502,11 @@ service cloud.firestore {
           || (isMember(tenantId) && isValidId(settingId) && isStaffWritableSetting(settingId, incoming()));
       }
 
+      // SYNC PULSE — 테넌트 실시간 변경 신호 (문서 1개만 구독)
+      match /sync/{pulseId} {
+        allow read, write: if isMember(tenantId) && isValidId(pulseId);
+      }
+
       // BACKUPS
       match /backups/{backupId} {
         allow read, write: if isAdmin(tenantId) && isValidId(backupId);

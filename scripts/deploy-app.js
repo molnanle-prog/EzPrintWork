@@ -260,8 +260,8 @@ async function main() {
   const waitForGithubReleaseEnabled = !fastDeploy && process.env.DEPLOY_WAIT_RELEASE !== '0';
   const enableHostingCleanup = process.env.DEPLOY_CLEANUP_HOSTING === '1';
   const MIN_SETUP_BYTES = 15 * 1024 * 1024;
-  const GITHUB_EXE_URL = 'https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/EzPrintWork-Setup.exe';
   const appVersion = require(path.join(currentDir, 'package.json')).version;
+  const GITHUB_EXE_URL = `https://github.com/molnanle-prog/EzPrintWork/releases/download/v${appVersion}/EzPrintWork-Setup.exe`;
   const ghToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
 
   log('===================================================', colors.bold + colors.green);
@@ -341,7 +341,7 @@ async function main() {
 
     const setupExeName = 'EzPrintWork-Setup.exe';
     const githubDownloadUrl =
-      `https://github.com/molnanle-prog/EzPrintWork/releases/latest/download/${setupExeName}`;
+      `https://github.com/molnanle-prog/EzPrintWork/releases/download/v${appVersion}/${setupExeName}`;
     const githubVersionUrl =
       `https://github.com/molnanle-prog/EzPrintWork/releases/download/v${appVersion}/${setupExeName}`;
 

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, FastForward } from 'lucide-react';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2 } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
@@ -11,6 +11,8 @@ import { useDialog } from '../../contexts/DialogContext';
 import { LocalPathInput } from './LocalPathInput';
 import { useAuth } from '../../contexts/AuthContext';
 import { syncClientFromJob } from '../../utils/clientSync';
+import { findQuoteForJob } from '../../utils/quoteJobSync';
+import { openQuotePreviewWindow } from '../../utils/quotePreviewStorage';
 import { toast } from 'sonner';
 
 
@@ -195,6 +197,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
   
   const [showContactModal, setShowContactModal] = useState(false);
   const [showPrintModal, setShowPrintModal] = useState(false);
+  const [openingQuote, setOpeningQuote] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   const [isStaffDropdownOpen, setIsStaffDropdownOpen] = useState(false);
   
@@ -670,36 +673,25 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
       }
   };
 
-  const handleFastCompleteJob = async () => {
-      if (!currentUser) {
-          showAlert("사용자 정보가 없어 조기 완료를 처리할 수 없습니다.");
-          return;
+  const handleOpenQuotePreview = async () => {
+    if (isNew) return;
+    setOpeningQuote(true);
+    try {
+      const quoteId = await db.ensureQuoteForJob(editedJob);
+      const quote =
+        db.getQuotes().find((q) => q.id === quoteId) ?? findQuoteForJob(db.getQuotes(), editedJob);
+      if (!quote) {
+        showAlert('연결된 견적서를 찾을 수 없습니다.');
+        return;
       }
-      if (await showConfirm(`'${editedJob.title}' 작업의 남은 단계를 모두 건너뛰고 '즉시 완료' 처리하시겠습니까?`)) {
-          const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
-          newHistory.push({
-              timestamp: new Date().toISOString(),
-              staffId: currentUser.id,
-              action: '즉시 완료',
-              details: '중간 제작 공정을 건너뛰고 조기 완료 처리 완료했습니다.'
-          });
-
-          const finalJob: Job = {
-              ...editedJob,
-              status: 'COMPLETED',
-              progress: 100,
-              completedAt: new Date().toISOString(),
-              history: newHistory
-          };
-
-          try {
-              await db.updateJob(finalJob);
-              onUpdate(finalJob);
-              onClose();
-          } catch (error) {
-              showAlert(getErrorMessage(error));
-          }
+      if (!openQuotePreviewWindow(quote)) {
+        showAlert('팝업이 차단되었습니다. 브라우저에서 팝업 허용 후 다시 시도해 주세요.');
       }
+    } catch (error) {
+      showAlert(getErrorMessage(error));
+    } finally {
+      setOpeningQuote(false);
+    }
   };
 
   const toggleProcessing = (option: string) => {
@@ -1124,6 +1116,15 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                 {/* Footer */}
                 <div className="p-4 border-t border-slate-200 flex justify-end gap-3 bg-white flex-none">
                     <div className="mr-auto flex gap-2">
+                        <button
+                          onClick={handleOpenQuotePreview}
+                          disabled={openingQuote}
+                          className="px-4 py-2.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg font-bold transition-colors flex items-center gap-2 border border-indigo-200 disabled:opacity-50"
+                          title="이 작업의 견적서 미리보기"
+                        >
+                          {openingQuote ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
+                          <span className="hidden sm:inline">견적서 보기</span>
+                        </button>
                         <button onClick={() => setShowPrintModal(true)} className="px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
                         <button 
                             onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
@@ -1870,21 +1871,19 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                   </button>
                 )}
 
-                {/* 3. 즉시 완료 (조기 패스) */}
-                {editedJob.status !== 'COMPLETED' && editedJob.status !== 'CANCELED' && (
-                  <button 
-                    onClick={handleFastCompleteJob} 
-                    className="px-3 py-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8 flex-none" 
-                    title="제작 단계를 건너뛰고 조기 완료 처리합니다"
-                  >
-                    <FastForward size={16} />
-                    <span className="hidden md:inline">즉시 완료</span>
-                  </button>
-                )}
               </div>
             )}
             {!isNew && (
               <>
+                <button
+                  onClick={handleOpenQuotePreview}
+                  disabled={openingQuote}
+                  className="px-4 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+                  title="이 작업의 견적서 미리보기"
+                >
+                  {openingQuote ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
+                  <span className="hidden sm:inline">견적서 보기</span>
+                </button>
                 <button onClick={() => setShowPrintModal(true)} className="px-4 py-1.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
                 <button 
                     onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
