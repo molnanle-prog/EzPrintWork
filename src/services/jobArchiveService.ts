@@ -387,6 +387,15 @@ export class JobArchiveService {
         return result.success;
     }
 
+    /** 웹→Firestore 릴레이 — 매장 PC가 NAS jobs-archive에 부분 반영 */
+    async mergePartialJobsToNas(tenantId: string, partialJobs: Job[]): Promise<boolean> {
+        if (!tenantId || partialJobs.length === 0 || !this.isElectron()) return false;
+        const existing = await this.readLocalArchivedJobs(tenantId);
+        const merged = this.mergeJobs(existing, partialJobs);
+        const result = await this.persistArchiveSnapshot(tenantId, merged);
+        return result.success;
+    }
+
     isConfiguredNasPath(): boolean {
         const root = getArchiveRootPath();
         return !!root && isNasOrNetworkPath(root);

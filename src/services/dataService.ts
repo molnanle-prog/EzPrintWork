@@ -15,6 +15,12 @@ import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
 import { localDbBridge } from './localDbBridge';
 import { refreshLocalGateway, postJobsPartialViaGateway, isStoreGatewayReachable } from './gatewayBridge';
+import {
+    claimWebJobRelayBatches,
+    enqueueWebJobRelayBatches,
+    getWebJobQueueRef,
+    isLikelyMixedContentBlocked,
+} from './webJobRelayService';
 import type { SituationMirrorPayload } from './situationMirrorService';
 import {
     applyArchiveRootFromSettings,
@@ -62,6 +68,17 @@ export const formatBusinessNumber = (value: string) => {
 };
 
 export const getErrorMessage = (error: any): string => {
+    const code = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
+    const webGatewayMessages: Record<string, string> = {
+        'web-gateway-batch-save-failed':
+            '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
+        'web-gateway-job-save-failed':
+            '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
+        'web-gateway-job-add-failed':
+            '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
+    };
+    if (code && webGatewayMessages[code]) return webGatewayMessages[code];
+
     let message = '알 수 없는 오류가 발생했습니다.';
     if (error instanceof Error) message = error.message;
     else if (typeof error === 'string') message = error;
@@ -494,6 +511,8 @@ export class DataService {
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
     private syncPulseUnsub: (() => void) | null = null;
+    private webJobQueueUnsub: (() => void) | null = null;
+    private webJobQueueProcessing = false;
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
@@ -614,18 +633,37 @@ export class DataService {
         }
     }
 
-    private async persistJobsViaWebGateway(jobs: Job[]): Promise<boolean> {
+    private async persistWebJobsFromBrowser(jobs: Job[]): Promise<'gateway' | 'relay' | false> {
         if (!this.tenantId || this.getIsElectron() || jobs.length === 0) return false;
+
         const gateway = this.getStoreGatewayUrl();
-        if (!gateway) return false;
-        const reachable = await isStoreGatewayReachable(gateway);
-        if (!reachable) return false;
-        const result = await postJobsPartialViaGateway(gateway, this.tenantId, jobs);
-        if (result.ok && result.updatedAt) {
-            this.lastNasMirrorAt = result.updatedAt;
-            this.lastNasArchiveAt = result.updatedAt;
+        const canTryGateway = !!gateway && !isLikelyMixedContentBlocked(gateway);
+
+        if (canTryGateway && gateway) {
+            const reachable = await isStoreGatewayReachable(gateway);
+            if (reachable) {
+                const result = await postJobsPartialViaGateway(gateway, this.tenantId, jobs);
+                if (result.ok) {
+                    if (result.updatedAt) {
+                        this.lastNasMirrorAt = result.updatedAt;
+                        this.lastNasArchiveAt = result.updatedAt;
+                    }
+                    return 'gateway';
+                }
+            }
         }
-        return result.ok;
+
+        const enqueued = await enqueueWebJobRelayBatches(this.tenantId, jobs);
+        if (!enqueued) return false;
+
+        await this.bumpSyncPulse({ webJobRelayAt: new Date().toISOString() });
+        return 'relay';
+    }
+
+    /** @deprecated persistWebJobsFromBrowser 사용 */
+    private async persistJobsViaWebGateway(jobs: Job[]): Promise<boolean> {
+        const mode = await this.persistWebJobsFromBrowser(jobs);
+        return mode === 'gateway' || mode === 'relay';
     }
 
     private isSyncAdmin(): boolean {
@@ -1408,6 +1446,51 @@ export class DataService {
             this.syncPulseUnsub();
             this.syncPulseUnsub = null;
         }
+        this.stopWebJobQueue();
+    }
+
+    private stopWebJobQueue() {
+        if (this.webJobQueueUnsub) {
+            this.webJobQueueUnsub();
+            this.webJobQueueUnsub = null;
+        }
+    }
+
+    private subscribeWebJobQueue() {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) return;
+        this.stopWebJobQueue();
+        this.webJobQueueUnsub = onSnapshot(
+            getWebJobQueueRef(this.tenantId),
+            (snap) => {
+                const batches = (snap.data()?.batches as unknown[] | undefined) || [];
+                if (batches.length > 0) void this.processWebJobRelayQueue();
+            },
+            (err) => console.warn('[DataService] web job queue listen failed:', err)
+        );
+    }
+
+    private async processWebJobRelayQueue() {
+        if (!this.tenantId || this.webJobQueueProcessing || !this.isLocalPrimaryMode()) return;
+        this.webJobQueueProcessing = true;
+        try {
+            const batches = await claimWebJobRelayBatches(this.tenantId);
+            if (batches.length === 0) return;
+
+            for (const batch of batches) {
+                if (!batch.jobs?.length) continue;
+                this.applyLocalJobUpdates(batch.jobs);
+                await jobArchiveService.mergePartialJobsToNas(this.tenantId, batch.jobs);
+            }
+
+            await this.persistAllToLocalDb().catch((e) =>
+                console.warn('[DataService] local db sync after web relay failed:', e)
+            );
+            await this.pushLiveMirrors();
+        } catch (e) {
+            console.warn('[DataService] web job relay process failed:', e);
+        } finally {
+            this.webJobQueueProcessing = false;
+        }
     }
 
     private stopAllLazySync() {
@@ -1993,6 +2076,9 @@ export class DataService {
 
             await this.pullJoinRequests();
             this.subscribeSyncPulse();
+            if (localPrimary) {
+                this.subscribeWebJobQueue();
+            }
 
             if (!localPrimary) {
                 await this.pullOperationalCloudData();
@@ -2282,13 +2368,17 @@ export class DataService {
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
-                const gatewayOk = await this.persistJobsViaWebGateway([newEntity as Job]);
-                if (gatewayOk) {
-                    await this.bumpMirrorSyncPulse();
+                const saveMode = await this.persistWebJobsFromBrowser([newEntity as Job]);
+                if (saveMode) {
+                    if (saveMode === 'gateway') {
+                        await this.bumpMirrorSyncPulse();
+                    } else {
+                        toast.success('매장 PC에 저장 요청을 보냈습니다. 잠시 후 반영됩니다.');
+                    }
                     this.updateTenantActivity().catch(() => {});
                     return;
                 }
-                toast.error('매장 PC 게이트웨이에 연결되지 않아 저장하지 못했습니다. 같은 Wi‑Fi에서 매장 PC 앱이 켜져 있는지 확인해 주세요.');
+                toast.error('매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.');
                 throw new Error('web-gateway-job-add-failed');
             }
             try {
@@ -2357,15 +2447,17 @@ export class DataService {
             return;
         }
         if (col === 'jobs' && this.tenantId && this.isWebMirrorMode()) {
-            const gatewayOk = await this.persistJobsViaWebGateway([updated as Job]);
-            if (gatewayOk) {
-                if (!options?.skipPulse) {
+            const saveMode = await this.persistWebJobsFromBrowser([updated as Job]);
+            if (saveMode) {
+                if (!options?.skipPulse && saveMode === 'gateway') {
                     await this.bumpMirrorSyncPulse();
+                } else if (saveMode === 'relay') {
+                    toast.success('매장 PC에 저장 요청을 보냈습니다. 잠시 후 반영됩니다.');
                 }
                 this.updateTenantActivity().catch(() => {});
                 return;
             }
-            toast.error('매장 PC 게이트웨이에 연결되지 않아 저장하지 못했습니다. 같은 Wi‑Fi에서 매장 PC 앱이 켜져 있는지 확인해 주세요.');
+            toast.error('매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.');
             throw new Error('web-gateway-job-save-failed');
         }
         if (this.tenantId) {
@@ -2615,9 +2707,13 @@ export class DataService {
         this.notify();
 
         if (this.isWebMirrorMode()) {
-            const gatewayOk = await this.persistJobsViaWebGateway(updates.map((u) => u.updated));
-            if (gatewayOk) {
-                await this.bumpMirrorSyncPulse();
+            const saveMode = await this.persistWebJobsFromBrowser(updates.map((u) => u.updated));
+            if (saveMode) {
+                if (saveMode === 'gateway') {
+                    await this.bumpMirrorSyncPulse();
+                } else {
+                    toast.success('매장 PC에 저장 요청을 보냈습니다. 잠시 후 반영됩니다.');
+                }
                 await Promise.all(
                     updates.map(async ({ updated }) => {
                         try {
@@ -2629,7 +2725,7 @@ export class DataService {
                 );
                 return;
             }
-            toast.error('매장 PC 게이트웨이에 연결되지 않아 칸반 이동을 저장하지 못했습니다.');
+            toast.error('매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.');
             throw new Error('web-gateway-batch-save-failed');
         }
 
