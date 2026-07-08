@@ -36,3 +36,44 @@ export async function getLocalGatewayInfo(): Promise<LocalGatewayInfo | null> {
         return null;
     }
 }
+
+function normalizeGatewayBase(url: string | null | undefined): string | null {
+    const base = url?.trim().replace(/\/$/, '');
+    return base || null;
+}
+
+/** 웹·태블릿 — 매장 PC LAN 게이트웨이 연결 확인 */
+export async function isStoreGatewayReachable(gatewayBaseUrl: string | null | undefined): Promise<boolean> {
+    const base = normalizeGatewayBase(gatewayBaseUrl);
+    if (!base) return false;
+    try {
+        const res = await fetch(`${base}/health`, { cache: 'no-store' });
+        return res.ok;
+    } catch {
+        return false;
+    }
+}
+
+/** 웹·태블릿 — NAS jobs-archive에 작업 반영 (사내 Wi‑Fi) */
+export async function postJobsPartialViaGateway(
+    gatewayBaseUrl: string,
+    tenantId: string,
+    jobs: unknown[]
+): Promise<{ ok: boolean; updatedAt?: string }> {
+    const base = normalizeGatewayBase(gatewayBaseUrl);
+    if (!base || !tenantId || jobs.length === 0) return { ok: false };
+    try {
+        const res = await fetch(`${base}/api/v1/jobs/partial`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tenantId, jobs }),
+            cache: 'no-store',
+        });
+        if (!res.ok) return { ok: false };
+        const data = (await res.json()) as { updatedAt?: string };
+        return { ok: true, updatedAt: data.updatedAt };
+    } catch (error) {
+        console.warn('[WebGateway] jobs partial post failed:', error);
+        return { ok: false };
+    }
+}

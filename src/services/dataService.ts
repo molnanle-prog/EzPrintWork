@@ -14,7 +14,8 @@ import { db as firestore, auth, storage } from './firebase';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
 import { localDbBridge } from './localDbBridge';
-import { refreshLocalGateway } from './gatewayBridge';
+import { refreshLocalGateway, postJobsPartialViaGateway, isStoreGatewayReachable } from './gatewayBridge';
+import type { SituationMirrorPayload } from './situationMirrorService';
 import {
     applyArchiveRootFromSettings,
     clearCompanyArchiveRootOverride,
@@ -519,6 +520,7 @@ export class DataService {
     private cloudDegraded = false;
     private localOperationalReady = false;
     private lastNasMirrorAt: string | null = null;
+    private webMirrorReady = false;
     private lastNasArchiveAt: string | null = null;
     private nasPollTimer: ReturnType<typeof setInterval> | null = null;
     private archivedJobs: Job[] = [];
@@ -532,6 +534,11 @@ export class DataService {
     /** Electron — 업무 DB는 SQLite, Firestore는 회원·직원만 */
     isLocalPrimaryMode(): boolean {
         return this.getIsElectron() && localDbBridge.isAvailable();
+    }
+
+    /** 브라우저(웹·태블릿·PC 웹) — jobs는 NAS 미러(게이트웨이/Storage)만, Firestore jobs 미사용 */
+    isWebMirrorMode(): boolean {
+        return !this.getIsElectron();
     }
 
     setSyncUserRole(role: 'admin' | 'staff' | 'superadmin' | null) {
@@ -553,6 +560,72 @@ export class DataService {
             void this.refreshStoreGateway();
         }
         return applied;
+    }
+
+    /** Firestore settings.main.storeGatewayUrl — 웹·태블릿 NAS/LAN 조회 */
+    getStoreGatewayUrl(): string | null {
+        const url = this.getSettingsObj()?.storeGatewayUrl;
+        return typeof url === 'string' && url.trim() ? url.trim() : null;
+    }
+
+    hasWebMirrorData() {
+        return this.webMirrorReady;
+    }
+
+    private async fetchWebMirrorPayload(): Promise<SituationMirrorPayload | null> {
+        if (!this.tenantId || this.getIsElectron()) return null;
+        return situationMirrorService.readRemoteMirror(this.tenantId, this.getStoreGatewayUrl());
+    }
+
+    private applyMirrorPayload(situation: SituationMirrorPayload): boolean {
+        let applied = false;
+        if (situation.jobs?.length) {
+            const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), situation.jobs);
+            this.applyImportedJobs(merged);
+            applied = true;
+        }
+        if (Array.isArray(situation.clients) && situation.clients.length > 0) {
+            this.data['clients'] = situation.clients as Client[];
+            applied = true;
+        }
+        if (situation.settings && typeof situation.settings === 'object') {
+            this.data['settings'] = [situation.settings as Record<string, unknown>];
+            this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
+            applied = true;
+        }
+        if (situation.updatedAt) {
+            this.lastNasMirrorAt = situation.updatedAt;
+            this.lastNasArchiveAt = situation.updatedAt;
+        }
+        if (applied) this.notify();
+        return applied;
+    }
+
+    private async tryHydrateFromWebMirror(): Promise<boolean> {
+        if (!this.tenantId || this.getIsElectron()) return false;
+        try {
+            const situation = await this.fetchWebMirrorPayload();
+            if (!situation) return false;
+            const ok = this.applyMirrorPayload(situation);
+            if (ok) this.webMirrorReady = true;
+            return ok;
+        } catch {
+            return false;
+        }
+    }
+
+    private async persistJobsViaWebGateway(jobs: Job[]): Promise<boolean> {
+        if (!this.tenantId || this.getIsElectron() || jobs.length === 0) return false;
+        const gateway = this.getStoreGatewayUrl();
+        if (!gateway) return false;
+        const reachable = await isStoreGatewayReachable(gateway);
+        if (!reachable) return false;
+        const result = await postJobsPartialViaGateway(gateway, this.tenantId, jobs);
+        if (result.ok && result.updatedAt) {
+            this.lastNasMirrorAt = result.updatedAt;
+            this.lastNasArchiveAt = result.updatedAt;
+        }
+        return result.ok;
     }
 
     private isSyncAdmin(): boolean {
@@ -620,6 +693,7 @@ export class DataService {
         this.lastAppliedSettingsAt = null;
         this.cloudDegraded = false;
         this.localOperationalReady = false;
+        this.webMirrorReady = false;
         this.lastNasMirrorAt = null;
         this.lastNasArchiveAt = null;
         clearCompanyArchiveRootOverride();
@@ -1116,36 +1190,19 @@ export class DataService {
 
     private async tryHydrateFromMirrors(): Promise<boolean> {
         if (!this.tenantId) return false;
+        if (!this.getIsElectron()) {
+            return this.tryHydrateFromWebMirror();
+        }
         try {
-            const situation = this.getIsElectron()
-                ? await situationMirrorService.readFromNas(this.tenantId)
-                : await situationMirrorService.readFromStorage(this.tenantId);
-            if (situation) {
-                if (situation.jobs?.length) {
-                    this.applyImportedJobs(situation.jobs);
-                }
-                if (Array.isArray(situation.clients) && situation.clients.length > 0) {
-                    this.data['clients'] = situation.clients as Client[];
-                }
-                if (situation.settings && typeof situation.settings === 'object') {
-                    this.data['settings'] = [situation.settings as Record<string, unknown>];
-                    this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
-                }
-                if (situation.updatedAt) {
-                    this.lastNasMirrorAt = situation.updatedAt;
-                }
-                if (situation.jobs?.length || (situation.clients?.length || 0) > 0 || !!situation.settings) {
-                    this.notify();
-                    return true;
-                }
+            const situation = await situationMirrorService.readFromNas(this.tenantId);
+            if (situation && this.applyMirrorPayload(situation)) {
+                return true;
             }
         } catch {
             // ignore
         }
         try {
-            const archived = this.getIsElectron()
-                ? (await jobArchiveService.readNasArchiveSnapshot(this.tenantId))?.jobs || []
-                : await jobArchiveService.readArchivedJobs(this.tenantId);
+            const archived = (await jobArchiveService.readNasArchiveSnapshot(this.tenantId))?.jobs || [];
             if (archived.length > 0) {
                 this.applyImportedJobs(archived);
                 this.notify();
@@ -1162,8 +1219,17 @@ export class DataService {
         await Promise.all([
             this.pullCollectionDocs('clients'),
             this.pullCollectionDocs('settings'),
-            this.pullJobsHot(),
         ]);
+
+        if (this.isLocalPrimaryMode()) {
+            await this.pullJobsHot();
+            return;
+        }
+
+        const fromMirror = await this.tryHydrateFromWebMirror();
+        if (!fromMirror) {
+            console.warn('[DataService] web NAS mirror hydrate failed — Firestore jobs skipped');
+        }
     }
 
     private startNasMirrorPolling() {
@@ -1275,14 +1341,18 @@ export class DataService {
 
             const situation = this.getIsElectron()
                 ? await situationMirrorService.readFromNas(this.tenantId)
-                : await situationMirrorService.readFromStorage(this.tenantId);
+                : await this.fetchWebMirrorPayload();
 
             if (situation?.updatedAt && situation.updatedAt !== this.lastNasMirrorAt) {
                 this.lastNasMirrorAt = situation.updatedAt;
 
+                const useFullMerge =
+                    !!archiveSnap?.jobs?.length ||
+                    (!this.getIsElectron() && (situation.jobs?.length || 0) > 0);
+
                 if (!archiveSnap?.updatedAt || archiveSnap.updatedAt !== situation.updatedAt) {
                     if (situation.jobs?.length) {
-                        if (archiveSnap?.jobs?.length) {
+                        if (useFullMerge) {
                             const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), situation.jobs);
                             this.applyImportedJobs(merged);
                         } else {
@@ -1298,6 +1368,10 @@ export class DataService {
                 ) {
                     this.applySituationMirrorMeta(situation);
                     changed = true;
+                }
+
+                if (changed && !this.getIsElectron()) {
+                    this.webMirrorReady = true;
                 }
             }
 
@@ -1561,7 +1635,7 @@ export class DataService {
                     const before = this.lastNasMirrorAt;
                     await this.pollNasOperationalSync();
                     const mirrorApplied = before !== this.lastNasMirrorAt;
-                    if (!mirrorApplied && !this.isLocalPrimaryMode()) {
+                    if (!mirrorApplied && !this.isLocalPrimaryMode() && !this.isWebMirrorMode()) {
                         if (jobRev.op === 'delete') {
                             this.removeJobFromLocalCache(jobRev.id);
                             this.notify();
@@ -1580,7 +1654,7 @@ export class DataService {
                     const before = this.lastNasMirrorAt;
                     await this.pollNasOperationalSync();
                     const mirrorApplied = before !== this.lastNasMirrorAt;
-                    if (!mirrorApplied && !this.isLocalPrimaryMode()) {
+                    if (!mirrorApplied && !this.isLocalPrimaryMode() && !this.isWebMirrorMode()) {
                         for (const id of jobBatchRev.ids) {
                             await this.applyRemoteJobDoc(id);
                         }
@@ -1646,7 +1720,7 @@ export class DataService {
 
     private async pullPaymentJobs() {
         if (!this.tenantId) return;
-        if (this.isLocalPrimaryMode()) {
+        if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
             const hotCutoff = this.getHotWindowCutoffDate();
             const outstanding = this.getAllJobs().filter((job) =>
                 OUTSTANDING_PAYMENT_STATUSES.includes(
@@ -1846,7 +1920,7 @@ export class DataService {
         const key = clientName.trim();
         if (this.clientHistoryLoaded.has(key)) return;
 
-        if (this.isLocalPrimaryMode()) {
+        if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
             this.clientHistoryLoaded.add(key);
             return;
         }
@@ -1890,6 +1964,7 @@ export class DataService {
         this.stopPaymentJobsSync();
         this.cloudDegraded = false;
         this.localOperationalReady = false;
+        this.webMirrorReady = false;
         this.lastSyncError = null;
         this.syncStatus = 'connecting';
         this.operationalJobs = [];
@@ -1941,6 +2016,21 @@ export class DataService {
             }
 
             this.startNasMirrorPolling();
+
+            if (!localPrimary && !this.webMirrorReady && this.getAllJobs().length === 0) {
+                const gateway = this.getStoreGatewayUrl();
+                if (!gateway) {
+                    toast.warning(
+                        '웹/태블릿은 매장 PC NAS 연동이 필요합니다. 관리자 PC에서 NAS 경로 저장 후, 같은 Wi‑Fi에서 접속해 주세요.',
+                        { duration: 8000 }
+                    );
+                } else {
+                    toast.warning(
+                        '매장 PC 게이트웨이에 연결되지 않았습니다. 같은 사내망(Wi‑Fi)인지 확인해 주세요.',
+                        { duration: 8000 }
+                    );
+                }
+            }
 
             this.isReady = true;
             this.syncStatus = 'synced';
@@ -2191,6 +2281,16 @@ export class DataService {
                 this.updateTenantActivity().catch(() => {});
                 return;
             }
+            if (col === 'jobs' && this.isWebMirrorMode()) {
+                const gatewayOk = await this.persistJobsViaWebGateway([newEntity as Job]);
+                if (gatewayOk) {
+                    await this.bumpMirrorSyncPulse();
+                    this.updateTenantActivity().catch(() => {});
+                    return;
+                }
+                toast.error('매장 PC 게이트웨이에 연결되지 않아 저장하지 못했습니다. 같은 Wi‑Fi에서 매장 PC 앱이 켜져 있는지 확인해 주세요.');
+                throw new Error('web-gateway-job-add-failed');
+            }
             try {
                 if (col === 'messages' && !newEntity.senderId && auth.currentUser) {
                     newEntity.senderId = auth.currentUser.uid;
@@ -2255,6 +2355,18 @@ export class DataService {
             this.scheduleLiveMirrorPush();
             this.updateTenantActivity().catch(() => {});
             return;
+        }
+        if (col === 'jobs' && this.tenantId && this.isWebMirrorMode()) {
+            const gatewayOk = await this.persistJobsViaWebGateway([updated as Job]);
+            if (gatewayOk) {
+                if (!options?.skipPulse) {
+                    await this.bumpMirrorSyncPulse();
+                }
+                this.updateTenantActivity().catch(() => {});
+                return;
+            }
+            toast.error('매장 PC 게이트웨이에 연결되지 않아 저장하지 못했습니다. 같은 Wi‑Fi에서 매장 PC 앱이 켜져 있는지 확인해 주세요.');
+            throw new Error('web-gateway-job-save-failed');
         }
         if (this.tenantId) {
             try {
@@ -2501,6 +2613,25 @@ export class DataService {
         if (updates.length === 0) return;
 
         this.notify();
+
+        if (this.isWebMirrorMode()) {
+            const gatewayOk = await this.persistJobsViaWebGateway(updates.map((u) => u.updated));
+            if (gatewayOk) {
+                await this.bumpMirrorSyncPulse();
+                await Promise.all(
+                    updates.map(async ({ updated }) => {
+                        try {
+                            await this.syncQuoteFromJob(updated);
+                        } catch (e) {
+                            console.error('[saveJobsPartial] quote sync failed (gateway jobs saved):', e);
+                        }
+                    })
+                );
+                return;
+            }
+            toast.error('매장 PC 게이트웨이에 연결되지 않아 칸반 이동을 저장하지 못했습니다.');
+            throw new Error('web-gateway-batch-save-failed');
+        }
 
         await Promise.all(
             updates.map(({ id, updated }) =>

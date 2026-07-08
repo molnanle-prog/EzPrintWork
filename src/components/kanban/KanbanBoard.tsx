@@ -14,14 +14,16 @@ import { resolveClientSmsNumber } from '../../utils/clientSms';
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
   TouchSensor,
+  KeyboardSensor,
   useSensor,
   useSensors,
   DragStartEvent,
   DragEndEvent,
   MeasuringStrategy,
 } from '@dnd-kit/core';
+import { isTouchPrimaryDevice } from '../../utils/touchDevice';
 import { kanbanCollisionDetection, resolveKanbanDropTarget, computeKanbanInsertIndex, getDragPointerY } from './kanbanCollisionDetection';
 import {
   isJobAssignedToUser,
@@ -71,21 +73,26 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [activeDragJobId, setActiveDragJobId] = useState<string | null>(null);
   const justDraggedRef = useRef(false);
 
+  const touchPrimary = useMemo(() => isTouchPrimaryDevice(), []);
+
   const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 5 } })
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: touchPrimary ? 320 : 250, tolerance: 8 },
+    }),
+    useSensor(KeyboardSensor)
   );
 
   useEffect(() => {
     const hintKey = 'ezprint_kanban_touch_hint';
-    if (!localStorage.getItem(hintKey) && 'ontouchstart' in window) {
+    if (!localStorage.getItem(hintKey) && touchPrimary) {
       toast.info(
-        '카드를 0.25초 길게 누른 뒤 끌어서 옆 단계로 이동할 수 있습니다. 짧게 탭하면 상세 정보가 열립니다.',
-        { duration: 6000 }
+        '카드를 길게 누른 뒤 끌어서 옆 단계로 이동할 수 있습니다. 짧게 탭하면 상세 보기가 열립니다.',
+        { duration: 7000 }
       );
       localStorage.setItem(hintKey, '1');
     }
-  }, []);
+  }, [touchPrimary]);
 
   // Optimized Data Loading
   const loadBoardData = () => {
@@ -327,7 +334,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     justDraggedRef.current = true;
     setTimeout(() => {
       justDraggedRef.current = false;
-    }, 300);
+    }, touchPrimary ? 450 : 300);
 
     const { active, over } = event;
     if (!over) return;
@@ -795,7 +802,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
-      <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0">
+      <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0 touch-pan-x">
         <div className="flex gap-1.5 h-full py-1.5 px-0 w-full min-w-0">
           {kanbanSlots.map((slot) => {
             if (slot.type === 'single') {

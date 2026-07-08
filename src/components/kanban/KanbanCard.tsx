@@ -23,6 +23,7 @@ import {
   formatDDayLabel,
   getDDayBadgeClasses,
 } from '../../utils/jobUrgencyStyles';
+import { useKanbanCardInteraction } from './useKanbanCardInteraction';
 
 interface KanbanCardProps {
   job: Job;
@@ -69,27 +70,26 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     isDragging,
   } = useSortable({ id: job.id, disabled: isDragOverlay });
 
+  const {
+    touchPrimary,
+    sortableTouchAction,
+    handleCardClick,
+    handleCardContextMenu,
+    handleOpenDetail,
+    stopDragPropagation,
+    cardSurfaceClass,
+  } = useKanbanCardInteraction({ job, isDragOverlay, onSelect, onRightClick });
+
   const sortableStyle: React.CSSProperties = isDragOverlay
     ? {}
     : {
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.35 : 1,
-        touchAction: 'manipulation',
+        touchAction: sortableTouchAction,
       };
 
   const sortableProps = isDragOverlay ? {} : { ...attributes, ...listeners };
-
-  const handleCardClick = () => {
-    if (isDragOverlay) return;
-    onSelect(job);
-  };
-
-  const handleCardContextMenu = (e: React.MouseEvent) => {
-    if (isDragOverlay) return;
-    e.preventDefault();
-    onRightClick ? onRightClick(job) : onSelect(job);
-  };
 
   // Calculate Days Remaining
   const now = new Date();
@@ -362,7 +362,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         {...sortableProps}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
-        className={`kanban-card kanban-tray-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-all cursor-grab active:cursor-grabbing group ${
+        className={`kanban-card kanban-tray-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-all cursor-grab active:cursor-grabbing group ${cardSurfaceClass} ${
           isHovered ? 'z-30 shadow-lg ring-2 ring-indigo-400/80' : 'z-0 shadow-sm'
         } ${
           theme === 'trello'
@@ -390,6 +390,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
             <div className="flex items-center justify-end gap-0.5 pt-0.5">
               <button
                 type="button"
+                onPointerDown={stopDragPropagation}
                 onClick={(e) => {
                   e.stopPropagation();
                   onStatusChange(job, 'prev');
@@ -401,6 +402,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
               </button>
               <button
                 type="button"
+                onPointerDown={stopDragPropagation}
                 onClick={(e) => {
                   e.stopPropagation();
                   onStatusChange(job, 'next');
@@ -430,7 +432,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group ${
+        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group ${cardSurfaceClass} ${
           theme === 'trello'
             ? 'bg-[#24364e] border-[#384c66] hover:border-indigo-400'
             : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500'
@@ -455,6 +457,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         </span>
         <button
           type="button"
+          onPointerDown={stopDragPropagation}
           onClick={(e) => {
             e.stopPropagation();
             onStatusChange(job, 'prev');
@@ -466,6 +469,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         </button>
         <button
           type="button"
+          onPointerDown={stopDragPropagation}
           onClick={(e) => {
             e.stopPropagation();
             onStatusChange(job, 'next');
@@ -489,7 +493,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`kanban-card bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group`}
+        className={`kanban-card bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group ${cardSurfaceClass}`}
         onClick={handleCardClick}
         onContextMenu={handleCardContextMenu}
       >
@@ -513,12 +517,24 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
            </span>
            <div className="w-px h-3 bg-slate-200 dark:bg-slate-700"></div>
            <button 
+             onPointerDown={stopDragPropagation}
              onClick={(e) => { e.stopPropagation(); onStatusChange(job, 'prev'); }}
              className="text-slate-300 dark:text-slate-600 hover:text-red-500 dark:hover:text-red-400 transition-colors p-0.5"
              title="이전 단계로 돌리기"
            >
              <ArrowLeft size={15} />
            </button>
+           {touchPrimary && (
+             <button
+               type="button"
+               onPointerDown={stopDragPropagation}
+               onClick={handleOpenDetail}
+               className="text-slate-400 hover:text-indigo-500 p-0.5"
+               title="상세 보기"
+             >
+               <MoreVertical size={15} />
+             </button>
+           )}
          </div>
       </div>
     );
@@ -547,7 +563,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         style={sortableStyle}
         {...sortableProps}
         className={`
-          kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium
+          kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
           ${cardStyleClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
         `}
@@ -698,7 +714,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={`
-        kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 cursor-grab active:cursor-grabbing group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium
+        kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 cursor-grab active:cursor-grabbing group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
         ${cardStyleClass}
         active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50
       `}
@@ -760,6 +776,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
            {subJobsList.map((sub, idx) => (
              <span
                key={sub.id || idx}
+               onPointerDown={stopDragPropagation}
                onClick={(e) => handleToggleSubJob(e, idx)}
                className={`
                  kanban-badge text-[10px] px-2 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
@@ -775,9 +792,18 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         
         {/* Grip Icon & More menu */}
         <div className="flex gap-1 kanban-card-icon-muted text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
-          <GripHorizontal size={16} className="cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100 transition-opacity hover:text-slate-500" />
-          <button className="hover:text-slate-600 dark:hover:text-slate-400 transition-colors p-0.5 flex items-center justify-center" title="추가 메뉴">
-            <MoreVertical size={16} />
+          <GripHorizontal
+            size={16}
+            className={`cursor-grab active:cursor-grabbing hover:text-slate-500 ${touchPrimary ? 'opacity-50' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
+          />
+          <button
+            type="button"
+            onPointerDown={stopDragPropagation}
+            onClick={handleOpenDetail}
+            className={`hover:text-slate-600 dark:hover:text-slate-400 transition-colors p-1 flex items-center justify-center rounded-md ${touchPrimary ? 'text-slate-500 bg-slate-100/80 dark:bg-slate-800' : ''}`}
+            title={touchPrimary ? '상세 보기' : '상세 보기 (우클릭과 동일)'}
+          >
+            <MoreVertical size={touchPrimary ? 18 : 16} />
           </button>
         </div>
       </div>
