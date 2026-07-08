@@ -388,7 +388,9 @@ export interface IElectronAPI {
   localDbSaveClients?: (tenantId: string, clients: unknown[]) => Promise<{ success: boolean }>;
   localDbUpsertClient?: (tenantId: string, client: unknown) => Promise<{ success: boolean }>;
   localDbDeleteClient?: (tenantId: string, clientId: string) => Promise<{ success: boolean }>;
-  localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
+    localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
+  gatewaySetConfig?: (config: { archiveRoot: string | null; tenantId: string | null }) => Promise<{ ok: boolean }>;
+  gatewayGetInfo?: () => Promise<{ port: number; baseUrl: string; lanUrls: string[] }>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;

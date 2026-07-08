@@ -4,6 +4,9 @@ const path = require('path');
 const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
 const localDb = require('./localDb');
+const { LocalGateway } = require('./localGateway');
+
+const localGateway = new LocalGateway();
 
 // 프로토콜 등록 (ezpw://)
 if (process.defaultApp) {
@@ -95,10 +98,15 @@ if (!gotTheLock) {
     app.whenReady().then(() => {
         const win = createWindow();
         setupAutoUpdater(win);
+        void localGateway.start();
         // 앱이 프로토콜 호출로 처음 켜졌을 때 처리
         handleProtocolUrl(process.argv);
     });
 }
+
+app.on('before-quit', () => {
+    localGateway.stop();
+});
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
@@ -273,6 +281,17 @@ ipcMain.handle('get-user-data-path', async () => {
         console.error('userData 경로 획득 중 오류:', e);
         return null;
     }
+});
+
+ipcMain.handle('gateway-set-config', async (_event, config) => {
+    localGateway.setConfig(config || {});
+    await localGateway.start();
+    return { ok: true };
+});
+
+ipcMain.handle('gateway-get-info', async () => {
+    await localGateway.start();
+    return localGateway.getInfo();
 });
 
 // 7. 문서 폴더 경로 가져오기 (백업용)

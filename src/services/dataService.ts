@@ -14,6 +14,16 @@ import { db as firestore, auth, storage } from './firebase';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
 import { localDbBridge } from './localDbBridge';
+import { refreshLocalGateway } from './gatewayBridge';
+import {
+    applyArchiveRootFromSettings,
+    clearCompanyArchiveRootOverride,
+    getArchiveRootPath,
+    getTenantArchiveRootFromSettings,
+    setArchiveRootPath,
+    setCompanyArchiveRootOverride,
+    TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
+} from '../utils/archiveStorage';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
 import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
 import { formatJobNumber } from '../utils/jobNumber';
@@ -509,6 +519,7 @@ export class DataService {
     private cloudDegraded = false;
     private localOperationalReady = false;
     private lastNasMirrorAt: string | null = null;
+    private lastNasArchiveAt: string | null = null;
     private nasPollTimer: ReturnType<typeof setInterval> | null = null;
     private archivedJobs: Job[] = [];
     private archiveLoaded = false;
@@ -529,6 +540,19 @@ export class DataService {
 
     getTenantId(): string | null {
         return this.tenantId;
+    }
+
+    /** Firestore에 저장된 회사 공통 NAS 경로 (관리자 설정 → 전 PC 강제) */
+    getTenantArchiveRootPath(): string | null {
+        return getTenantArchiveRootFromSettings(this.getSettingsObj());
+    }
+
+    private enforceCompanyArchiveRoot(): boolean {
+        const applied = applyArchiveRootFromSettings(this.getSettingsObj());
+        if (applied) {
+            void this.refreshStoreGateway();
+        }
+        return applied;
     }
 
     private isSyncAdmin(): boolean {
@@ -597,6 +621,8 @@ export class DataService {
         this.cloudDegraded = false;
         this.localOperationalReady = false;
         this.lastNasMirrorAt = null;
+        this.lastNasArchiveAt = null;
+        clearCompanyArchiveRootOverride();
         this.stopNasMirrorPolling();
         this.archivedJobs = [];
         this.archiveLoaded = false;
@@ -1005,6 +1031,8 @@ export class DataService {
         const settings = this.getSettingsObj();
         let published = false;
 
+        let mirrorUpdatedAt: string | null = null;
+
         try {
             published = (await jobArchiveService.syncLiveJobsMirror(tenantId, jobs)) || published;
         } catch (e) {
@@ -1021,14 +1049,25 @@ export class DataService {
                 statusDefinitions: this.getStatusDefinitions(),
                 staff,
             });
+            mirrorUpdatedAt = payload.updatedAt;
             published = (await situationMirrorService.publish(tenantId, payload)) || published;
         } catch (e) {
             console.warn('[DataService] situation mirror failed:', e);
         }
 
-        if (published) {
+        if (published && mirrorUpdatedAt) {
+            this.lastNasMirrorAt = mirrorUpdatedAt;
+            this.lastNasArchiveAt = mirrorUpdatedAt;
             await this.bumpMirrorSyncPulse();
         }
+
+        void this.refreshStoreGateway();
+    }
+
+    private async refreshStoreGateway() {
+        if (!this.getIsElectron() || !this.tenantId) return;
+        const root = getArchiveRootPath();
+        await refreshLocalGateway(root, this.tenantId);
     }
 
     private stopNasMirrorPolling() {
@@ -1078,7 +1117,9 @@ export class DataService {
     private async tryHydrateFromMirrors(): Promise<boolean> {
         if (!this.tenantId) return false;
         try {
-            const situation = await situationMirrorService.read(this.tenantId, true);
+            const situation = this.getIsElectron()
+                ? await situationMirrorService.readFromNas(this.tenantId)
+                : await situationMirrorService.readFromStorage(this.tenantId);
             if (situation) {
                 if (situation.jobs?.length) {
                     this.applyImportedJobs(situation.jobs);
@@ -1090,6 +1131,9 @@ export class DataService {
                     this.data['settings'] = [situation.settings as Record<string, unknown>];
                     this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
                 }
+                if (situation.updatedAt) {
+                    this.lastNasMirrorAt = situation.updatedAt;
+                }
                 if (situation.jobs?.length || (situation.clients?.length || 0) > 0 || !!situation.settings) {
                     this.notify();
                     return true;
@@ -1099,7 +1143,9 @@ export class DataService {
             // ignore
         }
         try {
-            const archived = await jobArchiveService.readArchivedJobs(this.tenantId);
+            const archived = this.getIsElectron()
+                ? (await jobArchiveService.readNasArchiveSnapshot(this.tenantId))?.jobs || []
+                : await jobArchiveService.readArchivedJobs(this.tenantId);
             if (archived.length > 0) {
                 this.applyImportedJobs(archived);
                 this.notify();
@@ -1125,9 +1171,49 @@ export class DataService {
         this.stopNasMirrorPolling();
         const pollMs = this.getIsElectron() ? APP_MIRROR_POLL_MS : WEB_MIRROR_POLL_MS;
         this.nasPollTimer = window.setInterval(() => {
-            void this.pollNasSituationMirror();
+            void this.pollNasOperationalSync();
         }, pollMs);
-        void this.pollNasSituationMirror();
+        void this.pollNasOperationalSync();
+    }
+
+    private jobTimestampMs(job: Job): number {
+        const row = job as Job & { updatedAt?: string };
+        const raw = row.updatedAt || job.createdAt;
+        if (!raw) return 0;
+        const ms = new Date(raw).getTime();
+        return Number.isFinite(ms) ? ms : 0;
+    }
+
+    private mergeJobsByUpdatedAt(current: Job[], incoming: Job[]): Job[] {
+        const map = new Map<string, Job>();
+        for (const job of current) {
+            if (job?.id) map.set(job.id, job);
+        }
+        for (const job of incoming) {
+            if (!job?.id) continue;
+            const prev = map.get(job.id);
+            if (!prev) {
+                map.set(job.id, job);
+                continue;
+            }
+            const useIncoming = this.jobTimestampMs(job) >= this.jobTimestampMs(prev);
+            map.set(job.id, useIncoming ? { ...prev, ...job } : prev);
+        }
+        return Array.from(map.values());
+    }
+
+    private applySituationMirrorMeta(situation: {
+        clients?: Client[];
+        settings?: Record<string, unknown>;
+        updatedAt?: string;
+    }) {
+        if (Array.isArray(situation.clients) && situation.clients.length > 0) {
+            this.data['clients'] = situation.clients as Client[];
+        }
+        if (situation.settings && typeof situation.settings === 'object') {
+            this.data['settings'] = [situation.settings as Record<string, unknown>];
+            this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
+        }
     }
 
     private applySituationMirrorJobsPartial(jobs: Job[]) {
@@ -1166,17 +1252,65 @@ export class DataService {
         this.applyImportedJobs(next);
     }
 
-    private async pollNasSituationMirror() {
+    private async pollNasOperationalSync() {
         if (!this.tenantId || document.visibilityState !== 'visible') return;
         try {
-            const situation = await situationMirrorService.read(this.tenantId, true);
-            if (!situation?.updatedAt || situation.updatedAt === this.lastNasMirrorAt) return;
-            this.lastNasMirrorAt = situation.updatedAt;
-            if (!situation.jobs?.length) return;
-            this.applySituationMirrorJobsPartial(situation.jobs);
-            this.notify();
+            let changed = false;
+
+            const archiveSnap = this.getIsElectron()
+                ? await jobArchiveService.readNasArchiveSnapshot(this.tenantId)
+                : null;
+
+            if (
+                archiveSnap?.updatedAt &&
+                archiveSnap.updatedAt !== this.lastNasArchiveAt
+            ) {
+                this.lastNasArchiveAt = archiveSnap.updatedAt;
+                if (archiveSnap.jobs.length > 0) {
+                    const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), archiveSnap.jobs);
+                    this.applyImportedJobs(merged);
+                    changed = true;
+                }
+            }
+
+            const situation = this.getIsElectron()
+                ? await situationMirrorService.readFromNas(this.tenantId)
+                : await situationMirrorService.readFromStorage(this.tenantId);
+
+            if (situation?.updatedAt && situation.updatedAt !== this.lastNasMirrorAt) {
+                this.lastNasMirrorAt = situation.updatedAt;
+
+                if (!archiveSnap?.updatedAt || archiveSnap.updatedAt !== situation.updatedAt) {
+                    if (situation.jobs?.length) {
+                        if (archiveSnap?.jobs?.length) {
+                            const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), situation.jobs);
+                            this.applyImportedJobs(merged);
+                        } else {
+                            this.applySituationMirrorJobsPartial(situation.jobs);
+                        }
+                        changed = true;
+                    }
+                }
+
+                if (
+                    (situation.clients?.length || 0) > 0 ||
+                    (situation.settings && Object.keys(situation.settings).length > 0)
+                ) {
+                    this.applySituationMirrorMeta(situation);
+                    changed = true;
+                }
+            }
+
+            if (changed) {
+                if (this.isLocalPrimaryMode()) {
+                    await this.persistAllToLocalDb().catch((e) =>
+                        console.warn('[DataService] local db sync after NAS poll failed:', e)
+                    );
+                }
+                this.notify();
+            }
         } catch (e) {
-            console.warn('[DataService] NAS mirror poll skipped:', e);
+            console.warn('[DataService] NAS operational poll skipped:', e);
         }
     }
 
@@ -1417,7 +1551,7 @@ export class DataService {
         try {
             const mirrorAt = data.mirrorAt as string | undefined;
             if (mirrorAt && mirrorAt !== this.lastNasMirrorAt && !this.isLocalPulse('mirrorAt', mirrorAt)) {
-                await this.pollNasSituationMirror();
+                await this.pollNasOperationalSync();
             }
 
             const jobRev = data.jobRev as { id?: string; op?: string; at?: string } | undefined;
@@ -1425,7 +1559,7 @@ export class DataService {
                 if (!this.isLocalPulse('jobRev', jobRev.at)) {
                     this.lastAppliedJobRevAt = jobRev.at;
                     const before = this.lastNasMirrorAt;
-                    await this.pollNasSituationMirror();
+                    await this.pollNasOperationalSync();
                     const mirrorApplied = before !== this.lastNasMirrorAt;
                     if (!mirrorApplied && !this.isLocalPrimaryMode()) {
                         if (jobRev.op === 'delete') {
@@ -1444,7 +1578,7 @@ export class DataService {
                 if (!this.isLocalPulse('jobRev', jobBatchRev.at)) {
                     this.lastAppliedJobRevAt = jobBatchRev.at;
                     const before = this.lastNasMirrorAt;
-                    await this.pollNasSituationMirror();
+                    await this.pollNasOperationalSync();
                     const mirrorApplied = before !== this.lastNasMirrorAt;
                     if (!mirrorApplied && !this.isLocalPrimaryMode()) {
                         for (const id of jobBatchRev.ids) {
@@ -1585,6 +1719,9 @@ export class DataService {
             }
 
             const settingsObj = this.data['settings']?.[0];
+            if (settingsObj) {
+                this.enforceCompanyArchiveRoot();
+            }
             if (settingsObj && this.applySettingsDefaultsMerge(settingsObj)) {
                 this.persistSettingsDefaultsMerge(settingsObj).catch((err) =>
                     console.error('[DataService] Settings defaults merge failed:', err)
@@ -1763,18 +1900,22 @@ export class DataService {
 
         const localPrimary = this.isLocalPrimaryMode();
 
-        if (localPrimary) {
-            const loaded = await this.loadLocalPrimaryData();
-            if (loaded) {
-                this.localOperationalReady = true;
-                this.syncStatus = 'synced';
-                this.isReady = true;
-                this.notify();
-            }
-        }
-
         try {
             await this.pullCollectionDocs('staff');
+            await this.pullCollectionDocs('settings');
+            this.enforceCompanyArchiveRoot();
+
+            if (localPrimary) {
+                const loaded = await this.loadLocalPrimaryData();
+                if (loaded) {
+                    this.localOperationalReady = true;
+                    this.syncStatus = 'synced';
+                    this.isReady = true;
+                    this.notify();
+                    await this.pollNasOperationalSync();
+                }
+            }
+
             await this.pullJoinRequests();
             this.subscribeSyncPulse();
 
@@ -2650,6 +2791,66 @@ export class DataService {
 
     async saveQuoteTemplate(template: QuoteTemplateSettings) {
         await this.updateSetting('quoteTemplate', template);
+    }
+
+    /** 매장 NAS 경로 — Firestore settings에 저장해 모든 PC가 동일 경로 사용 */
+    async saveArchiveRootPath(archiveRootPath: string): Promise<void> {
+        const path = archiveRootPath?.trim();
+        if (!path) return;
+
+        setArchiveRootPath(path);
+        setCompanyArchiveRootOverride(path);
+        const settings = this.getSettingsObj();
+        settings[TENANT_ARCHIVE_ROOT_SETTINGS_KEY] = path;
+        this.data['settings'] = [settings];
+        this.notify();
+
+        if (this.tenantId && this.isLocalPrimaryMode()) {
+            await localDbBridge.saveSettings(this.tenantId, settings);
+        }
+
+        if (this.tenantId) {
+            try {
+                await setDoc(
+                    doc(firestore, 'tenants', this.tenantId, 'settings', 'main'),
+                    stripUndefinedForFirestore({ [TENANT_ARCHIVE_ROOT_SETTINGS_KEY]: path }),
+                    { merge: true }
+                );
+                await this.bumpSyncPulse({ settingsAt: new Date().toISOString() });
+            } catch (e) {
+                console.warn('[DataService] archive root path cloud save failed:', e);
+            }
+        }
+
+        void this.refreshStoreGateway();
+    }
+
+    /** 사내 웹/태블릿 — LAN 게이트웨이 URL (Storage 폴백 전 우선) */
+    async saveStoreGatewayUrl(storeGatewayUrl: string): Promise<void> {
+        const url = storeGatewayUrl?.trim();
+        if (!url) return;
+
+        const settings = this.getSettingsObj();
+        settings.storeGatewayUrl = url;
+        this.data['settings'] = [settings];
+        this.notify();
+
+        if (this.tenantId && this.isLocalPrimaryMode()) {
+            await localDbBridge.saveSettings(this.tenantId, settings);
+        }
+
+        if (this.tenantId) {
+            try {
+                await setDoc(
+                    doc(firestore, 'tenants', this.tenantId, 'settings', 'main'),
+                    stripUndefinedForFirestore({ storeGatewayUrl: url }),
+                    { merge: true }
+                );
+                await this.bumpSyncPulse({ settingsAt: new Date().toISOString() });
+            } catch (e) {
+                console.warn('[DataService] store gateway url save failed:', e);
+            }
+        }
     }
 
     async uploadQuoteHeaderImage(file: File): Promise<string> {

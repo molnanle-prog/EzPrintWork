@@ -35,4 +35,6 @@ contextBridge.exposeInMainWorld('electron', {
     localDbUpsertClient: (tenantId, client) => ipcRenderer.invoke('local-db-upsert-client', { tenantId, client }),
     localDbDeleteClient: (tenantId, clientId) => ipcRenderer.invoke('local-db-delete-client', { tenantId, clientId }),
     localDbSaveSettings: (tenantId, settings) => ipcRenderer.invoke('local-db-save-settings', { tenantId, settings }),
+    gatewaySetConfig: (config) => ipcRenderer.invoke('gateway-set-config', config),
+    gatewayGetInfo: () => ipcRenderer.invoke('gateway-get-info'),
 });

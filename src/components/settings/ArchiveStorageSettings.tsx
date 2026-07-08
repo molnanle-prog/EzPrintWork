@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from 'react';
 import {
     FolderOpen, HardDrive, Network, CheckCircle2, AlertTriangle,
-    RefreshCw, ExternalLink, Shield, Info
+    RefreshCw, ExternalLink, Shield, Info, Lock
 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { jobArchiveService } from '../../services/jobArchiveService';
+import { getLocalGatewayInfo } from '../../services/gatewayBridge';
+import { useAuth } from '../../contexts/AuthContext';
 import {
     ARCHIVE_FILE_NAME,
     DEFAULT_ARCHIVE_FOLDER_NAME,
@@ -12,6 +14,7 @@ import {
     isNasOrNetworkPath,
     markArchiveSetupDone,
     setArchiveRootPath,
+    TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
 } from '../../utils/archiveStorage';
 
 interface ArchiveStorageSettingsProps {
@@ -23,16 +26,47 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
     compact = false,
     onConfigured,
 }) => {
+    const { canManageCompany } = useAuth();
     const isElectron = typeof window !== 'undefined' && !!window.electron;
     const [documentsPath, setDocumentsPath] = useState<string | null>(null);
-    const [selectedPath, setSelectedPath] = useState<string | null>(getArchiveRootPath());
     const [defaultPathLabel, setDefaultPathLabel] = useState<string>('');
     const [statusMessage, setStatusMessage] = useState<string | null>(null);
     const [statusType, setStatusType] = useState<'info' | 'success' | 'error'>('info');
     const [testing, setTesting] = useState(false);
     const [showNasGuide, setShowNasGuide] = useState(false);
-
+    const [gatewayLanUrls, setGatewayLanUrls] = useState<string[]>([]);
     const tenantId = db.getTenantId();
+
+    const companyPath = db.getTenantArchiveRootPath();
+    const companyPathLocked = !!companyPath;
+    const [selectedPath, setSelectedPath] = useState<string | null>(
+        companyPath || getArchiveRootPath()
+    );
+
+    const refreshGatewayInfo = async () => {
+        if (!isElectron) return;
+        const info = await getLocalGatewayInfo();
+        setGatewayLanUrls(info?.lanUrls || []);
+    };
+
+    useEffect(() => {
+        void refreshGatewayInfo();
+    }, [isElectron, selectedPath, companyPath]);
+
+    useEffect(() => {
+        const synced = db.getTenantArchiveRootPath();
+        if (synced) setSelectedPath(synced);
+    }, [companyPath]);
+
+    const persistArchivePath = async (path: string | null) => {
+        if (!path?.trim() || !tenantId || !canManageCompany) return;
+        await db.saveArchiveRootPath(path.trim());
+        await refreshGatewayInfo();
+        const lanUrl = (await getLocalGatewayInfo())?.lanUrls?.[0];
+        if (lanUrl) {
+            await db.saveStoreGatewayUrl(lanUrl);
+        }
+    };
 
     useEffect(() => {
         if (!isElectron) return;
@@ -55,7 +89,7 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
     };
 
     const handleSelectFolder = async () => {
-        if (!isElectron) return;
+        if (!isElectron || !canManageCompany) return;
         try {
             const picked = await window.electron.selectDirectory();
             if (!picked) return;
@@ -68,6 +102,7 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
     };
 
     const handleUseDefault = () => {
+        if (!canManageCompany || companyPathLocked) return;
         setSelectedPath(null);
         setArchiveRootPath(null, true);
         setShowNasGuide(false);
@@ -76,7 +111,7 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
     };
 
     const handleTestAndSave = async () => {
-        if (!isElectron || !tenantId) return;
+        if (!isElectron || !tenantId || !canManageCompany) return;
         setTesting(true);
         showStatus('폴더 읽기/쓰기 테스트 중…', 'info');
         try {
@@ -87,10 +122,12 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
             }
             markArchiveSetupDone();
             const flushed = await jobArchiveService.flushPendingQueue(tenantId);
+            const pathToSave = selectedPath || defaultPathLabel;
+            if (pathToSave) await persistArchivePath(pathToSave);
             showStatus(
                 flushed > 0
-                    ? `설정 완료 · 네트워크 대기 ${flushed}건을 보관 파일에 반영했습니다.`
-                    : '이력 보관 폴더 설정이 완료되었습니다.',
+                    ? `설정 완료 · 회사 공통 NAS 경로로 저장됨 (다른 PC 자동 적용) · 대기 ${flushed}건 반영`
+                    : '회사 공통 NAS 경로가 저장되었습니다. 다른 PC·직원은 자동으로 같은 경로를 사용합니다.',
                 'success'
             );
             onConfigured?.();
@@ -103,18 +140,53 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
 
     const handleOpenFolder = async () => {
         if (!isElectron) return;
-        const root = selectedPath || defaultPathLabel;
+        const root = companyPath || selectedPath || defaultPathLabel;
         if (!root) return;
         await window.electron.openPath(root);
     };
 
-    const displayPath = selectedPath || defaultPathLabel || '경로 확인 중…';
+    const displayPath = companyPath || selectedPath || defaultPathLabel || '경로 확인 중…';
 
     if (!isElectron) {
         return (
             <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 text-sm text-slate-600 dark:text-slate-300">
-                <p className="font-bold mb-1">업무 데이터 = Firestore (공통)</p>
-                <p>직원·관리자·PC·태블릿 모두 Firestore에서 같은 작업을 봅니다. 1년이 지난 과거 이력도 클라우드 공통 복사본으로 동일하게 조회됩니다. PC/NAS 폴더 설정은 관리자 PC 앱에서만 합니다 (회사 백업용).</p>
+                <p className="font-bold mb-1">업무 데이터 = NAS + Firestore (회사 공통)</p>
+                <p>매장 PC는 관리자가 설정한 NAS 경로를 사용합니다. 웹·태블릿은 LAN 게이트웨이 또는 Storage 미러로 조회합니다.</p>
+            </div>
+        );
+    }
+
+    if (!canManageCompany) {
+        return (
+            <div className={`space-y-4 ${compact ? '' : 'rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-900/40 p-5'}`}>
+                <div className="flex items-start gap-2">
+                    <Lock className="w-5 h-5 text-slate-500 mt-0.5 shrink-0" />
+                    <div>
+                        <h3 className="font-bold text-slate-800 dark:text-slate-200">회사 NAS 경로 (관리자 설정)</h3>
+                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
+                            NAS 경로는 <strong>관리자가 1회 설정</strong>하면 모든 PC·직원에게 자동 적용됩니다. 직원은 경로를 변경할 수 없습니다.
+                        </p>
+                    </div>
+                </div>
+                {companyPath ? (
+                    <>
+                        <div className="text-[11px] font-mono break-all text-slate-600 dark:text-slate-300 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-3">
+                            📂 {companyPath}
+                        </div>
+                        <button
+                            type="button"
+                            onClick={handleOpenFolder}
+                            className="text-sm font-bold py-2.5 rounded-xl border border-indigo-300 dark:border-indigo-800 text-indigo-800 dark:text-indigo-300 flex items-center justify-center gap-2 w-full sm:w-auto"
+                        >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                            폴더 열기
+                        </button>
+                    </>
+                ) : (
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 text-amber-900 text-sm p-3">
+                        관리자가 아직 NAS 경로를 설정하지 않았습니다. 관리자 PC에서 「연결 테스트 후 저장」을 완료해 주세요.
+                    </div>
+                )}
             </div>
         );
     }
@@ -125,11 +197,17 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                 <div>
                     <h3 className="font-bold text-indigo-900 dark:text-indigo-200 flex items-center gap-2">
                         <HardDrive className="w-5 h-5" />
-                        PC/NAS 이력 보관 폴더
+                        회사 NAS 경로 (전 PC 공통)
                     </h3>
                     <p className="text-xs text-slate-600 dark:text-slate-400 mt-2 leading-relaxed">
-                        <strong>조회 원본은 Firestore(1년) + 클라우드 공통 복사본</strong>입니다. 이 폴더는 1년 초과 이력의 <strong>회사 백업 사본</strong>만 저장합니다 ({ARCHIVE_FILE_NAME}). 관리자·직원 화면은 NAS 경로와 무관하게 동일합니다.
+                        <strong>관리자가 1회 설정</strong>하면 Firestore에 저장되고, <strong>모든 PC·직원 앱이 같은 NAS</strong>를 강제로 사용합니다 ({ARCHIVE_FILE_NAME}, situation-mirror.json). PC마다 경로가 달라질 수 없습니다.
                     </p>
+                </div>
+            )}
+
+            {companyPathLocked && (
+                <div className="rounded-lg border border-indigo-200 dark:border-indigo-800 bg-indigo-50/80 dark:bg-indigo-950/30 p-3 text-xs text-indigo-900 dark:text-indigo-200">
+                    현재 회사 공통 경로가 적용 중입니다. 변경 시 모든 PC에 즉시 반영됩니다.
                 </div>
             )}
 
@@ -150,24 +228,35 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                 📂 {displayPath}
             </div>
 
+            {gatewayLanUrls.length > 0 && (
+                <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/50 dark:bg-emerald-950/20 p-3 space-y-1">
+                    <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300">사내 웹/태블릿 접속 (LAN 게이트웨이)</p>
+                    {gatewayLanUrls.map((url) => (
+                        <p key={url} className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400 break-all">
+                            {url}/api/v1/mirror
+                        </p>
+                    ))}
+                </div>
+            )}
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <button
                     type="button"
                     onClick={handleSelectFolder}
-                    title="NAS 또는 로컬 폴더를 선택합니다. (아카이브 보관 사본 경로)"
                     className="text-sm font-bold py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white flex items-center justify-center gap-2"
                 >
                     <FolderOpen className="w-4 h-4" />
-                    폴더 선택 (PC/NAS)
+                    {companyPathLocked ? 'NAS 경로 변경' : 'NAS 폴더 선택'}
                 </button>
-                <button
-                    type="button"
-                    onClick={handleUseDefault}
-                    title="별도 경로 지정 없이 내 문서 기본 아카이브 폴더를 사용합니다."
-                    className="text-sm font-bold py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200"
-                >
-                    내 문서 기본값 사용
-                </button>
+                {!companyPathLocked && (
+                    <button
+                        type="button"
+                        onClick={handleUseDefault}
+                        className="text-sm font-bold py-2.5 rounded-xl border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200"
+                    >
+                        내 문서 기본값 (임시)
+                    </button>
+                )}
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -175,16 +264,14 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                     type="button"
                     onClick={handleTestAndSave}
                     disabled={testing}
-                    title="선택한 경로의 읽기/쓰기 가능 여부를 검사한 뒤 아카이브 경로로 확정합니다."
                     className="text-sm font-bold py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white flex items-center justify-center gap-2"
                 >
                     {testing ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Shield className="w-4 h-4" />}
-                    연결 테스트 후 저장
+                    연결 테스트 후 회사에 저장
                 </button>
                 <button
                     type="button"
                     onClick={handleOpenFolder}
-                    title="현재 설정된 아카이브 폴더를 탐색기에서 엽니다."
                     className="text-sm font-bold py-2.5 rounded-xl border border-indigo-300 dark:border-indigo-800 text-indigo-800 dark:text-indigo-300 flex items-center justify-center gap-2"
                 >
                     <ExternalLink className="w-3.5 h-3.5" />
@@ -195,7 +282,6 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
             <button
                 type="button"
                 onClick={() => setShowNasGuide((v) => !v)}
-                title="NAS/네트워크 공유 폴더 권한 및 불안정 네트워크 대응 가이드를 표시합니다."
                 className="text-xs font-bold text-indigo-700 dark:text-indigo-300 underline flex items-center gap-1"
             >
                 <Network className="w-3.5 h-3.5" />
@@ -209,20 +295,10 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                         NAS 또는 사내 공유 폴더 연결 방법
                     </p>
                     <ol className="list-decimal pl-4 space-y-2">
-                        <li>Windows 탐색기에서 NAS 공유 폴더를 먼저 연결합니다. (예: <code>\\NAS\ezprint</code> 또는 드라이브 문자 <code>Z:</code>)</li>
-                        <li>공유 폴더에 <strong>읽기+쓰기</strong> 권한이 있는 계정으로 PC에 로그인합니다.</li>
-                        <li>위 「폴더 선택」에서 연결된 NAS 경로를 직접 선택합니다.</li>
-                        <li>「연결 테스트 후 저장」으로 쓰기 테스트를 반드시 확인합니다.</li>
+                        <li>Windows 탐색기에서 NAS 공유 폴더를 먼저 연결합니다. (예: <code>\\NAS\ezprint</code> 또는 드라이브 <code>Z:</code>)</li>
+                        <li>「NAS 폴더 선택」→ 「연결 테스트 후 회사에 저장」 — <strong>한 번만</strong> 하면 됩니다.</li>
+                        <li>다른 PC·직원은 로그인만 하면 <strong>같은 경로가 자동 적용</strong>됩니다 ({TENANT_ARCHIVE_ROOT_SETTINGS_KEY}).</li>
                     </ol>
-                    <p className="font-bold text-slate-800 dark:text-slate-200">네트워크가 불안정할 때</p>
-                    <ul className="list-disc pl-4 space-y-1">
-                        <li>저장 실패 시 앱이 자동으로 <strong>로컬 임시 보관</strong>에 먼저 저장합니다.</li>
-                        <li>네트워크가 복구되면 다음 로그인 때 <strong>자동으로 NAS에 다시 반영</strong>합니다.</li>
-                        <li>태블릿·웹에서는 클라우드 읽기 복사본으로 과거 작업을 계속 조회할 수 있습니다.</li>
-                    </ul>
-                    <p className="text-[10px] text-slate-500">
-                        Synology/QNAP: 제어판 → 공유 폴더 → 권한에서 EzPrintWork 전용 폴더를 만들고 SMB 활성화를 권장합니다.
-                    </p>
                 </div>
             )}
         </div>

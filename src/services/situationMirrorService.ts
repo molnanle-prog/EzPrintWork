@@ -6,6 +6,8 @@ import {
     ARCHIVE_USE_DEFAULT_KEY,
     DEFAULT_ARCHIVE_FOLDER_NAME,
     getArchiveRootPath,
+    getEffectiveArchiveRootPath,
+    hasCompanyArchiveRootConfigured,
 } from '../utils/archiveStorage';
 
 const MIRROR_VERSION = 1;
@@ -54,10 +56,17 @@ export class SituationMirrorService {
 
     async resolveMirrorRoot(): Promise<string | null> {
         if (!this.isElectron()) return null;
-        const custom = getArchiveRootPath();
-        if (custom?.trim()) {
-            return custom.trim().endsWith(this.getSep()) ? custom.trim() : `${custom.trim()}${this.getSep()}`;
+
+        const effective = getEffectiveArchiveRootPath();
+        if (effective?.trim()) {
+            const trimmed = effective.trim();
+            return trimmed.endsWith(this.getSep()) ? trimmed : `${trimmed}${this.getSep()}`;
         }
+
+        if (hasCompanyArchiveRootConfigured()) {
+            return null;
+        }
+
         if (localStorage.getItem(ARCHIVE_USE_DEFAULT_KEY) === 'true' || !getArchiveRootPath()) {
             const docs = await window.electron.getDocumentsPath();
             return `${docs}${this.getSep()}${DEFAULT_ARCHIVE_FOLDER_NAME}${this.getSep()}`;
@@ -123,16 +132,20 @@ export class SituationMirrorService {
         };
     }
 
+    /** Electron — NAS 단일 원본. Storage는 웹용 비동기 미러 */
     async publish(tenantId: string, payload: SituationMirrorPayload): Promise<boolean> {
         if (!tenantId) return false;
         const content = JSON.stringify(payload, null, 2);
+        let nasOk = false;
 
         if (this.isElectron()) {
             const root = await this.resolveMirrorRoot();
             if (root) {
                 const localPath = this.joinPath(root, SITUATION_FILE_NAME);
-                await this.writeLocalWithRetry(localPath, content);
+                nasOk = await this.writeLocalWithRetry(localPath, content);
             }
+            void this.uploadStorageMirrorAsync(tenantId, content);
+            return nasOk;
         }
 
         try {
@@ -143,11 +156,24 @@ export class SituationMirrorService {
             return true;
         } catch (error) {
             console.warn('[SituationMirror] storage upload failed:', error);
-            return this.isElectron();
+            return false;
         }
     }
 
-    /** 웹·태블릿 외부 보기 — Firebase Storage만 읽음 (Firestore jobs 컬렉션 미사용) */
+    private uploadStorageMirrorAsync(tenantId: string, content: string): void {
+        void (async () => {
+            try {
+                const blob = new Blob([content], { type: 'application/json' });
+                await uploadBytes(ref(storage, this.storageObjectPath(tenantId)), blob, {
+                    contentType: 'application/json',
+                });
+            } catch (error) {
+                console.warn('[SituationMirror] storage upload failed (non-blocking):', error);
+            }
+        })();
+    }
+
+    /** 웹·태블릿 — Storage 폴백 (매장 PC NAS 직접 접근 불가 시) */
     async readFromStorage(tenantId: string): Promise<SituationMirrorPayload | null> {
         if (!tenantId) return null;
         try {
@@ -160,7 +186,12 @@ export class SituationMirrorService {
         }
     }
 
-    /** Electron — NAS/로컬 우선 (오프라인) */
+    /** Electron — NAS/공유 폴더만 (PC 간 동기화 원본) */
+    async readFromNas(tenantId: string): Promise<SituationMirrorPayload | null> {
+        return this.readLocal(tenantId);
+    }
+
+    /** Electron — NAS/로컬 파일 */
     async readLocal(tenantId: string): Promise<SituationMirrorPayload | null> {
         if (!tenantId || !this.isElectron()) return null;
         const root = await this.resolveMirrorRoot();
@@ -174,15 +205,57 @@ export class SituationMirrorService {
         }
     }
 
-    async read(tenantId: string, preferLocal = false): Promise<SituationMirrorPayload | null> {
-        if (preferLocal && this.isElectron()) {
-            const local = await this.readLocal(tenantId);
-            if (local) return local;
+    /**
+     * 외부 웹 — 사내 게이트웨이(LAN) 우선, 없으면 Storage.
+     * gatewayBaseUrl 예: http://192.168.0.10:3847
+     */
+    async readRemoteMirror(tenantId: string, gatewayBaseUrl?: string | null): Promise<SituationMirrorPayload | null> {
+        if (!tenantId) return null;
+
+        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
+        if (base) {
+            try {
+                const res = await fetch(
+                    `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
+                    { cache: 'no-store' }
+                );
+                if (res.ok) {
+                    const data = (await res.json()) as Partial<SituationMirrorPayload> & {
+                        jobs?: Job[];
+                        updatedAt?: string;
+                    };
+                    if (data.jobs || data.updatedAt) {
+                        return {
+                            version: data.version ?? MIRROR_VERSION,
+                            tenantId,
+                            updatedAt: data.updatedAt || new Date().toISOString(),
+                            companyName: data.companyName,
+                            kanbanLayout: data.kanbanLayout,
+                            statusDefinitions: data.statusDefinitions,
+                            jobs: data.jobs || [],
+                            clients: data.clients,
+                            settings: data.settings,
+                            staff: data.staff,
+                        };
+                    }
+                }
+            } catch (error) {
+                console.warn('[SituationMirror] gateway read failed:', error);
+            }
         }
-        const remote = await this.readFromStorage(tenantId);
-        if (remote) return remote;
-        if (!preferLocal) return this.readLocal(tenantId);
-        return null;
+
+        return this.readFromStorage(tenantId);
+    }
+
+    /** @deprecated PC 동기화는 readFromNas 사용. 웹은 readFromStorage / readRemoteMirror */
+    async read(tenantId: string, preferLocal = false): Promise<SituationMirrorPayload | null> {
+        if (this.isElectron()) {
+            if (preferLocal) return this.readFromNas(tenantId);
+            const local = await this.readFromNas(tenantId);
+            if (local) return local;
+            return this.readFromStorage(tenantId);
+        }
+        return this.readFromStorage(tenantId);
     }
 }
 

@@ -10,6 +10,8 @@ import {
     isNasOrNetworkPath,
     pendingArchiveKey,
     sleep,
+    getEffectiveArchiveRootPath,
+    hasCompanyArchiveRootConfigured,
 } from '../utils/archiveStorage';
 
 const ARCHIVE_VERSION = 1;
@@ -47,10 +49,17 @@ export class JobArchiveService {
 
     async resolveArchiveRoot(): Promise<string | null> {
         if (!this.isElectron()) return null;
-        const custom = getArchiveRootPath();
-        if (custom?.trim()) {
-            return custom.trim().endsWith(this.getSep()) ? custom.trim() : `${custom.trim()}${this.getSep()}`;
+
+        const effective = getEffectiveArchiveRootPath();
+        if (effective?.trim()) {
+            const trimmed = effective.trim();
+            return trimmed.endsWith(this.getSep()) ? trimmed : `${trimmed}${this.getSep()}`;
         }
+
+        if (hasCompanyArchiveRootConfigured()) {
+            return null;
+        }
+
         if (localStorage.getItem(ARCHIVE_USE_DEFAULT_KEY) === 'true' || !getArchiveRootPath()) {
             const docs = await window.electron.getDocumentsPath();
             return `${docs}${this.getSep()}${DEFAULT_ARCHIVE_FOLDER_NAME}${this.getSep()}`;
@@ -223,10 +232,45 @@ export class JobArchiveService {
      * 관리자/직원, PC/웹/태블릿 모두 Firebase Storage 미러를 동일하게 읽습니다.
      * PC/NAS 로컬 파일은 회사 백업용이며, 미러가 없을 때만 관리자 PC 폴백으로 사용합니다.
      */
+    /** Electron — NAS가 단일 원본. Storage는 웹 폴백용 */
     async readArchivedJobs(tenantId: string): Promise<Job[]> {
+        if (this.isElectron()) {
+            const local = await this.readLocalArchivedJobs(tenantId);
+            if (local.length > 0) return local;
+        }
         const remote = await this.readStorageMirrorJobs(tenantId);
         if (remote.length > 0) return remote;
         return this.readLocalArchivedJobs(tenantId);
+    }
+
+    /** PC 간 동기화 — NAS jobs-archive.json (Storage 미사용) */
+    async readNasArchiveSnapshot(tenantId: string): Promise<{ jobs: Job[]; updatedAt: string | null } | null> {
+        if (!tenantId || !this.isElectron()) return null;
+
+        const tryParse = (raw: string | null) => {
+            if (!raw) return null;
+            try {
+                const parsed = JSON.parse(raw) as Partial<JobArchiveFile>;
+                return {
+                    jobs: Array.isArray(parsed.jobs) ? (parsed.jobs as Job[]) : [],
+                    updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+                };
+            } catch {
+                return null;
+            }
+        };
+
+        const archivePath = await this.getArchiveFilePath(tenantId);
+        if (archivePath) {
+            const primary = tryParse(await this.readFileWithRetry(archivePath));
+            if (primary) return primary;
+        }
+
+        const shadowPath = await this.getShadowFilePath(tenantId);
+        if (shadowPath) {
+            return tryParse(await this.readFileWithRetry(shadowPath));
+        }
+        return null;
     }
 
     private async uploadStorageMirror(tenantId: string, jobs: Job[]): Promise<boolean> {
@@ -263,11 +307,12 @@ export class JobArchiveService {
                 }
             }
             if (!wrote) return { success: false };
+            void this.uploadStorageMirror(tenantId, jobs);
+            return { success: true, usedShadow };
         }
 
         const uploaded = await this.uploadStorageMirror(tenantId, jobs);
-        if (!uploaded) return { success: false, usedShadow };
-        return { success: true, usedShadow };
+        return { success: uploaded, usedShadow: false };
     }
 
     async upsertArchivedJob(tenantId: string, job: Job): Promise<boolean> {

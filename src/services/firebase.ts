@@ -19,6 +19,7 @@ export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId)
 export const storage = getStorage(app);
 
 const PRESENCE_STAFF_CACHE_TTL_MS = 30 * 60_000;
+const PRESENCE_HEARTBEAT_MS = 150_000;
 
 export type PresenceUser = {
   uid: string;
@@ -30,6 +31,7 @@ export type PresenceUser = {
 
 let presenceActiveUser: PresenceUser | null = null;
 let presenceLastPayload: PresenceUser | null = null;
+let presenceHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let cachedStaffDocIds: { tenantId: string; uid: string; ids: string[]; at: number } | null = null;
 
 const presenceNow = () => new Date().toISOString();
@@ -141,11 +143,18 @@ export function startPresenceSession(user: PresenceUser): void {
   presenceActiveUser = user;
   cachedStaffDocIds = null;
   void setPresenceOnline(user);
+  presenceHeartbeatTimer = setInterval(() => {
+    if (presenceActiveUser) void writePresence(presenceActiveUser, true);
+  }, PRESENCE_HEARTBEAT_MS);
   window.addEventListener('pagehide', onPresencePageHide);
   window.addEventListener('beforeunload', onPresenceBeforeUnload);
 }
 
 export function stopPresenceSession(): void {
+  if (presenceHeartbeatTimer) {
+    clearInterval(presenceHeartbeatTimer);
+    presenceHeartbeatTimer = null;
+  }
   window.removeEventListener('pagehide', onPresencePageHide);
   window.removeEventListener('beforeunload', onPresenceBeforeUnload);
   presenceActiveUser = null;

@@ -13,7 +13,7 @@ import { PaymentReceivableManager } from '../components/payments/PaymentReceivab
 import { ArchiveSetupWizard } from '../components/auth/ArchiveSetupWizard';
 import { db } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
-import { isArchiveSetupDone } from '../utils/archiveStorage';
+import { isArchiveSetupDone, markArchiveSetupDone } from '../utils/archiveStorage';
 
 type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'logs' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
 
@@ -37,9 +37,20 @@ export const MainPage: React.FC = () => {
 
     useEffect(() => {
         if (!isElectron || !canAccessRootSettings) return;
-        if (!isArchiveSetupDone()) {
-            setShowArchiveWizard(true);
-        }
+
+        const syncWizard = () => {
+            if (db.getTenantArchiveRootPath()) {
+                markArchiveSetupDone();
+                setShowArchiveWizard(false);
+                return;
+            }
+            if (!isArchiveSetupDone()) {
+                setShowArchiveWizard(true);
+            }
+        };
+
+        syncWizard();
+        return db.subscribe(syncWizard);
     }, [isElectron, canAccessRootSettings]);
 
     const handleNavigateToQuote = (quoteId?: string) => {

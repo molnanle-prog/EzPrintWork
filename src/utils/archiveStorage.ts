@@ -6,6 +6,12 @@ export const ARCHIVE_FILE_NAME = 'jobs-archive.json';
 export const ARCHIVE_README_NAME = 'readme.txt';
 export const DEFAULT_ARCHIVE_FOLDER_NAME = 'EzPrintWork_Archive';
 
+/** Firestore settings.main — 회사 공통 NAS 경로 (관리자 1회 설정 → 전 PC 강제) */
+export const TENANT_ARCHIVE_ROOT_SETTINGS_KEY = 'archiveRootPath';
+
+/** 로그인 세션 동안 Firestore 회사 경로 (localStorage보다 우선) */
+let companyArchiveRootOverride: string | null = null;
+
 export function isNasOrNetworkPath(folderPath: string): boolean {
     const p = folderPath.trim();
     if (!p) return false;
@@ -34,6 +40,45 @@ export function setArchiveRootPath(path: string | null, useDefault = false) {
         localStorage.removeItem(ARCHIVE_ROOT_PATH_KEY);
         localStorage.removeItem(ARCHIVE_USE_DEFAULT_KEY);
     }
+}
+
+export function getTenantArchiveRootFromSettings(
+    settings: Record<string, unknown> | null | undefined
+): string | null {
+    const raw = settings?.[TENANT_ARCHIVE_ROOT_SETTINGS_KEY];
+    if (typeof raw !== 'string' || !raw.trim()) return null;
+    return raw.trim();
+}
+
+export function hasCompanyArchiveRootConfigured(): boolean {
+    return !!companyArchiveRootOverride;
+}
+
+/** NAS 읽기/쓰기 — 회사 경로가 있으면 무조건 그 경로만 사용 */
+export function getEffectiveArchiveRootPath(): string | null {
+    if (companyArchiveRootOverride) return companyArchiveRootOverride;
+    return getArchiveRootPath();
+}
+
+export function setCompanyArchiveRootOverride(path: string | null): boolean {
+    const next = path?.trim() || null;
+    if (next === companyArchiveRootOverride) return false;
+    companyArchiveRootOverride = next;
+    if (next) {
+        setArchiveRootPath(next);
+    }
+    return true;
+}
+
+export function clearCompanyArchiveRootOverride(): void {
+    companyArchiveRootOverride = null;
+}
+
+export function applyArchiveRootFromSettings(settings: Record<string, unknown> | null | undefined): boolean {
+    if (typeof window === 'undefined') return false;
+    const tenantPath = getTenantArchiveRootFromSettings(settings);
+    if (!tenantPath) return false;
+    return setCompanyArchiveRootOverride(tenantPath);
 }
 
 export function markArchiveSetupDone() {
