@@ -164,6 +164,13 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
         showAlert(getErrorMessage(error));
     }
   }
+  const handleHideFromBoard = async (job: Job) => {
+    try {
+      await db.hideJobFromBoard(job.id, currentUser?.id);
+    } catch (error) {
+      showAlert(getErrorMessage(error));
+    }
+  };
 
   // Helper: Sort jobs by Order first, then fallback to Created Date
   const sortedJobs = [...jobs].sort((a, b) => {
@@ -300,6 +307,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
                   staff={staff} 
                   statusDefinitions={statusDefinitions}
                   onContact={(j) => setContactingJob(j)}
+                  onHideFromBoard={handleHideFromBoard}
                  />
                </div>
              );

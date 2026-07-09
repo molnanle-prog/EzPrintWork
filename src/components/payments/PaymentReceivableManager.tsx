@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { db, formatJobNumber, getErrorMessage } from '../../services/dataService';
-import { Job, PaymentStatus, Staff } from '../../types';
+import { Client, Job, PaymentStatus, Staff } from '../../types';
 import { resolveClientSmsNumber } from '../../utils/clientSms';
 import {
   CreditCard,
@@ -23,8 +23,9 @@ import { JobDetailModal } from '../common/JobDetailModal';
 import { PastJobSearchResults } from '../common/PastJobSearchResults';
 import { ClientContactModal } from '../common/ClientContactModal';
 import { toast } from 'sonner';
+import { getJobOutstandingAmount, normalizePrepaidBalance } from '../../utils/prepaidBalance';
 
-type PaymentFilter = 'all' | 'outstanding' | PaymentStatus | 'byClient';
+type PaymentFilter = 'all' | 'outstanding' | PaymentStatus | 'byClient' | 'prepaidClients';
 type SortKey = 'title' | 'clientName' | 'contactPerson' | 'phone' | 'price' | 'paymentStatus' | 'dueDate';
 type ColumnKey = SortKey | 'contact';
 type SortDir = 'asc' | 'desc';
@@ -180,6 +181,7 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
 
 export const PaymentReceivableManager: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [clients, setClients] = useState<Client[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
   const [filter, setFilter] = useState<PaymentFilter>('all');
   const [search, setSearch] = useState('');
@@ -202,6 +204,7 @@ export const PaymentReceivableManager: React.FC = () => {
 
   const reload = () => {
     setJobs(db.getAllJobs());
+    setClients(db.getClients());
     setStaff(db.getStaff().filter((s) => !s.isDeleted && s.active !== false));
   };
 
@@ -215,12 +218,16 @@ export const PaymentReceivableManager: React.FC = () => {
     const active = jobs.filter((j) => j.paymentStatus !== '취소');
     const outstandingJobs = active.filter((j) => isOutstanding(j.paymentStatus));
     const paidJobs = active.filter((j) => j.paymentStatus === '결제완료');
+    const totalPrepaid = db.getTotalPrepaidBalance();
+    const outstandingAmount = outstandingJobs.reduce((s, j) => s + getJobOutstandingAmount(j), 0);
     return {
       outstandingCount: outstandingJobs.length,
-      outstandingAmount: outstandingJobs.reduce((s, j) => s + (j.price || 0), 0),
+      outstandingAmount,
       partialCount: active.filter((j) => j.paymentStatus === '일부결제').length,
       paidCount: paidJobs.length,
       paidAmount: paidJobs.reduce((s, j) => s + (j.price || 0), 0),
+      totalPrepaid,
+      netPosition: totalPrepaid - outstandingAmount,
     };
   }, [jobs]);
 
@@ -228,7 +235,7 @@ export const PaymentReceivableManager: React.FC = () => {
     const q = search.trim().toLowerCase();
     return jobs
       .filter((j) => {
-        if (filter === 'byClient') return false;
+        if (filter === 'byClient' || filter === 'prepaidClients') return false;
         if (filter === 'outstanding') return isOutstanding(j.paymentStatus);
         if (filter !== 'all') return j.paymentStatus === filter;
         return true;
@@ -273,7 +280,7 @@ export const PaymentReceivableManager: React.FC = () => {
         };
         if (job.paymentStatus === '결제대기') row.pendingCount += 1;
         if (job.paymentStatus === '일부결제') row.partialCount += 1;
-        row.totalOutstanding += job.price || 0;
+        row.totalOutstanding += getJobOutstandingAmount(job);
         row.jobs.push(job);
         map.set(name, row);
       });
@@ -305,6 +312,37 @@ export const PaymentReceivableManager: React.FC = () => {
     }),
     [clientSummaries]
   );
+
+  const prepaidClientRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return clients
+      .map((client) => {
+        const balance = normalizePrepaidBalance(client.prepaidBalance);
+        if (balance <= 0) return null;
+        const relatedJobs = jobs.filter((j) => j.clientName?.trim() === client.name.trim());
+        const outstandingJobs = relatedJobs.filter((j) => isOutstanding(j.paymentStatus));
+        const outstandingAmount = outstandingJobs.reduce((sum, j) => sum + getJobOutstandingAmount(j), 0);
+        return {
+          client,
+          balance,
+          outstandingJobs,
+          outstandingAmount,
+          recentJob: relatedJobs
+            .slice()
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0],
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => !!row)
+      .filter((row) => {
+        if (!q) return true;
+        return (
+          row.client.name.toLowerCase().includes(q) ||
+          (row.client.contactPerson || '').toLowerCase().includes(q) ||
+          (row.client.phone || '').replace(/\D/g, '').includes(q.replace(/\D/g, ''))
+        );
+      })
+      .sort((a, b) => b.balance - a.balance);
+  }, [clients, jobs, search]);
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -445,6 +483,7 @@ export const PaymentReceivableManager: React.FC = () => {
     { id: '일부결제', label: '일부결제' },
     { id: '결제완료', label: '결제완료' },
     { id: 'byClient', label: '고객사별 종합' },
+    { id: 'prepaidClients', label: '선불고객' },
   ];
 
   const tableMinWidth = Object.values(columnWidths).reduce((s, w) => s + w, 0) + SELECT_COLUMN_WIDTH;
@@ -584,6 +623,8 @@ export const PaymentReceivableManager: React.FC = () => {
             <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
               {filter === 'byClient'
                 ? '고객사별 미수·일부결제 현황을 종합합니다. 미수 건을 클릭하면 작업 상세를 확인할 수 있습니다.'
+                : filter === 'prepaidClients'
+                ? '선불 잔액이 있는 거래처만 모아 봅니다. 필요 시 연관 작업 상세로 바로 이동할 수 있습니다.'
                 : '작업별 견적 금액·결제 상태를 한곳에서 확인하고 관리합니다. 헤더 클릭 정렬 · 우측 가장자리 드래그로 칸 너비 조절.'}
             </p>
           </div>
@@ -593,7 +634,13 @@ export const PaymentReceivableManager: React.FC = () => {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder={filter === 'byClient' ? '고객사·작업명 검색 (지난 작업 포함)' : '거래처·작업명 검색 — 선택 시 상세 보기'}
+              placeholder={
+                filter === 'byClient'
+                  ? '고객사·작업명 검색 (지난 작업 포함)'
+                  : filter === 'prepaidClients'
+                  ? '고객사·담당자·전화번호 검색'
+                  : '거래처·작업명 검색 — 선택 시 상세 보기'
+              }
               className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
@@ -605,7 +652,7 @@ export const PaymentReceivableManager: React.FC = () => {
           className="mt-3"
         />
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mt-4">
           <div className="rounded-xl border border-red-200 bg-red-50 dark:bg-red-950/30 dark:border-red-900/50 px-3 py-2">
             <p className="text-[10px] font-bold text-red-600 uppercase tracking-wide flex items-center gap-1">
               <AlertCircle size={12} /> 미수·미결제
@@ -616,6 +663,7 @@ export const PaymentReceivableManager: React.FC = () => {
                 {stats.outstandingAmount.toLocaleString()}원
               </p>
             </div>
+            <p className="text-[10px] text-red-500/70 mt-1">선불 차감분 제외</p>
           </div>
           <div className="rounded-xl border border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-900/40 px-3 py-2">
             <p className="text-[10px] font-bold text-amber-700 uppercase tracking-wide flex items-center gap-1">
@@ -623,6 +671,16 @@ export const PaymentReceivableManager: React.FC = () => {
             </p>
             <div className="mt-1 flex items-baseline justify-between gap-2">
               <p className="text-xl font-black text-amber-800 dark:text-amber-200 leading-none">{stats.partialCount}건</p>
+            </div>
+          </div>
+          <div className="rounded-xl border border-indigo-200 bg-indigo-50 dark:bg-indigo-950/30 dark:border-indigo-900/50 px-3 py-2">
+            <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-wide flex items-center gap-1">
+              <Wallet size={12} /> 선불 잔액 합계
+            </p>
+            <div className="mt-1 flex items-baseline justify-between gap-2">
+              <p className="text-xl font-black text-indigo-800 dark:text-indigo-200 leading-none tabular-nums">
+                {stats.totalPrepaid.toLocaleString()}원
+              </p>
             </div>
           </div>
           <div className="rounded-xl border border-blue-200 bg-blue-50 dark:bg-blue-950/30 dark:border-blue-900/50 px-3 py-2">
@@ -636,6 +694,20 @@ export const PaymentReceivableManager: React.FC = () => {
               </p>
             </div>
           </div>
+        </div>
+
+        <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span>
+            순 포지션(선불 − 미수):{' '}
+            <strong
+              className={
+                stats.netPosition >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
+              }
+            >
+              {stats.netPosition >= 0 ? '+' : ''}
+              {stats.netPosition.toLocaleString()}원
+            </strong>
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2 mt-4">
@@ -656,7 +728,7 @@ export const PaymentReceivableManager: React.FC = () => {
             ))}
           </div>
 
-          {filter !== 'byClient' && (
+          {filter !== 'byClient' && filter !== 'prepaidClients' && (
             <div className="flex flex-wrap items-center gap-2 ml-auto">
               <span className="text-xs font-bold text-slate-600 dark:text-slate-300 whitespace-nowrap">
                 선택 {selectedCount}건
@@ -804,6 +876,71 @@ export const PaymentReceivableManager: React.FC = () => {
                     </React.Fragment>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        ) : filter === 'prepaidClients' ? (
+          <div className="min-w-[720px]">
+            <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-700 bg-indigo-50/60 dark:bg-indigo-950/20 flex flex-wrap items-center gap-x-6 gap-y-1 text-sm">
+              <span className="font-bold text-slate-700 dark:text-slate-200">
+                선불 고객사 <span className="text-indigo-600">{prepaidClientRows.length}</span>곳
+              </span>
+              <span className="text-slate-600 dark:text-slate-300">
+                선불 합계{' '}
+                <span className="font-black text-indigo-700 tabular-nums">{stats.totalPrepaid.toLocaleString()}원</span>
+              </span>
+            </div>
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-slate-50 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-700 sticky top-0 z-10">
+                <tr>
+                  <th className="p-3 text-xs font-bold text-slate-500">고객사</th>
+                  <th className="p-3 text-xs font-bold text-slate-500">담당자/연락처</th>
+                  <th className="p-3 text-xs font-bold text-slate-500">선불 잔액</th>
+                  <th className="p-3 text-xs font-bold text-slate-500">연관 미수</th>
+                  <th className="p-3 text-xs font-bold text-slate-500 text-right">최근 작업</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                {prepaidClientRows.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="p-10 text-center text-slate-400 text-sm">
+                      선불 잔액이 있는 고객사가 없습니다.
+                    </td>
+                  </tr>
+                )}
+                {prepaidClientRows.map((row) => (
+                  <tr key={row.client.id} className="hover:bg-indigo-50/40 dark:hover:bg-indigo-900/10 transition-colors">
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5 text-sm font-bold text-slate-800 dark:text-slate-100">
+                        <Building2 size={14} className="text-slate-400 shrink-0" />
+                        {row.client.name}
+                      </div>
+                    </td>
+                    <td className="p-3 text-xs text-slate-600 dark:text-slate-300">
+                      <div>{row.client.contactPerson || '-'}</div>
+                      <div className="font-mono text-[11px]">{row.client.phone || '-'}</div>
+                    </td>
+                    <td className="p-3 text-sm font-black text-indigo-700 dark:text-indigo-300 tabular-nums">
+                      {row.balance.toLocaleString()}원
+                    </td>
+                    <td className="p-3 text-xs text-slate-600 dark:text-slate-300">
+                      {row.outstandingJobs.length}건 / {row.outstandingAmount.toLocaleString()}원
+                    </td>
+                    <td className="p-3 text-right">
+                      {row.recentJob ? (
+                        <button
+                          type="button"
+                          onClick={() => setSelectedJob(row.recentJob || null)}
+                          className="text-xs font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-indigo-300"
+                        >
+                          {row.recentJob.title}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-slate-400">작업 없음</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

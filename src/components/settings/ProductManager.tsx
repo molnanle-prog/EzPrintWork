@@ -145,9 +145,10 @@ export const ProductManager: React.FC = () => {
 
   // --- Type Management ---
 
-  const handleAddType = () => {
+  const handleAddType = async () => {
       if (!newTypeName.trim()) return;
-      if (definitions.find(d => d.name === newTypeName)) {
+      const latestDefs = db.getProductDefinitions();
+      if (latestDefs.find(d => d.name === newTypeName)) {
           showAlert('이미 존재하는 작업 종류입니다.');
           return;
       }
@@ -157,9 +158,15 @@ export const ProductManager: React.FC = () => {
           paperTypes: ['기본'],
           paperWeights: ['기본']
       };
-      db.saveProductDefinitions([...definitions, newDef]);
-      setNewTypeName('');
-      setSelectedType(newDef);
+      const newDefs = [...latestDefs, newDef];
+      try {
+          await db.saveProductDefinitions(newDefs);
+          setDefinitions(newDefs);
+          setNewTypeName('');
+          setSelectedType(newDef);
+      } catch (error) {
+          showAlert('품목 추가 실패: ' + getErrorMessage(error));
+      }
   };
 
   const handleDeleteType = async (name: string) => {
@@ -187,7 +194,7 @@ export const ProductManager: React.FC = () => {
 
   // --- Option Management ---
 
-  const handleAddOption = (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string, setter: (v: string) => void) => {
+  const handleAddOption = async (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string, setter: (v: string) => void) => {
       if (!selectedType || !value.trim()) return;
       
       let finalValue = value.trim();
@@ -209,15 +216,25 @@ export const ProductManager: React.FC = () => {
           }
       }
 
-      if (selectedType[category].includes(finalValue)) {
+      const latestDefs = db.getProductDefinitions();
+      const currentType = latestDefs.find((d) => d.name === selectedType.name);
+      if (!currentType) return;
+
+      if (currentType[category].includes(finalValue)) {
           setter(''); 
           return;
       }
 
-      const updatedDef = { ...selectedType, [category]: [...selectedType[category], finalValue] };
-      const newDefs = definitions.map(d => d.name === selectedType.name ? updatedDef : d);
-      db.saveProductDefinitions(newDefs);
-      setter('');
+      const updatedDef = { ...currentType, [category]: [...currentType[category], finalValue] };
+      const newDefs = latestDefs.map(d => d.name === selectedType.name ? updatedDef : d);
+      try {
+          await db.saveProductDefinitions(newDefs);
+          setDefinitions(newDefs);
+          setSelectedType(updatedDef);
+          setter('');
+      } catch (error) {
+          showAlert('옵션 추가 실패: ' + getErrorMessage(error));
+      }
   };
 
   const handleDeleteOption = async (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string) => {
@@ -226,10 +243,15 @@ export const ProductManager: React.FC = () => {
       const categoryName = category === 'sizes' ? '규격' : category === 'paperTypes' ? '용지' : '평량';
 
       if (await showConfirm(`'${value}' ${categoryName} 항목을 삭제하시겠습니까?\n\n확인(삭제)을 누르면 즉시 저장됩니다.`)) {
-          const updatedDef = { ...selectedType, [category]: selectedType[category].filter(v => v !== value) };
-          const newDefs = definitions.map(d => d.name === selectedType.name ? updatedDef : d);
+          const latestDefs = db.getProductDefinitions();
+          const currentType = latestDefs.find((d) => d.name === selectedType.name);
+          if (!currentType) return;
+
+          const updatedDef = { ...currentType, [category]: currentType[category].filter(v => v !== value) };
+          const newDefs = latestDefs.map(d => d.name === selectedType.name ? updatedDef : d);
           try {
               await db.saveProductDefinitions(newDefs);
+              setDefinitions(newDefs);
               setSelectedType(updatedDef);
               await showAlert(`'${value}' ${categoryName} 항목이 삭제되었습니다.`);
           } catch (error) {

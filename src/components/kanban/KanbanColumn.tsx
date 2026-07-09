@@ -40,6 +40,7 @@ export interface CompactTraySectionProps {
     onPointerDown: (e: React.PointerEvent) => void;
     title?: string;
   };
+  onHideFromBoard?: (job: Job) => void;
 }
 
 export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
@@ -54,6 +55,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
   isTvMode = false,
   fillHeight = false,
   resizeHandle,
+  onHideFromBoard,
 }) => {
   const { theme } = useTheme();
   const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
@@ -65,9 +67,8 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
   });
   const jobIds = sortedJobs.map((job) => job.id);
   const isQuoteTray = statusDef.key === 'QUOTE';
-  const isCompletedTray = statusDef.key === 'COMPLETED';
-  // 완료 칸도 견적 칸처럼 큰 헤더를 사용해 가독성을 맞춘다.
-  const useLargeHeader = isQuoteTray || isCompletedTray;
+  // 하단 묶음 칸은 어떤 단계로 연결되더라도 일반 컬럼과 같은 헤더 가독성을 유지한다.
+  const useLargeHeader = true;
 
   return (
     <div className={`flex flex-col ${fillHeight ? 'h-full min-h-0' : 'flex-none'}`}>
@@ -154,6 +155,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
                   isTvMode={isTvMode}
                   isCompactTray={!isQuoteTray}
                   isQuoteTray={isQuoteTray}
+                  onHideFromBoard={onHideFromBoard}
                 />
               ))}
             </div>
@@ -191,6 +193,7 @@ interface KanbanColumnProps {
     onPointerDown: (e: React.PointerEvent) => void;
     title?: string;
   };
+  onHideFromBoard?: (job: Job) => void;
 }
 
 export const KanbanColumn: React.FC<KanbanColumnProps> = ({ 
@@ -207,6 +210,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   isTvMode = false,
   embedded = false,
   resizeHandle,
+  onHideFromBoard,
 }) => {
   const { theme } = useTheme();
 
@@ -287,6 +291,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
                 isCompact={isCompact}
                 currentUserId={currentUserId}
                 isTvMode={isTvMode}
+                onHideFromBoard={onHideFromBoard}
               />
             ))}
 

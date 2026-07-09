@@ -1,4 +1,0 @@
-[33mThe CJS build of Vite's Node API is deprecated. See https://vite.dev/guide/troubleshooting.html#vite-cjs-node-api-deprecated for more details.[39m
-[36mvite v5.4.21 [32mbuilding for production...[36m[39m
-transforming...
-[32m✓[39m 2588 modules transformed.

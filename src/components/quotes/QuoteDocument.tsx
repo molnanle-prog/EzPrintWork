@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Quote } from '../../types';
 import { db } from '../../services/dataService';
 import { getQuoteJobNumber, formatQuoteClientLabel, resolveQuoteJob, resolveQuoteLinesForDisplay } from '../../utils/quoteJobSync';
@@ -26,6 +26,15 @@ function getSpecPreview(description?: string): string {
 }
 
 export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentType = 'quote', id }) => {
+  const [, setRenderTick] = useState(0);
+
+  useEffect(() => {
+    const unsubscribe = db.subscribe(() => {
+      setRenderTick((prev) => prev + 1);
+    });
+    return unsubscribe;
+  }, []);
+
   const company = db.getCompanyInfo();
   const template = db.getQuoteTemplate();
   const headerHeightMm = template.headerHeightMm ?? 17;

@@ -30,50 +30,60 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
   return (
     <>
       <style>{`
-        /* 화면 미리보기용 기본 스타일 */
         .printable-document {
           width: 210mm;
           margin: 0 auto;
         }
-        
-        /* 인쇄 시 여백 짤림 방지 및 A4 폭 최적화 */
+
+        /* 바로 인쇄 / PDF 공통: A4 실크기, 동일 안쪽 여백 */
+        .page-container {
+          width: 210mm;
+          height: 297mm;
+          padding: 7mm;
+          box-sizing: border-box;
+          display: flex;
+          flex-direction: column;
+        }
+
         @media print {
           @page {
             size: A4;
-            margin: 6mm 8mm 6mm 8mm; /* 상하 6mm, 좌우 8mm 여백을 강제 적용해 기본 프린트 여백에서 짤림 방지 */
+            margin: 0;
           }
           body {
-            margin: 0;
+            margin: 0 !important;
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
           }
           .printable-document {
-            width: 100% !important;
-            max-width: 100% !important;
+            width: 210mm !important;
+            max-width: 210mm !important;
             padding: 0 !important;
             margin: 0 !important;
             box-shadow: none !important;
             background: transparent !important;
           }
-          /* 각 A4 페이지 컨테이너 */
           .page-container {
-            width: 100% !important;
-            height: 280mm !important; /* 마진 제외한 실제 A4 가용 높이 */
-            max-width: 100% !important;
-            max-height: 100% !important;
-            padding: 0 !important;
+            width: 210mm !important;
+            height: 297mm !important;
+            max-width: 210mm !important;
+            max-height: 297mm !important;
+            padding: 7mm !important;
             margin: 0 !important;
-            box-sizing: border-box;
+            box-sizing: border-box !important;
             page-break-after: always;
-            display: flex;
-            flex-direction: column;
+            break-after: page;
+          }
+          .page-container:last-child {
+            page-break-after: auto;
+            break-after: auto;
           }
         }
-        
-        .export-mode .lift-text { 
-          position: relative; 
-          top: -8px; 
-          display: inline-block; 
+
+        .export-mode .lift-text {
+          position: relative;
+          top: -8px;
+          display: inline-block;
         }
       `}</style>
       <div id={id} className="printable-document">
@@ -100,15 +110,11 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
           };
 
           return (
-            <div 
-              key={pageIndex} 
-              className="page-container bg-white text-black mx-auto flex flex-col relative" 
-              style={{ 
-                  width: '210mm', 
-                  height: '297mm', // Fixed A4 Height
-                  padding: '10mm', // Standard Margin
-                  boxSizing: 'border-box',
-                  pageBreakAfter: pageIndex < pages.length - 1 ? 'always' : 'auto'
+            <div
+              key={pageIndex}
+              className="page-container bg-white text-black mx-auto flex flex-col relative"
+              style={{
+                pageBreakAfter: pageIndex < pages.length - 1 ? 'always' : 'auto',
               }}
             >
               {/* 1. Header */}

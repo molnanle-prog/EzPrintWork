@@ -1,10 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, History } from 'lucide-react';
+import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
 import { CompletedJobSearchModal } from './kanban/CompletedJobSearchModal';
 import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
+import { FinanceBoardModal } from './payments/FinanceBoardModal';
 import { db } from '../services/dataService';
 import { Job, Staff } from '../types';
 import { useAuth } from '../contexts/AuthContext';
@@ -20,16 +22,36 @@ interface LayoutProps {
 }
 
 const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) => {
+    const { canAccessAdminSettings } = useAuth();
     const [status, setStatus] = useState(db.getSyncStatus());
     const [cloudDegraded, setCloudDegraded] = useState(db.isCloudDegraded());
+    const [lastMirrorAt, setLastMirrorAt] = useState(db.getLastNasMirrorAt());
+    const isWeb = typeof window !== 'undefined' && !window.electron;
 
     useEffect(() => {
         const unsubscribe = db.subscribe(() => {
             setStatus(db.getSyncStatus());
             setCloudDegraded(db.isCloudDegraded());
+            setLastMirrorAt(db.getLastNasMirrorAt());
         });
         return () => unsubscribe();
     }, []);
+
+    const formatMirrorTime = (iso: string | null) => {
+        if (!iso) return null;
+        try {
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return null;
+            return d.toLocaleString('ko-KR', {
+                month: 'numeric',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+            });
+        } catch {
+            return null;
+        }
+    };
 
     let icon, color, title;
 
@@ -56,14 +78,50 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
             break;
     }
 
+    const mirrorLabel = formatMirrorTime(lastMirrorAt);
+    const webReadOnlyTitle = canAccessAdminSettings
+        ? '웹 — 작업·칸반은 조회 전용. 관리자는 상품·설정 저장 가능'
+        : '웹·태블릿 조회 전용 — 수정은 매장 PC 앱에서';
+    const webReadOnlyLabel = canAccessAdminSettings ? '작업 조회 전용' : '조회 전용';
+
     if (condensed) {
-        return <div className={`flex items-center justify-center w-8 h-8 rounded-full bg-slate-800 ${color}`} title={title}>{icon}</div>;
+        return (
+            <div className="flex flex-col items-center gap-1">
+                {isWeb && (
+                    <div
+                        className="flex items-center justify-center w-8 h-8 rounded-full bg-sky-950/80 text-sky-300 border border-sky-800/60"
+                        title={webReadOnlyTitle}
+                    >
+                        <Eye size={14} />
+                    </div>
+                )}
+                <div className={`flex items-center justify-center w-8 h-8 rounded-full bg-slate-800 ${color}`} title={title}>{icon}</div>
+            </div>
+        );
     }
 
     return (
-        <div className={`flex items-center gap-2 px-3.5 py-2 text-sm rounded-lg bg-slate-800 ${color}`} title={title}>
-            {icon}
-            <span className="font-bold">{title}</span>
+        <div className="space-y-1.5">
+            {isWeb && (
+                <div
+                    className="flex flex-col gap-0.5 px-3.5 py-2 text-sm rounded-lg bg-sky-950/50 border border-sky-800/40 text-sky-200"
+                    title={webReadOnlyTitle}
+                >
+                    <div className="flex items-center gap-2 font-bold">
+                        <Eye size={14} />
+                        <span>{webReadOnlyLabel}</span>
+                    </div>
+                    {mirrorLabel && (
+                        <span className="text-[11px] text-sky-300/80 font-medium pl-5">
+                            동기화 {mirrorLabel}
+                        </span>
+                    )}
+                </div>
+            )}
+            <div className={`flex items-center gap-2 px-3.5 py-2 text-sm rounded-lg bg-slate-800 ${color}`} title={title}>
+                {icon}
+                <span className="font-bold">{title}</span>
+            </div>
         </div>
     );
 };
@@ -73,6 +131,12 @@ const getDisconnectDetail = (code: string | null) => {
         return {
             title: '회사 소속 정보 동기화 대기 중',
             body: <>프로필이 서버에 반영되지 않았습니다.<br/>잠시 후 새로고침하거나, 로그아웃 후 다시 로그인해 주세요.</>,
+        };
+    }
+    if (code === 'auth-not-ready') {
+        return {
+            title: '로그인 세션 준비 중',
+            body: <>Firebase 인증이 아직 준비되지 않았습니다.<br/>잠시 후 새로고침하거나, 로그아웃 후 다시 로그인해 주세요.</>,
         };
     }
     if (code === 'permission-denied') {
@@ -112,16 +176,16 @@ const ReconnectOverlay: React.FC = () => {
         return () => unsubscribe();
     }, []);
 
-    const handleRetry = () => {
+    const handleRetry = async () => {
         setIsRetrying(true);
-        window.location.reload();
+        await hardReloadApp();
     };
 
     if (status !== 'disconnected') return null;
 
     if (
         db.hasLocalOperationalData() &&
-        (syncError === 'resource-exhausted' || syncError === 'unavailable' || syncError === 'pull-failed')
+        (syncError === 'resource-exhausted' || syncError === 'unavailable' || syncError === 'pull-failed' || syncError === 'permission-denied' || syncError === 'auth-not-ready')
     ) {
         return null;
     }
@@ -168,6 +232,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   });
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [showFinanceModal, setShowFinanceModal] = useState(false);
   const [selectedSearchJob, setSelectedSearchJob] = useState<Job | null>(null);
   const [staff, setStaff] = useState<Staff[]>([]);
 
@@ -241,7 +306,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     { id: 'dashboard', label: '상황판', icon: LayoutDashboard },
     { id: 'kanban', label: '작업진행', icon: Trello },
     { id: 'calendar', label: '달력', icon: Calendar },
-    { id: 'quotes', label: '견적', icon: FileText },
+    { id: 'history', label: '작업내역', icon: History },
+    { id: 'quotes', label: '견적서관리', icon: FileText },
     { id: 'payments', label: '결제상황', icon: CreditCard },
   ];
 
@@ -554,6 +620,17 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             <Search size={22} />
                             <span className="text-base font-bold">등록 작업 검색</span>
                         </button>
+                        <button
+                            onClick={() => setShowFinanceModal(true)}
+                            className={`rounded-full flex items-center gap-3 transition-colors px-5 h-12 shadow-sm ${
+                                theme === 'trello'
+                                    ? 'bg-violet-700 hover:bg-violet-600 text-white'
+                                    : 'bg-violet-600 text-white hover:bg-violet-700'
+                            }`}
+                        >
+                            <CreditCard size={20} />
+                            <span className="text-sm font-bold">미수·선불 카드</span>
+                        </button>
                     </div>
                 </header>
             )}
@@ -647,6 +724,9 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 onNavigateToQuote={() => onTabChange('quotes')}
             />
         </div>
+      )}
+      {showFinanceModal && (
+        <FinanceBoardModal onClose={() => setShowFinanceModal(false)} />
       )}
       <ReconnectOverlay />
     </div>

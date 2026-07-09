@@ -21,6 +21,7 @@ interface KanbanSplitColumnProps {
   currentUserId?: string;
   resolveIsMyJob?: (job: Job) => boolean;
   isTvMode?: boolean;
+  onHideFromBoard?: (job: Job) => void;
 }
 
 export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
@@ -39,6 +40,7 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
   currentUserId,
   resolveIsMyJob,
   isTvMode = false,
+  onHideFromBoard,
 }) => {
   const { theme } = useTheme();
   const [topPercent, setTopPercent] = useState(splitTopPercent);
@@ -114,6 +116,7 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
           resolveIsMyJob={resolveIsMyJob}
           isTvMode={isTvMode}
           embedded
+          onHideFromBoard={onHideFromBoard}
         />
       </div>
 
@@ -135,6 +138,7 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
               onPointerDown: handlePointerDown,
               title: '드래그하여 상·하 비율 조절',
             }}
+            onHideFromBoard={onHideFromBoard}
           />
         ) : (
           <KanbanColumn
@@ -153,6 +157,7 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
               onPointerDown: handlePointerDown,
               title: '드래그하여 상·하 비율 조절',
             }}
+            onHideFromBoard={onHideFromBoard}
           />
         )}
       </div>

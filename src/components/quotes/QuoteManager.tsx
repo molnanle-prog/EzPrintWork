@@ -5,14 +5,64 @@ import { db } from '../../services/dataService';
 import {
   getQuoteJobNumber,
   getQuoteTitle,
-  getQuoteBriefContent,
   formatQuoteClientLabel,
+  resolveQuoteJobId,
+  resolveQuoteJob,
 } from '../../utils/quoteJobSync';
 import { cacheQuoteForPreview } from '../../utils/quotePreviewStorage';
+import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
 
 import { Quote } from '../../types';
 
 import { Plus, Printer, User, Calendar, DollarSign } from 'lucide-react';
+
+function inferQuantityUnit(type?: string): string {
+  const t = (type || '').toLowerCase();
+  if (!t) return '개';
+  if (t.includes('책자') || t.includes('카탈로그') || t.includes('브로슈어') || t.includes('매뉴얼')) return '권';
+  if (t.includes('명함') || t.includes('전단') || t.includes('리플렛') || t.includes('포스터') || t.includes('스티커')) return '장';
+  return '개';
+}
+
+function formatQuantityWithUnit(quantity?: string, type?: string): string {
+  const raw = (quantity || '').trim();
+  if (!raw) return '';
+  if (/[a-zA-Z가-힣]/.test(raw)) return raw;
+  const digits = raw.replace(/,/g, '');
+  if (!/^\d+(\.\d+)?$/.test(digits)) return raw;
+  const num = Number(digits);
+  if (!Number.isFinite(num)) return raw;
+  return `${num.toLocaleString()}${inferQuantityUnit(type)}`;
+}
+
+function getQuoteContentSummary(quote: Quote, jobs: ReturnType<typeof db.getAllJobs>): string {
+  const job = resolveQuoteJob(quote, jobs);
+  if (job?.subJobs?.length) {
+    return job.subJobs
+      .map((item) => {
+        const specs = item.specs || {};
+        const qty = formatQuantityWithUnit(specs.quantity, item.type);
+        const proc = specs.processing?.length ? `(${specs.processing.join(', ')})` : '';
+        return [item.type, specs.size, qty, proc].filter(Boolean).join(' ');
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  const lines = quote.lines?.filter((l) => l.productType || l.quantity) ?? [];
+  if (lines.length > 0) {
+    return lines
+      .map((line) => {
+        const qty = formatQuantityWithUnit(line.quantity, line.productType);
+        return [line.productType, qty].filter(Boolean).join(' ');
+      })
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  if (quote.items && quote.items !== '품목 없음') return quote.items;
+  return '작업 내역 없음';
+}
 
 export const QuoteManager: React.FC = () => {
 
@@ -38,10 +88,16 @@ export const QuoteManager: React.FC = () => {
 
 
   const jobs = db.getAllJobs();
+  const visibleBoardJobs = filterJobsForOperationalBoard(jobs, { includeStatusKeys: ['QUOTE'] });
+  const visibleBoardJobIds = new Set(visibleBoardJobs.map((job) => job.id));
+  const visibleQuotes = quotes.filter((quote) => {
+    const linkedJobId = resolveQuoteJobId(quote, jobs);
+    return !!linkedJobId && visibleBoardJobIds.has(linkedJobId);
+  });
 
 
 
-  const sortedQuotes = [...quotes].sort(
+  const sortedQuotes = [...visibleQuotes].sort(
 
     (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
 
@@ -87,7 +143,7 @@ export const QuoteManager: React.FC = () => {
 
     <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full">
 
-      <div className="p-4 md:p-6 border-b border-slate-200 flex justify-between items-center bg-slate-50 flex-none">
+      <div className="p-3 md:p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 flex-none">
 
         <div>
 
@@ -126,27 +182,27 @@ export const QuoteManager: React.FC = () => {
           <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
             <tr>
               <th className="p-0" aria-hidden="true" />
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">작업번호</th>
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">제목</th>
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">업체명</th>
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">내용</th>
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">금액</th>
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">발행일</th>
-              <th className="px-3 py-3 font-semibold text-slate-600 text-sm">상태</th>
-              <th className="px-2 py-3 font-semibold text-slate-600 text-sm text-right">관리</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">작업번호</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">제목</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">업체명</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">내용</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">금액</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">발행일</th>
+              <th className="px-3 py-2 font-semibold text-slate-600 text-sm">상태</th>
+              <th className="px-2 py-2 font-semibold text-slate-600 text-sm text-right">관리</th>
               <th className="p-0" aria-hidden="true" />
             </tr>
           </thead>
 
           <tbody className="divide-y divide-slate-100">
 
-            {quotes.length === 0 && (
+            {sortedQuotes.length === 0 && (
 
               <tr>
 
                 <td colSpan={10} className="p-8 text-center text-slate-400">
 
-                  등록된 견적서가 없습니다. 작업을 등록하면 견적서가 자동 생성됩니다.
+                  보드에 남아있는 작업의 견적서가 없습니다.
 
                 </td>
 
@@ -168,7 +224,7 @@ export const QuoteManager: React.FC = () => {
                 <td className="p-0" aria-hidden="true" />
                 <td
 
-                  className="px-3 py-3 font-mono text-[11px] font-bold text-indigo-700 whitespace-nowrap"
+                  className="px-3 py-2 font-mono text-[11px] font-bold text-indigo-700 whitespace-nowrap"
 
                   title={getQuoteJobNumber(quote, jobs)}
 
@@ -180,7 +236,7 @@ export const QuoteManager: React.FC = () => {
 
                 <td
 
-                  className="px-3 py-3 font-semibold text-slate-800 text-sm truncate"
+                  className="px-3 py-2 font-semibold text-slate-800 text-sm truncate"
 
                   title={getQuoteTitle(quote, jobs)}
 
@@ -190,23 +246,23 @@ export const QuoteManager: React.FC = () => {
 
                 </td>
 
-                <td className="px-3 py-3 font-medium text-slate-700 text-sm truncate" title={formatQuoteClientLabel(quote, jobs)}>
+                <td className="px-3 py-2 font-medium text-slate-700 text-sm truncate" title={formatQuoteClientLabel(quote, jobs)}>
                   {formatQuoteClientLabel(quote, jobs)}
                 </td>
 
                 <td
 
-                  className="px-3 py-3 text-slate-600 text-xs truncate"
+                  className="px-3 py-2 text-slate-600 text-xs truncate"
 
-                  title={getQuoteBriefContent(quote)}
+                  title={getQuoteContentSummary(quote, jobs)}
 
                 >
 
-                  {getQuoteBriefContent(quote)}
+                  {getQuoteContentSummary(quote, jobs)}
 
                 </td>
 
-                <td className="px-3 py-3 font-bold text-slate-800 text-sm whitespace-nowrap">
+                <td className="px-3 py-2 font-bold text-slate-800 text-sm whitespace-nowrap">
 
                   {quote.totalAmount.toLocaleString()}원
 
@@ -218,13 +274,13 @@ export const QuoteManager: React.FC = () => {
 
                 </td>
 
-                <td className="px-3 py-3 text-slate-500 text-xs whitespace-nowrap">
+                <td className="px-3 py-2 text-slate-500 text-xs whitespace-nowrap">
 
                   {new Date(quote.date).toLocaleDateString()}
 
                 </td>
 
-                <td className="px-3 py-3">
+                <td className="px-3 py-2">
 
                   <span
 
@@ -238,7 +294,7 @@ export const QuoteManager: React.FC = () => {
 
                 </td>
 
-                <td className="px-2 py-3 text-right">
+                <td className="px-2 py-2 text-right">
 
                   <div className="flex justify-end gap-2 opacity-50 group-hover:opacity-100 transition-opacity">
 
@@ -281,9 +337,9 @@ export const QuoteManager: React.FC = () => {
 
       <div className="md:hidden flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
 
-        {quotes.length === 0 && (
+        {sortedQuotes.length === 0 && (
 
-          <div className="text-center text-slate-400 py-10">등록된 견적서가 없습니다.</div>
+          <div className="text-center text-slate-400 py-10">보드에 남아있는 작업의 견적서가 없습니다.</div>
 
         )}
 
@@ -340,7 +396,7 @@ export const QuoteManager: React.FC = () => {
 
             <div className="text-xs text-slate-600 mb-3 bg-slate-50 p-2 rounded line-clamp-2">
 
-              {getQuoteBriefContent(quote)}
+              {getQuoteContentSummary(quote, jobs)}
 
             </div>
 

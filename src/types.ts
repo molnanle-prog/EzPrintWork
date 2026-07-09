@@ -102,6 +102,11 @@ export interface Job {
   order: number; 
   filePath?: string; 
   thumbnailUrl?: string;
+  /** 보드(칸반/달력/상황판)에서만 숨김. 이력/검색에는 남김 */
+  boardHiddenAt?: string;
+  boardHiddenBy?: string;
+  /** 이 작업에 선불로 차감된 금액 */
+  prepaidAppliedAmount?: number;
 }
 
 export interface Staff {
@@ -117,7 +122,7 @@ export interface Staff {
   email: string;
   uid?: string; // Firebase User ID link
   loginId?: string; // Custom login ID
-  password?: string; // Plaintext password (stored in private tenant staff collection)
+  password?: string; // UI 입력용만 — Firestore staff에는 저장하지 않음 (Firebase Auth)
   joinDate: string;
   isDeleted?: boolean; 
   lastReadMsgId?: string; // Last confirmed message ID in chat widget
@@ -214,6 +219,8 @@ export interface Client {
   contacts: ClientContact[]; 
   sendSmsOnComplete?: boolean; // 완료 시 알림 문자 발송 여부
   customSmsNumber?: string;    // 알림 수신 전용 연락처 (비어있으면 기본 연락처 사용)
+  /** 선불(예치) 잔액 — 작업 결제 시 자동 차감 */
+  prepaidBalance?: number;
 }
 
 export interface PaperStock {
@@ -389,7 +396,11 @@ export interface IElectronAPI {
   localDbUpsertClient?: (tenantId: string, client: unknown) => Promise<{ success: boolean }>;
   localDbDeleteClient?: (tenantId: string, clientId: string) => Promise<{ success: boolean }>;
     localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
-  gatewaySetConfig?: (config: { archiveRoot: string | null; tenantId: string | null }) => Promise<{ ok: boolean }>;
+  gatewaySetConfig?: (config: {
+    archiveRoot: string | null;
+    tenantId: string | null;
+    gatewayToken?: string | null;
+  }) => Promise<{ ok: boolean }>;
   gatewayGetInfo?: () => Promise<{ port: number; baseUrl: string; lanUrls: string[] }>;
   minimize: () => void;
   maximize: () => void;

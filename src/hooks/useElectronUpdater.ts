@@ -11,6 +11,8 @@ export function hasElectronUpdater(): boolean {
     );
 }
 
+const ELECTRON_UPDATE_POLL_MS = 5 * 60 * 1000;
+
 export function useElectronUpdater() {
     const { setDesktopNotice } = useUpdateNotice();
     const isDownloadingRef = useRef(false);
@@ -92,6 +94,18 @@ export function useElectronUpdater() {
 
         return () => unsubscribe();
     }, [setDesktopNotice, installDesktopUpdate]);
+
+    // 앱 사용 중에도 주기적으로 GitHub Release 확인 (시작 시 1회만이 아님)
+    useEffect(() => {
+        if (!hasElectronUpdater() || import.meta.env.DEV) return;
+
+        const poll = () => {
+            void window.electron?.updaterCheck?.();
+        };
+
+        const timer = window.setInterval(poll, ELECTRON_UPDATE_POLL_MS);
+        return () => window.clearInterval(timer);
+    }, []);
 
     return { installDesktopUpdate };
 }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
 import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '../contexts/ThemeContext';
@@ -91,6 +91,15 @@ export const LoginPage: React.FC = () => {
             loginPassword: overrides?.loginPassword ?? password,
         });
     };
+
+    useEffect(() => {
+        if (authLoading || currentUser) return;
+        // 로그아웃 직후 Firebase 세션·동기화 잔여 — 회사 검색·재로그인 방해 제거
+        if (auth.currentUser) {
+            void signOut(auth).catch(() => {});
+        }
+        db.clearSession();
+    }, [authLoading, currentUser]);
 
     useEffect(() => {
         setIsElectron(typeof window !== 'undefined' && !!window.electron);
@@ -373,27 +382,18 @@ export const LoginPage: React.FC = () => {
 
             let userDoc: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
             let userData: Record<string, any> | null = null;
-            const passwordsToMatch = [...new Set([
-                password.trim(),
-                password.trim().toLowerCase(),
-            ])];
 
+            // 평문 password 비교 제거 — loginId로 직원 찾고 Firebase Auth로 검증
             for (const docSnap of snap.docs) {
                 const data = docSnap.data();
                 if (data.isDeleted === true || data.active === false) continue;
-                const dbPassword = (data.password || '').trim();
-                const matched = passwordsToMatch.some(
-                    (p) => p === dbPassword || p.toLowerCase() === dbPassword.toLowerCase()
-                );
-                if (matched) {
-                    userDoc = docSnap;
-                    userData = data;
-                    break;
-                }
+                userDoc = docSnap;
+                userData = data;
+                break;
             }
 
             if (!userDoc || !userData) {
-                toast.error('아이디 또는 비밀번호가 올바르지 않거나 선택한 회사와 일치하지 않습니다.');
+                toast.error('아이디를 찾을 수 없거나 선택한 회사와 일치하지 않습니다.');
                 setIsStaffLoggingIn(false);
                 return;
             }
@@ -462,7 +462,6 @@ export const LoginPage: React.FC = () => {
                 {
                     loginId: rawLoginId,
                     email: userData.email,
-                    password: userData.password,
                     uid: userData.uid,
                 },
                 loginId.trim(),
@@ -471,7 +470,7 @@ export const LoginPage: React.FC = () => {
 
             if (!authResult) {
                 clearPendingStaffProfile();
-                toast.error('Firebase 로그인 연동에 실패했습니다. 관리자에게 직원 정보 재저장을 요청하세요.');
+                toast.error('아이디 또는 비밀번호가 올바르지 않습니다. 관리자에게 문의해 주세요.');
                 setIsStaffLoggingIn(false);
                 return;
             }
@@ -575,39 +574,39 @@ export const LoginPage: React.FC = () => {
                 return;
             }
 
-            // 아이디 및 비밀번호 소문자 자동 마이그레이션 자가 치유 (Self-Healing)
+            // 아이디 소문자 자동 마이그레이션 (평문 password는 더 이상 저장하지 않음)
             const currentLoginIdInDb = userData.loginId || '';
-            const currentPasswordInDb = userData.password || '';
             const needsIdMigration = currentLoginIdInDb && currentLoginIdInDb !== currentLoginIdInDb.toLowerCase();
-            const needsPwMigration = currentPasswordInDb && currentPasswordInDb !== currentPasswordInDb.toLowerCase();
+            const hadPlainPassword = !!(userData.password || '').trim();
 
-            if (needsIdMigration || needsPwMigration) {
+            if (needsIdMigration || hadPlainPassword) {
                 const lowerId = currentLoginIdInDb.toLowerCase();
-                const lowerPw = currentPasswordInDb.toLowerCase();
                 (async () => {
                     try {
-                        const { doc, updateDoc } = await import('firebase/firestore');
+                        const { doc, updateDoc, deleteField } = await import('firebase/firestore');
                         const { db: fsDb } = await import('../services/firebase');
                         
-                        // tenants/{tenantId}/staff/{userId} 업데이트
                         const staffDocRef = doc(fsDb, `tenants/${selectedTenantId}/staff`, userDoc.id);
-                        await updateDoc(staffDocRef, { 
-                            loginId: lowerId,
-                            password: lowerPw
-                        });
+                        const staffPatch: Record<string, unknown> = {};
+                        if (needsIdMigration) staffPatch.loginId = lowerId;
+                        if (hadPlainPassword) staffPatch.password = deleteField();
+                        if (Object.keys(staffPatch).length > 0) {
+                            await updateDoc(staffDocRef, staffPatch);
+                        }
                         
-                        // 글로벌 users/{userId} 업데이트
                         const userDocRef = doc(fsDb, 'users', userDoc.id);
                         const userSnap = await getDoc(userDocRef);
                         if (userSnap.exists()) {
-                            await updateDoc(userDocRef, { 
-                                loginId: lowerId,
-                                password: lowerPw
-                            });
+                            const userPatch: Record<string, unknown> = {};
+                            if (needsIdMigration) userPatch.loginId = lowerId;
+                            if (hadPlainPassword) userPatch.password = deleteField();
+                            if (Object.keys(userPatch).length > 0) {
+                                await updateDoc(userDocRef, userPatch);
+                            }
                         }
-                        console.log(`[Self-Healing] Successfully migrated staff ${userDoc.id} loginId/password to lowercase.`);
+                        console.log(`[Self-Healing] Migrated staff ${userDoc.id} (loginId / cleared plaintext password).`);
                     } catch (migrationErr) {
-                        console.warn("[Self-Healing] Failed to migrate credentials to lowercase:", migrationErr);
+                        console.warn("[Self-Healing] Failed to migrate credentials:", migrationErr);
                     }
                 })();
             }
@@ -804,7 +803,6 @@ export const LoginPage: React.FC = () => {
                 active: true,
                 email: authEmail,
                 loginId: normalizedLoginId,
-                password: normalizedPassword,
                 joinDate: new Date().toISOString()
             });
 
@@ -817,7 +815,6 @@ export const LoginPage: React.FC = () => {
                         action: "signup_staff",
                         companyName: companyName.trim(),
                         loginId: normalizedLoginId,
-                        password: normalizedPassword,
                         staffName: staffName.trim(),
                         staffRole: staffRole,
                         contact: formattedPhone

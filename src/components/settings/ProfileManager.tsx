@@ -7,7 +7,9 @@ import { APP_BUILD_ID, APP_VERSION } from '../../utils/autoUpdate';
 import { manualUpdateCheck as runManualUpdateCheck } from '../../hooks/useAutoUpdate';
 import { useUpdateNotice } from '../../contexts/UpdateNoticeContext';
 import { doc, setDoc } from 'firebase/firestore';
-import { db as firestore } from '../../services/firebase';
+import { updatePassword } from 'firebase/auth';
+import { db as firestore, auth } from '../../services/firebase';
+import { MIN_STAFF_PASSWORD_LENGTH } from '../../utils/staffAuthProvision';
 
 export const ProfileManager: React.FC = () => {
   const { currentUser, refreshUser } = useAuth();
@@ -47,7 +49,7 @@ export const ProfileManager: React.FC = () => {
           phoneOffice: matchedStaff.phoneOffice || '',
           phoneCompany: matchedStaff.phoneCompany || '',
           extensionNumber: matchedStaff.extensionNumber || '',
-          password: matchedStaff.password || ''
+          password: ''
         });
       } else {
         // 매칭되는 Staff 데이터가 없는 경우 (예: 테넌트 소유자/관리자 최초 로그인 등)
@@ -92,6 +94,21 @@ export const ProfileManager: React.FC = () => {
     setStatus({ type: null, message: '' });
 
     try {
+      const newPassword = formData.password.trim();
+      if (newPassword && currentUser.role !== 'admin') {
+        if (newPassword.length < MIN_STAFF_PASSWORD_LENGTH) {
+          setStatus({ type: 'error', message: `비밀번호는 ${MIN_STAFF_PASSWORD_LENGTH}자 이상 입력해 주세요.` });
+          setIsSaving(false);
+          return;
+        }
+        if (!auth.currentUser) {
+          setStatus({ type: 'error', message: '로그인 세션이 없습니다. 다시 로그인해 주세요.' });
+          setIsSaving(false);
+          return;
+        }
+        await updatePassword(auth.currentUser, newPassword.toLowerCase());
+      }
+
       // 직원이 매칭된 경우 또는 현재 로그인한 사용자가 관리자인 경우 프로필 저장을 허용합니다.
       if (staffData || currentUser.role === 'admin') {
         const isNewStaff = !staffData;
@@ -104,7 +121,6 @@ export const ProfileManager: React.FC = () => {
           phoneOffice: formData.phoneOffice,
           phoneCompany: formData.phoneCompany,
           extensionNumber: formData.extensionNumber,
-          password: formData.password,
           role: staffData ? staffData.role : '대표자',
           active: true,
           email: formData.email.trim() || currentUser.email || '',
@@ -112,7 +128,7 @@ export const ProfileManager: React.FC = () => {
           joinDate: staffData?.joinDate || new Date().toISOString()
         };
 
-        // 1. 테넌트 내부 직원 컬렉션에 저장
+        // 1. 테넌트 내부 직원 컬렉션에 저장 (평문 password 미저장)
         if (isNewStaff) {
           await db.addStaff(updatedStaff);
         } else {
@@ -128,8 +144,14 @@ export const ProfileManager: React.FC = () => {
         }, { merge: true });
 
         await refreshUser();
+        setFormData((prev) => ({ ...prev, password: '' }));
         
-        setStatus({ type: 'success', message: '개인정보가 성공적으로 업데이트되었습니다.' });
+        setStatus({
+          type: 'success',
+          message: newPassword && currentUser.role !== 'admin'
+            ? '개인정보와 로그인 비밀번호가 업데이트되었습니다.'
+            : '개인정보가 성공적으로 업데이트되었습니다.',
+        });
       } else {
         // 직원이 매칭되지 않는 특수한 경우 (사원 계정인데 목록에 없는 예외 케이스)
         setStatus({ 
@@ -139,7 +161,12 @@ export const ProfileManager: React.FC = () => {
       }
     } catch (error: any) {
       console.error('Profile update error:', error);
-      setStatus({ type: 'error', message: error.message || '저장 중 오류가 발생했습니다.' });
+      const code = error?.code || '';
+      if (code === 'auth/requires-recent-login') {
+        setStatus({ type: 'error', message: '비밀번호 변경을 위해 다시 로그인한 뒤 시도해 주세요.' });
+      } else {
+        setStatus({ type: 'error', message: error.message || '저장 중 오류가 발생했습니다.' });
+      }
     } finally {
       setIsSaving(false);
       // 알림 메시지 자동 초기화 (4초 뒤)
@@ -329,10 +356,10 @@ export const ProfileManager: React.FC = () => {
                 />
               </div>
 
-              {/* Password */}
+              {/* Password — Firebase Auth만 (Firestore 평문 저장 안 함) */}
               <div className="space-y-1.5 col-span-1 md:col-span-2">
                 <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Lock size={13} /> {currentUser.role === 'admin' ? '관리자 비밀번호 (변경 불가)' : '로그인 비밀번호'}
+                  <Lock size={13} /> {currentUser.role === 'admin' ? '관리자 비밀번호 (변경 불가)' : '로그인 비밀번호 변경'}
                 </label>
                 {currentUser.role === 'admin' ? (
                   <div className="w-full bg-slate-100 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-2">
@@ -341,14 +368,15 @@ export const ProfileManager: React.FC = () => {
                 ) : (
                   <>
                     <input
-                      type="text"
+                      type="password"
                       value={formData.password}
                       onChange={(e) => setFormData({ ...formData, password: e.target.value })}
                       className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                      placeholder="로그인에 사용할 새 비밀번호를 입력하세요"
+                      placeholder="변경할 때만 입력 (비워두면 유지)"
+                      autoComplete="new-password"
                     />
                     <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">
-                      비밀번호를 설정하지 않은 경우 빈 칸으로 표시되며, 새로운 비밀번호를 여기에 직접 설정해 사용할 수 있습니다.
+                      비밀번호는 Firebase Auth에만 저장됩니다. 변경 시에만 입력하세요.
                     </p>
                   </>
                 )}

@@ -30,7 +30,7 @@ const isStaffMainOwner = (staff: Staff, ownerId: string | null): boolean =>
 
 // Firebase Secondary Auth imports for silent user creation/management
 import { initializeApp, getApp } from 'firebase/app';
-import { getAuth, signInWithEmailAndPassword, updatePassword, signOut } from 'firebase/auth';
+import { getAuth, signInWithEmailAndPassword, signOut } from 'firebase/auth';
 import { doc, getDoc, setDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { firebaseConfig, db as firestore } from '../../services/firebase';
 import { toast } from 'sonner';
@@ -116,7 +116,6 @@ export const StaffManager: React.FC = () => {
                 action: "update_staff",
                 companyName,
                 loginId: pureId,
-                password: staff.password || '',
                 staffName: staff.name,
                 staffRole: nextRoleLabel,
                 contact: getStaffContact(staff)
@@ -355,19 +354,16 @@ export const StaffManager: React.FC = () => {
                       secondaryApp = initializeApp(firebaseConfig, 'Secondary');
                   }
                   const secondaryAuth = getAuth(secondaryApp);
-                  const oldStaff = staffList.find((s) => s.id === staff.id);
-                  if (oldStaff && oldStaff.password !== staff.password) {
+                  if (staff.password?.trim()) {
                       try {
-                          const oldEmail = normalizeStaffLoginEmail(oldStaff.loginId || staff.loginId);
-                          const oldPassword = oldStaff.password || '';
-                          await signInWithEmailAndPassword(secondaryAuth, oldEmail, oldPassword);
-                          if (secondaryAuth.currentUser) {
-                              await updatePassword(secondaryAuth.currentUser, staff.password);
-                          }
+                          const authEmail = normalizeStaffLoginEmail(staff.loginId);
+                          // 입력한 비번으로 Auth 로그인 가능하면 이미 일치 — 변경 불필요
+                          await signInWithEmailAndPassword(secondaryAuth, authEmail, staff.password.trim().toLowerCase());
                           await signOut(secondaryAuth);
-                      } catch (updateError) {
-                          console.warn('Auth password update failed:', updateError);
-                          toast.warning('직원 정보는 저장되었으나 Firebase 비밀번호 변경에 실패했습니다.');
+                      } catch {
+                          toast.warning(
+                              '직원 정보는 저장되었습니다. 비밀번호는 Firebase에만 보관되며, 기존 계정 변경은 해당 직원이 로그인 후 프로필에서 하거나 계정 재연결이 필요합니다.'
+                          );
                       }
                   }
 
@@ -385,7 +381,6 @@ export const StaffManager: React.FC = () => {
                       role: authRole,
                       position: staff.role,
                       loginId: staff.loginId.trim(),
-                      password: staff.password.trim(),
                   };
                   if (!userSnap.exists()) {
                       userProfileUpdate.uid = uid;
@@ -394,8 +389,11 @@ export const StaffManager: React.FC = () => {
 
                   try {
                       await setDoc(doc(firestore, 'users', uid), userProfileUpdate, { merge: true });
+                      try {
+                          const { deleteField, updateDoc } = await import('firebase/firestore');
+                          await updateDoc(doc(firestore, 'users', uid), { password: deleteField() });
+                      } catch { /* optional */ }
                   } catch (userErr: unknown) {
-                      // users 프로필은 직원 첫 로그인 시 본인 계정으로 생성됨
                       console.warn('users profile sync skipped (staff login will create):', userErr);
                   }
               }
@@ -416,7 +414,6 @@ export const StaffManager: React.FC = () => {
                       action: isNewStaff ? 'add_staff' : 'update_staff',
                       companyName,
                       loginId: pureId,
-                      password: staff.password || '',
                       staffName: staff.name,
                       staffRole: staff.role || '직원',
                       contact: getStaffContact(staff),
@@ -462,7 +459,6 @@ export const StaffManager: React.FC = () => {
                       action: "add_staff",
                       companyName,
                       loginId: pureId,
-                      password: approvedStaff?.password || '',
                       staffName: request.userName,
                       staffRole: approvedStaff?.role || '디자이너',
                       contact: approvedStaff ? getStaffContact(approvedStaff) : ''
@@ -626,23 +622,18 @@ export const StaffManager: React.FC = () => {
                     {!staff.phone && !staff.phoneCompany && !staff.phoneOffice && !staff.extensionNumber && !staff.email && (
                         <span className="text-slate-400 dark:text-slate-500 italic text-xs pl-1">등록된 정보 없음</span>
                     )}
-                    {currentUser?.role === 'admin' && (staff.loginId || staff.password) && (
+                    {currentUser?.role === 'admin' && staff.loginId && (
                         <div className="mt-3 p-2.5 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900 rounded-xl text-xs space-y-1.5 animate-in fade-in duration-200">
                             <div className="text-[10px] font-black text-blue-600 dark:text-blue-400 uppercase tracking-wider pl-0.5 mb-1">
                                 로그인 계정 정보 (관리자 전용)
                             </div>
-                            {staff.loginId && (
-                                <div className="flex items-center justify-between">
-                                    <span className="text-slate-400 dark:text-slate-500 font-bold">아이디 (ID):</span>
-                                    <span className="font-mono font-black text-blue-700 dark:text-blue-300">{staff.loginId}</span>
-                                </div>
-                            )}
-                            {staff.password && (
-                                <div className="flex items-center justify-between">
-                                    <span className="text-slate-400 dark:text-slate-500 font-bold">비밀번호:</span>
-                                    <span className="font-mono font-black text-blue-700 dark:text-blue-300 select-all" title="더블 클릭하여 복사">{staff.password}</span>
-                                </div>
-                            )}
+                            <div className="flex items-center justify-between">
+                                <span className="text-slate-400 dark:text-slate-500 font-bold">아이디 (ID):</span>
+                                <span className="font-mono font-black text-blue-700 dark:text-blue-300">{staff.loginId}</span>
+                            </div>
+                            <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-snug pl-0.5">
+                                비밀번호는 Firebase Auth에만 보관되며 목록에 표시되지 않습니다.
+                            </p>
                         </div>
                     )}
                 </div>

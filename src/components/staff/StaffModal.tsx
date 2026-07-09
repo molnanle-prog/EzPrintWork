@@ -51,6 +51,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
       setFormData({
         ...staff,
         email: cleanEmail,
+        password: '', // Firestore에 평문 없음 — 변경 시에만 입력
         avatarUrl: getStaffAvatarUrl(staff.avatarUrl, staff.id),
       });
     } else {
@@ -80,11 +81,14 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
         return;
     }
 
-    if ((formData.loginId && !formData.password) || (!formData.loginId && formData.password)) {
-        await showAlert('로그인 계정을 사용하려면 아이디와 비밀번호를 모두 입력해야 합니다.');
+    if (formData.loginId && !formData.password && !staff?.uid) {
+        await showAlert('로그인 계정을 새로 만들려면 아이디와 비밀번호를 모두 입력해야 합니다.');
         return;
     }
-
+    if (!formData.loginId && formData.password) {
+        await showAlert('비밀번호만 입력할 수 없습니다. 아이디도 함께 입력해 주세요.');
+        return;
+    }
     if (formData.loginId && formData.password && formData.password.trim().length < MIN_STAFF_PASSWORD_LENGTH) {
         await showAlert(`로그인 비밀번호는 ${MIN_STAFF_PASSWORD_LENGTH}자 이상 입력해 주세요.`);
         return;
@@ -410,7 +414,7 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
               <Key size={16} /> 로그인 계정 설정 (선택)
             </label>
             <p className="text-xs text-slate-500 font-medium mb-1.5 pl-1">
-              직원이 프로그램에 로그인할 수 있도록 ID와 비밀번호를 생성해 줍니다.
+              직원이 프로그램에 로그인할 수 있도록 ID와 비밀번호를 생성합니다. 비밀번호는 Firebase Auth에만 저장됩니다.
             </p>
             
             <div className="flex items-center gap-2">
@@ -427,11 +431,12 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
             <div className="flex items-center gap-2">
                 <span className="text-xs font-bold text-slate-600 w-20 text-right">비밀번호</span>
                 <input 
-                  type="text" 
+                  type="password" 
                   value={formData.password || ''}
                   onChange={(e) => setFormData({...formData, password: e.target.value})}
                   className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
-                  placeholder="6자리 이상의 비밀번호"
+                  placeholder={staff?.uid ? '변경할 때만 입력 (비워두면 유지)' : '6자리 이상의 비밀번호'}
+                  autoComplete="new-password"
                 />
             </div>
           </div>

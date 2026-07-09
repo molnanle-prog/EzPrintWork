@@ -83,11 +83,31 @@ service cloud.firestore {
         && isReasonableListQuery();
     }
 
-    // tenants 목록/단건 — 로그인 전 회사 찾기용 공개 조회
+    // 회사명 부분 검색 (name >= … && name <= …\uf8ff)
+    function isTenantNamePrefixSearchQuery() {
+      return isReasonableListQuery()
+        && request.query.filters.size() >= 2
+        && request.query.filters.size() <= 3
+        && request.query.filters[0].field.path == ['name']
+        && request.query.filters[0].op == '>='
+        && request.query.filters[1].field.path == ['name']
+        && request.query.filters[1].op == '<=';
+    }
+
+    // tenants 목록/단건 — 로그인 전·후 누구나 회사 찾기용
     function isPublicTenantDiscovery() {
       return isReasonableListQuery()
         || isTenantNameSearchQuery()
+        || isTenantNamePrefixSearchQuery()
         || isTenantNameJoinCodeQuery();
+    }
+
+    // tenants/{id} 단건 — 회사 검색 결과 읽기 (하위 jobs/clients 등은 isMember로 보호)
+    function isPublicTenantDiscoveryGet() {
+      return resource != null
+        && resource.data.name is string
+        && resource.data.name.size() >= 1
+        && resource.data.name.size() <= 100;
     }
 
     function isStaffLoginQuery() {
@@ -288,9 +308,9 @@ service cloud.firestore {
 
     // 3. Tenants
     match /tenants/{tenantId} {
-      // 회사 검색: list 쿼리 허용 + get은 결과 문서 읽기용으로 공개 (jobs/clients 등 하위는 isMember로 보호)
+      // 회사 검색: list 쿼리 허용 + get은 검색 결과 문서 읽기 (로그인 여부 무관)
       allow list: if isSuperAdmin() || isPublicTenantDiscovery();
-      allow get: if isSuperAdmin() || isMember(tenantId) || !isSignedIn();
+      allow get: if isSuperAdmin() || isMember(tenantId) || isPublicTenantDiscoveryGet();
       allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
       allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
       allow delete: if isSuperAdmin();

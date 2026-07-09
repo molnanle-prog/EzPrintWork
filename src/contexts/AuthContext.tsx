@@ -6,7 +6,7 @@ import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
 import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, isStaffAdminRole, CompanyPermissionContext } from '../utils/adminAccess';
-import { isStaffKeepLoggedIn, clearSavedStaffCredentials } from '../utils/staffLoginPreferences';
+import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
 import { lookupStaffRecordRole } from '../utils/resolveStaffTenantProfile';
 import {
@@ -341,7 +341,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                     active: true,
                     email: user.email || updatedUser.email || '',
                     loginId: (updatedUser as any).loginId || user.email || '',
-                    password: (updatedUser as any).password || '',
                     joinDate: (updatedUser as any).createdAt || new Date().toISOString()
                   }, { merge: true });
                   console.log(`[AuthSelfHealing] Automatically created missing staff record for tenant owner: ${user.uid}`);
@@ -825,8 +824,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       await setPresenceOffline();
     }
     clearPersistedStaffSession();
-    clearSavedStaffCredentials();
     clearLocalStaffSessionId();
+    dataService.clearSession();
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);
@@ -834,6 +833,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료
   useEffect(() => {
+    const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
+    if (!isDesktopApp) return;
+
     sessionKickedRef.current = false;
     if (!firebaseUser?.uid || !currentUser?.loginId) return;
 

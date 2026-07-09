@@ -40,6 +40,7 @@ interface KanbanBoardProps {
 }
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) => {
+  const isWebReadOnly = db.isWebMirrorMode();
   const [displayJobs, setDisplayJobs] = useState<Job[]>([]);
   const [activeJobsStats, setActiveJobsStats] = useState<Job[]>([]); 
   const [staff, setStaff] = useState<Staff[]>([]);
@@ -207,6 +208,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const handleJobDrop = async (draggedJobId: string, newStatusKey: string, insertIndex?: number) => {
+    if (isWebReadOnly) {
+      showAlert('웹(태블릿/휴대폰)은 조회 전용입니다. 작업 수정은 매장 PC 앱에서 진행해 주세요.');
+      return;
+    }
     const allJobs = db.getAllJobs(); 
     const draggedJob = allJobs.find(j => j.id === draggedJobId);
     if (!draggedJob || !currentUser) return;
@@ -330,6 +335,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
+    if (isWebReadOnly) {
+      setActiveDragJobId(null);
+      return;
+    }
     setActiveDragJobId(null);
     justDraggedRef.current = true;
     setTimeout(() => {
@@ -394,6 +403,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   }, []);
 
   const handleCreateJob = async (newJob: Job) => {
+    if (isWebReadOnly) {
+      showAlert('웹(태블릿/휴대폰)은 조회 전용입니다. 작업 등록은 매장 PC 앱에서 진행해 주세요.');
+      return;
+    }
     try {
         const allJobs = db.getAllJobs();
         const columnJobs = allJobs.filter(j => j.status === newJob.status);
@@ -408,6 +421,15 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         setIsCreatingJob(false);
     } catch (error) {
         showAlert(getErrorMessage(error));
+    }
+  };
+  const handleHideFromBoard = async (job: Job) => {
+    if (isWebReadOnly) return;
+    try {
+      await db.hideJobFromBoard(job.id, currentUser?.id);
+      toast.success('완료 카드를 보드에서 내렸습니다.');
+    } catch (error) {
+      showAlert(getErrorMessage(error));
     }
   };
 
@@ -541,12 +563,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         getStaffName={getStaffName}
         onSelectJob={handleSelectJob}
         onRightClickJob={handleRightClickJob}
-        onStatusChange={updateJobStatus}
+        onStatusChange={isWebReadOnly ? () => {} : updateJobStatus}
         currentUserId={currentStaffId ?? currentUser?.id}
         resolveIsMyJob={resolveIsMyJob}
         isCompact={false}
         showAd={showsAds && statusDef.key === adStatusKey}
         isTvMode={isTvMode}
+        onHideFromBoard={handleHideFromBoard}
       />
     </div>
   );
@@ -768,7 +791,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           <button 
             onClick={() => setIsCreatingJob(true)}
             title="새로운 작업을 등록합니다"
-            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95"
+            disabled={isWebReadOnly}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
           >
             <Plus size={16} />
             <span>작업 등록</span>
@@ -799,8 +823,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         sensors={sensors}
         collisionDetection={kanbanCollisionDetection}
         measuring={{ droppable: { strategy: MeasuringStrategy.WhileDragging } }}
-        onDragStart={handleDragStart}
-        onDragEnd={handleDragEnd}
+        onDragStart={isWebReadOnly ? undefined : handleDragStart}
+        onDragEnd={isWebReadOnly ? undefined : handleDragEnd}
       >
       <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0 touch-pan-x">
         <div className="flex gap-1.5 h-full py-1.5 px-0 w-full min-w-0">
@@ -828,10 +852,11 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 getStaffName={getStaffName}
                 onSelectJob={handleSelectJob}
                 onRightClickJob={handleRightClickJob}
-                onStatusChange={updateJobStatus}
+                onStatusChange={isWebReadOnly ? () => {} : updateJobStatus}
                 currentUserId={currentStaffId ?? currentUser?.id}
                 resolveIsMyJob={resolveIsMyJob}
                 isTvMode={isTvMode}
+                onHideFromBoard={handleHideFromBoard}
               />
             );
           })}
@@ -862,6 +887,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 currentUserId={currentStaffId ?? currentUser?.id}
                 isTvMode={isTvMode}
                 isDragOverlay
+                onHideFromBoard={handleHideFromBoard}
               />
             </div>
           );
@@ -877,6 +903,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           initialViewMode={jobModalViewMode}
           onClose={() => setSelectedJob(null)} 
           onUpdate={async (updated) => {
+             if (isWebReadOnly) {
+                showAlert('웹(태블릿/휴대폰)은 조회 전용입니다. 작업 수정은 매장 PC 앱에서 진행해 주세요.');
+                return;
+             }
              try {
                 await db.updateJob(updated);
                 setSelectedJob(null);

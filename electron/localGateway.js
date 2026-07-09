@@ -5,12 +5,32 @@ const os = require('os');
 
 const SITUATION_FILE = 'situation-mirror.json';
 const ARCHIVE_FILE = 'jobs-archive.json';
+const DEFAULT_GATEWAY_PORT = 3847;
 
 const CORS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Ezpw-Gateway-Token',
 };
+
+/** 웹과 동일한 규칙 — src/utils/gatewayToken.ts */
+function deriveStoreGatewayToken(tenantId) {
+    const id = String(tenantId || '').trim();
+    if (!id) return '';
+    let hash = 2166136261;
+    const raw = `ezpw-gw-v1:${id}`;
+    for (let i = 0; i < raw.length; i++) {
+        hash ^= raw.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    const a = (hash >>> 0).toString(36);
+    let hash2 = 5381;
+    for (let i = 0; i < raw.length; i++) {
+        hash2 = ((hash2 << 5) + hash2) ^ raw.charCodeAt(i);
+    }
+    const b = (hash2 >>> 0).toString(36);
+    return `${a}${b}`.slice(0, 24);
+}
 
 function readRequestBody(req) {
     return new Promise((resolve, reject) => {
@@ -32,11 +52,21 @@ class LocalGateway {
         this.port = 0;
         this.archiveRoot = null;
         this.tenantId = null;
+        this.gatewayToken = null;
     }
 
-    setConfig({ archiveRoot, tenantId }) {
+    setConfig({ archiveRoot, tenantId, gatewayToken }) {
         this.archiveRoot = archiveRoot ? String(archiveRoot).replace(/[\\/]$/, '') : null;
         this.tenantId = tenantId || null;
+        this.gatewayToken = gatewayToken || (tenantId ? deriveStoreGatewayToken(tenantId) : null);
+    }
+
+    isAuthorized(req, url) {
+        if (!this.gatewayToken) return true;
+        const headerToken = req.headers['x-ezpw-gateway-token'];
+        const queryToken = url.searchParams.get('token');
+        const provided = (headerToken || queryToken || '').trim();
+        return provided === this.gatewayToken;
     }
 
     readJsonFile(name) {
@@ -120,11 +150,20 @@ class LocalGateway {
 
                 if (url.pathname === '/health') {
                     res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
-                    res.end(JSON.stringify({ ok: true, ...this.getInfo() }));
+                    res.end(JSON.stringify({
+                        ok: true,
+                        ...this.getInfo(),
+                        authRequired: !!this.gatewayToken,
+                    }));
                     return;
                 }
 
                 if (url.pathname === '/api/v1/mirror' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
                     const tenantId = url.searchParams.get('tenantId') || this.tenantId;
                     const situation = this.readJsonFile(SITUATION_FILE);
                     const archive = this.readJsonFile(ARCHIVE_FILE);
@@ -147,6 +186,12 @@ class LocalGateway {
                 }
 
                 if (url.pathname === '/api/v1/jobs/partial' && req.method === 'POST') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    // 웹은 조회 전용 — POST는 매장 PC 내부/레거시만. 외부 쓰기는 거부 권장이나 NAS 경유 유지.
                     if (!this.archiveRoot) {
                         res.writeHead(503, CORS);
                         res.end('NAS path not configured');
@@ -199,11 +244,28 @@ class LocalGateway {
                 res.end('Not found');
             });
 
-            this.server.listen(0, '0.0.0.0', () => {
-                this.port = this.server.address().port;
-                console.log('[LocalGateway] listening on', this.getInfo().baseUrl);
+            const listenOn = (port) => {
+                this.server.listen(port, '0.0.0.0', () => {
+                    this.port = this.server.address().port;
+                    console.log('[LocalGateway] listening on', this.getInfo().baseUrl);
+                    resolve(this.getInfo());
+                });
+            };
+
+            this.server.once('error', (error) => {
+                if (error?.code === 'EADDRINUSE') {
+                    console.warn(`[LocalGateway] port ${DEFAULT_GATEWAY_PORT} already in use, fallback random port`);
+                    this.server.removeAllListeners('error');
+                    listenOn(0);
+                    return;
+                }
+                console.error('[LocalGateway] failed to start:', error);
+                this.server = null;
+                this.port = 0;
                 resolve(this.getInfo());
             });
+
+            listenOn(DEFAULT_GATEWAY_PORT);
         });
     }
 

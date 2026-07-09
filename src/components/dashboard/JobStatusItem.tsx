@@ -14,9 +14,10 @@ interface JobStatusItemProps {
   staff: Staff[];
   statusDefinitions: JobStatusDefinition[];
   onContact?: (job: Job) => void;
+  onHideFromBoard?: (job: Job) => void;
 }
 
-export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, statusDefinitions, onContact }) => {
+export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, statusDefinitions, onContact, onHideFromBoard }) => {
   const { theme } = useTheme();
   
   const getStatusStepIndex = (statusKey: string) => {
@@ -147,6 +148,18 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
                   title="고객 알림"
                 >
                   <MessageCircle size={12} />
+                </button>
+               )}
+               {onHideFromBoard && isDone && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onHideFromBoard(job);
+                  }}
+                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-700 rounded transition-colors"
+                  title="보드에서 내리기"
+                >
+                  <CheckCircle2 size={12} />
                 </button>
                )}
 

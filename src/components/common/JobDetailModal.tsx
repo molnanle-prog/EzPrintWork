@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
+import { findClientByName, normalizePrepaidBalance } from '../../utils/prepaidBalance';
 import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2 } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { JobOrderPreviewModal } from './JobOrderPreviewModal';
@@ -1377,6 +1378,17 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                             </span>
                           </div>
                           <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="결제완료">결제완료</option></select></div>
+                          {(() => {
+                            const client = findClientByName(db.getClients(), editedJob.clientName);
+                            const prepaid = normalizePrepaidBalance(client?.prepaidBalance);
+                            const applied = editedJob.prepaidAppliedAmount || 0;
+                            if (prepaid <= 0 && applied <= 0) return null;
+                            return (
+                              <p className="text-[9px] text-indigo-600 dark:text-indigo-400 pl-1">
+                                {applied > 0 ? `선불 차감 ${applied.toLocaleString()}원` : `거래처 선불 잔액 ${prepaid.toLocaleString()}원`}
+                              </p>
+                            );
+                          })()}
                         </div>
 
                         {/* Dates 2: 납기일 */}
@@ -1875,6 +1887,18 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
             )}
             {!isNew && (
               <>
+                {(editedJob.status === 'COMPLETED' || editedJob.status === 'DELIVERY') && (
+                  <button
+                    onClick={async () => {
+                      await db.hideJobFromBoard(editedJob.id, currentUser?.id);
+                      onClose();
+                    }}
+                    className="px-4 py-1.5 bg-rose-600 text-white hover:bg-rose-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                    title="작업 내역은 남기고 보드(칸반/달력/상황판)에서만 숨깁니다"
+                  >
+                    보드에서 내리기
+                  </button>
+                )}
                 <button
                   onClick={handleOpenQuotePreview}
                   disabled={openingQuote}

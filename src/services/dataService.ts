@@ -7,20 +7,16 @@ import { normalizeKanbanLayoutConfig, normalizeStatusDefinition } from '../utils
 import { toast } from 'sonner';
 import { 
     collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch,
-    query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer
+    query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer,
+    deleteField
 } from 'firebase/firestore';
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { db as firestore, auth, storage } from './firebase';
+import { signOut } from 'firebase/auth';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
 import { localDbBridge } from './localDbBridge';
-import { refreshLocalGateway, postJobsPartialViaGateway, isStoreGatewayReachable } from './gatewayBridge';
-import {
-    claimWebJobRelayBatches,
-    enqueueWebJobRelayBatches,
-    getWebJobQueueRef,
-    isLikelyMixedContentBlocked,
-} from './webJobRelayService';
+import { refreshLocalGateway } from './gatewayBridge';
 import type { SituationMirrorPayload } from './situationMirrorService';
 import {
     applyArchiveRootFromSettings,
@@ -32,6 +28,7 @@ import {
     TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
 } from '../utils/archiveStorage';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
+import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances } from '../utils/prepaidBalance';
 import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
 import { formatJobNumber } from '../utils/jobNumber';
 import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
@@ -70,6 +67,8 @@ export const formatBusinessNumber = (value: string) => {
 export const getErrorMessage = (error: any): string => {
     const code = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
     const webGatewayMessages: Record<string, string> = {
+        'web-readonly-jobs':
+            '웹(태블릿/휴대폰)은 조회 전용입니다. 작업 수정은 매장 PC 앱에서 진행해 주세요.',
         'web-gateway-batch-save-failed':
             '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
         'web-gateway-job-save-failed':
@@ -511,11 +510,12 @@ export class DataService {
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
     private syncPulseUnsub: (() => void) | null = null;
-    private webJobQueueUnsub: (() => void) | null = null;
-    private webJobQueueProcessing = false;
+    private lastPublishedGatewayUrl: string | null = null;
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
+    private lastWriteErrorToastAt = 0;
+    private lastWriteErrorToastKey = '';
     private syncUserRole: 'admin' | 'staff' | 'superadmin' | null = null;
     /** jobs 핫 캐시 — 로그인 1회 pull + pulse 시 변경분만 getDoc */
     private operationalJobs: Job[] = [];
@@ -560,6 +560,17 @@ export class DataService {
         return !this.getIsElectron();
     }
 
+    /**
+     * Firestore 클라우드 저장 가능 여부.
+     * 웹: jobs는 항상 조회 전용. 관리자(메인·사내)는 설정·마스터 데이터 저장 허용.
+     */
+    private canPersistToCloud(col?: string): boolean {
+        if (!this.tenantId) return false;
+        if (!this.isWebMirrorMode()) return true;
+        if (col === 'jobs') return false;
+        return this.isSyncAdmin();
+    }
+
     setSyncUserRole(role: 'admin' | 'staff' | 'superadmin' | null) {
         this.syncUserRole = role;
     }
@@ -589,6 +600,15 @@ export class DataService {
 
     hasWebMirrorData() {
         return this.webMirrorReady;
+    }
+
+    /** 웹 조회용 — 마지막 NAS/미러 동기화 시각(ISO) */
+    getLastNasMirrorAt(): string | null {
+        return this.lastNasMirrorAt;
+    }
+
+    isWebViewOnly(): boolean {
+        return !this.getIsElectron();
     }
 
     private async fetchWebMirrorPayload(): Promise<SituationMirrorPayload | null> {
@@ -633,38 +653,6 @@ export class DataService {
         }
     }
 
-    private async persistWebJobsFromBrowser(jobs: Job[]): Promise<'gateway' | 'relay' | false> {
-        if (!this.tenantId || this.getIsElectron() || jobs.length === 0) return false;
-
-        const gateway = this.getStoreGatewayUrl();
-        const canTryGateway = !!gateway && !isLikelyMixedContentBlocked(gateway);
-
-        if (canTryGateway && gateway) {
-            const reachable = await isStoreGatewayReachable(gateway);
-            if (reachable) {
-                const result = await postJobsPartialViaGateway(gateway, this.tenantId, jobs);
-                if (result.ok) {
-                    if (result.updatedAt) {
-                        this.lastNasMirrorAt = result.updatedAt;
-                        this.lastNasArchiveAt = result.updatedAt;
-                    }
-                    return 'gateway';
-                }
-            }
-        }
-
-        const enqueued = await enqueueWebJobRelayBatches(this.tenantId, jobs);
-        if (!enqueued) return false;
-
-        await this.bumpSyncPulse({ webJobRelayAt: new Date().toISOString() });
-        return 'relay';
-    }
-
-    /** @deprecated persistWebJobsFromBrowser 사용 */
-    private async persistJobsViaWebGateway(jobs: Job[]): Promise<boolean> {
-        const mode = await this.persistWebJobsFromBrowser(jobs);
-        return mode === 'gateway' || mode === 'relay';
-    }
 
     private isSyncAdmin(): boolean {
         return this.syncUserRole === 'admin' || this.syncUserRole === 'superadmin';
@@ -684,6 +672,7 @@ export class DataService {
                 const userSnap = await getDocFromServer(doc(firestore, 'users', effectiveUid));
                 const profileTenant = userSnap.data()?.tenantId;
                 if (userSnap.exists() && profileTenant === tenantId) {
+                    await this.waitForAuthToken();
                     this.setTenant(tenantId);
                     return true;
                 }
@@ -742,6 +731,46 @@ export class DataService {
         this.stopSyncPulse();
         this.startSyncing();
     }
+
+    /** 로그아웃·세션 만료 — 동기화 중단 및 테넌트 연결 해제 */
+    clearSession() {
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        this.unsubscribeList.forEach((unsub) => unsub());
+        this.unsubscribeList = [];
+        this.stopSyncPulse();
+        this.stopNasMirrorPolling();
+        this.stopPaymentJobsSync();
+
+        this.tenantId = null;
+        this.syncUserRole = null;
+        this.lastSyncError = null;
+        this.syncStatus = 'disconnected';
+        this.isReady = false;
+        this.cloudDegraded = false;
+        this.localOperationalReady = false;
+        this.webMirrorReady = false;
+        this.quotesBootstrappedForTenant = null;
+        this.settingsMergePersisting = false;
+        this.quotesBootstrapInProgress = false;
+        this.operationalJobs = [];
+        this.kanbanCompletedJobs = [];
+        this.supplementaryJobs = [];
+        this.calendarMonthsLoaded.clear();
+        this.clientHistoryLoaded.clear();
+        this.paymentJobsWanted = false;
+        this.paymentJobsLoaded = false;
+        this.lazyCollectionsLoaded.clear();
+        this.localPulseMarkers.clear();
+        this.lastNasMirrorAt = null;
+        this.lastNasArchiveAt = null;
+        clearCompanyArchiveRootOverride();
+        this.rebuildMergedJobs();
+        this.notify();
+    }
+
     private mergeSettingsDocs(docs: { id: string; [key: string]: any }[]): Record<string, any> {
         const main: Record<string, any> = {};
         const companyDoc = docs.find(d => d.id === 'companyInfo');
@@ -832,6 +861,12 @@ export class DataService {
         this.notify();
 
         if (!this.tenantId) {
+            this.settingsMergePersisting = false;
+            return;
+        }
+
+        // 웹 일반 직원 — 메모리 병합만. 관리자는 Firestore 저장 허용
+        if (this.isWebMirrorMode() && !this.isSyncAdmin()) {
             this.settingsMergePersisting = false;
             return;
         }
@@ -1135,7 +1170,7 @@ export class DataService {
     }
 
     async pushLiveMirrors(): Promise<void> {
-        if (!this.tenantId) return;
+        if (!this.tenantId || this.isWebMirrorMode()) return;
         const tenantId = this.tenantId;
         const jobs = this.getAllJobs();
         const staff = (this.data['staff'] || []) as Staff[];
@@ -1179,7 +1214,19 @@ export class DataService {
     private async refreshStoreGateway() {
         if (!this.getIsElectron() || !this.tenantId) return;
         const root = getArchiveRootPath();
-        await refreshLocalGateway(root, this.tenantId);
+        const info = await refreshLocalGateway(root, this.tenantId);
+        const lanUrl = info?.lanUrls?.[0]?.trim().replace(/\/$/, '') || null;
+        if (!lanUrl) return;
+
+        // 아침 허브: 누가 PC 켜고 로그인해도 Firestore에 LAN URL 자동 게시
+        if (lanUrl !== this.lastPublishedGatewayUrl && lanUrl !== this.getStoreGatewayUrl()) {
+            this.lastPublishedGatewayUrl = lanUrl;
+            await this.saveStoreGatewayUrl(lanUrl).catch((e) =>
+                console.warn('[DataService] auto storeGatewayUrl save failed:', e)
+            );
+        } else if (lanUrl !== this.lastPublishedGatewayUrl) {
+            this.lastPublishedGatewayUrl = lanUrl;
+        }
     }
 
     private stopNasMirrorPolling() {
@@ -1446,51 +1493,6 @@ export class DataService {
             this.syncPulseUnsub();
             this.syncPulseUnsub = null;
         }
-        this.stopWebJobQueue();
-    }
-
-    private stopWebJobQueue() {
-        if (this.webJobQueueUnsub) {
-            this.webJobQueueUnsub();
-            this.webJobQueueUnsub = null;
-        }
-    }
-
-    private subscribeWebJobQueue() {
-        if (!this.tenantId || !this.isLocalPrimaryMode()) return;
-        this.stopWebJobQueue();
-        this.webJobQueueUnsub = onSnapshot(
-            getWebJobQueueRef(this.tenantId),
-            (snap) => {
-                const batches = (snap.data()?.batches as unknown[] | undefined) || [];
-                if (batches.length > 0) void this.processWebJobRelayQueue();
-            },
-            (err) => console.warn('[DataService] web job queue listen failed:', err)
-        );
-    }
-
-    private async processWebJobRelayQueue() {
-        if (!this.tenantId || this.webJobQueueProcessing || !this.isLocalPrimaryMode()) return;
-        this.webJobQueueProcessing = true;
-        try {
-            const batches = await claimWebJobRelayBatches(this.tenantId);
-            if (batches.length === 0) return;
-
-            for (const batch of batches) {
-                if (!batch.jobs?.length) continue;
-                this.applyLocalJobUpdates(batch.jobs);
-                await jobArchiveService.mergePartialJobsToNas(this.tenantId, batch.jobs);
-            }
-
-            await this.persistAllToLocalDb().catch((e) =>
-                console.warn('[DataService] local db sync after web relay failed:', e)
-            );
-            await this.pushLiveMirrors();
-        } catch (e) {
-            console.warn('[DataService] web job relay process failed:', e);
-        } finally {
-            this.webJobQueueProcessing = false;
-        }
     }
 
     private stopAllLazySync() {
@@ -1527,7 +1529,7 @@ export class DataService {
     }
 
     private async bumpSyncPulse(patch: Record<string, unknown>) {
-        if (!this.tenantId) return;
+        if (!this.tenantId || (this.isWebMirrorMode() && !this.isSyncAdmin())) return;
         if (this.isLocalPrimaryMode() && ('jobsAt' in patch || 'jobRev' in patch || 'jobBatchRev' in patch)) {
             return;
         }
@@ -2031,8 +2033,67 @@ export class DataService {
         }
     }
 
+    private async waitForAuthToken(): Promise<boolean> {
+        const user = auth.currentUser;
+        if (!user) return false;
+        for (let attempt = 0; attempt < 8; attempt++) {
+            try {
+                await user.getIdToken(attempt > 0);
+                return true;
+            } catch (e) {
+                console.warn('[DataService] auth token wait retry', attempt + 1, e);
+                await new Promise((r) => setTimeout(r, 250));
+            }
+        }
+        return false;
+    }
+
+    /** staff·settings — Electron 로컬 DB가 있으면 클라우드 실패 시 계속 진행 */
+    private async pullCloudConfigDocs(softFail: boolean): Promise<void> {
+        try {
+            await this.pullCollectionDocs('staff');
+            await this.pullCollectionDocs('settings');
+            this.enforceCompanyArchiveRoot();
+        } catch (error) {
+            if (!softFail) throw error;
+            console.warn('[DataService] cloud staff/settings pull skipped (local fallback):', error);
+        }
+    }
+
+    private async tryRecoverFromLocalOrMirror(): Promise<boolean> {
+        if (this.isLocalPrimaryMode()) {
+            try {
+                const loaded = await this.loadLocalPrimaryData();
+                if (loaded) {
+                    this.localOperationalReady = true;
+                    return true;
+                }
+            } catch (e) {
+                console.warn('[DataService] local DB recovery failed:', e);
+            }
+        }
+        return this.tryHydrateFromMirrors();
+    }
+
+    private enterCloudDegradedMode(message: string) {
+        this.cloudDegraded = true;
+        this.syncStatus = 'synced';
+        this.isReady = true;
+        this.startNasMirrorPolling();
+        this.finishSessionPull();
+        toast.warning(message, { duration: 6000 });
+    }
+
     private async startSyncing() {
         if (!this.tenantId) return;
+
+        if (!auth.currentUser) {
+            this.lastSyncError = 'auth-not-ready';
+            this.syncStatus = 'disconnected';
+            this.notify();
+            this.scheduleReconnect();
+            return;
+        }
 
         this.unsubscribeList.forEach((unsub) => unsub());
         this.unsubscribeList = [];
@@ -2058,45 +2119,52 @@ export class DataService {
 
         const localPrimary = this.isLocalPrimaryMode();
 
-        try {
-            await this.pullCollectionDocs('staff');
-            await this.pullCollectionDocs('settings');
-            this.enforceCompanyArchiveRoot();
+        const authReady = await this.waitForAuthToken();
+        if (!authReady) {
+            this.lastSyncError = 'auth-not-ready';
+            this.syncStatus = 'disconnected';
+            this.notify();
+            this.scheduleReconnect();
+            return;
+        }
 
-            if (localPrimary) {
+        if (localPrimary) {
+            try {
                 const loaded = await this.loadLocalPrimaryData();
-                if (loaded) {
-                    this.localOperationalReady = true;
-                    this.syncStatus = 'synced';
-                    this.isReady = true;
-                    this.notify();
-                    await this.pollNasOperationalSync();
-                }
+                if (loaded) this.localOperationalReady = true;
+            } catch (e) {
+                console.warn('[DataService] local DB preload failed:', e);
+            }
+        }
+
+        try {
+            await this.pullCloudConfigDocs(localPrimary && this.localOperationalReady);
+
+            if (localPrimary && this.localOperationalReady) {
+                this.syncStatus = 'synced';
+                this.isReady = true;
+                this.notify();
+                await this.pollNasOperationalSync();
             }
 
             await this.pullJoinRequests();
             this.subscribeSyncPulse();
-            if (localPrimary) {
-                this.subscribeWebJobQueue();
-            }
 
             if (!localPrimary) {
                 await this.pullOperationalCloudData();
-            } else {
-                if (!this.localOperationalReady) {
-                    try {
-                        await this.pullOperationalCloudData();
+            } else if (!this.localOperationalReady) {
+                try {
+                    await this.pullOperationalCloudData();
+                    await this.persistAllToLocalDb();
+                    this.localOperationalReady = true;
+                } catch (migErr) {
+                    console.warn('[DataService] cloud migration pull failed, trying mirrors:', migErr);
+                    const hydrated = await this.tryHydrateFromMirrors();
+                    if (hydrated) {
                         await this.persistAllToLocalDb();
                         this.localOperationalReady = true;
-                    } catch (migErr) {
-                        console.warn('[DataService] cloud migration pull failed, trying mirrors:', migErr);
-                        const hydrated = await this.tryHydrateFromMirrors();
-                        if (hydrated) {
-                            await this.persistAllToLocalDb();
-                            this.localOperationalReady = true;
-                        } else {
-                            throw migErr;
-                        }
+                    } else {
+                        throw migErr;
                     }
                 }
             }
@@ -2126,36 +2194,38 @@ export class DataService {
             const code = error?.code || 'pull-failed';
             this.lastSyncError = code;
 
-            if (
-                this.localOperationalReady &&
-                (code === 'resource-exhausted' || code === 'unavailable' || code === 'pull-failed')
-            ) {
-                this.cloudDegraded = true;
-                this.syncStatus = 'synced';
-                this.isReady = true;
-                this.startNasMirrorPolling();
-                this.finishSessionPull();
-                toast.warning('클라우드 연결/한도 문제 — 로컬 DB로 계속 사용합니다.', { duration: 5000 });
+            const recoverableCodes = ['resource-exhausted', 'unavailable', 'pull-failed', 'permission-denied', 'auth-not-ready'];
+
+            if (this.localOperationalReady && recoverableCodes.includes(code)) {
+                this.enterCloudDegradedMode('클라우드 연결 문제 — 로컬 데이터로 계속 사용합니다.');
                 return;
+            }
+
+            if (!this.localOperationalReady && recoverableCodes.includes(code)) {
+                const recovered = await this.tryRecoverFromLocalOrMirror();
+                if (recovered) {
+                    this.localOperationalReady = true;
+                    this.enterCloudDegradedMode(
+                        code === 'permission-denied'
+                            ? '클라우드 권한 문제 — 로컬·미러 데이터로 계속 사용합니다. 로그아웃 후 다시 로그인하면 동기화가 복구됩니다.'
+                            : '클라우드 연결 문제 — 저장된 로컬·미러 데이터로 계속 사용합니다.'
+                    );
+                    return;
+                }
             }
 
             if (!this.localOperationalReady && (code === 'resource-exhausted' || code === 'unavailable')) {
                 const hydrated = await this.tryHydrateFromMirrors();
                 if (hydrated) {
                     this.localOperationalReady = true;
-                    this.cloudDegraded = true;
-                    this.syncStatus = 'synced';
-                    this.isReady = true;
-                    this.startNasMirrorPolling();
-                    this.finishSessionPull();
-                    toast.warning('Firestore 한도 초과 — 저장된 미러 데이터로 계속 사용합니다.', { duration: 6000 });
+                    this.enterCloudDegradedMode('Firestore 한도 초과 — 저장된 미러 데이터로 계속 사용합니다.');
                     return;
                 }
             }
 
             this.syncStatus = 'disconnected';
             this.notify();
-            if (code === 'unavailable' || code === 'permission-denied') {
+            if (code === 'unavailable' || code === 'permission-denied' || code === 'auth-not-ready') {
                 this.scheduleReconnect();
             }
         }
@@ -2272,7 +2342,6 @@ export class DataService {
             active: true,
             email: ownerEmail,
             loginId: ownerEmail.toLowerCase(),
-            password: '',
             joinDate: now,
         });
         await batch2.commit();
@@ -2281,23 +2350,74 @@ export class DataService {
     }
 
     async searchTenants(nameQuery: string): Promise<Tenant[]> {
+        try {
+            return await this.searchTenantsOnce(nameQuery);
+        } catch (error: any) {
+            if (error?.code !== 'permission-denied' || !auth.currentUser) {
+                throw error;
+            }
+            // 로그아웃 직후 Firebase 세션만 남으면 회사 검색이 막힘 — 1회 정리 후 재시도
+            console.warn('[searchTenants] permission-denied with stale auth — signing out and retrying');
+            try {
+                await signOut(auth);
+                this.clearSession();
+                await new Promise((r) => setTimeout(r, 300));
+            } catch (signOutErr) {
+                console.warn('[searchTenants] signOut before retry failed:', signOutErr);
+            }
+            return this.searchTenantsOnce(nameQuery);
+        }
+    }
+
+    private async searchTenantsOnce(nameQuery: string): Promise<Tenant[]> {
         const term = nameQuery.trim();
         if (!term) return [];
 
         const mapTenant = (d: any) => ({ id: d.id, ...d.data() } as Tenant);
+        const tenantsCol = collection(firestore, 'tenants');
+        const lower = term.toLowerCase();
+        const dedupeById = (rows: Tenant[]) => {
+            const seen = new Set<string>();
+            return rows.filter((t) => {
+                if (!t.id || seen.has(t.id)) return false;
+                seen.add(t.id);
+                return true;
+            });
+        };
 
+        // 1) 정확히 일치
         const exactSnap = await getDocs(
-            query(collection(firestore, 'tenants'), where('name', '==', term), limit(10))
+            query(tenantsCol, where('name', '==', term), limit(10))
         );
         if (!exactSnap.empty) {
-            return exactSnap.docs.map(mapTenant);
+            return dedupeById(exactSnap.docs.map(mapTenant));
         }
 
-        const snap = await getDocs(query(collection(firestore, 'tenants'), limit(50)));
-        const lower = term.toLowerCase();
-        return snap.docs
-            .map(mapTenant)
-            .filter(t => (t.name || '').toLowerCase().includes(lower));
+        // 2) 접두사 검색 — "상록" → "상록인쇄" 등
+        try {
+            const prefixSnap = await getDocs(
+                query(
+                    tenantsCol,
+                    where('name', '>=', term),
+                    where('name', '<=', term + '\uf8ff'),
+                    limit(25)
+                )
+            );
+            const prefixMatches = dedupeById(prefixSnap.docs.map(mapTenant)).filter((t) =>
+                (t.name || '').toLowerCase().includes(lower)
+            );
+            if (prefixMatches.length > 0) {
+                return prefixMatches;
+            }
+        } catch (e) {
+            console.warn('[searchTenants] prefix query failed:', e);
+        }
+
+        // 3) 폴백 — includes 부분 일치 (소규모 테넌트 목록)
+        const snap = await getDocs(query(tenantsCol, limit(50)));
+        return dedupeById(snap.docs.map(mapTenant)).filter((t) =>
+            (t.name || '').toLowerCase().includes(lower)
+        );
     }
 
     // --- CRUD Methods (Local JSON Based) ---
@@ -2333,6 +2453,14 @@ export class DataService {
 
     private notifyFirestoreWriteError(action: string, e: any) {
         const code = e?.code || '';
+        const key = code || action;
+        const now = Date.now();
+        if (key === this.lastWriteErrorToastKey && now - this.lastWriteErrorToastAt < 8000) {
+            return;
+        }
+        this.lastWriteErrorToastKey = key;
+        this.lastWriteErrorToastAt = now;
+
         if (code === 'resource-exhausted') {
             toast.error('Firebase 저장 한도가 초과되었습니다. 잠시 후 다시 시도해 주세요.');
         } else if (code === 'permission-denied') {
@@ -2368,18 +2496,10 @@ export class DataService {
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
-                const saveMode = await this.persistWebJobsFromBrowser([newEntity as Job]);
-                if (saveMode) {
-                    if (saveMode === 'gateway') {
-                        await this.bumpMirrorSyncPulse();
-                    } else {
-                        toast.success('매장 PC에 저장 요청을 보냈습니다. 잠시 후 반영됩니다.');
-                    }
-                    this.updateTenantActivity().catch(() => {});
-                    return;
-                }
-                toast.error('매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.');
-                throw new Error('web-gateway-job-add-failed');
+                throw new Error('web-readonly-jobs');
+            }
+            if (!this.canPersistToCloud(col)) {
+                return;
             }
             try {
                 if (col === 'messages' && !newEntity.senderId && auth.currentUser) {
@@ -2447,18 +2567,10 @@ export class DataService {
             return;
         }
         if (col === 'jobs' && this.tenantId && this.isWebMirrorMode()) {
-            const saveMode = await this.persistWebJobsFromBrowser([updated as Job]);
-            if (saveMode) {
-                if (!options?.skipPulse && saveMode === 'gateway') {
-                    await this.bumpMirrorSyncPulse();
-                } else if (saveMode === 'relay') {
-                    toast.success('매장 PC에 저장 요청을 보냈습니다. 잠시 후 반영됩니다.');
-                }
-                this.updateTenantActivity().catch(() => {});
-                return;
-            }
-            toast.error('매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.');
-            throw new Error('web-gateway-job-save-failed');
+            throw new Error('web-readonly-jobs');
+        }
+        if (!this.canPersistToCloud(col)) {
+            return;
         }
         if (this.tenantId) {
             try {
@@ -2546,6 +2658,12 @@ export class DataService {
                 if (!ok) throw new Error('local-db-client-delete-failed');
                 return;
             }
+            if (col === 'jobs' && this.isWebMirrorMode()) {
+                throw new Error('web-readonly-jobs');
+            }
+            if (!this.canPersistToCloud(col)) {
+                return;
+            }
             try {
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await deleteDoc(docRef);
@@ -2614,6 +2732,10 @@ export class DataService {
             await localDbBridge.saveSettings(this.tenantId, settings);
             return;
         }
+
+        if (!this.canPersistToCloud()) {
+            return;
+        }
         
         if (this.tenantId) {
             try {
@@ -2662,13 +2784,64 @@ export class DataService {
         await this.ensureQuoteForJob(job);
     }
     async updateJob(job: Job) {
-        const { id, ...data } = job;
+        const oldJob = this.getAllJobs().find((row) => row.id === job.id);
+        let jobToSave = job;
+
+        if (oldJob) {
+            const prepaidResult = resolvePrepaidOnJobUpdate(oldJob, job, this.getClients());
+            jobToSave = prepaidResult.job;
+
+            for (const clientUpdate of prepaidResult.clientUpdates) {
+                const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+                if (!client) continue;
+                await this.updateClient({ ...client, prepaidBalance: clientUpdate.prepaidBalance });
+            }
+
+            if (prepaidResult.warning) {
+                toast.warning(prepaidResult.warning, { duration: 6000 });
+            } else if (prepaidResult.notice) {
+                toast.success(prepaidResult.notice, { duration: 5000 });
+            }
+
+            const prepaidDelta = (prepaidResult.job.prepaidAppliedAmount || 0) - (oldJob.prepaidAppliedAmount || 0);
+            if (prepaidDelta !== 0) {
+                const history = [...(jobToSave.history || [])];
+                history.push({
+                    timestamp: new Date().toISOString(),
+                    staffId: 'system',
+                    action: prepaidDelta > 0 ? '선불 차감' : '선불 복구',
+                    details:
+                        prepaidDelta > 0
+                            ? `선불 ${prepaidDelta.toLocaleString()}원 차감 (잔액 반영)`
+                            : `선불 ${Math.abs(prepaidDelta).toLocaleString()}원 복구`,
+                });
+                jobToSave = { ...jobToSave, history };
+            }
+        }
+
+        const { id, ...data } = jobToSave;
         await this.updateEntity('jobs', id!, data);
         try {
-            await this.syncQuoteFromJob(job);
+            await this.syncQuoteFromJob(jobToSave);
         } catch (e) {
             console.error('[updateJob] quote sync failed (job saved):', e);
         }
+    }
+    async hideJobFromBoard(jobId: string, staffId?: string) {
+        const target = this.getAllJobs().find((job) => job.id === jobId);
+        if (!target) return;
+        await this.updateEntity('jobs', jobId, {
+            boardHiddenAt: new Date().toISOString(),
+            boardHiddenBy: staffId || 'system',
+        });
+    }
+    async unhideJobFromBoard(jobId: string) {
+        const target = this.getAllJobs().find((job) => job.id === jobId);
+        if (!target) return;
+        await this.updateEntity('jobs', jobId, {
+            boardHiddenAt: undefined,
+            boardHiddenBy: undefined,
+        });
     }
     async deleteJob(id: string) { await this.deleteEntity('jobs', id); }
     
@@ -2693,6 +2866,10 @@ export class DataService {
     }
 
     async saveJobsPartial(jobs: Job[]) {
+        if (this.isWebMirrorMode()) {
+            throw new Error('web-readonly-jobs');
+        }
+
         const updates: { id: string; updated: Job }[] = [];
 
         for (const job of jobs) {
@@ -2705,29 +2882,6 @@ export class DataService {
         if (updates.length === 0) return;
 
         this.notify();
-
-        if (this.isWebMirrorMode()) {
-            const saveMode = await this.persistWebJobsFromBrowser(updates.map((u) => u.updated));
-            if (saveMode) {
-                if (saveMode === 'gateway') {
-                    await this.bumpMirrorSyncPulse();
-                } else {
-                    toast.success('매장 PC에 저장 요청을 보냈습니다. 잠시 후 반영됩니다.');
-                }
-                await Promise.all(
-                    updates.map(async ({ updated }) => {
-                        try {
-                            await this.syncQuoteFromJob(updated);
-                        } catch (e) {
-                            console.error('[saveJobsPartial] quote sync failed (gateway jobs saved):', e);
-                        }
-                    })
-                );
-                return;
-            }
-            toast.error('매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.');
-            throw new Error('web-gateway-batch-save-failed');
-        }
 
         await Promise.all(
             updates.map(({ id, updated }) =>
@@ -2749,8 +2903,30 @@ export class DataService {
         );
     }
 
-    async addStaff(staff: Staff) { await this.addEntity('staff', staff); }
-    async updateStaff(staff: Staff) { const { id, ...data } = staff; await this.updateEntity('staff', id, data); }
+    /** 직원 저장 — Firestore에 평문 password 쓰지 않음 (Firebase Auth만) */
+    private stripStaffPasswordForPersist(staff: Staff): Staff {
+        const { password: _pw, ...rest } = staff as Staff & { password?: string };
+        return rest as Staff;
+    }
+
+    async addStaff(staff: Staff) {
+        await this.addEntity('staff', this.stripStaffPasswordForPersist(staff));
+    }
+    async updateStaff(staff: Staff) {
+        const cleaned = this.stripStaffPasswordForPersist(staff);
+        const { id, ...data } = cleaned;
+        await this.updateEntity('staff', id, data);
+        // 기존 평문 password 필드 제거 (Auth만 사용)
+        if (this.tenantId && this.canPersistToCloud('staff')) {
+            try {
+                await updateDoc(doc(firestore, 'tenants', this.tenantId, 'staff', id), {
+                    password: deleteField(),
+                });
+            } catch (e) {
+                console.warn('[updateStaff] plaintext password clear skipped:', e);
+            }
+        }
+    }
     async updateStaffLastReadMsgId(staffId: string, lastReadMsgId: string) { await this.updateEntity('staff', staffId, { lastReadMsgId }); }
     async deleteStaff(id: string) {
         await this.updateEntity('staff', id, { isDeleted: true, active: false });
@@ -2787,7 +2963,6 @@ export class DataService {
             if (s.active !== false) n += 10;
             if (!s.isDeleted) n += 10;
             if (s.loginId) n += 5;
-            if (s.password) n += 3;
             if (s.uid) n += 3;
             if (s.extensionNumber) n += 2;
             if (s.phone || s.phoneCompany || s.phoneOffice) n += 2;
@@ -2969,7 +3144,7 @@ export class DataService {
 
     /** 관리자 1회 — 누락 견적만 생성 (throttle, 실패해도 기존 데이터 유지) */
     private async maybeBootstrapQuotes() {
-        if (!this.tenantId || isQuotePreviewRoute()) return;
+        if (!this.tenantId || isQuotePreviewRoute() || this.isWebMirrorMode()) return;
         if (!this.isSyncAdmin()) return;
         if (this.quotesBootstrappedForTenant === this.tenantId) return;
         if (this.quotesBootstrapInProgress) return;
@@ -3302,6 +3477,9 @@ export class DataService {
     }
     getStaff(): Staff[] { return (this.data['staff'] || []) as Staff[]; }
     getClients(): Client[] { return (this.data['clients'] || []) as Client[]; }
+    getTotalPrepaidBalance(): number {
+        return sumClientPrepaidBalances(this.getClients());
+    }
     getQuotes(): Quote[] { return (this.data['quotes'] || []) as Quote[]; }
     getInstructions(): AdminInstruction[] { return (this.data['instructions'] || []) as AdminInstruction[]; }
     getMessages(): ChatMessage[] { return (this.data['messages'] || []) as ChatMessage[]; }

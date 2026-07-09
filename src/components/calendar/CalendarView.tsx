@@ -9,6 +9,8 @@ import { useDialog } from '../../contexts/DialogContext';
 import { AdBanner } from '../common/AdBanner';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import { isLongProjectJob, isJobBoardHidden } from '../../utils/jobBoardVisibility';
+import { getStaffIdForUser, isJobAssignedToStaffId } from '../../utils/staffMatch';
 
 interface CalendarViewProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -55,7 +57,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const { showConfirm } = useDialog();
-  const { showsAds } = useAuth();
+  const { showsAds, currentUser } = useAuth();
   const { theme } = useTheme();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -65,6 +67,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
 
   const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
   const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
+  const [filterOnlyMyJobs, setFilterOnlyMyJobs] = useState<boolean>(() => localStorage.getItem('ez_calendar_only_my_jobs') === 'true');
+  const [filterLongProjectOnly, setFilterLongProjectOnly] = useState<boolean>(() => localStorage.getItem('ez_calendar_only_long_projects') === 'true');
 
   const handleDragStart = (e: React.DragEvent, jobId: string) => {
     e.dataTransfer.setData("text/plain", jobId);
@@ -124,6 +128,14 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
     return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
   }, []);
 
+  useEffect(() => {
+    localStorage.setItem('ez_calendar_only_my_jobs', String(filterOnlyMyJobs));
+  }, [filterOnlyMyJobs]);
+
+  useEffect(() => {
+    localStorage.setItem('ez_calendar_only_long_projects', String(filterLongProjectOnly));
+  }, [filterLongProjectOnly]);
+
   const loadData = async () => {
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
@@ -180,10 +192,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
       const viewStartTs = new Date(gridDates[0]).getTime();
       const viewEndTs = new Date(gridDates[gridDates.length - 1]).getTime() + (24 * 60 * 60 * 1000) - 1;
 
+      const currentStaffId = currentUser ? getStaffIdForUser(staff, currentUser) : undefined;
       const visibleJobs = jobs.filter(job => {
+          if (isJobBoardHidden(job)) return false;
           const start = new Date(job.createdAt).getTime();
           const end = new Date(job.dueDate).getTime();
-          return end >= viewStartTs && start <= viewEndTs && job.status !== 'CANCELED' && job.status !== 'QUOTE';
+          if (!(end >= viewStartTs && start <= viewEndTs && job.status !== 'CANCELED' && job.status !== 'QUOTE')) {
+            return false;
+          }
+          if (filterOnlyMyJobs && currentStaffId) {
+            if (!isJobAssignedToStaffId(job, currentStaffId, staff)) return false;
+          }
+          if (filterLongProjectOnly && !isLongProjectJob(job)) return false;
+          return true;
       });
 
       visibleJobs.sort((a, b) => {
@@ -217,7 +238,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
           });
       });
       return { gridDates, slots };
-  }, [jobs, currentDate]);
+  }, [jobs, currentDate, currentUser, staff, filterOnlyMyJobs, filterLongProjectOnly]);
 
   // Find the best padding cells for the Ad
   const adCellIndices = useMemo(() => {
@@ -452,6 +473,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                                 onDragLeave={handleDragLeave}
                                 onDrop={(e) => handleDropOnBar(e, job.id)}
                             >
+                                {isDone && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void db.hideJobFromBoard(job.id, currentUser?.id);
+                                    }}
+                                    className="absolute right-0.5 top-0.5 z-20 rounded bg-slate-900/70 text-white text-[9px] px-1"
+                                    title="보드에서 내리기"
+                                  >
+                                    숨김
+                                  </button>
+                                )}
                                 {showLabel && <span className={textClass}>{content}</span>}
                             </div>
                         );
@@ -545,6 +579,28 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
               <button onClick={prevMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronLeft size={20} /></button>
               <button onClick={goToday} className={`px-3 py-1.5 md:px-4 md:py-2 rounded-lg font-bold shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}>오늘</button>
               <button onClick={nextMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronRight size={20} /></button>
+              <button
+                onClick={() => setFilterOnlyMyJobs((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                  filterOnlyMyJobs
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200'
+                }`}
+                title="내 담당 작업만 보기"
+              >
+                담당자 보기
+              </button>
+              <button
+                onClick={() => setFilterLongProjectOnly((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                  filterLongProjectOnly
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200'
+                }`}
+                title="장기프로젝트만 보기"
+              >
+                장기프로젝트만
+              </button>
             </div>
           </div>
         )}

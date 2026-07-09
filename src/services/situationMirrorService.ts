@@ -215,9 +215,14 @@ export class SituationMirrorService {
         const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
         if (base) {
             try {
+                const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+                const token = deriveStoreGatewayToken(tenantId);
                 const res = await fetch(
                     `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
-                    { cache: 'no-store' }
+                    {
+                        cache: 'no-store',
+                        headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+                    }
                 );
                 if (res.ok) {
                     const data = (await res.json()) as Partial<SituationMirrorPayload> & {

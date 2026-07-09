@@ -29,14 +29,12 @@ export function buildStaffAuthEmails(staff: StaffAuthRow, loginIdInput: string):
   return [...new Set([primary, legacy].filter(Boolean))] as string[];
 }
 
-function buildPasswords(passwordInput: string, staff: StaffAuthRow): string[] {
+function buildPasswords(passwordInput: string, _staff: StaffAuthRow): string[] {
   return [
     ...new Set(
       [
         passwordInput.trim(),
         passwordInput.trim().toLowerCase(),
-        staff.password?.trim(),
-        staff.password?.trim().toLowerCase(),
       ].filter(Boolean)
     ),
   ] as string[];

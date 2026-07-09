@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
 import {
@@ -13,6 +13,7 @@ import {
   type SmsReceiveMode,
 } from '../../utils/clientSms';
 import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
+import { normalizePrepaidBalance } from '../../utils/prepaidBalance';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const ClientManager: React.FC = () => {
@@ -44,7 +45,8 @@ export const ClientManager: React.FC = () => {
       note: '',
       contacts: [],
       sendSmsOnComplete: true,
-      customSmsNumber: ''
+      customSmsNumber: '',
+      prepaidBalance: 0,
   });
 
   const loadClients = () => {
@@ -205,7 +207,8 @@ export const ClientManager: React.FC = () => {
           note: '',
           contacts: [{ name: '', phone: '', department: '담당자' }],
           sendSmsOnComplete: true,
-          customSmsNumber: ''
+          customSmsNumber: '',
+          prepaidBalance: 0,
       });
       setIsModalOpen(true);
   };
@@ -235,6 +238,7 @@ export const ClientManager: React.FC = () => {
         customSmsNumber: formData.sendSmsOnComplete !== false
             ? resolveSmsNumberForMode(formData, smsReceiveMode)
             : '',
+        prepaidBalance: normalizePrepaidBalance(formData.prepaidBalance),
     };
 
     try {
@@ -504,6 +508,11 @@ export const ClientManager: React.FC = () => {
                                       수신: {resolveClientSmsNumber(client) || '번호 없음'}
                                   </span>
                               )}
+                              {normalizePrepaidBalance(client.prepaidBalance) > 0 && (
+                                  <span className="text-[10px] bg-indigo-50 dark:bg-indigo-950/20 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-900/50 font-bold" title="선불 잔액">
+                                      선불 {normalizePrepaidBalance(client.prepaidBalance).toLocaleString()}원
+                                  </span>
+                              )}
                           </div>
                       </div>
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -651,6 +660,31 @@ export const ClientManager: React.FC = () => {
                                         주소 검색
                                     </button>
                                 </div>
+                            </div>
+                            <div className="md:col-span-2 space-y-1">
+                                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
+                                    <Wallet size={14} className="text-indigo-500" /> 선불(예치) 잔액
+                                </label>
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        step={1000}
+                                        value={formData.prepaidBalance ?? 0}
+                                        onChange={(e) =>
+                                            setFormData({
+                                                ...formData,
+                                                prepaidBalance: Math.max(0, Number(e.target.value) || 0),
+                                            })
+                                        }
+                                        className={`${inputClass} font-mono`}
+                                        placeholder="0"
+                                    />
+                                    <span className="text-xs text-slate-500 dark:text-slate-400 shrink-0">원</span>
+                                </div>
+                                <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                                    입금·예치금을 등록해 두면 작업을 일부결제/결제완료로 변경할 때 자동 차감됩니다.
+                                </p>
                             </div>
                             <div className="md:col-span-2 space-y-1">
                                 <label className="text-xs font-bold text-slate-500 dark:text-slate-400">메모/특이사항</label>

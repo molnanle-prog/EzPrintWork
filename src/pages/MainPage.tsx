@@ -14,8 +14,9 @@ import { ArchiveSetupWizard } from '../components/auth/ArchiveSetupWizard';
 import { db } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { isArchiveSetupDone, markArchiveSetupDone } from '../utils/archiveStorage';
+import { WorkHistoryBoard } from '../components/history/WorkHistoryBoard';
 
-type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'logs' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
+type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'history' | 'logs' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
 
 export const MainPage: React.FC = () => {
     const { currentUser, canAccessRootSettings } = useAuth();
@@ -62,6 +63,7 @@ export const MainPage: React.FC = () => {
             case 'dashboard': return <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
             case 'kanban': return <KanbanBoard onNavigateToQuote={handleNavigateToQuote} />;
             case 'calendar': return <CalendarView onNavigateToQuote={handleNavigateToQuote} />;
+            case 'history': return <WorkHistoryBoard />;
             case 'quotes': return <QuoteManager />;
             case 'payments': return <PaymentReceivableManager />;
             case 'staff': return <StaffManager />;

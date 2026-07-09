@@ -39,6 +39,7 @@ interface KanbanCardProps {
   isDragOverlay?: boolean;
   isQuoteTray?: boolean;
   isCompactTray?: boolean;
+  onHideFromBoard?: (job: Job) => void;
 }
 
 export const KanbanCard: React.FC<KanbanCardProps> = ({ 
@@ -55,6 +56,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   isDragOverlay = false,
   isQuoteTray = false,
   isCompactTray = false,
+  onHideFromBoard,
 }) => {
   const { theme } = useTheme();
   const { currentUser } = useAuth();
@@ -97,6 +99,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   const diffTime = due.getTime() - now.getTime();
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   const isDone = status === 'COMPLETED';
+  const canHideFromBoard = (status === 'COMPLETED' || status === 'DELIVERY') && !!onHideFromBoard;
   const urgencyTier = resolveEffectiveTier(daysRemaining, job.priority);
   const ddayLabel = formatDDayLabel(daysRemaining);
   const ddayBadgeClass = getDDayBadgeClasses(urgencyTier);
@@ -479,6 +482,20 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         >
           <ArrowRight size={14} />
         </button>
+        {canHideFromBoard && (
+          <button
+            type="button"
+            onPointerDown={stopDragPropagation}
+            onClick={(e) => {
+              e.stopPropagation();
+              onHideFromBoard(job);
+            }}
+            className="kanban-tray-icon shrink-0 text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors p-0.5"
+            title="보드에서 내리기"
+          >
+            <CheckCircle size={14} />
+          </button>
+        )}
       </div>
     );
   }
@@ -792,6 +809,20 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         
         {/* Grip Icon & More menu */}
         <div className="flex gap-1 kanban-card-icon-muted text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
+          {canHideFromBoard && (
+            <button
+              type="button"
+              onPointerDown={stopDragPropagation}
+              onClick={(e) => {
+                e.stopPropagation();
+                onHideFromBoard(job);
+              }}
+              className="hover:text-rose-500 transition-colors p-1 flex items-center justify-center rounded-md"
+              title="보드에서 내리기"
+            >
+              <CheckCircle size={16} />
+            </button>
+          )}
           <GripHorizontal
             size={16}
             className={`cursor-grab active:cursor-grabbing hover:text-slate-500 ${touchPrimary ? 'opacity-50' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}

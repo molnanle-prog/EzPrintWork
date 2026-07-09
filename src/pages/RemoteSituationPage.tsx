@@ -4,6 +4,7 @@ import { situationMirrorService, SituationMirrorPayload } from '../services/situ
 import { db } from '../services/dataService';
 import { Job, JobStatusDefinition } from '../types';
 import { RefreshCw, WifiOff, Eye } from 'lucide-react';
+import { hardReloadApp } from '../utils/hardReload';
 
 const DEFAULT_STATUSES: JobStatusDefinition[] = [
     { key: 'QUOTE', label: '견적' },
@@ -101,7 +102,7 @@ export const RemoteSituationPage: React.FC = () => {
                 <div className="flex items-center gap-2 shrink-0">
                     <button
                         type="button"
-                        onClick={() => void load()}
+                        onClick={() => void hardReloadApp()}
                         disabled={loading}
                         className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-sm font-bold disabled:opacity-50"
                     >
