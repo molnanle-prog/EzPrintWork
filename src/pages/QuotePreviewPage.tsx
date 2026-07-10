@@ -51,6 +51,7 @@ export const QuotePreviewPage: React.FC = () => {
 
   useEffect(() => {
     if (!quoteId) return;
+    void db.ensureCompanyInfoForDocuments();
     void loadQuote();
     const unsubscribe = db.subscribe(() => {
       void loadQuote();

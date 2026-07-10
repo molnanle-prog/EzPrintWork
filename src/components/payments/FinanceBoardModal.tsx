@@ -1,15 +1,24 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { X, Search, Star } from 'lucide-react';
+import { X, Search, ArrowBigUp, LayoutGrid, Building2 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { Job, JobHistoryLog, Staff } from '../../types';
-import { getJobOutstandingAmount } from '../../utils/prepaidBalance';
+import { getJobOutstandingAmount, findClientByName, normalizePrepaidBalance, buildPrepaidBoardRunByClient, summarizePrepaidBoardRun, getClientPrepaidFormula, buildPrepaidFlowLabel, getManagementPrepaidBadge } from '../../utils/prepaidBalance';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanCard } from '../kanban/KanbanCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
 import { isJobAssignedToUser } from '../../utils/staffMatch';
+import {
+  loadManagementCardViewMode,
+  ManagementCardViewMode,
+  saveManagementCardViewMode,
+} from '../../utils/managementCardPreferences';
 
 type FilterKey = 'all' | 'receivable' | 'prepaid';
+
+function getClientLabel(job: Job): string {
+  return (job.clientName || '').trim() || '미지정';
+}
 
 function getStatusPipeline() {
   return db.getStatusDefinitions().filter((s) => s.key !== 'CANCELED');
@@ -38,8 +47,12 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
   const { currentUser } = useAuth();
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState<FilterKey>('all');
+  const [viewMode, setViewMode] = useState<ManagementCardViewMode>(() =>
+    loadManagementCardViewMode(currentUser?.id)
+  );
   const [jobs, setJobs] = useState<Job[]>(() => db.getManagementCardJobs());
   const [staff, setStaff] = useState<Staff[]>(() => db.getStaff());
+  const [clients, setClients] = useState(() => db.getClients());
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const readOnly = db.isWebMirrorMode();
@@ -48,11 +61,29 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
     const refresh = () => {
       setJobs(db.getManagementCardJobs());
       setStaff(db.getStaff());
+      setClients(db.getClients());
     };
     void db.cleanupExpiredManagementCardPins().then(refresh);
     const unsub = db.subscribe(refresh);
     return () => unsub();
   }, []);
+
+  useEffect(() => {
+    setViewMode(loadManagementCardViewMode(currentUser?.id));
+  }, [currentUser?.id]);
+
+  const handleViewModeChange = useCallback(
+    (mode: ManagementCardViewMode) => {
+      setViewMode(mode);
+      saveManagementCardViewMode(currentUser?.id, mode);
+    },
+    [currentUser?.id]
+  );
+
+  const prepaidBoardRun = useMemo(
+    () => buildPrepaidBoardRunByClient(jobs, clients),
+    [jobs, clients]
+  );
 
   const q = query.trim().toLowerCase();
   const filteredJobs = useMemo(() => {
@@ -60,7 +91,10 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
       if (filter === 'receivable' && !(job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제')) {
         return false;
       }
-      if (filter === 'prepaid' && (job.prepaidAppliedAmount || 0) <= 0) return false;
+      if (filter === 'prepaid') {
+        const slot = prepaidBoardRun.get(getClientLabel(job))?.get(job.id);
+        if ((slot?.applied || 0) <= 0) return false;
+      }
       if (!q) return true;
       return (
         (job.title || '').toLowerCase().includes(q) ||
@@ -68,19 +102,53 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
         (job.contactPerson || '').toLowerCase().includes(q)
       );
     });
-  }, [jobs, filter, q]);
+  }, [jobs, filter, q, prepaidBoardRun]);
+
+  const groupedByClient = useMemo(() => {
+    const map = new Map<string, Job[]>();
+    for (const job of filteredJobs) {
+      const client = getClientLabel(job);
+      const list = map.get(client) || [];
+      list.push(job);
+      map.set(client, list);
+    }
+    return Array.from(map.entries())
+      .sort(([a], [b]) => a.localeCompare(b, 'ko'))
+      .map(([clientName, clientJobs]) => {
+        const receivable = clientJobs.filter(
+          (j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제'
+        );
+        const receivableTotal = receivable.reduce((sum, job) => sum + getJobOutstandingAmount(job), 0);
+        const jobMap = prepaidBoardRun.get(clientName);
+        const clientRecord = findClientByName(clients, clientName);
+        const ledgerBalance = normalizePrepaidBalance(clientRecord?.prepaidBalance);
+        const formula = getClientPrepaidFormula(clientJobs, jobMap, ledgerBalance);
+        const flowLabel = buildPrepaidFlowLabel(clientJobs, jobMap);
+        return {
+          clientName,
+          jobs: clientJobs,
+          receivableTotal,
+          receivableCount: receivable.length,
+          prepaidStart: formula.start,
+          prepaidAppliedTotal: formula.applied,
+          clientPrepaidBalance: formula.remaining,
+          flowLabel,
+        };
+      });
+  }, [filteredJobs, clients, prepaidBoardRun]);
 
   const summary = useMemo(() => {
     const receivable = jobs.filter((j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제');
     const totalReceivable = receivable.reduce((sum, job) => sum + getJobOutstandingAmount(job), 0);
-    const prepaidAppliedTotal = jobs.reduce((sum, job) => sum + (job.prepaidAppliedAmount || 0), 0);
+    const prepaidSummary = summarizePrepaidBoardRun(jobs, clients);
     return {
       total: jobs.length,
       receivableCount: receivable.length,
       totalReceivable,
-      prepaidAppliedTotal,
+      prepaidAppliedTotal: prepaidSummary.totalApplied,
+      clientPrepaidTotal: prepaidSummary.remainingBalance,
     };
-  }, [jobs]);
+  }, [jobs, clients]);
 
   const handleSelectJob = useCallback((job: Job) => {
     setSelectedJob(job);
@@ -140,10 +208,40 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
     [currentUser?.id, readOnly]
   );
 
+  const renderJobCard = useCallback(
+    (job: Job) => {
+      const clientName = getClientLabel(job);
+      const slot = prepaidBoardRun.get(clientName)?.get(job.id);
+      const managementPrepaidBadge = getManagementPrepaidBadge(job, slot) || undefined;
+
+      return (
+        <KanbanCard
+          key={job.id}
+          job={job}
+          status={job.status}
+          staffName={getStaffName(job, staff)}
+          onSelect={handleSelectJob}
+          onRightClick={handleRightClickJob}
+          onStatusChange={handleStatusChange}
+          isMyJob={isJobAssignedToUser(job, currentUser, staff)}
+          currentUserId={currentUser?.id}
+          isManagementPanel
+          managementPrepaidBadge={managementPrepaidBadge}
+        />
+      );
+    },
+    [staff, handleSelectJob, handleRightClickJob, handleStatusChange, currentUser, prepaidBoardRun]
+  );
+
   const filterTabs: { id: FilterKey; label: string }[] = [
     { id: 'all', label: '전체' },
     { id: 'receivable', label: '미수' },
     { id: 'prepaid', label: '선불차감' },
+  ];
+
+  const viewModeTabs: { id: ManagementCardViewMode; label: string; icon: React.ReactNode }[] = [
+    { id: 'cards', label: '전체 카드', icon: <LayoutGrid size={13} /> },
+    { id: 'byClient', label: '거래처별', icon: <Building2 size={13} /> },
   ];
 
   return (
@@ -151,9 +249,9 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
       <div className="w-full max-w-5xl max-h-[90vh] bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden flex flex-col">
         <div className="px-5 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between shrink-0">
           <div className="flex items-center gap-2">
-            <Star size={18} className="text-amber-500 fill-amber-400" />
+            <ArrowBigUp size={18} className="text-violet-600 fill-violet-500" strokeWidth={2} />
             <h2 className="font-black text-slate-800 dark:text-slate-100">관리카드</h2>
-            <span className="text-xs text-slate-500">회사 공통 · 칸반과 동일한 카드</span>
+            <span className="text-xs text-slate-500">칸반에서 올려 관리하는 작업</span>
           </div>
           <button onClick={onClose} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800">
             <X size={18} />
@@ -178,6 +276,9 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
               <p className="text-lg font-black text-indigo-700 dark:text-indigo-300 tabular-nums">
                 {summary.prepaidAppliedTotal.toLocaleString()}원
               </p>
+              <p className="text-[11px] text-indigo-500/80">
+                남은 선불 잔액 {summary.clientPrepaidTotal.toLocaleString()}원
+              </p>
             </div>
           </div>
         </div>
@@ -192,53 +293,112 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
               className="w-full pl-8 pr-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm"
             />
           </div>
-          <div className="flex gap-1">
-            {filterTabs.map((tab) => (
-              <button
-                key={tab.id}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${
-                  filter === tab.id
-                    ? 'bg-violet-600 text-white border-violet-600'
-                    : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600'
-                }`}
-                onClick={() => setFilter(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap gap-2">
+            <div className="flex gap-1">
+              {viewModeTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-1.5 ${
+                    viewMode === tab.id
+                      ? 'bg-slate-800 text-white border-slate-800 dark:bg-slate-100 dark:text-slate-900 dark:border-slate-100'
+                      : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600'
+                  }`}
+                  onClick={() => handleViewModeChange(tab.id)}
+                >
+                  {tab.icon}
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              {filterTabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${
+                    filter === tab.id
+                      ? 'bg-violet-600 text-white border-violet-600'
+                      : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600'
+                  }`}
+                  onClick={() => setFilter(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
           {filteredJobs.length === 0 ? (
             <div className="text-center py-16 text-slate-500">
-              <Star size={32} className="mx-auto mb-3 text-slate-300" />
-              <p className="font-bold">관리카드에 고정된 작업이 없습니다.</p>
-              <p className="text-sm mt-1">칸반 카드의 별표를 눌러 추가하세요.</p>
+              <ArrowBigUp size={32} className="mx-auto mb-3 text-slate-300 fill-slate-200" strokeWidth={2} />
+              <p className="font-bold">관리카드에 올린 작업이 없습니다.</p>
+              <p className="text-sm mt-1">칸반 카드의 ↑ 버튼으로 관리카드로 올리세요.</p>
               <p className="text-xs mt-2 text-slate-400">취소·결제완료된 작업은 관리카드에서 자동 제외됩니다.</p>
             </div>
-          ) : (
+          ) : viewMode === 'cards' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">
-              {filteredJobs.map((job) => (
-                <KanbanCard
-                  key={job.id}
-                  job={job}
-                  status={job.status}
-                  staffName={getStaffName(job, staff)}
-                  onSelect={handleSelectJob}
-                  onRightClick={handleRightClickJob}
-                  onStatusChange={handleStatusChange}
-                  isMyJob={isJobAssignedToUser(job, currentUser, staff)}
-                  currentUserId={currentUser?.id}
-                  isManagementPanel
-                />
+              {filteredJobs.map((job) => renderJobCard(job))}
+            </div>
+          ) : (
+            <div className="space-y-5">
+              {groupedByClient.map((group) => (
+                <section
+                  key={group.clientName}
+                  className="rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden"
+                >
+                  <div className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800/80 border-b border-slate-200 dark:border-slate-700 space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Building2 size={15} className="text-violet-600 shrink-0" />
+                        <h3 className="font-bold text-slate-800 dark:text-slate-100 truncate">{group.clientName}</h3>
+                        <span className="text-xs text-slate-500 shrink-0">{group.jobs.length}건</span>
+                      </div>
+                      {(group.prepaidStart > 0 || group.prepaidAppliedTotal > 0 || group.receivableCount > 0) && (
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-bold tabular-nums">
+                          {(group.prepaidStart > 0 || group.prepaidAppliedTotal > 0) && (
+                            <span className="text-indigo-600 dark:text-indigo-400">
+                              선불 {group.prepaidStart.toLocaleString()}
+                              <span className="text-slate-400 font-medium mx-1">−</span>
+                              차감 {group.prepaidAppliedTotal.toLocaleString()}
+                              <span className="text-slate-400 font-medium mx-1">=</span>
+                              잔액 {group.clientPrepaidBalance.toLocaleString()}
+                            </span>
+                          )}
+                          {group.receivableCount > 0 && (
+                            <>
+                              {(group.prepaidStart > 0 || group.prepaidAppliedTotal > 0) && (
+                                <span className="text-slate-300 dark:text-slate-600 font-medium">|</span>
+                              )}
+                              <span className="text-red-600 dark:text-red-400">
+                                미수 {group.receivableTotal.toLocaleString()}원 ({group.receivableCount}건)
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                    {group.flowLabel && (
+                      <p
+                        className="text-[11px] text-slate-500 dark:text-slate-400 tabular-nums truncate pl-6"
+                        title={group.flowLabel}
+                      >
+                        {group.flowLabel}
+                      </p>
+                    )}
+                  </div>
+                  <div className="p-3 grid grid-cols-1 md:grid-cols-2 gap-3 items-start bg-white dark:bg-slate-900/40">
+                    {group.jobs.map((job) => renderJobCard(job))}
+                  </div>
+                </section>
               ))}
             </div>
           )}
         </div>
 
         <div className="px-5 py-2 border-t border-slate-200 dark:border-slate-700 text-[11px] text-slate-500 shrink-0">
-          왼쪽 클릭: 간단보기 · 우클릭: 상세보기 · ◀▶: 단계 이동 · 마우스 오버: 칸반과 동일 상세
+          왼쪽 클릭: 간단보기 · 우클릭: 상세보기 · ◀▶: 단계 이동 · ↓: 칸반으로 내리기
         </div>
       </div>
 

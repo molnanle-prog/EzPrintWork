@@ -54,6 +54,7 @@ function runQuitAndInstall(version) {
     sendUpdaterStatus({
         phase: 'installing',
         version,
+        currentVersion: app.getVersion(),
         message: '설치 프로그램을 실행합니다. 잠시만 기다려 주세요.',
     });
 
@@ -85,6 +86,7 @@ function setupAutoUpdater(win) {
         sendUpdaterStatus({
             phase: 'available',
             version: info.version,
+            currentVersion: app.getVersion(),
             releaseDate: info.releaseDate,
         });
     });
@@ -113,6 +115,7 @@ function setupAutoUpdater(win) {
         sendUpdaterStatus({
             phase: 'downloading',
             version,
+            currentVersion: app.getVersion(),
             percent: progress.percent,
             transferred: progress.transferred,
             total: progress.total,
@@ -129,6 +132,7 @@ function setupAutoUpdater(win) {
         sendUpdaterStatus({
             phase: 'downloaded',
             version: info.version,
+            currentVersion: app.getVersion(),
         });
         runQuitAndInstall(info.version);
     });

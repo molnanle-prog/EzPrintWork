@@ -1,7 +1,7 @@
 import { User } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, limit, query, setDoc, where } from 'firebase/firestore';
 import { db } from '../services/firebase';
-import { resolveAppRoleFromStaff } from './adminAccess';
+import { resolveAppRoleFromStaff, normalizeStaffRecord } from './adminAccess';
 import { readPendingStaffProfile } from './staffLoginSession';
 import { STAFF_LOGIN_PREFS, loadStaffLoginPreferences } from './staffLoginPreferences';
 
@@ -27,17 +27,41 @@ export function readStaffLoginTenant(): string | null {
   return sessionStorage.getItem(STAFF_LOGIN_TENANT_KEY);
 }
 
-/** 로그인 사용자의 staff 문서 role 조회 (사내 관리자 권한 보정용) */
-export async function lookupStaffRecordRole(
+export type StaffAuthSnapshot = {
+  jobTitle: string;
+  isCompanyAdmin: boolean;
+};
+
+/** 로그인 사용자의 staff 문서 직책·사내관리자 여부 조회 */
+export async function lookupStaffAuthSnapshot(
   tenantId: string,
   uid: string,
   loginId?: string | null
-): Promise<string | null> {
+): Promise<StaffAuthSnapshot | null> {
   const staffCol = collection(db, `tenants/${tenantId}/staff`);
+
+  const toSnapshot = (data: Record<string, unknown>): StaffAuthSnapshot => {
+    const normalized = normalizeStaffRecord({
+      id: String(data.id || uid),
+      name: String(data.name || ''),
+      role: String(data.role || data.position || ''),
+      isCompanyAdmin: data.isCompanyAdmin === true,
+      phone: String(data.phone || ''),
+      avatarUrl: String(data.avatarUrl || ''),
+      active: data.active !== false,
+      email: String(data.email || ''),
+      joinDate: String(data.joinDate || ''),
+    });
+    return {
+      jobTitle: normalized.role,
+      isCompanyAdmin: normalized.isCompanyAdmin === true,
+    };
+  };
+
   try {
     const uidDoc = await getDoc(doc(staffCol, uid));
     if (uidDoc.exists() && uidDoc.data().isDeleted !== true) {
-      return String(uidDoc.data().role || uidDoc.data().position || '');
+      return toSnapshot(uidDoc.data() as Record<string, unknown>);
     }
   } catch (err) {
     console.warn('[StaffRole] uid lookup failed:', err);
@@ -49,7 +73,7 @@ export async function lookupStaffRecordRole(
       const snap = await getDocs(query(staffCol, where('loginId', '==', normalizedLogin), limit(5)));
       for (const d of snap.docs) {
         const data = d.data();
-        if (data.isDeleted !== true) return String(data.role || data.position || '');
+        if (data.isDeleted !== true) return toSnapshot(data as Record<string, unknown>);
       }
     } catch (err) {
       console.warn('[StaffRole] loginId lookup failed:', err);
@@ -57,6 +81,16 @@ export async function lookupStaffRecordRole(
   }
 
   return null;
+}
+
+/** @deprecated lookupStaffAuthSnapshot 사용 */
+export async function lookupStaffRecordRole(
+  tenantId: string,
+  uid: string,
+  loginId?: string | null
+): Promise<string | null> {
+  const snapshot = await lookupStaffAuthSnapshot(tenantId, uid, loginId);
+  return snapshot?.jobTitle ?? null;
 }
 
 export async function resolveStaffTenantProfile(user: User): Promise<ResolvedStaffProfile | null> {
@@ -117,7 +151,10 @@ export async function resolveStaffTenantProfile(user: User): Promise<ResolvedSta
         if (data.isDeleted === true || data.active === false) continue;
         return {
           tenantId,
-          role: resolveAppRoleFromStaff(data.role || data.position),
+          role: resolveAppRoleFromStaff({
+            role: String(data.role || data.position || ''),
+            isCompanyAdmin: data.isCompanyAdmin === true,
+          }),
           name: data.userName || data.name || '사원',
           loginId,
           staffDocId: docSnap.id,
@@ -130,7 +167,10 @@ export async function resolveStaffTenantProfile(user: User): Promise<ResolvedSta
         if (data.isDeleted !== true && data.active !== false) {
           return {
             tenantId,
-            role: resolveAppRoleFromStaff(data.role || data.position),
+            role: resolveAppRoleFromStaff({
+            role: String(data.role || data.position || ''),
+            isCompanyAdmin: data.isCompanyAdmin === true,
+          }),
             name: data.userName || data.name || '사원',
             loginId,
             staffDocId: byId.id,

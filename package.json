@@ -1,6 +1,6 @@
 {
   "name": "ezprintwork",
-  "version": "1.6.2",
+  "version": "1.6.6",
   "author": "EzPrintWork",
   "description": "인쇄소 통합 관리 시스템",
   "main": "electron/main.js",
@@ -91,9 +91,10 @@
       "perMachine": false,
       "allowToChangeInstallationDirectory": false,
       "deleteAppDataOnUninstall": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "EzPrintWork"
+      "shortcutName": "EzPrintWork",
+      "include": "build/installer.nsh"
     }
   }
 }

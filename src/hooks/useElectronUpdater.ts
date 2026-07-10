@@ -38,6 +38,7 @@ export function useElectronUpdater() {
                         kind: 'desktop',
                         phase: 'available',
                         version: status.version,
+                        currentVersion: status.currentVersion,
                     });
                     break;
 
@@ -47,6 +48,7 @@ export function useElectronUpdater() {
                         kind: 'desktop',
                         phase: 'downloading',
                         version: status.version,
+                        currentVersion: status.currentVersion,
                         percent: status.percent,
                     });
                     break;
@@ -57,6 +59,7 @@ export function useElectronUpdater() {
                         kind: 'desktop',
                         phase: 'installing',
                         version: status.version,
+                        currentVersion: status.currentVersion,
                         message: '다운로드 완료 — 설치 프로그램을 실행합니다.',
                     });
                     void installDesktopUpdate();
@@ -68,6 +71,7 @@ export function useElectronUpdater() {
                         kind: 'desktop',
                         phase: 'installing',
                         version: status.version,
+                        currentVersion: status.currentVersion,
                         message: status.message,
                     });
                     break;
@@ -132,6 +136,7 @@ export async function manualElectronUpdateCheck(
             kind: 'desktop',
             phase: 'available',
             version: result.updateInfo.version,
+            currentVersion: result.currentVersion,
         });
         return true;
     }

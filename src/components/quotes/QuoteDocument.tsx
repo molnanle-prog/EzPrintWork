@@ -1,9 +1,10 @@
 
 import React, { useEffect, useState } from 'react';
-import { Quote } from '../../types';
+import { Quote, CompanyInfo } from '../../types';
 import { db } from '../../services/dataService';
 import { getQuoteJobNumber, formatQuoteClientLabel, resolveQuoteJob, resolveQuoteLinesForDisplay } from '../../utils/quoteJobSync';
 import { formatKoreanWonAmount } from '../../utils/koreanAmount';
+import { readCachedCompanyInfoForPreview } from '../../utils/quotePreviewStorage';
 
 interface QuoteDocumentProps {
   quote: Quote;
@@ -26,16 +27,25 @@ function getSpecPreview(description?: string): string {
 }
 
 export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentType = 'quote', id }) => {
-  const [, setRenderTick] = useState(0);
+  const [company, setCompany] = useState<CompanyInfo>(() => {
+    const cached = readCachedCompanyInfoForPreview(quote.id);
+    return cached?.name ? cached : db.getCompanyInfo();
+  });
 
   useEffect(() => {
+    const cached = readCachedCompanyInfoForPreview(quote.id);
+    if (cached?.name) setCompany(cached);
+
+    void db.ensureCompanyInfoForDocuments().then((info) => {
+      if (info?.name) setCompany(info);
+    });
+
     const unsubscribe = db.subscribe(() => {
-      setRenderTick((prev) => prev + 1);
+      const next = db.getCompanyInfo();
+      if (next?.name) setCompany(next);
     });
     return unsubscribe;
-  }, []);
-
-  const company = db.getCompanyInfo();
+  }, [quote.id]);
   const template = db.getQuoteTemplate();
   const headerHeightMm = template.headerHeightMm ?? 17;
   const jobs = db.getAllJobs();

@@ -2,10 +2,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
-import { findClientByName, normalizePrepaidBalance } from '../../utils/prepaidBalance';
+import { findClientByName, normalizePrepaidBalance, getJobPrepaidBreakdown, getPrepaidSlotForJob } from '../../utils/prepaidBalance';
 import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2 } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
-import { JobOrderPreviewModal } from './JobOrderPreviewModal';
+import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
 import { calcQuoteTotals } from '../../utils/quoteCalculator';
 import { useDialog } from '../../contexts/DialogContext';
@@ -184,6 +184,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
     history: job.history || [],
     assignedStaffIds: job.assignedStaffIds || (job.assignedStaffId ? [job.assignedStaffId] : []),
     priceIncludesVat: job.priceIncludesVat ?? false,
+    usePrepaidForPayment: job.usePrepaidForPayment !== false,
   };
 
   const [editedJob, setEditedJob] = useState<Job>(initialJob);
@@ -197,7 +198,6 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
   const [isCustomChecked, setIsCustomChecked] = useState(false);
   
   const [showContactModal, setShowContactModal] = useState(false);
-  const [showPrintModal, setShowPrintModal] = useState(false);
   const [openingQuote, setOpeningQuote] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   const [isStaffDropdownOpen, setIsStaffDropdownOpen] = useState(false);
@@ -1126,7 +1126,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                           {openingQuote ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
                           <span className="hidden sm:inline">견적서 보기</span>
                         </button>
-                        <button onClick={() => setShowPrintModal(true)} className="px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                        <button onClick={() => openJobOrderPreviewWindow(editedJob)} className="px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
                         <button 
                             onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
                             disabled={!editedJob.clientPhone}
@@ -1137,6 +1137,18 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                             <span>{editedJob.clientPhone ? "문자" : "연락처없음"}</span>
                         </button>
                     </div>
+                    {!editedJob.managementCardPinnedAt && (
+                      <button
+                        onClick={async () => {
+                          await db.hideJobFromBoard(editedJob.id, currentUser?.id);
+                          onClose();
+                        }}
+                        className="px-4 py-2.5 bg-rose-600 text-white hover:bg-rose-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                        title="작업 내역은 남기고 보드(칸반/달력/상황판)에서만 숨깁니다"
+                      >
+                        보드에서 내리기
+                      </button>
+                    )}
                     <button onClick={onClose} className="px-5 py-2.5 text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition-colors">닫기</button>
                     <button onClick={() => setViewMode('edit')} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md transition-all flex items-center gap-2"><FileEdit size={18}/> 상세 정보 및 수정</button>
                 </div>
@@ -1379,14 +1391,63 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                           </div>
                           <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="결제완료">결제완료</option></select></div>
                           {(() => {
-                            const client = findClientByName(db.getClients(), editedJob.clientName);
-                            const prepaid = normalizePrepaidBalance(client?.prepaidBalance);
-                            const applied = editedJob.prepaidAppliedAmount || 0;
-                            if (prepaid <= 0 && applied <= 0) return null;
+                            const clients = db.getClients();
+                            const boardJobs = db.getManagementCardJobs();
+                            const prepaidSlot = getPrepaidSlotForJob(editedJob, boardJobs, clients);
+                            const client = findClientByName(clients, editedJob.clientName);
+                            const ledgerBalance = normalizePrepaidBalance(client?.prepaidBalance);
+                            const balanceBefore = prepaidSlot?.balanceBefore ?? ledgerBalance;
+                            const breakdown = getJobPrepaidBreakdown(editedJob, ledgerBalance, {
+                              balanceBefore,
+                            });
+                            const balanceAfter =
+                              prepaidSlot?.applied || breakdown.applied
+                                ? Math.max(0, balanceBefore - breakdown.applied)
+                                : balanceBefore;
+                            if (balanceBefore <= 0 && breakdown.applied <= 0) return null;
                             return (
-                              <p className="text-[9px] text-indigo-600 dark:text-indigo-400 pl-1">
-                                {applied > 0 ? `선불 차감 ${applied.toLocaleString()}원` : `거래처 선불 잔액 ${prepaid.toLocaleString()}원`}
-                              </p>
+                              <div className="pl-1 space-y-1">
+                                {balanceBefore > 0 && (
+                                  <label className="flex items-center gap-1.5 text-[10px] text-indigo-700 dark:text-indigo-300 cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={editedJob.usePrepaidForPayment !== false}
+                                      onChange={(e) =>
+                                        setEditedJob({ ...editedJob, usePrepaidForPayment: e.target.checked })
+                                      }
+                                      className="rounded border-indigo-300"
+                                    />
+                                    선불에서 차감 (잔액 {balanceBefore.toLocaleString()}원)
+                                  </label>
+                                )}
+                                {breakdown.applied > 0 && (
+                                  <p className="text-[9px] text-violet-600 dark:text-violet-400">
+                                    선불 차감 {breakdown.applied.toLocaleString()}원
+                                    {breakdown.outstanding > 0 &&
+                                      ` · 차감 후 미수 ${breakdown.outstanding.toLocaleString()}원`}
+                                    {breakdown.outstanding <= 0 &&
+                                      ` · 차감 후 잔액 ${balanceAfter.toLocaleString()}원`}
+                                  </p>
+                                )}
+                                {breakdown.applied <= 0 &&
+                                  editedJob.usePrepaidForPayment !== false &&
+                                  balanceBefore > 0 &&
+                                  (editedJob.paymentStatus === '결제대기' ||
+                                    editedJob.paymentStatus === '일부결제' ||
+                                    editedJob.paymentStatus === '결제완료') && (
+                                    <p className="text-[9px] text-amber-600 dark:text-amber-400">
+                                      선불 {Math.min(balanceBefore, breakdown.price).toLocaleString()}원 차감 예정
+                                      {breakdown.prepaidShortfall > 0 &&
+                                        ` · 부족 ${breakdown.prepaidShortfall.toLocaleString()}원`}
+                                      {editedJob.paymentStatus === '결제완료' &&
+                                        breakdown.prepaidShortfall <= 0 &&
+                                        ` · 차감 후 잔액 ${Math.max(0, balanceBefore - breakdown.price).toLocaleString()}원`}
+                                    </p>
+                                  )}
+                                {editedJob.usePrepaidForPayment === false && balanceBefore > 0 && (
+                                  <p className="text-[9px] text-slate-500">별도 수금 (선불 차감 안 함)</p>
+                                )}
+                              </div>
                             );
                           })()}
                         </div>
@@ -1848,46 +1909,47 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
             </div>
           </div>
           <div className="p-2.5 border-t border-slate-200 flex justify-end gap-3 bg-slate-50 flex-none">
-            {!isNew && canDeletePermanently && (
+            {!isNew && (canDeletePermanently || currentUser) && (
               <div className="mr-auto flex items-center gap-2 transition-all">
-                {/* 1. 완전 삭제 */}
-                <button 
-                  onClick={handleDelete} 
-                  className="px-3 py-1.5 text-red-600 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8 border border-red-100 hover:border-red-200" 
-                  title="이 작업을 전산에서 영구적으로 완전히 삭제하여 검색에서도 제외합니다."
-                >
-                  <Trash2 size={16} />
-                  <span className="hidden sm:inline">완전 삭제</span>
-                </button>
-
-                <div className="w-px h-4 bg-slate-200 flex-none"></div>
-
-                {/* 2. 작업 취소 / 작업 복구 */}
-                {editedJob.status !== 'CANCELED' ? (
-                  <button 
-                    onClick={handleCancelJob} 
-                    className="px-3 py-1.5 text-orange-600 hover:bg-orange-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
-                    title="소비자 취소로 이 작업을 취소 보관함으로 옮깁니다"
-                  >
-                    <FileX size={16} />
-                    <span className="hidden md:inline">작업 취소</span>
-                  </button>
-                ) : (
-                  <button 
-                    onClick={handleRestoreJob} 
-                    className="px-3 py-1.5 text-blue-600 hover:bg-blue-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
-                    title="취소된 작업을 다시 진행 중인 공정으로 복원합니다"
-                  >
-                    <RotateCcw size={16} />
-                    <span className="hidden md:inline">작업 복구</span>
-                  </button>
+                {canDeletePermanently && (
+                  <>
+                    <button 
+                      onClick={handleDelete} 
+                      className="px-3 py-1.5 text-red-600 hover:bg-red-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8 border border-red-100 hover:border-red-200" 
+                      title="이 작업을 전산에서 영구적으로 완전히 삭제하여 검색에서도 제외합니다."
+                    >
+                      <Trash2 size={16} />
+                      <span className="hidden sm:inline">완전 삭제</span>
+                    </button>
+                    <div className="w-px h-4 bg-slate-200 flex-none" />
+                  </>
                 )}
-
+                {currentUser && (
+                  editedJob.status !== 'CANCELED' ? (
+                    <button 
+                      onClick={handleCancelJob} 
+                      className="px-3 py-1.5 text-orange-600 hover:bg-orange-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
+                      title="소비자 취소로 이 작업을 취소 보관함으로 옮깁니다"
+                    >
+                      <FileX size={16} />
+                      <span className="hidden md:inline">작업 취소</span>
+                    </button>
+                  ) : (
+                    <button 
+                      onClick={handleRestoreJob} 
+                      className="px-3 py-1.5 text-blue-600 hover:bg-blue-50 rounded-lg font-bold transition-colors flex items-center gap-1.5 text-xs sm:text-sm h-8" 
+                      title="취소된 작업을 다시 진행 중인 공정으로 복원합니다"
+                    >
+                      <RotateCcw size={16} />
+                      <span className="hidden md:inline">작업 복구</span>
+                    </button>
+                  )
+                )}
               </div>
             )}
             {!isNew && (
               <>
-                {(editedJob.status === 'COMPLETED' || editedJob.status === 'DELIVERY') && (
+                {!editedJob.managementCardPinnedAt && (
                   <button
                     onClick={async () => {
                       await db.hideJobFromBoard(editedJob.id, currentUser?.id);
@@ -1908,7 +1970,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                   {openingQuote ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
                   <span className="hidden sm:inline">견적서 보기</span>
                 </button>
-                <button onClick={() => setShowPrintModal(true)} className="px-4 py-1.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                <button onClick={() => openJobOrderPreviewWindow(editedJob)} className="px-4 py-1.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
                 <button 
                     onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
                     disabled={!editedJob.clientPhone}
@@ -1937,7 +1999,6 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
           }} 
         />
       )}
-      {showPrintModal && (<JobOrderPreviewModal job={editedJob} onClose={() => setShowPrintModal(false)} />)}
     </>
   );
 }

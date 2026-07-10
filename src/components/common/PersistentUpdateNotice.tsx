@@ -68,7 +68,12 @@ export const PersistentUpdateNotice: React.FC = () => {
     );
   }
 
-  const { phase, version, percent, message } = notice;
+  const { phase, version, currentVersion, percent, message } = notice;
+
+  const desktopUpdateTitle =
+    currentVersion && version && currentVersion !== version
+      ? `v${currentVersion} → v${version} 업데이트`
+      : `PC 앱 v${version} 업데이트`;
 
   if (phase === 'downloading') {
     const pct = Math.min(100, Math.max(0, percent ?? 0));
@@ -81,7 +86,9 @@ export const PersistentUpdateNotice: React.FC = () => {
         <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-2xl p-4">
           <div className="flex items-center gap-2 text-sm font-bold text-slate-800 dark:text-slate-100 mb-2">
             <Loader2 size={16} className="animate-spin text-blue-600" />
-            PC 앱 v{version} 다운로드 중…
+            {currentVersion && version && currentVersion !== version
+              ? `v${currentVersion} → v${version} 다운로드 중…`
+              : `PC 앱 v${version} 다운로드 중…`}
           </div>
           <div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
             <div
@@ -101,7 +108,9 @@ export const PersistentUpdateNotice: React.FC = () => {
         <div className="rounded-xl border border-emerald-200 dark:border-emerald-800 bg-white dark:bg-slate-900 shadow-2xl p-4">
           <div className="flex items-center gap-2 text-sm font-bold text-emerald-700 dark:text-emerald-300 mb-2">
             <Loader2 size={16} className="animate-spin" />
-            v{version}{' '}
+            {currentVersion && version && currentVersion !== version
+              ? `v${currentVersion} → v${version}`
+              : `v${version}`}{' '}
             {phase === 'downloaded' ? '다운로드 완료 — 자동 설치 중…' : '설치 프로그램 실행 중…'}
           </div>
           <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
@@ -140,12 +149,14 @@ export const PersistentUpdateNotice: React.FC = () => {
       <div className="relative rounded-xl border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden">
         <div className="px-4 py-3 pr-10 bg-gradient-to-r from-indigo-600 to-violet-600 text-white flex items-center gap-2">
           <Download size={18} />
-          <span className="font-bold text-sm">PC 앱 v{version} 업데이트</span>
+          <span className="font-bold text-sm">{desktopUpdateTitle}</span>
         </div>
         <NoticeCloseButton onClose={clearDesktopNotice} label="나중에" />
         <div className="px-4 py-3 space-y-3">
           <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-            새 버전이 있습니다. 업데이트 시작을 누르면 다운로드가 시작되며, 완료 후 자동으로 설치됩니다.
+            {currentVersion && version && currentVersion !== version
+              ? `현재 설치된 v${currentVersion}에서 새 버전 v${version}으로 업데이트할 수 있습니다.`
+              : '새 버전이 있습니다. 업데이트 시작을 누르면 다운로드가 시작되며, 완료 후 자동으로 설치됩니다.'}
           </p>
           <div className="flex gap-2">
             <button

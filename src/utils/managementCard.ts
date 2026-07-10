@@ -1,6 +1,6 @@
 import { Job } from '../types';
 
-/** 관리카드에 고정(별표)된 작업인지 */
+/** 관리카드로 올린 작업인지 */
 export function isJobPinnedToManagementCard(job: Job): boolean {
   return !!job.managementCardPinnedAt;
 }

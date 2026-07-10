@@ -5,10 +5,10 @@ import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limi
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
-import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, isStaffAdminRole, CompanyPermissionContext } from '../utils/adminAccess';
+import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
 import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
-import { lookupStaffRecordRole } from '../utils/resolveStaffTenantProfile';
+import { lookupStaffAuthSnapshot } from '../utils/resolveStaffTenantProfile';
 import {
   abortIncompleteStaffLogin,
   healStaffProfileFromRecords,
@@ -96,6 +96,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [tenantPaymentStatus, setTenantPaymentStatus] = useState<string>('UNPAID');
   const [tenantOwnerId, setTenantOwnerId] = useState<string | null>(null);
   const [staffRecordRole, setStaffRecordRole] = useState<string | null>(null);
+  const [staffIsCompanyAdmin, setStaffIsCompanyAdmin] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
 
   const applyTenantSnapshot = (tenantData: any) => {
@@ -115,6 +116,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     tenantOwnerId,
     userEmail: currentUser?.email,
     staffRecordRole,
+    staffIsCompanyAdmin,
   };
   const hasAdminAccess = hasCompanyAdminAccess(permissionCtx) || currentUser?.email === 'molnanle@gmail.com';
   const isSiteAdmin = hasAdminAccess && !isTenantOwner;
@@ -242,15 +244,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
         let effectiveRole = userData.role;
         let resolvedStaffRole: string | null = null;
+        let resolvedStaffIsCompanyAdmin = false;
         if (userData.tenantId) {
-          resolvedStaffRole = await lookupStaffRecordRole(userData.tenantId, user.uid, loginId);
+          const staffAuth = await lookupStaffAuthSnapshot(userData.tenantId, user.uid, loginId);
+          resolvedStaffRole = staffAuth?.jobTitle ?? null;
+          resolvedStaffIsCompanyAdmin = staffAuth?.isCompanyAdmin === true;
           setStaffRecordRole(resolvedStaffRole);
+          setStaffIsCompanyAdmin(resolvedStaffIsCompanyAdmin);
           const tenantOwnerSnap = await getDoc(doc(db, 'tenants', userData.tenantId));
           const ownerId = tenantOwnerSnap.exists() ? String(tenantOwnerSnap.data()?.ownerId || '') : '';
           const isMainOwner = isTenantOwnerUser(user.uid, ownerId);
-          if (isStaffAdminRole(resolvedStaffRole) && !isMainOwner) {
+          if (resolvedStaffIsCompanyAdmin && !isMainOwner) {
             effectiveRole = 'admin';
-          } else if (!isStaffAdminRole(resolvedStaffRole) && !isMainOwner && effectiveRole === 'admin') {
+          } else if (!resolvedStaffIsCompanyAdmin && !isMainOwner && effectiveRole === 'admin') {
             effectiveRole = 'staff';
           }
           if (effectiveRole !== userData.role) {
@@ -258,6 +264,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         } else {
           setStaffRecordRole(null);
+          setStaffIsCompanyAdmin(false);
         }
 
         const updatedUser = {

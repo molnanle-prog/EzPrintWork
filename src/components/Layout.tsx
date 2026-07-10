@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, Star, History } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -12,7 +12,7 @@ import { Job, Staff } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { toast } from 'sonner';
-import { APP_VERSION } from '../utils/autoUpdate';
+import { useInstalledAppVersion } from '../hooks/useInstalledAppVersion';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 
 interface LayoutProps {
@@ -224,6 +224,7 @@ const ReconnectOverlay: React.FC = () => {
 export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => {
   const { tenantPlan } = useAuth();
   const { theme } = useTheme();
+  const installedAppVersion = useInstalledAppVersion();
   const [isTvMode, setIsTvMode] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('ezprint_tv_mode') === 'true';
@@ -349,7 +350,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
           <div className="flex items-center gap-2 px-3 text-slate-300">
               <Printer size={isPinned ? 14 : 16} className={isPinned ? "text-yellow-400" : "text-blue-500"} />
               <span className={`font-bold tracking-wide ${isPinned ? 'text-[10px]' : 'text-xs'}`}>
-                  {isPinned ? `EzPrint v${APP_VERSION} (위젯)` : `EzPrintWork Cloud v${APP_VERSION}`}
+                  {isPinned ? `EzPrint v${installedAppVersion} (위젯)` : `EzPrintWork Cloud v${installedAppVersion}`}
               </span>
           </div>
           
@@ -628,7 +629,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                                     : 'bg-violet-600 text-white hover:bg-violet-700'
                             }`}
                         >
-                            <Star size={20} />
+                            <ArrowBigUp size={20} className="fill-white" strokeWidth={2} />
                             <span className="text-sm font-bold">관리카드</span>
                         </button>
                     </div>

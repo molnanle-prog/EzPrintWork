@@ -10,6 +10,8 @@ export type DesktopUpdateNotice = {
   kind: 'desktop';
   phase: 'available' | 'downloading' | 'downloaded' | 'installing' | 'error';
   version?: string;
+  /** 설치된 PC 앱 버전 (electron app.getVersion) */
+  currentVersion?: string;
   percent?: number;
   message?: string;
 };

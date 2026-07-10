@@ -128,7 +128,7 @@ export const QuoteManager: React.FC = () => {
 
 
   const openPreview = (quote: Quote) => {
-    cacheQuoteForPreview(quote);
+    cacheQuoteForPreview(quote, db.getCompanyInfo());
     const base = window.location.href.split('#')[0];
     const url = `${base}#/quote-preview/${encodeURIComponent(quote.id)}`;
     const opened = window.open(url, '_blank', 'width=1280,height=900');

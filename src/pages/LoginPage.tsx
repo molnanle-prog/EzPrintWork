@@ -8,9 +8,10 @@ import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
 import { db, formatPhoneNumber, isValidPhoneNumber } from '../services/dataService';
 import { getMaxStaffForPlan } from '../utils/planLimits';
-import { APP_VERSION } from '../utils/autoUpdate';
+import { useInstalledAppVersion } from '../hooks/useInstalledAppVersion';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import { createDesktopShortcut } from '../utils/desktopShortcut';
+import { getWindowsStartupEnabled, setWindowsStartupEnabled } from '../utils/windowsStartup';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
 import { normalizeStaffLoginEmail, provisionStaffAuthAccount, MIN_STAFF_PASSWORD_LENGTH } from '../utils/staffAuthProvision';
 import { signInStaffWithFirebaseAuth } from '../utils/staffFirebaseSignIn';
@@ -71,6 +72,8 @@ export const LoginPage: React.FC = () => {
     const [loginCompanySearchResults, setLoginCompanySearchResults] = useState<{ id: string; name: string }[]>([]);
 
     const [isElectron, setIsElectron] = useState(false);
+    const [openAtLogin, setOpenAtLogin] = useState(false);
+    const installedAppVersion = useInstalledAppVersion();
 
     const persistLoginPrefs = (
         overrides?: Partial<{
@@ -103,6 +106,10 @@ export const LoginPage: React.FC = () => {
 
     useEffect(() => {
         setIsElectron(typeof window !== 'undefined' && !!window.electron);
+
+        if (typeof window !== 'undefined' && window.electron?.getOpenAtLogin) {
+            void getWindowsStartupEnabled().then(setOpenAtLogin).catch(() => setOpenAtLogin(false));
+        }
 
         const prefs = loadStaffLoginPreferences();
         if ((prefs.rememberCompany || prefs.keepLoggedIn) && prefs.companyName && prefs.tenantId) {
@@ -142,6 +149,17 @@ export const LoginPage: React.FC = () => {
     const [searchResults, setSearchResults] = useState<{ id: string; name: string }[]>([]);
     const [isSearchingCompany, setIsSearchingCompany] = useState(false);
     const [hasSearched, setHasSearched] = useState(false);
+
+    const handleToggleOpenAtLogin = async (checked: boolean) => {
+        setOpenAtLogin(checked);
+        const result = await setWindowsStartupEnabled(checked);
+        if (result.ok) {
+            toast.success(result.message);
+        } else {
+            setOpenAtLogin(!checked);
+            toast.error(result.message || '시작 프로그램 설정에 실패했습니다.');
+        }
+    };
 
     const handleDownloadShortcut = async () => {
         const isElectronApp = typeof window !== 'undefined' && !!window.electron?.createDesktopShortcut;
@@ -444,7 +462,10 @@ export const LoginPage: React.FC = () => {
                 ? userData.email.trim().toLowerCase()
                 : null;
             const staffRoleForAuth = userData.role || userData.position;
-            const resolvedRole = resolveAppRoleFromStaff(staffRoleForAuth);
+            const resolvedRole = resolveAppRoleFromStaff({
+                role: String(staffRoleForAuth || ''),
+                isCompanyAdmin: userData.isCompanyAdmin === true,
+            });
             const staffDisplayName = userData.userName || userData.name || '사원';
 
             setPendingStaffProfile({
@@ -496,16 +517,22 @@ export const LoginPage: React.FC = () => {
 
             try {
                 let latestStaffRole = staffRoleForAuth;
+                let latestIsCompanyAdmin = userData.isCompanyAdmin === true;
                 try {
                     const staffDocSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
                     if (staffDocSnap.exists()) {
-                        latestStaffRole = staffDocSnap.data().role || latestStaffRole;
+                        const staffData = staffDocSnap.data();
+                        latestStaffRole = staffData.role || latestStaffRole;
+                        latestIsCompanyAdmin = staffData.isCompanyAdmin === true;
                     }
                 } catch {
                     /* staff role lookup optional */
                 }
 
-                const appRole = resolveAppRoleFromStaff(latestStaffRole);
+                const appRole = resolveAppRoleFromStaff({
+                    role: String(latestStaffRole || ''),
+                    isCompanyAdmin: latestIsCompanyAdmin,
+                });
 
                 const staffProfile = {
                     tenantId,
@@ -944,7 +971,7 @@ export const LoginPage: React.FC = () => {
                     </div>
                     <div>
                         <h1 className="text-4xl font-black text-white tracking-tighter mb-2">EzPrintWork</h1>
-                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v{APP_VERSION})</p>
+                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v{installedAppVersion})</p>
                     </div>
                 </div>
  
@@ -999,16 +1026,32 @@ export const LoginPage: React.FC = () => {
                                     </button>
                                 </div>
 
-                                <button 
-                                    onClick={() => triggerDesktopSetupDownload()}
-                                    className="w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group"
-                                >
-                                    <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform" />
-                                    <div className="flex flex-col items-start leading-tight text-left">
-                                        <span className="text-[13px] font-black">PC 전용 앱 (.exe)</span>
-                                        <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">클릭 후 설치 프로그램 실행</span>
-                                    </div>
-                                </button>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    {isElectron ? (
+                                        <label className="w-full min-h-[56px] flex items-center justify-center gap-2 px-3 rounded-2xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800/80 cursor-pointer select-none transition-colors">
+                                            <input
+                                                type="checkbox"
+                                                checked={openAtLogin}
+                                                onChange={(e) => void handleToggleOpenAtLogin(e.target.checked)}
+                                                className="w-3.5 h-3.5 shrink-0 rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                            />
+                                            <span className="text-[12px] font-bold text-slate-300 whitespace-nowrap">
+                                                Windows 시작 시 자동실행
+                                            </span>
+                                        </label>
+                                    ) : null}
+
+                                    <button 
+                                        onClick={() => triggerDesktopSetupDownload()}
+                                        className={`w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group ${isElectron ? '' : 'sm:col-span-2'}`}
+                                    >
+                                        <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform shrink-0" />
+                                        <div className="flex flex-col items-start leading-tight text-left">
+                                            <span className="text-[13px] font-black">PC 전용 앱 (.exe)</span>
+                                            <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">클릭 후 설치 프로그램 실행</span>
+                                        </div>
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Divider */}

@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('electron', {
         return () => ipcRenderer.removeListener('updater-status', handler);
     },
     createDesktopShortcut: () => ipcRenderer.invoke('create-desktop-shortcut'),
+    getOpenAtLogin: () => ipcRenderer.invoke('get-open-at-login'),
+    setOpenAtLogin: (enabled) => ipcRenderer.invoke('set-open-at-login', enabled),
     localDbLoad: (tenantId) => ipcRenderer.invoke('local-db-load', tenantId),
     localDbSaveJobs: (tenantId, jobs) => ipcRenderer.invoke('local-db-save-jobs', { tenantId, jobs }),
     localDbUpsertJob: (tenantId, job) => ipcRenderer.invoke('local-db-upsert-job', { tenantId, job }),

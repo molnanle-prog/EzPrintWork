@@ -18,6 +18,17 @@ body {
   color: #f1f5f9;
 }
 
+.dark input:not([type='checkbox']):not([type='radio']):not([type='range']):not([type='hidden']),
+.dark textarea {
+  caret-color: #e2e8f0;
+}
+
+/* number 입력: 커서와 스피너 사이 간격 (~1mm) */
+.number-spin-gap::-webkit-inner-spin-button,
+.number-spin-gap::-webkit-outer-spin-button {
+  margin-left: 4px;
+}
+
 /* Custom scrollbar for app-like feel */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }

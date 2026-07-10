@@ -105,9 +105,13 @@ export interface Job {
   /** 보드(칸반/달력/상황판)에서만 숨김. 이력/검색에는 남김 */
   boardHiddenAt?: string;
   boardHiddenBy?: string;
+  /** 보드 숨김 사유 — 관리카드 이동 vs 수동 내리기 구분 */
+  boardHiddenReason?: 'management_card' | 'manual';
   /** 이 작업에 선불로 차감된 금액 */
   prepaidAppliedAmount?: number;
-  /** 관리카드(별표) 고정 시각 — 회사 공통(작업 문서), 개인별 아님 */
+  /** 결제 시 선불 차감 사용 (기본 true — false면 별도 수금) */
+  usePrepaidForPayment?: boolean;
+  /** 관리카드로 올린 시각 — 회사 공통(작업 문서), 개인별 아님 */
   managementCardPinnedAt?: string;
 }
 
@@ -115,6 +119,8 @@ export interface Staff {
   id: string;
   name: string;
   role: string;
+  /** 사내 관리자 권한 — 직책(role)과 별도, 뱃지·권한용 */
+  isCompanyAdmin?: boolean;
   phone: string;        
   phoneOffice?: string; 
   phoneCompany?: string; 
@@ -209,6 +215,21 @@ export interface ClientContact {
     department?: string; 
 }
 
+export type PrepaidLedgerType = 'deposit' | 'deduction' | 'restore' | 'adjustment';
+
+export interface PrepaidLedgerEntry {
+  id: string;
+  timestamp: string;
+  type: PrepaidLedgerType;
+  /** 입금·복구는 양수, 차감은 음수 */
+  amount: number;
+  balanceAfter: number;
+  staffId?: string;
+  jobId?: string;
+  jobTitle?: string;
+  note?: string;
+}
+
 export interface Client {
   id: string;
   name: string;
@@ -223,6 +244,8 @@ export interface Client {
   customSmsNumber?: string;    // 알림 수신 전용 연락처 (비어있으면 기본 연락처 사용)
   /** 선불(예치) 잔액 — 작업 결제 시 자동 차감 */
   prepaidBalance?: number;
+  /** 선불 입출금 이력 */
+  prepaidLedger?: PrepaidLedgerEntry[];
 }
 
 export interface PaperStock {
@@ -335,6 +358,8 @@ export type ElectronUpdaterPhase =
 export interface ElectronUpdaterStatus {
   phase: ElectronUpdaterPhase;
   version?: string;
+  /** 설치된 PC 앱 버전 */
+  currentVersion?: string;
   releaseDate?: string;
   percent?: number;
   transferred?: number;
@@ -381,7 +406,9 @@ export interface IElectronAPI {
   updaterDownload?: () => Promise<{ ok: boolean; error?: string }>;
   updaterInstall?: () => Promise<{ ok: boolean }>;
   onUpdaterStatus?: (callback: (payload: ElectronUpdaterStatus) => void) => () => void;
-  createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; error?: string }>;
+  createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; paths?: string[]; error?: string }>;
+  getOpenAtLogin?: () => Promise<{ ok: boolean; enabled: boolean; supported?: boolean; error?: string }>;
+  setOpenAtLogin?: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean; supported?: boolean; error?: string }>;
   findLegacyDbFiles: () => Promise<{ name: string; path: string; size: string; mtime: string }[]>;
   localDbLoad?: (tenantId: string) => Promise<{
     success: boolean;

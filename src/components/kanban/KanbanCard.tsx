@@ -3,7 +3,7 @@ import { Job, Priority, PaymentStatus, JobItem } from '../../types';
 import { 
   MoreVertical, User, AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, 
   GripHorizontal, Layers, Users, FileText, FileWarning, 
-  FolderOpen, Play, CheckCircle, ShieldAlert, Star
+  FolderOpen, Play, CheckCircle, ShieldAlert, ArrowBigUp, ArrowBigDown
 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -24,7 +24,7 @@ import {
   getDDayBadgeClasses,
 } from '../../utils/jobUrgencyStyles';
 import { useKanbanCardInteraction } from './useKanbanCardInteraction';
-import { isJobPinnedToManagementCard } from '../../utils/managementCard';
+import type { ManagementPrepaidBadge } from '../../utils/prepaidBalance';
 
 interface KanbanCardProps {
   job: Job;
@@ -43,6 +43,8 @@ interface KanbanCardProps {
   onHideFromBoard?: (job: Job) => void;
   /** 관리카드 팝업 — 칸반과 동일 카드, 드래그 비활성 */
   isManagementPanel?: boolean;
+  /** 관리카드 — 이 건의 선불 처리 뱃지 */
+  managementPrepaidBadge?: ManagementPrepaidBadge;
 }
 
 type SortableBinding = Pick<
@@ -79,13 +81,13 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   isCompactTray = false,
   onHideFromBoard,
   isManagementPanel = false,
+  managementPrepaidBadge,
   sortable,
 }) => {
   const { theme } = useTheme();
   const { currentUser } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
   const isTrayView = isCompactTray;
-  const isPinnedToManagement = isJobPinnedToManagementCard(job);
   const isWebReadOnly = db.isWebMirrorMode();
 
   const {
@@ -107,44 +109,63 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     cardSurfaceClass,
   } = useKanbanCardInteraction({ job, isDragOverlay, onSelect, onRightClick });
 
-  const handleToggleManagementPin = async (e: React.MouseEvent) => {
+  const handleMoveToManagementCard = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (isWebReadOnly) {
-      toast.error('웹(태블릿)은 조회 전용입니다. 별표 설정은 매장 PC에서 해 주세요.');
+      toast.error('웹(태블릿)은 조회 전용입니다. 관리카드 이동은 매장 PC에서 해 주세요.');
       return;
     }
     try {
-      if (isPinnedToManagement) {
-        await db.unpinJobFromManagementCard(job.id);
-        toast.success('관리카드에서 해제했습니다.');
-      } else {
-        await db.pinJobToManagementCard(job.id);
-        toast.success('관리카드에 추가했습니다.');
-      }
+      await db.pinJobToManagementCard(job.id);
+      toast.success('관리카드로 올렸습니다. 칸반에서는 숨겨집니다.');
     } catch {
-      toast.error('관리카드 설정에 실패했습니다.');
+      toast.error('관리카드로 올리기에 실패했습니다.');
     }
   };
 
-  const renderManagementStar = (size = 16) => (
-    <button
-      type="button"
-      onPointerDown={stopDragPropagation}
-      onClick={handleToggleManagementPin}
-      className={`p-1 rounded-md transition-colors pointer-events-auto ${
-        isPinnedToManagement || touchPrimary
-          ? 'opacity-100'
-          : 'opacity-0 group-hover:opacity-100'
-      } ${
-        isPinnedToManagement
-          ? 'text-amber-500 hover:text-amber-600'
-          : 'text-slate-300 dark:text-slate-600 hover:text-amber-400'
-      }`}
-      title={isPinnedToManagement ? '관리카드 고정 해제 (회사 공통)' : '관리카드에 추가 (회사 공통)'}
-    >
-      <Star size={size} className={isPinnedToManagement ? 'fill-amber-400' : ''} />
-    </button>
-  );
+  const handleMoveToKanban = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isWebReadOnly) {
+      toast.error('웹(태블릿)은 조회 전용입니다. 칸반 이동은 매장 PC에서 해 주세요.');
+      return;
+    }
+    try {
+      await db.unpinJobFromManagementCard(job.id);
+      toast.success('칸반으로 내렸습니다.');
+    } catch {
+      toast.error('칸반으로 내리기에 실패했습니다.');
+    }
+  };
+
+  const renderManagementMoveButton = (size = 16) => {
+    if (isManagementPanel) {
+      return (
+        <button
+          type="button"
+          onPointerDown={stopDragPropagation}
+          onClick={handleMoveToKanban}
+          className="p-1 rounded-md transition-colors pointer-events-auto opacity-100 text-emerald-600 hover:text-emerald-700"
+          title="칸반으로 내리기"
+        >
+          <ArrowBigDown size={size} className="fill-emerald-500 text-emerald-600" strokeWidth={2} />
+        </button>
+      );
+    }
+
+    return (
+      <button
+        type="button"
+        onPointerDown={stopDragPropagation}
+        onClick={handleMoveToManagementCard}
+        className={`p-1 rounded-md transition-colors pointer-events-auto ${
+          touchPrimary ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'
+        } text-violet-500 hover:text-violet-600`}
+        title="관리카드로 올리기"
+      >
+        <ArrowBigUp size={size} className="fill-violet-500 text-violet-600" strokeWidth={2} />
+      </button>
+    );
+  };
 
   const sortableStyle: React.CSSProperties = isDragOverlay
     ? {}
@@ -163,7 +184,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   const diffTime = due.getTime() - now.getTime();
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   const isDone = status === 'COMPLETED';
-  const canHideFromBoard = (status === 'COMPLETED' || status === 'DELIVERY') && !!onHideFromBoard;
+  const canHideFromBoard = !!onHideFromBoard;
   const urgencyTier = resolveEffectiveTier(daysRemaining, job.priority);
   const ddayLabel = formatDDayLabel(daysRemaining);
   const ddayBadgeClass = getDDayBadgeClasses(urgencyTier);
@@ -440,9 +461,6 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         onContextMenu={handleCardContextMenu}
         title={!isHovered ? `${job.title}\n${job.clientName}` : undefined}
       >
-        {isPinnedToManagement && (
-          <div className="absolute top-0.5 right-0.5 pointer-events-auto">{renderManagementStar(11)}</div>
-        )}
         <div className={`kanban-card-title font-bold text-slate-800 dark:text-slate-100 leading-snug pr-4 ${isHovered ? 'text-[11px] whitespace-normal' : 'text-[10px] line-clamp-2'}`}>
           {job.title}
         </div>
@@ -458,7 +476,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
               <div className="kanban-tray-meta text-[9px] truncate">{staffName}</div>
             )}
             <div className="flex items-center justify-end gap-0.5 pt-0.5">
-              {renderManagementStar(12)}
+              {renderManagementMoveButton(12)}
               <button
                 type="button"
                 onPointerDown={stopDragPropagation}
@@ -526,7 +544,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         <span className="kanban-tray-price text-[10px] font-mono font-bold shrink-0">
           {job.price ? `${job.price.toLocaleString()}원` : '미정'}
         </span>
-        {renderManagementStar(13)}
+        {renderManagementMoveButton(13)}
         <button
           type="button"
           onPointerDown={stopDragPropagation}
@@ -602,7 +620,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
                 {job.paymentStatus || '결제대기'}
            </span>
            <div className="w-px h-3 bg-slate-200 dark:bg-slate-700"></div>
-           {renderManagementStar(14)}
+           {renderManagementMoveButton(14)}
            <button 
              onPointerDown={stopDragPropagation}
              onClick={(e) => { e.stopPropagation(); onStatusChange(job, 'prev'); }}
@@ -880,7 +898,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         
         {/* Grip Icon & More menu */}
         <div className="flex gap-1 kanban-card-icon-muted text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
-          {renderManagementStar(15)}
+          {renderManagementMoveButton(15)}
           {canHideFromBoard && (
             <button
               type="button"
@@ -943,6 +961,30 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       
       {/* 2. Main Title and Client */}
       <div className="pointer-events-none flex flex-col gap-0.5">
+        {isManagementPanel && managementPrepaidBadge && (
+          <div className="flex justify-end -mb-0.5">
+            {managementPrepaidBadge.kind === 'deducted' && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 border border-violet-200 dark:border-violet-800 tabular-nums">
+                선불 −{managementPrepaidBadge.amount.toLocaleString()}
+              </span>
+            )}
+            {managementPrepaidBadge.kind === 'pending' && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 tabular-nums">
+                선불 예정 −{managementPrepaidBadge.amount.toLocaleString()}
+              </span>
+            )}
+            {managementPrepaidBadge.kind === 'separate' && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600">
+                별도결제
+              </span>
+            )}
+            {managementPrepaidBadge.kind === 'receivable' && (
+              <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 tabular-nums">
+                미수 {managementPrepaidBadge.amount.toLocaleString()}
+              </span>
+            )}
+          </div>
+        )}
         <h4 className="kanban-card-title font-medium text-[15px] lg:text-[16px] leading-snug truncate text-slate-800 dark:text-slate-100" title={job.title}>
           {job.title}
         </h4>

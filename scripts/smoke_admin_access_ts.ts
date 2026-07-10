@@ -30,6 +30,7 @@ check('staff cannot delete permanently', !canDeletePermanently(staffCtx));
 check('owner canManageTenantRoot', canManageTenantRoot(ownerCtx));
 check('site admin cannot root settings', !canManageTenantRoot(adminCtx));
 check('site admin via staff record canManageCompany', canManageCompany({ ...staffCtx, staffRecordRole: 'admin' }));
+check('site admin via isCompanyAdmin flag', canManageCompany({ ...staffCtx, staffIsCompanyAdmin: true }));
 check('hidden dev-admin id', isHiddenStaffId('dev-admin'));
 check('normal id not hidden', !isHiddenStaffId('user-abc'));
 

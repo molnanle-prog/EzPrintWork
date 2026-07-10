@@ -1,8 +1,8 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { db, getHolidayName } from '../../services/dataService';
 import { Job, Staff, StaffLeave, Priority, JobStatusDefinition, PaymentStatus } from '../../types';
-import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, Calendar as CalendarIcon, CheckCircle2, Tv } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, Calendar as CalendarIcon, CheckCircle2, Tv, Users } from 'lucide-react';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { LeaveModal } from './LeaveModal';
 import { useDialog } from '../../contexts/DialogContext';
@@ -45,6 +45,24 @@ const getJobColorStyles = (id: string) => {
   return styles[Math.abs(hash) % styles.length];
 };
 
+const loadInitialAssigneeStaffIds = (): string[] | null => {
+  const saved = localStorage.getItem('ez_calendar_assignee_staff_ids');
+  if (saved !== null) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        return parsed.filter((id): id is string => typeof id === 'string');
+      }
+    } catch {
+      return [];
+    }
+  }
+  const oldOnlyMy = localStorage.getItem('ez_calendar_only_my_jobs') === 'true';
+  const oldSingleId = localStorage.getItem('ez_calendar_assignee_staff_id');
+  if (oldOnlyMy && oldSingleId) return [oldSingleId];
+  return null;
+};
+
 export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote }) => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -67,8 +85,23 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
 
   const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
   const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
-  const [filterOnlyMyJobs, setFilterOnlyMyJobs] = useState<boolean>(() => localStorage.getItem('ez_calendar_only_my_jobs') === 'true');
+  const [selectedAssigneeStaffIds, setSelectedAssigneeStaffIds] = useState<string[]>(() => loadInitialAssigneeStaffIds() ?? []);
+  const [assigneeFilterInitialized, setAssigneeFilterInitialized] = useState(() => loadInitialAssigneeStaffIds() !== null);
+  const [showAssigneePopover, setShowAssigneePopover] = useState(false);
   const [filterLongProjectOnly, setFilterLongProjectOnly] = useState<boolean>(() => localStorage.getItem('ez_calendar_only_long_projects') === 'true');
+
+  const defaultAssigneeStaffId = useMemo(
+    () => (currentUser ? getStaffIdForUser(staff, currentUser) : undefined),
+    [currentUser, staff]
+  );
+
+  const activeStaff = useMemo(() => staff.filter((s) => !s.isDeleted), [staff]);
+
+  const toggleAssigneeStaff = useCallback((staffId: string) => {
+    setSelectedAssigneeStaffIds((prev) =>
+      prev.includes(staffId) ? prev.filter((id) => id !== staffId) : [...prev, staffId]
+    );
+  }, []);
 
   const handleDragStart = (e: React.DragEvent, jobId: string) => {
     e.dataTransfer.setData("text/plain", jobId);
@@ -129,8 +162,23 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('ez_calendar_only_my_jobs', String(filterOnlyMyJobs));
-  }, [filterOnlyMyJobs]);
+    localStorage.setItem('ez_calendar_assignee_staff_ids', JSON.stringify(selectedAssigneeStaffIds));
+  }, [selectedAssigneeStaffIds]);
+
+  useEffect(() => {
+    if (assigneeFilterInitialized || !defaultAssigneeStaffId) return;
+    setSelectedAssigneeStaffIds([defaultAssigneeStaffId]);
+    setAssigneeFilterInitialized(true);
+  }, [assigneeFilterInitialized, defaultAssigneeStaffId]);
+
+  useEffect(() => {
+    if (selectedAssigneeStaffIds.length === 0) return;
+    const validIds = new Set(activeStaff.map((s) => s.id));
+    const filtered = selectedAssigneeStaffIds.filter((id) => validIds.has(id));
+    if (filtered.length !== selectedAssigneeStaffIds.length) {
+      setSelectedAssigneeStaffIds(filtered);
+    }
+  }, [activeStaff, selectedAssigneeStaffIds]);
 
   useEffect(() => {
     localStorage.setItem('ez_calendar_only_long_projects', String(filterLongProjectOnly));
@@ -192,7 +240,6 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
       const viewStartTs = new Date(gridDates[0]).getTime();
       const viewEndTs = new Date(gridDates[gridDates.length - 1]).getTime() + (24 * 60 * 60 * 1000) - 1;
 
-      const currentStaffId = currentUser ? getStaffIdForUser(staff, currentUser) : undefined;
       const visibleJobs = jobs.filter(job => {
           if (isJobBoardHidden(job)) return false;
           const start = new Date(job.createdAt).getTime();
@@ -200,8 +247,9 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
           if (!(end >= viewStartTs && start <= viewEndTs && job.status !== 'CANCELED' && job.status !== 'QUOTE')) {
             return false;
           }
-          if (filterOnlyMyJobs && currentStaffId) {
-            if (!isJobAssignedToStaffId(job, currentStaffId, staff)) return false;
+          if (selectedAssigneeStaffIds.length > 0) {
+            const matchesAny = selectedAssigneeStaffIds.some((id) => isJobAssignedToStaffId(job, id, staff));
+            if (!matchesAny) return false;
           }
           if (filterLongProjectOnly && !isLongProjectJob(job)) return false;
           return true;
@@ -238,7 +286,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
           });
       });
       return { gridDates, slots };
-  }, [jobs, currentDate, currentUser, staff, filterOnlyMyJobs, filterLongProjectOnly]);
+  }, [jobs, currentDate, staff, selectedAssigneeStaffIds, filterLongProjectOnly]);
 
   // Find the best padding cells for the Ad
   const adCellIndices = useMemo(() => {
@@ -526,8 +574,102 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
               </div>
             </div>
             
-            <div className="flex gap-1 md:gap-2 items-center">
-              <div className="hidden xl:flex gap-2 text-xs md:text-sm font-medium mr-2">
+            <div className="flex gap-1 md:gap-2 items-center flex-wrap justify-end">
+              <div className="relative">
+                <button
+                  onClick={() => setShowAssigneePopover((prev) => !prev)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                    selectedAssigneeStaffIds.length > 0
+                      ? 'bg-blue-600 text-white border-blue-600'
+                      : theme === 'trello'
+                        ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300'
+                        : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200'
+                  }`}
+                  title="담당자를 체크하면 해당 담당자 작업만 표시 (복수 선택 가능)"
+                >
+                  <Users size={14} />
+                  담당자 보기
+                  {selectedAssigneeStaffIds.length > 0 && (
+                    <span className={`px-1.5 rounded text-[10px] font-bold ${selectedAssigneeStaffIds.length > 0 ? 'bg-white/20' : ''}`}>
+                      {selectedAssigneeStaffIds.length}
+                    </span>
+                  )}
+                </button>
+
+                {showAssigneePopover && (
+                  <>
+                    <div className="fixed inset-0 z-30" onClick={() => setShowAssigneePopover(false)} />
+                    <div
+                      className={`absolute top-full right-0 mt-2 w-56 rounded-xl shadow-2xl border p-2 z-40 overflow-hidden ${
+                        theme === 'trello'
+                          ? 'bg-[#1d2d44] border-[#2c3e56]'
+                          : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
+                      }`}
+                    >
+                      <div className={`px-3 py-2 border-b mb-1 flex items-center justify-between ${theme === 'trello' ? 'border-[#2c3e56]' : 'border-slate-100 dark:border-slate-700'}`}>
+                        <p className={`text-[10px] font-medium uppercase tracking-widest ${theme === 'trello' ? 'text-slate-400' : 'text-slate-400'}`}>
+                          담당자 선택
+                        </p>
+                        {selectedAssigneeStaffIds.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedAssigneeStaffIds([])}
+                            className="text-[10px] font-bold text-blue-500 hover:text-blue-400"
+                          >
+                            전체 해제
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-[280px] overflow-y-auto custom-scrollbar p-1 space-y-0.5">
+                        {activeStaff.map((s) => {
+                          const checked = selectedAssigneeStaffIds.includes(s.id);
+                          return (
+                            <label
+                              key={s.id}
+                              className={`flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                                theme === 'trello'
+                                  ? checked
+                                    ? 'bg-[#2c3e56] text-slate-200'
+                                    : 'hover:bg-[#24364e] text-slate-300'
+                                  : checked
+                                    ? 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-200'
+                                    : 'hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleAssigneeStaff(s.id)}
+                                className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 shrink-0"
+                              />
+                              <span className="text-sm font-medium truncate">
+                                {s.name} <span className="text-xs opacity-70">({s.role})</span>
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <p className={`px-3 py-2 text-[10px] ${theme === 'trello' ? 'text-slate-500' : 'text-slate-400'}`}>
+                        체크한 담당자 작업만 표시 · 복수 선택 가능
+                      </p>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <button
+                onClick={() => setFilterLongProjectOnly((prev) => !prev)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                  filterLongProjectOnly
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200'
+                }`}
+                title="장기프로젝트만 보기 (담당자 보기와 함께 사용 가능)"
+              >
+                장기프로젝트만
+              </button>
+
+              <div className="hidden xl:flex gap-2 text-xs md:text-sm font-medium">
                  <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-100 dark:border-red-800'}`}>
                     <AlertCircle size={14} />
                     <span>긴급: {activeJobsStats.filter(j => j.priority !== Priority.NORMAL).length}</span>
@@ -576,31 +718,12 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
               <button onClick={() => setShowLeaveModal(true)} className="mr-2 px-3 py-1.5 bg-purple-600 text-white text-xs md:text-sm font-bold rounded-lg hover:bg-purple-700 shadow-sm flex items-center gap-1">
                   <Palmtree size={16} /><span className="hidden sm:inline">휴가 등록</span>
               </button>
-              <button onClick={prevMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronLeft size={20} /></button>
-              <button onClick={goToday} className={`px-3 py-1.5 md:px-4 md:py-2 rounded-lg font-bold shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}>오늘</button>
-              <button onClick={nextMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronRight size={20} /></button>
-              <button
-                onClick={() => setFilterOnlyMyJobs((prev) => !prev)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
-                  filterOnlyMyJobs
-                    ? 'bg-blue-600 text-white border-blue-600'
-                    : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200'
-                }`}
-                title="내 담당 작업만 보기"
-              >
-                담당자 보기
-              </button>
-              <button
-                onClick={() => setFilterLongProjectOnly((prev) => !prev)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
-                  filterLongProjectOnly
-                    ? 'bg-indigo-600 text-white border-indigo-600'
-                    : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200'
-                }`}
-                title="장기프로젝트만 보기"
-              >
-                장기프로젝트만
-              </button>
+
+              <div className="flex gap-1 items-center">
+                <button onClick={prevMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronLeft size={20} /></button>
+                <button onClick={goToday} className={`px-3 py-1.5 md:px-4 md:py-2 rounded-lg font-bold shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}>오늘</button>
+                <button onClick={nextMonth} className={`p-1.5 md:p-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 border shadow-sm transition-colors ${theme === 'trello' ? 'bg-[#1d2d44] border-[#2c3e56] text-slate-300 hover:bg-[#24364e]' : 'bg-white dark:bg-slate-700 border-slate-200 dark:border-slate-600'}`}><ChevronRight size={20} /></button>
+              </div>
             </div>
           </div>
         )}

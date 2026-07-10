@@ -8,7 +8,8 @@ import { OnboardingPage } from './pages/OnboardingPage';
 import { TenantGuard } from './components/auth/TenantGuard';
 import { Toaster } from 'sonner';
 import { AutoUpdateProvider } from './components/common/AutoUpdateProvider';
-import { isQuotePreviewRoute } from './utils/quotePreviewStorage';
+import { JobOrderPreviewPage } from './pages/JobOrderPreviewPage';
+import { isStandaloneDocumentPreviewRoute } from './utils/documentPreviewRoutes';
 import { isRemoteViewRoute } from './utils/remoteView';
 import { db } from './services/dataService';
 import { RemoteSituationPage } from './pages/RemoteSituationPage';
@@ -27,7 +28,7 @@ const LoadingScreen = () => (
 
 function AppRoutes() {
     const { isAuthenticated, loading, currentUser } = useAuth();
-    const previewOnly = isQuotePreviewRoute();
+    const previewOnly = isStandaloneDocumentPreviewRoute();
     const remoteOnly = isRemoteViewRoute();
 
     useEffect(() => {
@@ -56,6 +57,14 @@ function AppRoutes() {
                             element={
                                 <TenantGuard>
                                     <QuotePreviewPage />
+                                </TenantGuard>
+                            }
+                        />
+                        <Route
+                            path="/job-order-preview/:jobId"
+                            element={
+                                <TenantGuard>
+                                    <JobOrderPreviewPage />
                                 </TenantGuard>
                             }
                         />
@@ -106,6 +115,14 @@ function AppRoutes() {
                             element={
                                 <TenantGuard>
                                     <QuotePreviewPage />
+                                </TenantGuard>
+                            }
+                        />
+                        <Route
+                            path="/job-order-preview/:jobId"
+                            element={
+                                <TenantGuard>
+                                    <JobOrderPreviewPage />
                                 </TenantGuard>
                             }
                         />

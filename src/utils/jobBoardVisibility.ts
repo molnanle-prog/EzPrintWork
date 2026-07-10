@@ -4,6 +4,10 @@ export function isJobBoardHidden(job: Job): boolean {
   return !!job.boardHiddenAt;
 }
 
+export function isJobHiddenForManagementCard(job: Job): boolean {
+  return job.boardHiddenReason === 'management_card';
+}
+
 export function isLongProjectJob(job: Job): boolean {
   const created = new Date(job.createdAt).getTime();
   const due = new Date(job.dueDate).getTime();

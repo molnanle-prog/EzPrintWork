@@ -30,6 +30,8 @@ export interface SituationMirrorPayload {
     kanbanLayout?: KanbanLayoutConfig;
     statusDefinitions?: JobStatusDefinition[];
     jobs: Job[];
+    /** 삭제된 job ID — 다른 PC·웹·태블릿에 삭제 전파 */
+    deletedJobs?: { id: string; deletedAt: string }[];
     clients?: Client[];
     settings?: Record<string, unknown>;
     staff?: SituationStaffSnapshot[];
@@ -104,6 +106,7 @@ export class SituationMirrorService {
             kanbanLayout?: KanbanLayoutConfig;
             statusDefinitions?: JobStatusDefinition[];
             staff?: Staff[];
+            deletedJobs?: { id: string; deletedAt: string }[];
         }
     ): SituationMirrorPayload {
         const boardJobs = filterJobsForOperationalBoard(input.jobs, {
@@ -117,6 +120,7 @@ export class SituationMirrorService {
             kanbanLayout: input.kanbanLayout,
             statusDefinitions: input.statusDefinitions,
             jobs: boardJobs,
+            deletedJobs: input.deletedJobs?.length ? input.deletedJobs : undefined,
             clients: input.clients || [],
             settings: input.settings || {},
             staff: (input.staff || []).map((s) => {
@@ -212,6 +216,23 @@ export class SituationMirrorService {
     async readRemoteMirror(tenantId: string, gatewayBaseUrl?: string | null): Promise<SituationMirrorPayload | null> {
         if (!tenantId) return null;
 
+        const normalize = (
+            data: Partial<SituationMirrorPayload> & { jobs?: Job[]; updatedAt?: string }
+        ): SituationMirrorPayload => ({
+            version: data.version ?? MIRROR_VERSION,
+            tenantId,
+            updatedAt: data.updatedAt || new Date().toISOString(),
+            companyName: data.companyName,
+            kanbanLayout: data.kanbanLayout,
+            statusDefinitions: data.statusDefinitions,
+            jobs: data.jobs || [],
+            deletedJobs: data.deletedJobs,
+            clients: data.clients,
+            settings: data.settings,
+            staff: data.staff,
+        });
+
+        let gatewayPayload: SituationMirrorPayload | null = null;
         const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
         if (base) {
             try {
@@ -229,19 +250,8 @@ export class SituationMirrorService {
                         jobs?: Job[];
                         updatedAt?: string;
                     };
-                    if (data.jobs || data.updatedAt) {
-                        return {
-                            version: data.version ?? MIRROR_VERSION,
-                            tenantId,
-                            updatedAt: data.updatedAt || new Date().toISOString(),
-                            companyName: data.companyName,
-                            kanbanLayout: data.kanbanLayout,
-                            statusDefinitions: data.statusDefinitions,
-                            jobs: data.jobs || [],
-                            clients: data.clients,
-                            settings: data.settings,
-                            staff: data.staff,
-                        };
+                    if (data.jobs?.length || data.updatedAt || data.deletedJobs?.length) {
+                        gatewayPayload = normalize(data);
                     }
                 }
             } catch (error) {
@@ -249,7 +259,32 @@ export class SituationMirrorService {
             }
         }
 
-        return this.readFromStorage(tenantId);
+        const storagePayload = await this.readFromStorage(tenantId);
+
+        const ts = (p: SituationMirrorPayload | null) => Date.parse(p?.updatedAt || '') || 0;
+        const jobCount = (p: SituationMirrorPayload | null) => p?.jobs?.length || 0;
+
+        if (gatewayPayload && storagePayload) {
+            const gTs = ts(gatewayPayload);
+            const sTs = ts(storagePayload);
+            const newer = sTs > gTs ? storagePayload : gatewayPayload;
+            const older = sTs > gTs ? gatewayPayload : storagePayload;
+            const jobs =
+                jobCount(newer) > 0
+                    ? newer.jobs
+                    : jobCount(older) > 0
+                      ? older.jobs
+                      : [];
+            const { mergeTombstoneLists } = await import('../utils/jobTombstones');
+            return {
+                ...newer,
+                jobs,
+                deletedJobs: mergeTombstoneLists(newer.deletedJobs, older.deletedJobs),
+                updatedAt: sTs >= gTs ? storagePayload.updatedAt : gatewayPayload.updatedAt,
+            };
+        }
+
+        return gatewayPayload || storagePayload;
     }
 
     /** @deprecated PC 동기화는 readFromNas 사용. 웹은 readFromStorage / readRemoteMirror */

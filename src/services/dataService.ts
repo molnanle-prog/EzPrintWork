@@ -28,12 +28,21 @@ import {
     TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
 } from '../utils/archiveStorage';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
-import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances } from '../utils/prepaidBalance';
+import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances, normalizePrepaidBalance, appendPrepaidLedger, removeAndRecalculatePrepaidLedger, canDeletePrepaidLedgerEntry } from '../utils/prepaidBalance';
 import { isManagementCardExpired, shouldShowInManagementCards } from '../utils/managementCard';
-import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
+import { isStandaloneDocumentPreviewRoute } from '../utils/documentPreviewRoutes';
 import { formatJobNumber } from '../utils/jobNumber';
 import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
+import {
+    filterJobsByTombstones,
+    isJobTombstoned,
+    loadJobTombstoneMap,
+    saveJobTombstoneMap,
+    tombstoneMapToPayload,
+    type JobTombstone,
+} from '../utils/jobTombstones';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
+import { filterJobTitleOptions, normalizeStaffRecord, isReservedStaffAuthRole } from '../utils/adminAccess';
 import { APP_VERSION } from '../utils/autoUpdate';
 // --- Utility Functions (From Original) ---
 export const isValidPhoneNumber = (value: string): boolean => {
@@ -350,8 +359,10 @@ export function mergeStatusDefinitionsWithInitial(
 }
 
 export function mergeRolesWithInitial(roles: string[]): { roles: string[]; changed: boolean } {
-    const merged = mergeStringListField(roles, DEFAULT_STAFF_ROLES);
-    return { roles: merged, changed: !stringArraysEqual(merged, roles) };
+    const sanitized = filterJobTitleOptions(roles);
+    const merged = filterJobTitleOptions(mergeStringListField(sanitized, DEFAULT_STAFF_ROLES));
+    const changed = !stringArraysEqual(merged, roles);
+    return { roles: merged, changed };
 }
 
 function splitLegacyBookletProcessings(all: string[]): ProductProcessingSets {
@@ -546,6 +557,10 @@ export class DataService {
     private archivedJobs: Job[] = [];
     private archiveLoaded = false;
     private archiveInitializing = false;
+    /** NAS/Storage 미러에서 받은 회사명 — settings.companyInfo 미동기화 시 견적서 공급자 폴백 */
+    private mirrorCompanyName: string | null = null;
+    /** 삭제된 job ID — 미러·다른 PC·웹에 전파해 중복 복원 방지 */
+    private jobTombstones = new Map<string, number>();
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
@@ -567,9 +582,15 @@ export class DataService {
      */
     private canPersistToCloud(col?: string): boolean {
         if (!this.tenantId) return false;
+        // 업무 데이터(jobs/clients) — Firestore 저장 금지 (NAS·로컬 SQLite만)
+        if (col === 'jobs' || col === 'clients') return false;
         if (!this.isWebMirrorMode()) return true;
-        if (col === 'jobs') return false;
         return this.isSyncAdmin();
+    }
+
+    /** Firestore tenants/.../jobs 컬렉션 접근 금지 여부 */
+    private isFirestoreJobsForbidden(): boolean {
+        return this.isLocalPrimaryMode() || this.isWebMirrorMode() || this.getIsElectron();
     }
 
     setSyncUserRole(role: 'admin' | 'staff' | 'superadmin' | null) {
@@ -619,9 +640,16 @@ export class DataService {
 
     private applyMirrorPayload(situation: SituationMirrorPayload): boolean {
         let applied = false;
+        if (situation.deletedJobs?.length) {
+            this.applyJobTombstonesFromMirror(situation.deletedJobs);
+            applied = true;
+        }
         if (situation.jobs?.length) {
             const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), situation.jobs);
             this.applyImportedJobs(merged);
+            applied = true;
+        } else if (situation.deletedJobs?.length) {
+            this.purgeTombstonedJobsFromCaches();
             applied = true;
         }
         if (Array.isArray(situation.clients) && situation.clients.length > 0) {
@@ -629,8 +657,10 @@ export class DataService {
             applied = true;
         }
         if (situation.settings && typeof situation.settings === 'object') {
-            this.data['settings'] = [situation.settings as Record<string, unknown>];
-            this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
+            this.mergeSettingsFromMirror(situation.settings as Record<string, unknown>, situation.companyName);
+            applied = true;
+        } else if (situation.companyName) {
+            this.mirrorCompanyName = situation.companyName;
             applied = true;
         }
         if (situation.updatedAt) {
@@ -641,16 +671,47 @@ export class DataService {
         return applied;
     }
 
-    private async tryHydrateFromWebMirror(): Promise<boolean> {
+    private async tryHydrateFromWebMirror(maxAttempts = 3): Promise<boolean> {
         if (!this.tenantId || this.getIsElectron()) return false;
-        try {
-            const situation = await this.fetchWebMirrorPayload();
-            if (!situation) return false;
-            const ok = this.applyMirrorPayload(situation);
-            if (ok) this.webMirrorReady = true;
-            return ok;
-        } catch {
-            return false;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            try {
+                const situation = await this.fetchWebMirrorPayload();
+                if (!situation) {
+                    if (attempt < maxAttempts - 1) {
+                        await new Promise((r) => setTimeout(r, 1500));
+                    }
+                    continue;
+                }
+                const ok = this.applyMirrorPayload(situation);
+                if (ok) {
+                    this.webMirrorReady = true;
+                    return true;
+                }
+                if (attempt < maxAttempts - 1) {
+                    await new Promise((r) => setTimeout(r, 1500));
+                }
+            } catch {
+                if (attempt < maxAttempts - 1) {
+                    await new Promise((r) => setTimeout(r, 1500));
+                }
+            }
+        }
+        return false;
+    }
+
+    private async retryWebMirrorHydrateInBackground(): Promise<void> {
+        if (!this.tenantId || this.getIsElectron()) return;
+        for (let i = 0; i < 5; i++) {
+            await new Promise((r) => setTimeout(r, 2000));
+            if (!this.tenantId || this.getIsElectron()) return;
+            if (this.getAllJobs().length > 0) return;
+            const ok = await this.tryHydrateFromWebMirror(1);
+            if (ok) {
+                this.isReady = true;
+                this.syncStatus = 'synced';
+                this.notify();
+                return;
+            }
         }
     }
 
@@ -704,6 +765,8 @@ export class DataService {
     setTenant(tenantId: string) {
         if (this.tenantId === tenantId) return;
         this.tenantId = tenantId;
+        this.jobTombstones = loadJobTombstoneMap(tenantId);
+        this.mirrorCompanyName = null;
         this.lastSyncError = null;
         this.quotesBootstrappedForTenant = null;
         this.operationalJobs = [];
@@ -970,6 +1033,8 @@ export class DataService {
 
     private async runHotColdArchival(): Promise<void> {
         if (!this.tenantId || !this.getIsElectron() || !this.isSyncAdmin()) return;
+        // 로컬·NAS 전용 모드 — Firestore jobs 레거시 아카이브 스킵
+        if (this.isLocalPrimaryMode() || this.isFirestoreJobsForbidden()) return;
         const dayKey = new Date().toISOString().split('T')[0];
         const markerKey = `ezpw_archive_last_run_${this.tenantId}`;
         if (localStorage.getItem(markerKey) === dayKey) return;
@@ -1058,6 +1123,23 @@ export class DataService {
         if (!this.tenantId) return [];
         const trimmed = q.trim();
         if (trimmed.length < 2) return [];
+
+        if (this.isFirestoreJobsForbidden()) {
+            await this.ensureColdArchiveLoaded();
+            const needle = trimmed.toLowerCase();
+            const map = new Map<string, Job>();
+            for (const job of this.getAllJobs()) {
+                if (!job?.id) continue;
+                const hay = `${job.title || ''} ${job.clientName || ''} ${job.contactPerson || ''}`.toLowerCase();
+                if (hay.includes(needle)) map.set(job.id, job);
+            }
+            const results = Array.from(map.values()).slice(0, 80);
+            if (results.length > 0) {
+                this.mergeSupplementaryJobs(results, () => false);
+                this.notify();
+            }
+            return results;
+        }
 
         const jobsCol = collection(firestore, 'tenants', this.tenantId, 'jobs');
         const hotCutoffIso = this.getHotWindowCutoffDate().toISOString();
@@ -1196,6 +1278,7 @@ export class DataService {
                 kanbanLayout: this.getSettingsObj()?.kanbanLayout,
                 statusDefinitions: this.getStatusDefinitions(),
                 staff,
+                deletedJobs: tombstoneMapToPayload(this.jobTombstones),
             });
             mirrorUpdatedAt = payload.updatedAt;
             published = (await situationMirrorService.publish(tenantId, payload)) || published;
@@ -1254,7 +1337,14 @@ export class DataService {
             bundle.jobCount > 0 || bundle.clients.length > 0 || !!bundle.settings;
         if (!hasData) return false;
 
-        if (bundle.jobs.length > 0) this.applyImportedJobs(bundle.jobs);
+        if (bundle.jobs.length > 0) {
+            const filtered = filterJobsByTombstones(
+                bundle.jobs,
+                this.jobTombstones,
+                (job) => this.jobTimestampMs(job)
+            );
+            this.applyImportedJobs(filtered);
+        }
         if (bundle.clients.length > 0) this.data['clients'] = bundle.clients;
         if (bundle.settings) {
             this.data['settings'] = [bundle.settings];
@@ -1290,7 +1380,12 @@ export class DataService {
         try {
             const archived = (await jobArchiveService.readNasArchiveSnapshot(this.tenantId))?.jobs || [];
             if (archived.length > 0) {
-                this.applyImportedJobs(archived);
+                const filtered = filterJobsByTombstones(
+                    archived,
+                    this.jobTombstones,
+                    (job) => this.jobTimestampMs(job)
+                );
+                this.applyImportedJobs(filtered);
                 this.notify();
                 return true;
             }
@@ -1336,13 +1431,65 @@ export class DataService {
         return Number.isFinite(ms) ? ms : 0;
     }
 
+    private mergeSettingsFromMirror(
+        incoming: Record<string, unknown>,
+        mirrorCompanyName?: string
+    ): void {
+        if (mirrorCompanyName?.trim()) {
+            this.mirrorCompanyName = mirrorCompanyName.trim();
+        }
+        const current = this.getSettingsObj();
+        const incomingCompany = (incoming.companyInfo as Record<string, unknown> | undefined) || {};
+        const currentCompany = (current.companyInfo as Record<string, unknown> | undefined) || {};
+        const merged: Record<string, unknown> = { ...current, ...incoming };
+        merged.companyInfo = {
+            ...this.extractLegacyCompanyFields(current),
+            ...this.extractLegacyCompanyFields(incoming),
+            ...currentCompany,
+            ...incomingCompany,
+            name:
+                (incomingCompany.name as string | undefined)?.trim() ||
+                (currentCompany.name as string | undefined)?.trim() ||
+                this.mirrorCompanyName ||
+                (current.name as string | undefined)?.trim() ||
+                'EzPrintWork',
+        };
+        this.data['settings'] = [merged];
+        this.applySettingsDefaultsMerge(merged);
+    }
+
+    private extractLegacyCompanyFields(settings: Record<string, unknown>): Partial<CompanyInfo> {
+        const fields: (keyof CompanyInfo)[] = [
+            'name',
+            'ceoName',
+            'businessNumber',
+            'address',
+            'phone',
+            'fax',
+            'email',
+            'bankAccount',
+        ];
+        const out: Partial<CompanyInfo> = {};
+        for (const key of fields) {
+            const value = settings[key];
+            if (typeof value === 'string' && value.trim()) {
+                out[key] = value.trim();
+            }
+        }
+        return out;
+    }
+
     private mergeJobsByUpdatedAt(current: Job[], incoming: Job[]): Job[] {
+        const tombstones = this.jobTombstones;
         const map = new Map<string, Job>();
-        for (const job of current) {
+        for (const job of filterJobsByTombstones(current, tombstones, (j) => this.jobTimestampMs(j))) {
             if (job?.id) map.set(job.id, job);
         }
         for (const job of incoming) {
             if (!job?.id) continue;
+            if (isJobTombstoned(job.id, tombstones, this.jobTimestampMs(job))) {
+                continue;
+            }
             const prev = map.get(job.id);
             if (!prev) {
                 map.set(job.id, job);
@@ -1354,17 +1501,55 @@ export class DataService {
         return Array.from(map.values());
     }
 
+    private recordJobTombstone(jobId: string): void {
+        if (!this.tenantId || !jobId) return;
+        this.jobTombstones.set(jobId, Date.now());
+        saveJobTombstoneMap(this.tenantId, this.jobTombstones);
+    }
+
+    private applyJobTombstonesFromMirror(list: JobTombstone[]): void {
+        if (!list?.length) return;
+        let changed = false;
+        for (const row of list) {
+            if (!row?.id || !row.deletedAt) continue;
+            const ms = Date.parse(row.deletedAt);
+            if (!Number.isFinite(ms)) continue;
+            const prev = this.jobTombstones.get(row.id) || 0;
+            if (ms > prev) {
+                this.jobTombstones.set(row.id, ms);
+                changed = true;
+            }
+        }
+        if (changed) {
+            if (this.tenantId) saveJobTombstoneMap(this.tenantId, this.jobTombstones);
+            this.purgeTombstonedJobsFromCaches();
+        }
+    }
+
+    private purgeTombstonedJobsFromCaches(): void {
+        const filter = (jobs: Job[]) =>
+            filterJobsByTombstones(jobs, this.jobTombstones, (j) => this.jobTimestampMs(j));
+        this.operationalJobs = filter(this.operationalJobs);
+        this.kanbanCompletedJobs = filter(this.kanbanCompletedJobs);
+        this.supplementaryJobs = filter(this.supplementaryJobs);
+        this.archivedJobs = filter(this.archivedJobs);
+        this.rebuildMergedJobs();
+        this.rebuildArchiveMergedJobs();
+    }
+
     private applySituationMirrorMeta(situation: {
         clients?: Client[];
         settings?: Record<string, unknown>;
         updatedAt?: string;
+        companyName?: string;
     }) {
         if (Array.isArray(situation.clients) && situation.clients.length > 0) {
             this.data['clients'] = situation.clients as Client[];
         }
         if (situation.settings && typeof situation.settings === 'object') {
-            this.data['settings'] = [situation.settings as Record<string, unknown>];
-            this.applySettingsDefaultsMerge(situation.settings as Record<string, unknown>);
+            this.mergeSettingsFromMirror(situation.settings as Record<string, unknown>, situation.companyName);
+        } else if (situation.companyName?.trim()) {
+            this.mirrorCompanyName = situation.companyName.trim();
         }
     }
 
@@ -1385,6 +1570,9 @@ export class DataService {
         const next: Job[] = [];
         for (const job of current) {
             if (!job?.id) continue;
+            if (isJobTombstoned(job.id, this.jobTombstones, this.jobTimestampMs(job))) {
+                continue;
+            }
             if (!boardIds.has(job.id)) {
                 next.push(job);
                 continue;
@@ -1398,7 +1586,9 @@ export class DataService {
         }
 
         for (const mirrored of incomingById.values()) {
-            next.push(mirrored);
+            if (!isJobTombstoned(mirrored.id, this.jobTombstones, this.jobTimestampMs(mirrored))) {
+                next.push(mirrored);
+            }
         }
 
         this.applyImportedJobs(next);
@@ -1431,6 +1621,11 @@ export class DataService {
 
             if (situation?.updatedAt && situation.updatedAt !== this.lastNasMirrorAt) {
                 this.lastNasMirrorAt = situation.updatedAt;
+
+                if (situation.deletedJobs?.length) {
+                    this.applyJobTombstonesFromMirror(situation.deletedJobs);
+                    changed = true;
+                }
 
                 const useFullMerge =
                     !!archiveSnap?.jobs?.length ||
@@ -1675,6 +1870,8 @@ export class DataService {
                 return list;
             };
             this.applyJobsHotPull(toList(opSnap), toList(outSnap), toList(paidSnap));
+            this.purgeTombstonedJobsFromCaches();
+            this.notify();
         } catch (error) {
             console.error('[DataService] jobs hot pull failed:', error);
             this.lastSyncError = (error as any)?.code || 'jobs-pull-failed';
@@ -1872,8 +2069,6 @@ export class DataService {
         if (colName === 'settings') {
             if (list.length === 0) {
                 this.data['settings'] = [this.getDefaultSettings('EzPrintWork')];
-            } else if (list.length === 1 && list[0].id === 'main' && list[0].companyInfo) {
-                this.data['settings'] = list;
             } else {
                 this.data['settings'] = [this.mergeSettingsDocs(list)];
             }
@@ -2059,6 +2254,85 @@ export class DataService {
             if (!softFail) throw error;
             console.warn('[DataService] cloud staff/settings pull skipped (local fallback):', error);
         }
+        await this.ensureCompanyInfoFromCloud().catch((e) =>
+            console.warn('[DataService] companyInfo refresh skipped:', e)
+        );
+    }
+
+    private isCompanyInfoIncomplete(info: CompanyInfo): boolean {
+        const name = info.name?.trim();
+        if (!name || name === 'EzPrintWork') return true;
+        return !(info.ceoName || info.businessNumber || info.phone || info.address || info.bankAccount);
+    }
+
+    /** 견적서·거래명세서 공급자 — Firestore companyInfo 조각 직접 보강 */
+    private async ensureCompanyInfoFromCloud(): Promise<void> {
+        if (!this.tenantId) return;
+        const current = this.getCompanyInfo();
+        if (!this.isCompanyInfoIncomplete(current)) return;
+
+        const settingsCol = collection(firestore, 'tenants', this.tenantId, 'settings');
+        const docs: { id: string; [key: string]: unknown }[] = [];
+        const existing = this.getSettingsObj();
+
+        if (Object.keys(existing).length > 0) {
+            docs.push({ id: 'main', ...existing });
+        }
+
+        try {
+            const companySnap = await getDoc(doc(settingsCol, 'companyInfo'));
+            if (companySnap.exists()) {
+                docs.push({ id: 'companyInfo', ...companySnap.data() });
+            }
+        } catch (e) {
+            console.warn('[DataService] companyInfo doc fetch failed:', e);
+        }
+
+        if (docs.length === 0) {
+            try {
+                const mainSnap = await getDoc(doc(settingsCol, 'main'));
+                if (mainSnap.exists()) {
+                    docs.push({ id: 'main', ...mainSnap.data() });
+                }
+            } catch (e) {
+                console.warn('[DataService] settings/main fetch failed:', e);
+            }
+        }
+
+        if (docs.length > 0) {
+            this.data['settings'] = [this.mergeSettingsDocs(docs)];
+            this.notify();
+        }
+    }
+
+    /** 견적 미리보기·인쇄 — 공급자 정보 확보 (팝업·직원 세션) */
+    async ensureCompanyInfoForDocuments(): Promise<CompanyInfo> {
+        const cachedName = this.mirrorCompanyName;
+        await this.ensureCompanyInfoFromCloud();
+
+        if (this.isCompanyInfoIncomplete(this.getCompanyInfo())) {
+            try {
+                await this.fetchWebMirrorPayload().then((mirror) => {
+                    if (!mirror) return;
+                    if (mirror.settings && typeof mirror.settings === 'object') {
+                        this.mergeSettingsFromMirror(
+                            mirror.settings as Record<string, unknown>,
+                            mirror.companyName
+                        );
+                    } else if (mirror.companyName) {
+                        this.mirrorCompanyName = mirror.companyName;
+                    }
+                });
+            } catch {
+                /* ignore */
+            }
+        }
+
+        const info = this.getCompanyInfo();
+        if (cachedName && this.isCompanyInfoIncomplete(info)) {
+            return { ...info, name: cachedName };
+        }
+        return info;
     }
 
     private async tryRecoverFromLocalOrMirror(): Promise<boolean> {
@@ -2173,6 +2447,7 @@ export class DataService {
             this.startNasMirrorPolling();
 
             if (!localPrimary && !this.webMirrorReady && this.getAllJobs().length === 0) {
+                void this.retryWebMirrorHydrateInBackground();
                 const gateway = this.getStoreGatewayUrl();
                 if (!gateway) {
                     toast.warning(
@@ -2623,7 +2898,30 @@ export class DataService {
         }
     }
 
+    private async purgeJobFromArchiveLayers(jobId: string): Promise<void> {
+        if (!this.tenantId || !jobId) return;
+        this.archivedJobs = this.archivedJobs.filter((j) => j.id !== jobId);
+        try {
+            await jobArchiveService.removeArchivedJob(this.tenantId, jobId);
+        } catch (e) {
+            console.warn('[DataService] archive job purge failed:', e);
+        }
+    }
+
+    private flushLiveMirrorPushNow() {
+        if (this.liveMirrorPushTimer) {
+            clearTimeout(this.liveMirrorPushTimer);
+            this.liveMirrorPushTimer = null;
+        }
+        void this.pushLiveMirrors();
+    }
+
     private async deleteEntity(col: string, id: string) {
+        if (col === 'jobs') {
+            this.recordJobTombstone(id);
+            await this.purgeJobFromArchiveLayers(id);
+        }
+
         if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
             if (!this.tenantId) return;
             const ok = await jobArchiveService.removeArchivedJob(this.tenantId, id);
@@ -2631,6 +2929,7 @@ export class DataService {
             this.archivedJobs = this.archivedJobs.filter((j) => j.id !== id);
             this.rebuildArchiveMergedJobs();
             this.notify();
+            if (col === 'jobs') this.flushLiveMirrorPushNow();
             return;
         }
 
@@ -2650,7 +2949,14 @@ export class DataService {
             if (this.isLocalPrimaryMode() && col === 'jobs') {
                 const ok = await localDbBridge.deleteJob(this.tenantId, id);
                 if (!ok) throw new Error('local-db-job-delete-failed');
-                this.scheduleLiveMirrorPush();
+                try {
+                    const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
+                    await deleteDoc(docRef);
+                    await this.bumpJobSyncPulse(id, 'delete');
+                } catch (e) {
+                    console.warn('[DataService] best-effort Firestore job delete:', e);
+                }
+                this.flushLiveMirrorPushNow();
                 this.updateTenantActivity().catch(() => {});
                 return;
             }
@@ -2663,6 +2969,10 @@ export class DataService {
                 throw new Error('web-readonly-jobs');
             }
             if (!this.canPersistToCloud(col)) {
+                if (col === 'jobs') {
+                    this.flushLiveMirrorPushNow();
+                    this.updateTenantActivity().catch(() => {});
+                }
                 return;
             }
             try {
@@ -2696,7 +3006,7 @@ export class DataService {
         }
         
         this.updateTenantActivity().catch(() => {});
-        if (col === 'jobs') this.scheduleLiveMirrorPush();
+        if (col === 'jobs') this.flushLiveMirrorPushNow();
     }
 
     private static readonly SETTINGS_FRAGMENT_IDS = [
@@ -2795,7 +3105,14 @@ export class DataService {
             for (const clientUpdate of prepaidResult.clientUpdates) {
                 const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
                 if (!client) continue;
-                await this.updateClient({ ...client, prepaidBalance: clientUpdate.prepaidBalance });
+                const ledger = clientUpdate.ledgerEntry
+                    ? appendPrepaidLedger(client, clientUpdate.ledgerEntry)
+                    : client.prepaidLedger;
+                await this.updateClient({
+                    ...client,
+                    prepaidBalance: clientUpdate.prepaidBalance,
+                    prepaidLedger: ledger,
+                });
             }
 
             if (prepaidResult.warning) {
@@ -2834,41 +3151,48 @@ export class DataService {
         await this.updateEntity('jobs', jobId, {
             boardHiddenAt: new Date().toISOString(),
             boardHiddenBy: staffId || 'system',
+            boardHiddenReason: 'manual',
         });
     }
     async unhideJobFromBoard(jobId: string) {
         const target = this.getAllJobs().find((job) => job.id === jobId);
         if (!target) return;
+        const restoreFromManagementCard = target.boardHiddenReason === 'management_card';
         await this.updateEntity('jobs', jobId, {
             boardHiddenAt: undefined,
             boardHiddenBy: undefined,
+            boardHiddenReason: undefined,
+            ...(restoreFromManagementCard ? { managementCardPinnedAt: undefined } : {}),
         });
     }
 
-    /** 칸반 카드 별표 → 관리카드에 고정 (회사 공통 — 작업 데이터에 저장) */
+    /** 칸반 → 관리카드로 올리기 (회사 공통 — 칸반에서 자동 숨김) */
     async pinJobToManagementCard(jobId: string) {
         const target = this.getAllJobs().find((job) => job.id === jobId);
         if (!target) return;
         const pinnedAt = new Date().toISOString();
-        await this.updateEntity('jobs', jobId, { managementCardPinnedAt: pinnedAt });
+        await this.updateEntity('jobs', jobId, {
+            managementCardPinnedAt: pinnedAt,
+            boardHiddenAt: pinnedAt,
+            boardHiddenReason: 'management_card',
+        });
     }
 
-    /** 관리카드 고정 해제 (회사 공통) */
+    /** 관리카드 → 칸반으로 내리기 (회사 공통) */
     async unpinJobFromManagementCard(jobId: string) {
         const target = this.getAllJobs().find((job) => job.id === jobId);
         if (!target) return;
-        await this.updateEntity('jobs', jobId, { managementCardPinnedAt: undefined });
-        // merge 저장만으로는 Firestore 필드가 남으므로 deleteField로 1회 정리 (updateStaff와 동일 패턴)
-        if (this.tenantId && this.canPersistToCloud('jobs')) {
-            try {
-                await updateDoc(doc(firestore, 'tenants', this.tenantId, 'jobs', jobId), {
-                    managementCardPinnedAt: deleteField(),
-                    updatedAt: new Date().toISOString(),
-                });
-            } catch (e) {
-                console.warn('[DataService] management card unpin field clear failed:', e);
-            }
-        }
+        const restoreKanban = target.boardHiddenReason === 'management_card';
+        await this.updateEntity('jobs', jobId, {
+            managementCardPinnedAt: undefined,
+            ...(restoreKanban
+                ? {
+                      boardHiddenAt: undefined,
+                      boardHiddenBy: undefined,
+                      boardHiddenReason: undefined,
+                  }
+                : {}),
+        });
     }
 
     /** 별표로 고정된 작업 목록 */
@@ -3144,6 +3468,52 @@ export class DataService {
 
     async addClient(client: Client) { await this.addEntity('clients', client); }
     async updateClient(client: Client) { const { id, ...data } = client; await this.updateEntity('clients', id, data); }
+
+    /** 거래처 선불(예치) 추가 입금 */
+    async addClientPrepaidDeposit(
+        clientId: string,
+        amount: number,
+        staffId?: string,
+        note?: string
+    ): Promise<void> {
+        const client = this.getClients().find((row) => row.id === clientId);
+        if (!client) return;
+        const deposit = Math.max(0, Math.round(amount));
+        if (deposit <= 0) return;
+
+        const newBalance = normalizePrepaidBalance(client.prepaidBalance) + deposit;
+        const ledger = appendPrepaidLedger(client, {
+            timestamp: new Date().toISOString(),
+            type: 'deposit',
+            amount: deposit,
+            balanceAfter: newBalance,
+            staffId: staffId || 'system',
+            note: note?.trim() || '선불 추가 입금',
+        });
+
+        await this.updateClient({ ...client, prepaidBalance: newBalance, prepaidLedger: ledger });
+    }
+
+    /** 선불 이력 삭제 (입금·조정만 — 잔액 재계산) */
+    async deleteClientPrepaidLedgerEntry(clientId: string, entryId: string): Promise<void> {
+        const client = this.getClients().find((row) => row.id === clientId);
+        if (!client) throw new Error('거래처를 찾을 수 없습니다.');
+
+        const entry = (client.prepaidLedger || []).find((row) => row.id === entryId);
+        if (!entry) throw new Error('선불 이력을 찾을 수 없습니다.');
+        if (!canDeletePrepaidLedgerEntry(entry)) {
+            throw new Error('작업 연동 차감·복구 내역은 삭제할 수 없습니다. 작업 결제 상태에서 조정해 주세요.');
+        }
+
+        const result = removeAndRecalculatePrepaidLedger(client, entryId);
+        if (!result) throw new Error('선불 이력을 찾을 수 없습니다.');
+
+        await this.updateClient({
+            ...client,
+            prepaidBalance: result.prepaidBalance,
+            prepaidLedger: result.ledger,
+        });
+    }
     async deleteClient(id: string) { await this.deleteEntity('clients', id); }
 
     async addQuote(quote: Quote) { await this.addEntity('quotes', quote); }
@@ -3191,7 +3561,7 @@ export class DataService {
 
     /** 관리자 1회 — 누락 견적만 생성 (throttle, 실패해도 기존 데이터 유지) */
     private async maybeBootstrapQuotes() {
-        if (!this.tenantId || isQuotePreviewRoute() || this.isWebMirrorMode()) return;
+        if (!this.tenantId || isStandaloneDocumentPreviewRoute() || this.isWebMirrorMode()) return;
         if (!this.isSyncAdmin()) return;
         if (this.quotesBootstrappedForTenant === this.tenantId) return;
         if (this.quotesBootstrapInProgress) return;
@@ -3211,7 +3581,7 @@ export class DataService {
 
     /** 최초 동기화 완료 후 — 기존 작업에 견적 문서 보장 (미리보기 새 창·직원 세션 제외) */
     private async bootstrapQuotesFromJobs() {
-        if (isQuotePreviewRoute() || !this.isSyncAdmin()) return;
+        if (isStandaloneDocumentPreviewRoute() || !this.isSyncAdmin()) return;
 
         const jobs = this.getAllJobs();
         const BATCH = 5;
@@ -3427,6 +3797,7 @@ export class DataService {
     async saveSmsConfig(config: any) { await this.updateSetting('smsConfig', config); }
     async saveRoles(roles: string[]) { await this.updateSetting('roles', { roles }); }
     async addRole(role: string) {
+        if (isReservedStaffAuthRole(role)) return;
         const roles = this.getRoles();
         if (!roles.includes(role)) {
             await this.saveRoles([...roles, role]);
@@ -3476,9 +3847,10 @@ export class DataService {
                 }
             }
 
-            // 2. Firestore에 전체 업로드
+            // 2. Firestore 업로드 (jobs/clients 제외 — NAS·로컬 전용)
             if (this.tenantId) {
-                for (const col of collections) {
+                const cloudCollections = collections.filter((c) => c !== 'jobs' && c !== 'clients');
+                for (const col of cloudCollections) {
                     if (backup[col] && Array.isArray(backup[col])) {
                         const promises = backup[col].map(async (item: any) => {
                             const docId = col === 'settings' ? 'main' : (item.id || this.generateId());
@@ -3487,6 +3859,15 @@ export class DataService {
                         });
                         await Promise.all(promises);
                     }
+                }
+                if (this.isLocalPrimaryMode()) {
+                    await this.persistAllToLocalDb().catch((e) =>
+                        console.warn('[importData] local db persist failed:', e)
+                    );
+                    this.flushLiveMirrorPushNow();
+                } else if (Array.isArray(backup.jobs)) {
+                    this.applyImportedJobs(backup.jobs);
+                    this.flushLiveMirrorPushNow();
                 }
             }
 
@@ -3522,7 +3903,9 @@ export class DataService {
             return jobEnd >= startTs && jobStart <= endTs;
         });
     }
-    getStaff(): Staff[] { return (this.data['staff'] || []) as Staff[]; }
+    getStaff(): Staff[] {
+        return ((this.data['staff'] || []) as Staff[]).map(normalizeStaffRecord);
+    }
     getClients(): Client[] { return (this.data['clients'] || []) as Client[]; }
     getTotalPrepaidBalance(): number {
         return sumClientPrepaidBalances(this.getClients());
@@ -3611,7 +3994,23 @@ export class DataService {
     async restoreProductDefaults() { await this.saveProductDefinitions(INITIAL_PRODUCT_DEFINITIONS); }
     getJobTypes(): string[] { return this.getProductDefinitions().map(d => d.name); }
     getPricingConfig(): PricingConfig { return this.getSettingsObj()['pricing'] || { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 }; }
-    getCompanyInfo(): CompanyInfo { return this.getSettingsObj()['companyInfo'] || { name: 'EzPrintWork' }; }
+    getCompanyInfo(): CompanyInfo {
+        const settings = this.getSettingsObj();
+        const fromFragment: Partial<CompanyInfo> =
+            (settings.companyInfo as CompanyInfo | undefined) || {};
+        const fromLegacy = this.extractLegacyCompanyFields(settings);
+        const merged: CompanyInfo = {
+            ...fromLegacy,
+            ...fromFragment,
+            name:
+                fromFragment.name?.trim() ||
+                fromLegacy.name?.trim() ||
+                this.mirrorCompanyName?.trim() ||
+                (settings.name as string | undefined)?.trim() ||
+                'EzPrintWork',
+        };
+        return merged;
+    }
     getSmsConfig() { return this.getSettingsObj()['smsConfig'] || {}; }
     getRoles(): string[] {
         const raw = this.getSettingsObj()['roles']?.roles;
@@ -3965,9 +4364,10 @@ export class DataService {
                 }
             }
 
-            // 2. Firestore에 일괄 업로드
+            // 2. Firestore 일괄 업로드 (jobs/clients 제외)
             if (this.tenantId) {
-                for (const col of collections) {
+                const cloudCollections = collections.filter((c) => c !== 'jobs' && c !== 'clients');
+                for (const col of cloudCollections) {
                     if (mergedData[col] && Array.isArray(mergedData[col])) {
                         const promises = mergedData[col].map(async (item: any) => {
                             const docId = col === 'settings' ? 'main' : (item.id || this.generateId());
@@ -3976,6 +4376,15 @@ export class DataService {
                         });
                         await Promise.all(promises);
                     }
+                }
+                if (this.isLocalPrimaryMode()) {
+                    await this.persistAllToLocalDb().catch((e) =>
+                        console.warn('[saveImportedData] local db persist failed:', e)
+                    );
+                    this.flushLiveMirrorPushNow();
+                } else if (Array.isArray(mergedData.jobs)) {
+                    this.applyImportedJobs(mergedData.jobs);
+                    this.flushLiveMirrorPushNow();
                 }
             }
 

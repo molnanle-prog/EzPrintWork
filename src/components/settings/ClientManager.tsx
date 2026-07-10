@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
-import { Client, ClientContact } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet } from 'lucide-react';
+import { Client, ClientContact, PrepaidLedgerEntry } from '../../types';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
 import {
@@ -13,11 +13,39 @@ import {
   type SmsReceiveMode,
 } from '../../utils/clientSms';
 import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
-import { normalizePrepaidBalance } from '../../utils/prepaidBalance';
+import { normalizePrepaidBalance, canDeletePrepaidLedgerEntry } from '../../utils/prepaidBalance';
 import { useAuth } from '../../contexts/AuthContext';
 
+function prepaidLedgerTypeLabel(type: PrepaidLedgerEntry['type']): string {
+  switch (type) {
+    case 'deposit':
+      return '입금';
+    case 'deduction':
+      return '차감';
+    case 'restore':
+      return '복구';
+    default:
+      return '조정';
+  }
+}
+
+function prepaidLedgerSummary(row: PrepaidLedgerEntry): string {
+  const detail = row.jobTitle || row.note || '';
+  return detail ? `${prepaidLedgerTypeLabel(row.type)} · ${detail}` : prepaidLedgerTypeLabel(row.type);
+}
+
+function formatPrepaidLedgerTime(timestamp: string): string {
+  return new Date(timestamp).toLocaleString('ko-KR', {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export const ClientManager: React.FC = () => {
-  const { canManageClientMaster } = useAuth();
+  const { canManageClientMaster, currentUser } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -35,6 +63,10 @@ export const ClientManager: React.FC = () => {
   // Form State
   const [editingId, setEditingId] = useState<string | null>(null);
   const [smsReceiveMode, setSmsReceiveMode] = useState<SmsReceiveMode>('mobile');
+  const [prepaidDepositInput, setPrepaidDepositInput] = useState('');
+  const [isAddingPrepaid, setIsAddingPrepaid] = useState(false);
+  const [showPrepaidHistoryModal, setShowPrepaidHistoryModal] = useState(false);
+  const [deletingPrepaidEntryId, setDeletingPrepaidEntryId] = useState<string | null>(null);
   const [formData, setFormData] = useState<Partial<Client>>({
       name: '', 
       businessRegistrationNumber: '',
@@ -238,8 +270,15 @@ export const ClientManager: React.FC = () => {
         customSmsNumber: formData.sendSmsOnComplete !== false
             ? resolveSmsNumberForMode(formData, smsReceiveMode)
             : '',
-        prepaidBalance: normalizePrepaidBalance(formData.prepaidBalance),
     };
+
+    if (editingId) {
+        const existing = clients.find((c) => c.id === editingId);
+        clientToSave.prepaidBalance = normalizePrepaidBalance(existing?.prepaidBalance);
+        clientToSave.prepaidLedger = existing?.prepaidLedger;
+    } else {
+        clientToSave.prepaidBalance = 0;
+    }
 
     try {
         if (editingId) {
@@ -248,6 +287,7 @@ export const ClientManager: React.FC = () => {
             await db.addClient(clientToSave as Client);
         }
         setIsModalOpen(false);
+        setShowPrepaidHistoryModal(false);
     } catch (error) {
         showAlert(getErrorMessage(error));
     }
@@ -581,7 +621,7 @@ export const ClientManager: React.FC = () => {
                         <Building2 className="text-blue-600 dark:text-blue-400" />
                         {editingId ? '거래처 정보 수정' : '신규 거래처 등록'}
                     </h2>
-                    <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors">
+                    <button onClick={() => { setIsModalOpen(false); setShowPrepaidHistoryModal(false); }} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors">
                         <X size={24} className="text-slate-500 dark:text-slate-400" />
                     </button>
                 </div>
@@ -665,25 +705,86 @@ export const ClientManager: React.FC = () => {
                                 <label className="text-xs font-bold text-slate-500 dark:text-slate-400 flex items-center gap-1">
                                     <Wallet size={14} className="text-indigo-500" /> 선불(예치) 잔액
                                 </label>
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="number"
-                                        min={0}
-                                        step={1000}
-                                        value={formData.prepaidBalance ?? 0}
-                                        onChange={(e) =>
-                                            setFormData({
-                                                ...formData,
-                                                prepaidBalance: Math.max(0, Number(e.target.value) || 0),
-                                            })
-                                        }
-                                        className={`${inputClass} font-mono`}
-                                        placeholder="0"
-                                    />
-                                    <span className="text-xs text-slate-500 dark:text-slate-400 shrink-0">원</span>
+                                <div className="grid grid-cols-1 sm:grid-cols-[minmax(10rem,14rem)_minmax(8rem,10rem)_auto] gap-2 items-center">
+                                    <div className="px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg bg-indigo-50/50 dark:bg-indigo-950/20 text-right font-mono">
+                                        <span className="font-bold text-indigo-700 dark:text-indigo-300 tabular-nums">
+                                            {normalizePrepaidBalance(
+                                                editingId
+                                                    ? clients.find((c) => c.id === editingId)?.prepaidBalance
+                                                    : 0
+                                            ).toLocaleString()}
+                                        </span>
+                                        <span className="text-xs font-normal text-slate-500 dark:text-slate-400 ml-1">
+                                            원
+                                        </span>
+                                    </div>
+                                    {editingId ? (
+                                        <>
+                                            <input
+                                                type="number"
+                                                min={0}
+                                                step={1000}
+                                                value={prepaidDepositInput}
+                                                onChange={(e) => setPrepaidDepositInput(e.target.value)}
+                                                className="number-spin-gap w-full px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 dark:focus:border-indigo-400 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 font-mono text-right placeholder:text-left caret-indigo-600 dark:caret-indigo-200"
+                                                placeholder="추가 금액"
+                                            />
+                                            <div className="flex rounded-lg overflow-hidden border border-indigo-600 dark:border-indigo-500 shrink-0 self-stretch sm:self-auto">
+                                                <button
+                                                    type="button"
+                                                    disabled={isAddingPrepaid || !prepaidDepositInput}
+                                                    onClick={async () => {
+                                                        const amount = Number(prepaidDepositInput);
+                                                        if (!amount || amount <= 0) {
+                                                            await showAlert('추가할 금액을 입력해 주세요.');
+                                                            return;
+                                                        }
+                                                        setIsAddingPrepaid(true);
+                                                        try {
+                                                            await db.addClientPrepaidDeposit(
+                                                                editingId,
+                                                                amount,
+                                                                currentUser?.id,
+                                                                '거래처 관리에서 선불 추가'
+                                                            );
+                                                            setPrepaidDepositInput('');
+                                                            loadClients();
+                                                            const updated = db.getClients().find((c) => c.id === editingId);
+                                                            if (updated) {
+                                                                setFormData((prev) => ({
+                                                                    ...prev,
+                                                                    prepaidBalance: updated.prepaidBalance,
+                                                                    prepaidLedger: updated.prepaidLedger,
+                                                                }));
+                                                            }
+                                                        } catch (error) {
+                                                            showAlert(getErrorMessage(error));
+                                                        } finally {
+                                                            setIsAddingPrepaid(false);
+                                                        }
+                                                    }}
+                                                    className="flex-1 min-w-[4.5rem] px-3 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold disabled:opacity-50 border-r border-indigo-500/80"
+                                                >
+                                                    {isAddingPrepaid ? '추가…' : '선불 추가'}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowPrepaidHistoryModal(true)}
+                                                    className="flex-1 min-w-[4.5rem] px-3 py-2.5 bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold flex items-center justify-center gap-1"
+                                                >
+                                                    <History size={13} />
+                                                    이력
+                                                </button>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <p className="sm:col-span-2 text-[11px] text-slate-400 dark:text-slate-500">
+                                            신규 거래처는 저장한 뒤 선불을 추가할 수 있습니다.
+                                        </p>
+                                    )}
                                 </div>
                                 <p className="text-[11px] text-slate-400 dark:text-slate-500">
-                                    입금·예치금을 등록해 두면 작업을 일부결제/결제완료로 변경할 때 자동 차감됩니다.
+                                    잔액은 직접 수정하지 않습니다. 추가 입금은 옆 입력란을 사용하고, 이력은 「이력」 버튼에서 확인하세요.
                                 </p>
                             </div>
                             <div className="md:col-span-2 space-y-1">
@@ -863,7 +964,7 @@ export const ClientManager: React.FC = () => {
 
                 <div className="p-4 border-t border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex justify-end gap-3 sticky bottom-0 z-10">
                     <button 
-                        onClick={() => setIsModalOpen(false)}
+                        onClick={() => { setIsModalOpen(false); setShowPrepaidHistoryModal(false); }}
                         className="px-5 py-2.5 text-slate-600 dark:text-slate-300 font-bold bg-white dark:bg-slate-700 border border-slate-300 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-600 rounded-lg transition-colors"
                     >
                         취소
@@ -1070,6 +1171,154 @@ export const ClientManager: React.FC = () => {
             </div>
         </div>
       )}
+
+      {showPrepaidHistoryModal && editingId && (() => {
+        const client = clients.find((c) => c.id === editingId);
+        const clientName = client?.name || formData.name || '거래처';
+        const balance = normalizePrepaidBalance(client?.prepaidBalance);
+        const ledger = [...(client?.prepaidLedger || formData.prepaidLedger || [])].reverse();
+
+        const handleDeletePrepaidEntry = async (row: PrepaidLedgerEntry) => {
+          if (!canDeletePrepaidLedgerEntry(row)) {
+            await showAlert('작업 연동 차감·복구 내역은 삭제할 수 없습니다. 작업 결제 상태에서 조정해 주세요.');
+            return;
+          }
+          const amountLabel = `${row.amount >= 0 ? '+' : ''}${row.amount.toLocaleString()}원`;
+          const confirmed = await showConfirm(
+            `이 선불 이력을 삭제하시겠습니까?\n\n` +
+              `${formatPrepaidLedgerTime(row.timestamp)} · ${prepaidLedgerSummary(row)}\n` +
+              `금액 ${amountLabel}\n\n` +
+              `삭제 후 잔액이 자동으로 다시 계산됩니다.`
+          );
+          if (!confirmed) return;
+
+          setDeletingPrepaidEntryId(row.id);
+          try {
+            await db.deleteClientPrepaidLedgerEntry(editingId, row.id);
+            loadClients();
+            const updated = db.getClients().find((c) => c.id === editingId);
+            if (updated) {
+              setFormData((prev) => ({
+                ...prev,
+                prepaidBalance: updated.prepaidBalance,
+                prepaidLedger: updated.prepaidLedger,
+              }));
+            }
+          } catch (error) {
+            await showAlert(getErrorMessage(error));
+          } finally {
+            setDeletingPrepaidEntryId(null);
+          }
+        };
+
+        return (
+          <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-5xl max-h-[88vh] flex flex-col border border-slate-200 dark:border-slate-700">
+              <div className="px-6 py-4 border-b border-slate-200 dark:border-slate-700 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                    <History size={20} className="text-indigo-500" />
+                    선불 이력
+                  </h3>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {clientName} · 잔액{' '}
+                    <span className="font-bold text-indigo-600 dark:text-indigo-400 tabular-nums">
+                      {balance.toLocaleString()}원
+                    </span>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowPrepaidHistoryModal(false)}
+                  className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full"
+                >
+                  <X size={22} className="text-slate-500" />
+                </button>
+              </div>
+              <div className="flex-1 overflow-auto">
+                {ledger.length === 0 ? (
+                  <p className="text-center text-slate-500 py-16 text-sm">선불 이력이 없습니다.</p>
+                ) : (
+                  <table className="w-full text-sm table-fixed">
+                    <thead className="sticky top-0 bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 z-10">
+                      <tr>
+                        <th className="w-[11rem] px-4 py-3 text-left text-xs font-bold text-slate-500">일시</th>
+                        <th className="px-4 py-3 text-left text-xs font-bold text-slate-500">내역</th>
+                        <th className="w-[7.5rem] px-4 py-3 text-right text-xs font-bold text-slate-500">금액</th>
+                        <th className="w-[7.5rem] px-4 py-3 text-right text-xs font-bold text-slate-500">잔액</th>
+                        <th className="w-[4rem] px-3 py-3 text-center text-xs font-bold text-slate-500">삭제</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ledger.map((row) => {
+                        const deletable = canDeletePrepaidLedgerEntry(row);
+                        const isDeleting = deletingPrepaidEntryId === row.id;
+                        return (
+                          <tr
+                            key={row.id}
+                            className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50/80 dark:hover:bg-slate-900/40"
+                          >
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-600 dark:text-slate-300 tabular-nums">
+                              {formatPrepaidLedgerTime(row.timestamp)}
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap overflow-hidden text-ellipsis text-slate-700 dark:text-slate-200" title={prepaidLedgerSummary(row)}>
+                              {prepaidLedgerSummary(row)}
+                            </td>
+                            <td
+                              className={`px-4 py-3 text-right font-mono whitespace-nowrap tabular-nums font-semibold ${
+                                row.amount >= 0 ? 'text-indigo-600 dark:text-indigo-400' : 'text-rose-600 dark:text-rose-400'
+                              }`}
+                            >
+                              {row.amount >= 0 ? '+' : ''}
+                              {row.amount.toLocaleString()}
+                            </td>
+                            <td className="px-4 py-3 text-right font-mono whitespace-nowrap tabular-nums text-slate-700 dark:text-slate-200">
+                              {row.balanceAfter.toLocaleString()}
+                            </td>
+                            <td className="px-3 py-3 text-center">
+                              {deletable ? (
+                                <button
+                                  type="button"
+                                  disabled={isDeleting}
+                                  onClick={() => void handleDeletePrepaidEntry(row)}
+                                  className="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 disabled:opacity-40 transition-colors"
+                                  title="이력 삭제 (잔액 재계산)"
+                                >
+                                  {isDeleting ? (
+                                    <Loader2 size={16} className="animate-spin mx-auto" />
+                                  ) : (
+                                    <Trash2 size={16} className="mx-auto" />
+                                  )}
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-300 dark:text-slate-600" title="작업 연동 내역">
+                                  —
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+              <div className="px-6 py-3 border-t border-slate-200 dark:border-slate-700 shrink-0 flex items-center justify-between gap-4">
+                <p className="text-xs text-slate-400">
+                  입금·조정 내역만 삭제 가능합니다. 작업 차감·복구는 작업 결제에서 조정해 주세요.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setShowPrepaidHistoryModal(false)}
+                  className="px-5 py-2 rounded-lg bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold hover:bg-slate-200 dark:hover:bg-slate-600 shrink-0"
+                >
+                  닫기
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

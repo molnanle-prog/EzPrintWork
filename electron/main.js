@@ -96,6 +96,7 @@ if (!gotTheLock) {
     });
 
     app.whenReady().then(() => {
+        ensureDesktopShortcut();
         const win = createWindow();
         setupAutoUpdater(win);
         void localGateway.start();
@@ -459,32 +460,148 @@ function resolveShortcutIconPath() {
     return process.execPath;
 }
 
-ipcMain.handle('create-desktop-shortcut', async () => {
-    if (process.platform !== 'win32') {
-        return { ok: false, error: 'Windows에서만 지원됩니다.' };
-    }
+function getWindowsDesktopDirs() {
+    const dirs = new Set();
+
+    const addDir = (dirPath) => {
+        if (!dirPath) return;
+        try {
+            const resolved = path.resolve(dirPath);
+            if (fs.existsSync(resolved)) dirs.add(resolved);
+        } catch (_) {
+            /* ignore */
+        }
+    };
 
     try {
-        const desktopDir = app.getPath('desktop');
-        const shortcutPath = path.join(desktopDir, 'EzPrintWork.lnk');
-        const target = process.execPath;
-        const icon = resolveShortcutIconPath();
-
-        const ok = shell.writeShortcutLink(shortcutPath, 'replace', {
-            target,
-            cwd: path.dirname(target),
-            icon,
-            iconIndex: 0,
-            description: 'EzPrintWork - 인쇄소 업무 관리',
-            args: '',
-        });
-
-        if (!ok) {
-            return { ok: false, error: '바로가기 생성에 실패했습니다.' };
-        }
-
-        return { ok: true, path: shortcutPath };
-    } catch (error) {
-        return { ok: false, error: error?.message || '바로가기 생성 중 오류가 발생했습니다.' };
+        addDir(app.getPath('desktop'));
+    } catch (_) {
+        /* ignore */
     }
+
+    const userProfile = process.env.USERPROFILE;
+    if (userProfile) {
+        addDir(path.join(userProfile, 'Desktop'));
+        try {
+            const entries = fs.readdirSync(userProfile, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory() && entry.name.toLowerCase().startsWith('onedrive')) {
+                    addDir(path.join(userProfile, entry.name, 'Desktop'));
+                }
+            }
+        } catch (_) {
+            /* ignore */
+        }
+    }
+
+    const publicRoot = process.env.PUBLIC;
+    if (publicRoot) {
+        addDir(path.join(publicRoot, 'Desktop'));
+    }
+
+    return [...dirs];
+}
+
+function buildShortcutOptions() {
+    const target = process.execPath;
+    const icon = resolveShortcutIconPath();
+    return {
+        target,
+        cwd: path.dirname(target),
+        icon,
+        iconIndex: 0,
+        description: 'EzPrintWork - 인쇄소 업무 관리',
+        args: '',
+    };
+}
+
+function writeDesktopShortcutToPath(shortcutPath, options) {
+    try {
+        if (fs.existsSync(shortcutPath)) {
+            fs.unlinkSync(shortcutPath);
+        }
+    } catch (_) {
+        /* ignore — replace/create may still succeed */
+    }
+
+    if (shell.writeShortcutLink(shortcutPath, 'create', options)) {
+        return true;
+    }
+    if (fs.existsSync(shortcutPath) && shell.writeShortcutLink(shortcutPath, 'update', options)) {
+        return true;
+    }
+    return shell.writeShortcutLink(shortcutPath, 'replace', options);
+}
+
+function createDesktopShortcutsEverywhere() {
+    if (process.platform !== 'win32') {
+        return { ok: false, error: 'Windows에서만 지원됩니다.', paths: [] };
+    }
+
+    const options = buildShortcutOptions();
+    const createdPaths = [];
+
+    for (const desktopDir of getWindowsDesktopDirs()) {
+        const shortcutPath = path.join(desktopDir, 'EzPrintWork.lnk');
+        if (writeDesktopShortcutToPath(shortcutPath, options)) {
+            createdPaths.push(shortcutPath);
+        }
+    }
+
+    if (createdPaths.length === 0) {
+        return { ok: false, error: '바로가기 생성에 실패했습니다.', paths: [] };
+    }
+
+    return { ok: true, path: createdPaths[0], paths: createdPaths };
+}
+
+function ensureDesktopShortcut() {
+    if (process.platform !== 'win32' || !app.isPackaged) return;
+    const result = createDesktopShortcutsEverywhere();
+    if (!result.ok) {
+        console.warn('[Shortcut] 바탕화면 바로가기 자동 생성 실패:', result.error);
+    }
+}
+
+function getOpenAtLoginState() {
+    if (process.platform !== 'win32') {
+        return { ok: false, enabled: false, supported: false };
+    }
+    try {
+        const settings = app.getLoginItemSettings();
+        return { ok: true, enabled: !!settings.openAtLogin, supported: true };
+    } catch (error) {
+        return { ok: false, enabled: false, supported: true, error: error?.message || String(error) };
+    }
+}
+
+function setOpenAtLoginState(enabled) {
+    if (process.platform !== 'win32') {
+        return { ok: false, enabled: false, supported: false, error: 'Windows에서만 지원됩니다.' };
+    }
+    try {
+        app.setLoginItemSettings({
+            openAtLogin: !!enabled,
+            openAsHidden: false,
+            path: process.execPath,
+            args: [],
+            name: 'EzPrintWork',
+        });
+        const settings = app.getLoginItemSettings();
+        return { ok: true, enabled: !!settings.openAtLogin, supported: true };
+    } catch (error) {
+        return { ok: false, enabled: false, supported: true, error: error?.message || String(error) };
+    }
+}
+
+ipcMain.handle('create-desktop-shortcut', async () => {
+    const result = createDesktopShortcutsEverywhere();
+    if (!result.ok) {
+        return { ok: false, error: result.error || '바로가기 생성에 실패했습니다.' };
+    }
+    return { ok: true, path: result.path, paths: result.paths };
 });
+
+ipcMain.handle('get-open-at-login', async () => getOpenAtLoginState());
+
+ipcMain.handle('set-open-at-login', async (_event, enabled) => setOpenAtLoginState(!!enabled));

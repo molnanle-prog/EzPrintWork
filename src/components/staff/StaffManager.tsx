@@ -8,7 +8,7 @@ import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { UpgradeModal } from '../common/UpgradeModal';
 import { GAS_WEBHOOK_URL } from '../../constants';
-import { isStaffAdminRole, isTenantOwnerUser, resolveAppRoleFromStaff, isHiddenStaffId } from '../../utils/adminAccess';
+import { isTenantOwnerUser, resolveAppRoleFromStaff, isHiddenStaffId, isCompanyAdminStaff, getStaffJobTitle } from '../../utils/adminAccess';
 import { countActiveStaffSeats } from '../../utils/planLimits';
 import { normalizeStaffLoginEmail, provisionStaffAuthAccount, MIN_STAFF_PASSWORD_LENGTH, getStaffAvatarUrl } from '../../utils/staffAuthProvision';
 
@@ -22,7 +22,7 @@ const getStaffContact = (staff: Staff): string => {
   return parts.length > 0 ? parts.join(' | ') : '';
 };
 
-const isAdminStaff = (staff: Staff): boolean => isStaffAdminRole(staff.role);
+const isAdminStaff = (staff: Staff): boolean => isCompanyAdminStaff(staff);
 
 const isStaffMainOwner = (staff: Staff, ownerId: string | null): boolean =>
   isTenantOwnerUser(staff.uid || staff.id, ownerId);
@@ -75,8 +75,8 @@ export const StaffManager: React.FC = () => {
       return;
     }
 
-    const currentlyAdmin = isStaffAdminRole(staff.role);
-    const nextRole = currentlyAdmin ? '사원' : 'admin';
+    const currentlyAdmin = isCompanyAdminStaff(staff);
+    const nextIsCompanyAdmin = !currentlyAdmin;
     const nextRoleLabel = currentlyAdmin ? '일반 직원' : '사내 관리자';
 
     const confirm = await showConfirm(
@@ -87,7 +87,12 @@ export const StaffManager: React.FC = () => {
     if (!confirm) return;
 
     try {
-      const updatedStaff = { ...staff, role: nextRole };
+      const healedRole = getStaffJobTitle(staff.role);
+      const updatedStaff = {
+        ...staff,
+        role: healedRole,
+        isCompanyAdmin: nextIsCompanyAdmin,
+      };
       await db.updateStaff(updatedStaff);
 
       if (staff.uid) {
@@ -372,7 +377,7 @@ export const StaffManager: React.FC = () => {
                   const authRole =
                     existingUser?.role === 'admin' || existingUser?.role === 'staff'
                       ? existingUser.role
-                      : resolveAppRoleFromStaff(staff.role);
+                      : resolveAppRoleFromStaff(staff);
                   const userProfileUpdate: Record<string, unknown> = {
                       displayName: staff.name,
                       name: staff.name,
@@ -563,14 +568,14 @@ export const StaffManager: React.FC = () => {
                 <div className="flex justify-between items-start mb-2 gap-2">
                 <div className="flex flex-wrap items-center gap-2 min-w-0">
                 <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100">{staff.name}</h3>
-                {isAdminStaff(staff) && (
+                {(isStaffMainOwner(staff, tenantOwnerId) || isAdminStaff(staff)) && (
                     <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black tracking-wide shrink-0 shadow-sm border ${
                         isStaffMainOwner(staff, tenantOwnerId)
                             ? 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-200 border-red-300/80 dark:border-red-600'
                             : 'bg-amber-100 text-amber-800 dark:bg-amber-900/50 dark:text-amber-200 border-amber-300/80 dark:border-amber-600'
                     }`}>
                         <Shield size={10} />
-                        {isStaffMainOwner(staff, tenantOwnerId) ? '메인 관리자' : '사내 관리자'}
+                        {isStaffMainOwner(staff, tenantOwnerId) ? '최종관리자' : '사내 관리자'}
                     </span>
                 )}
                 </div>
@@ -579,7 +584,7 @@ export const StaffManager: React.FC = () => {
                 </span>
                 </div>
                 <p className="text-blue-600 dark:text-blue-400 font-medium mb-4 flex items-center gap-1">
-                <Shield size={14} /> {staff.role}
+                <Shield size={14} /> {getStaffJobTitle(staff.role)}
                 </p>
                 
                 <div className="space-y-2 text-sm text-slate-600 dark:text-slate-400 min-h-[4rem]">
@@ -647,12 +652,12 @@ export const StaffManager: React.FC = () => {
                         <button
                             onClick={() => toggleRole(staff)}
                             className={`w-full py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 border shadow-sm active:scale-95
-                            ${isStaffAdminRole(staff.role)
+                            ${isCompanyAdminStaff(staff)
                                 ? 'bg-amber-50 border-amber-200 text-amber-700 hover:bg-amber-100 dark:bg-amber-950/20 dark:border-amber-900/30 dark:text-amber-400 dark:hover:bg-amber-950/40'
                                 : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 dark:bg-blue-950/20 dark:border-blue-900/30 dark:text-blue-400 dark:hover:bg-blue-950/40'}`}
                         >
                             <Shield size={14} />
-                            {isStaffAdminRole(staff.role) ? '사내 관리자 권한 해제' : '사내 관리자로 추가'}
+                            {isCompanyAdminStaff(staff) ? '사내 관리자 권한 해제' : '사내 관리자로 추가'}
                         </button>
                     </div>
                 )}

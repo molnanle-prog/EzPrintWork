@@ -4,6 +4,7 @@ import { db, formatPhoneNumber } from '../../services/dataService';
 import { X, User, Phone, Shield, Save, Hash, Settings, Plus, Camera, Upload, Key, Loader2 } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import { getStaffAvatarUrl, MIN_STAFF_PASSWORD_LENGTH } from '../../utils/staffAuthProvision';
+import { filterJobTitleOptions, getStaffJobTitle, isReservedStaffAuthRole, normalizeStaffRecord } from '../../utils/adminAccess';
 
 interface StaffModalProps {
   staff?: Staff | null;
@@ -37,19 +38,20 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
 
   useEffect(() => {
     // Load roles from DB and merge with default system roles to ensure newly added roles exist
-    const dbRoles = db.getRoles();
-    const DEFAULT_ROLES = ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"];
+    const dbRoles = filterJobTitleOptions(db.getRoles());
+    const DEFAULT_ROLES = filterJobTitleOptions(["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"]);
     const mergedRoles = Array.from(new Set([...dbRoles, ...DEFAULT_ROLES]));
 
     if (staff) {
-      if (staff.role && !mergedRoles.includes(staff.role)) {
-        setRoles([staff.role, ...mergedRoles]);
-      } else {
-        setRoles(mergedRoles);
-      }
+      const normalized = normalizeStaffRecord(staff);
+      const jobTitle = getStaffJobTitle(normalized.role);
+      const roleOptions = jobTitle && !mergedRoles.includes(jobTitle)
+        ? [jobTitle, ...mergedRoles]
+        : mergedRoles;
+      setRoles(roleOptions);
       const cleanEmail = staff.email?.endsWith('@ez-hub.kr') ? '' : (staff.email || '');
       setFormData({
-        ...staff,
+        ...normalized,
         email: cleanEmail,
         password: '', // Firestore에 평문 없음 — 변경 시에만 입력
         avatarUrl: getStaffAvatarUrl(staff.avatarUrl, staff.id),
@@ -78,6 +80,10 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
     e.preventDefault();
     if (!formData.name || !formData.role) {
         await showAlert('이름과 직책은 필수입니다.');
+        return;
+    }
+    if (isReservedStaffAuthRole(formData.role)) {
+        await showAlert('직책에는 시스템 권한명(admin 등)을 사용할 수 없습니다.');
         return;
     }
 
@@ -109,7 +115,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
         joinDate: formData.joinDate || new Date().toISOString().split('T')[0],
         avatarUrl: formData.avatarUrl || `https://i.pravatar.cc/150?u=${Date.now()}`,
         active: formData.active !== undefined ? formData.active : true,
-        isDeleted: false
+        isDeleted: false,
+        isCompanyAdmin: staff?.isCompanyAdmin,
     };
 
     await onSave(finalData);
@@ -123,6 +130,10 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
   const handleAddRole = () => {
     if (newRoleInput.trim()) {
         const newRole = newRoleInput.trim();
+        if (isReservedStaffAuthRole(newRole)) {
+            void showAlert('직책에는 시스템 권한명(admin 등)을 사용할 수 없습니다.');
+            return;
+        }
         db.addRole(newRole);
         setRoles(db.getRoles());
         setNewRoleInput('');

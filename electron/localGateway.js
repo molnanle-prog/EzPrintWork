@@ -102,9 +102,60 @@ class LocalGateway {
         for (const job of incoming || []) {
             if (!job?.id) continue;
             const prev = map.get(job.id);
-            map.set(job.id, prev ? { ...prev, ...job } : job);
+            if (!prev) {
+                map.set(job.id, job);
+                continue;
+            }
+            const prevTs = Date.parse(prev.updatedAt || prev.createdAt || '') || 0;
+            const nextTs = Date.parse(job.updatedAt || job.createdAt || '') || 0;
+            map.set(job.id, nextTs >= prevTs ? { ...prev, ...job } : prev);
         }
         return [...map.values()];
+    }
+
+    buildTombstoneMap(deletedJobs) {
+        const map = new Map();
+        for (const row of deletedJobs || []) {
+            if (!row?.id || !row.deletedAt) continue;
+            const ms = Date.parse(row.deletedAt);
+            if (!Number.isFinite(ms)) continue;
+            const prev = map.get(row.id);
+            if (!prev || ms > prev) map.set(row.id, ms);
+        }
+        return map;
+    }
+
+    filterJobsByTombstones(jobs, tombstones) {
+        const jobTs = (job) => {
+            const raw = job?.updatedAt || job?.createdAt;
+            const ms = raw ? Date.parse(raw) : 0;
+            return Number.isFinite(ms) ? ms : 0;
+        };
+        return (jobs || []).filter((job) => {
+            if (!job?.id) return false;
+            const deletedMs = tombstones.get(job.id);
+            if (!deletedMs) return true;
+            return jobTs(job) > deletedMs;
+        });
+    }
+
+    pickMirrorPayload(situation, archive) {
+        const deletedJobs = [
+            ...(situation?.deletedJobs || []),
+            ...(archive?.deletedJobs || []),
+        ];
+        const tombstones = this.buildTombstoneMap(deletedJobs);
+        const merged = this.mergeJobs(situation?.jobs, archive?.jobs);
+        const jobs = this.filterJobsByTombstones(merged, tombstones);
+        const sTs = situation?.updatedAt ? Date.parse(situation.updatedAt) : 0;
+        const aTs = archive?.updatedAt ? Date.parse(archive.updatedAt) : 0;
+        const updatedAt =
+            sTs >= aTs ? situation?.updatedAt || archive?.updatedAt : archive?.updatedAt || situation?.updatedAt;
+        const tombstonePayload = [...tombstones.entries()].map(([id, ms]) => ({
+            id,
+            deletedAt: new Date(ms).toISOString(),
+        }));
+        return { jobs, deletedJobs: tombstonePayload, updatedAt };
     }
 
     getLanAddresses() {
@@ -167,17 +218,18 @@ class LocalGateway {
                     const tenantId = url.searchParams.get('tenantId') || this.tenantId;
                     const situation = this.readJsonFile(SITUATION_FILE);
                     const archive = this.readJsonFile(ARCHIVE_FILE);
-                    const jobs = (archive?.jobs?.length ? archive.jobs : situation?.jobs) || [];
+                    const mirror = this.pickMirrorPayload(situation, archive);
 
                     res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                     res.end(JSON.stringify({
                         tenantId,
                         version: situation?.version ?? archive?.version ?? 1,
-                        updatedAt: situation?.updatedAt || archive?.updatedAt || null,
+                        updatedAt: mirror.updatedAt,
                         companyName: situation?.companyName,
                         kanbanLayout: situation?.kanbanLayout,
                         statusDefinitions: situation?.statusDefinitions,
-                        jobs,
+                        jobs: mirror.jobs,
+                        deletedJobs: mirror.deletedJobs,
                         clients: situation?.clients || [],
                         settings: situation?.settings || {},
                         staff: situation?.staff || [],
@@ -209,7 +261,15 @@ class LocalGateway {
                         const tenantId = body.tenantId || this.tenantId;
                         const now = new Date().toISOString();
                         const archive = this.readJsonFile(ARCHIVE_FILE);
-                        const merged = this.mergeJobs(archive?.jobs, jobs);
+                        const situation = this.readJsonFile(SITUATION_FILE);
+                        const tombstones = this.buildTombstoneMap([
+                            ...(situation?.deletedJobs || []),
+                            ...(archive?.deletedJobs || []),
+                        ]);
+                        const merged = this.filterJobsByTombstones(
+                            this.mergeJobs(archive?.jobs, jobs),
+                            tombstones
+                        );
                         const archivePayload = {
                             version: archive?.version ?? 1,
                             tenantId,
@@ -221,13 +281,16 @@ class LocalGateway {
                             res.end('write failed');
                             return;
                         }
-                        const situation = this.readJsonFile(SITUATION_FILE);
                         if (situation) {
+                            const sitMerged = this.filterJobsByTombstones(
+                                this.mergeJobs(situation.jobs, jobs),
+                                tombstones
+                            );
                             this.writeJsonFile(SITUATION_FILE, {
                                 ...situation,
                                 tenantId,
                                 updatedAt: now,
-                                jobs: this.mergeJobs(situation.jobs, jobs),
+                                jobs: sitMerged,
                             });
                         }
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });

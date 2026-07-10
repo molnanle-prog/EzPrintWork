@@ -1,6 +1,7 @@
 import { Job } from '../types';
 import { isLegacyCompletedDelivery } from './kanbanLayout';
 import { isJobBoardHidden } from './jobBoardVisibility';
+import { isJobPinnedToManagementCard } from './managementCard';
 
 function shouldShowArchivedCompletedJob(job: Job, selectedDate: string): boolean {
   if (job.paymentStatus !== '결제완료') return true;
@@ -29,6 +30,7 @@ export function filterJobsForOperationalBoard(
 
   return jobs.filter((job) => {
     if (isJobBoardHidden(job)) return false;
+    if (isJobPinnedToManagementCard(job)) return false;
     if (job.status === 'CANCELED') return includeCanceled;
     if (job.status === 'QUOTE') return includeStatus.has('QUOTE');
 

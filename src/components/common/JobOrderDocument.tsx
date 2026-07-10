@@ -4,6 +4,7 @@ import { Job, JobItem } from '../../types';
 import { FileText, Calendar, User, Phone } from 'lucide-react';
 import { formatJobNumber } from '../../services/dataService';
 import { APP_VERSION } from '../../utils/autoUpdate';
+import { A4_WIDTH_MM, A4_HEIGHT_MM } from '../../utils/printA4';
 
 interface JobOrderDocumentProps {
   job: Job;
@@ -39,7 +40,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
       <div
         id={id}
         className="printable-document bg-white text-black mx-auto"
-        style={{ width: '210mm', minHeight: '297mm', boxSizing: 'border-box' }}
+        style={{ width: `${A4_WIDTH_MM}mm`, boxSizing: 'border-box' }}
       >
         {pages.map((pageItems, pageIndex) => {
           // Dynamic Styling Logic based on item count in current page
@@ -68,9 +69,9 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
               key={pageIndex}
               className="page-container bg-white text-black mx-auto flex flex-col relative"
               style={{
-                width: '210mm',
-                minHeight: '297mm',
-                height: '297mm',
+                width: `${A4_WIDTH_MM}mm`,
+                height: `${A4_HEIGHT_MM}mm`,
+                minHeight: `${A4_HEIGHT_MM}mm`,
                 padding: '10mm',
                 boxSizing: 'border-box',
                 pageBreakAfter: pageIndex < pages.length - 1 ? 'always' : 'auto',
