@@ -63,9 +63,9 @@ function AppRoutes() {
                     </Routes>
                     <Toaster
                         richColors
-                        position="top-right"
-                        offset={{ top: 52, right: 16 }}
-                        mobileOffset={{ top: 52, right: 12, left: 12 }}
+                        position="top-center"
+                        offset={{ top: 52 }}
+                        mobileOffset={{ top: 52 }}
                     />
                 </div>
             </Router>
@@ -113,9 +113,9 @@ function AppRoutes() {
                     </Routes>
                     <Toaster
                         richColors
-                        position="top-right"
-                        offset={{ top: 52, right: 16 }}
-                        mobileOffset={{ top: 52, right: 12, left: 12 }}
+                        position="top-center"
+                        offset={{ top: 52 }}
+                        mobileOffset={{ top: 52 }}
                     />
                 </div>
             </Router>

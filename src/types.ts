@@ -107,6 +107,8 @@ export interface Job {
   boardHiddenBy?: string;
   /** 이 작업에 선불로 차감된 금액 */
   prepaidAppliedAmount?: number;
+  /** 관리카드(별표) 고정 시각 — 회사 공통(작업 문서), 개인별 아님 */
+  managementCardPinnedAt?: string;
 }
 
 export interface Staff {

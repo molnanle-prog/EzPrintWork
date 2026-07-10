@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, History } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, Star, History } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -628,8 +628,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                                     : 'bg-violet-600 text-white hover:bg-violet-700'
                             }`}
                         >
-                            <CreditCard size={20} />
-                            <span className="text-sm font-bold">미수·선불 카드</span>
+                            <Star size={20} />
+                            <span className="text-sm font-bold">관리카드</span>
                         </button>
                     </div>
                 </header>

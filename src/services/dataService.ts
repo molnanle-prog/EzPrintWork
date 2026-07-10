@@ -29,6 +29,7 @@ import {
 } from '../utils/archiveStorage';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
 import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances } from '../utils/prepaidBalance';
+import { isManagementCardExpired, shouldShowInManagementCards } from '../utils/managementCard';
 import { isQuotePreviewRoute } from '../utils/quotePreviewStorage';
 import { formatJobNumber } from '../utils/jobNumber';
 import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
@@ -2843,6 +2844,52 @@ export class DataService {
             boardHiddenBy: undefined,
         });
     }
+
+    /** 칸반 카드 별표 → 관리카드에 고정 (회사 공통 — 작업 데이터에 저장) */
+    async pinJobToManagementCard(jobId: string) {
+        const target = this.getAllJobs().find((job) => job.id === jobId);
+        if (!target) return;
+        const pinnedAt = new Date().toISOString();
+        await this.updateEntity('jobs', jobId, { managementCardPinnedAt: pinnedAt });
+    }
+
+    /** 관리카드 고정 해제 (회사 공통) */
+    async unpinJobFromManagementCard(jobId: string) {
+        const target = this.getAllJobs().find((job) => job.id === jobId);
+        if (!target) return;
+        await this.updateEntity('jobs', jobId, { managementCardPinnedAt: undefined });
+        // merge 저장만으로는 Firestore 필드가 남으므로 deleteField로 1회 정리 (updateStaff와 동일 패턴)
+        if (this.tenantId && this.canPersistToCloud('jobs')) {
+            try {
+                await updateDoc(doc(firestore, 'tenants', this.tenantId, 'jobs', jobId), {
+                    managementCardPinnedAt: deleteField(),
+                    updatedAt: new Date().toISOString(),
+                });
+            } catch (e) {
+                console.warn('[DataService] management card unpin field clear failed:', e);
+            }
+        }
+    }
+
+    /** 별표로 고정된 작업 목록 */
+    getManagementCardJobs(): Job[] {
+        return this.getAllJobs()
+            .filter((job) => shouldShowInManagementCards(job))
+            .sort(
+                (a, b) =>
+                    new Date(b.managementCardPinnedAt || 0).getTime() -
+                    new Date(a.managementCardPinnedAt || 0).getTime()
+            );
+    }
+
+    /** 완료·취소 등 관리카드 대상이 아닌 고정만 정리 (모달 열 때 1회) */
+    async cleanupExpiredManagementCardPins(): Promise<void> {
+        const expired = this.getAllJobs().filter(
+            (job) => job.managementCardPinnedAt && isManagementCardExpired(job)
+        );
+        await Promise.all(expired.map((job) => this.unpinJobFromManagementCard(job.id)));
+    }
+
     async deleteJob(id: string) { await this.deleteEntity('jobs', id); }
     
     async saveJobs(jobs: Job[]) {

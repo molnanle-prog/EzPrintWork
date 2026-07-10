@@ -3,7 +3,7 @@ import { Job, Priority, PaymentStatus, JobItem } from '../../types';
 import { 
   MoreVertical, User, AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, 
   GripHorizontal, Layers, Users, FileText, FileWarning, 
-  FolderOpen, Play, CheckCircle, ShieldAlert 
+  FolderOpen, Play, CheckCircle, ShieldAlert, Star
 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -24,6 +24,7 @@ import {
   getDDayBadgeClasses,
 } from '../../utils/jobUrgencyStyles';
 import { useKanbanCardInteraction } from './useKanbanCardInteraction';
+import { isJobPinnedToManagementCard } from '../../utils/managementCard';
 
 interface KanbanCardProps {
   job: Job;
@@ -40,9 +41,29 @@ interface KanbanCardProps {
   isQuoteTray?: boolean;
   isCompactTray?: boolean;
   onHideFromBoard?: (job: Job) => void;
+  /** 관리카드 팝업 — 칸반과 동일 카드, 드래그 비활성 */
+  isManagementPanel?: boolean;
 }
 
-export const KanbanCard: React.FC<KanbanCardProps> = ({ 
+type SortableBinding = Pick<
+  ReturnType<typeof useSortable>,
+  'attributes' | 'listeners' | 'setNodeRef' | 'transform' | 'transition' | 'isDragging'
+>;
+
+const NO_SORTABLE = {
+  attributes: {},
+  listeners: undefined,
+  setNodeRef: () => {},
+  transform: null,
+  transition: undefined,
+  isDragging: false,
+} as unknown as SortableBinding;
+
+type KanbanCardImplProps = KanbanCardProps & {
+  sortable: SortableBinding;
+};
+
+const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   job, 
   status, 
   staffName, 
@@ -57,11 +78,15 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   isQuoteTray = false,
   isCompactTray = false,
   onHideFromBoard,
+  isManagementPanel = false,
+  sortable,
 }) => {
   const { theme } = useTheme();
   const { currentUser } = useAuth();
   const [isHovered, setIsHovered] = useState(false);
   const isTrayView = isCompactTray;
+  const isPinnedToManagement = isJobPinnedToManagementCard(job);
+  const isWebReadOnly = db.isWebMirrorMode();
 
   const {
     attributes,
@@ -70,7 +95,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     transform,
     transition,
     isDragging,
-  } = useSortable({ id: job.id, disabled: isDragOverlay });
+  } = sortable;
 
   const {
     touchPrimary,
@@ -82,6 +107,45 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
     cardSurfaceClass,
   } = useKanbanCardInteraction({ job, isDragOverlay, onSelect, onRightClick });
 
+  const handleToggleManagementPin = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isWebReadOnly) {
+      toast.error('웹(태블릿)은 조회 전용입니다. 별표 설정은 매장 PC에서 해 주세요.');
+      return;
+    }
+    try {
+      if (isPinnedToManagement) {
+        await db.unpinJobFromManagementCard(job.id);
+        toast.success('관리카드에서 해제했습니다.');
+      } else {
+        await db.pinJobToManagementCard(job.id);
+        toast.success('관리카드에 추가했습니다.');
+      }
+    } catch {
+      toast.error('관리카드 설정에 실패했습니다.');
+    }
+  };
+
+  const renderManagementStar = (size = 16) => (
+    <button
+      type="button"
+      onPointerDown={stopDragPropagation}
+      onClick={handleToggleManagementPin}
+      className={`p-1 rounded-md transition-colors pointer-events-auto ${
+        isPinnedToManagement || touchPrimary
+          ? 'opacity-100'
+          : 'opacity-0 group-hover:opacity-100'
+      } ${
+        isPinnedToManagement
+          ? 'text-amber-500 hover:text-amber-600'
+          : 'text-slate-300 dark:text-slate-600 hover:text-amber-400'
+      }`}
+      title={isPinnedToManagement ? '관리카드 고정 해제 (회사 공통)' : '관리카드에 추가 (회사 공통)'}
+    >
+      <Star size={size} className={isPinnedToManagement ? 'fill-amber-400' : ''} />
+    </button>
+  );
+
   const sortableStyle: React.CSSProperties = isDragOverlay
     ? {}
     : {
@@ -91,7 +155,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         touchAction: sortableTouchAction,
       };
 
-  const sortableProps = isDragOverlay ? {} : { ...attributes, ...listeners };
+  const sortableProps = isDragOverlay || isManagementPanel ? {} : { ...attributes, ...listeners };
 
   // Calculate Days Remaining
   const now = new Date();
@@ -376,7 +440,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         onContextMenu={handleCardContextMenu}
         title={!isHovered ? `${job.title}\n${job.clientName}` : undefined}
       >
-        <div className={`kanban-card-title font-bold text-slate-800 dark:text-slate-100 leading-snug ${isHovered ? 'text-[11px] whitespace-normal' : 'text-[10px] line-clamp-2'}`}>
+        {isPinnedToManagement && (
+          <div className="absolute top-0.5 right-0.5 pointer-events-auto">{renderManagementStar(11)}</div>
+        )}
+        <div className={`kanban-card-title font-bold text-slate-800 dark:text-slate-100 leading-snug pr-4 ${isHovered ? 'text-[11px] whitespace-normal' : 'text-[10px] line-clamp-2'}`}>
           {job.title}
         </div>
         {isHovered ? (
@@ -391,6 +458,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
               <div className="kanban-tray-meta text-[9px] truncate">{staffName}</div>
             )}
             <div className="flex items-center justify-end gap-0.5 pt-0.5">
+              {renderManagementStar(12)}
               <button
                 type="button"
                 onPointerDown={stopDragPropagation}
@@ -458,6 +526,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         <span className="kanban-tray-price text-[10px] font-mono font-bold shrink-0">
           {job.price ? `${job.price.toLocaleString()}원` : '미정'}
         </span>
+        {renderManagementStar(13)}
         <button
           type="button"
           onPointerDown={stopDragPropagation}
@@ -533,6 +602,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
                 {job.paymentStatus || '결제대기'}
            </span>
            <div className="w-px h-3 bg-slate-200 dark:bg-slate-700"></div>
+           {renderManagementStar(14)}
            <button 
              onPointerDown={stopDragPropagation}
              onClick={(e) => { e.stopPropagation(); onStatusChange(job, 'prev'); }}
@@ -731,9 +801,10 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       className={`
-        kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 cursor-grab active:cursor-grabbing group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
+        kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
+        ${isManagementPanel ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
         ${cardStyleClass}
-        active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50
+        ${isManagementPanel ? 'hover:shadow-md' : 'active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50'}
       `}
       onClick={handleCardClick}
       onContextMenu={handleCardContextMenu}
@@ -809,6 +880,7 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         
         {/* Grip Icon & More menu */}
         <div className="flex gap-1 kanban-card-icon-muted text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
+          {renderManagementStar(15)}
           {canHideFromBoard && (
             <button
               type="button"
@@ -823,10 +895,40 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
               <CheckCircle size={16} />
             </button>
           )}
+          {isManagementPanel && (
+            <>
+              <button
+                type="button"
+                onPointerDown={stopDragPropagation}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatusChange(job, 'prev');
+                }}
+                className="hover:text-red-500 transition-colors p-1 flex items-center justify-center rounded-md"
+                title="이전 단계"
+              >
+                <ArrowLeft size={15} />
+              </button>
+              <button
+                type="button"
+                onPointerDown={stopDragPropagation}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onStatusChange(job, 'next');
+                }}
+                className="hover:text-emerald-500 transition-colors p-1 flex items-center justify-center rounded-md"
+                title="다음 단계"
+              >
+                <ArrowRight size={15} />
+              </button>
+            </>
+          )}
+          {!isManagementPanel && (
           <GripHorizontal
             size={16}
             className={`cursor-grab active:cursor-grabbing hover:text-slate-500 ${touchPrimary ? 'opacity-50' : 'opacity-0 group-hover:opacity-100'} transition-opacity`}
           />
+          )}
           <button
             type="button"
             onPointerDown={stopDragPropagation}
@@ -897,4 +999,16 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
       </div>
     </div>
   );
+};
+
+const KanbanCardSortable: React.FC<KanbanCardProps> = (props) => {
+  const sortable = useSortable({ id: props.job.id, disabled: props.isDragOverlay });
+  return <KanbanCardImpl {...props} sortable={sortable} />;
+};
+
+export const KanbanCard: React.FC<KanbanCardProps> = (props) => {
+  if (props.isManagementPanel) {
+    return <KanbanCardImpl {...props} sortable={NO_SORTABLE} />;
+  }
+  return <KanbanCardSortable {...props} />;
 };

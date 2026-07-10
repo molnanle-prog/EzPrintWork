@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 const projectRoot = path.resolve(__dirname, '..');
 const longRoot = fs.realpathSync.native(projectRoot).toLowerCase();
@@ -50,48 +51,33 @@ path.resolve = function(...args) {
   return toShortPath(res);
 };
 
-console.log('Path patching complete. Running Vite build programmatically...');
+console.log('Path patching complete. Running Vite build...');
 
-// Load and run Vite build
-const vitePath = path.join(projectRoot, 'node_modules', 'vite', 'dist', 'node', 'index.js');
-import('file:///' + vitePath.replace(/\\/g, '/')).then(({ build }) => {
-  const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
-  const buildId = `${pkg.version}-${Date.now()}`;
-  return build({
-    root: projectRoot.replace(/\\/g, '/'),
-    base: './',
-    define: {
-      __APP_VERSION__: JSON.stringify(pkg.version),
-      __APP_BUILD_ID__: JSON.stringify(buildId),
-    },
-    build: {
-      outDir: path.join(projectRoot, 'dist').replace(/\\/g, '/'),
-    }
-  }).then(() => {
-    const distDir = path.join(projectRoot, 'dist');
-    const manifest = {
-      version: pkg.version,
-      buildId,
-      builtAt: new Date().toISOString(),
-    };
-    fs.writeFileSync(path.join(distDir, 'version.json'), JSON.stringify(manifest, null, 2));
+/** Node 24 + Rollup 조합에서 chunk 렌더 중 크래시 — Node 20 LTS로 빌드 */
+const nodeMajor = Number(process.versions.node.split('.')[0]);
+const viteBin = path.join(projectRoot, 'node_modules', 'vite', 'bin', 'vite.js');
+const buildCmd =
+  nodeMajor >= 24
+    ? `npx -y node@20.18.0 "${viteBin}" build`
+    : `node "${viteBin}" build`;
 
-    const indexPath = path.join(distDir, 'index.html');
-    if (fs.existsSync(indexPath)) {
-      let html = fs.readFileSync(indexPath, 'utf-8');
-      if (!html.includes('name="ezpw-build-id"')) {
-        html = html.replace(
-          '</head>',
-          `    <meta name="ezpw-build-id" content="${buildId}" />\n  </head>`
-        );
-        fs.writeFileSync(indexPath, html);
-      }
-    }
-
-    console.log('Build succeeded programmatically with patched paths!');
-    console.log(`version.json → v${pkg.version} (${buildId})`);
-  });
-}).catch((err) => {
-  console.error('Build failed programmatically:', err);
+try {
+  execSync(buildCmd, { stdio: 'inherit', cwd: projectRoot, env: process.env });
+} catch {
+  console.error('Build failed.');
   process.exit(1);
-});
+}
+
+const pkg = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf-8'));
+const distDir = path.join(projectRoot, 'dist');
+const versionPath = path.join(distDir, 'version.json');
+if (fs.existsSync(versionPath)) {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(versionPath, 'utf-8'));
+    console.log(`Build succeeded! version.json → v${manifest.version} (${manifest.buildId})`);
+  } catch {
+    console.log(`Build succeeded! v${pkg.version}`);
+  }
+} else {
+  console.log(`Build succeeded! v${pkg.version}`);
+}
