@@ -98,18 +98,18 @@ export const JobOrderPreviewModal: React.FC<JobOrderPreviewModalProps> = ({ job,
   };
 
   return (
-    <div className="fixed inset-0 bg-black/70 z-[80] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 bg-black/70 z-[80] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200 print:static print:inset-auto print:bg-white print:p-0 print:backdrop-blur-none">
       <style>{`
+        .job-order-screen-scale {
+          zoom: 0.62;
+        }
         @media print {
           @page {
             size: A4;
             margin: 0;
           }
-          html, body {
+          body {
             margin: 0 !important;
-            padding: 0 !important;
-            width: ${A4_WIDTH_MM}mm !important;
-            height: ${A4_HEIGHT_MM}mm !important;
             -webkit-print-color-adjust: exact;
             print-color-adjust: exact;
           }
@@ -124,28 +124,50 @@ export const JobOrderPreviewModal: React.FC<JobOrderPreviewModalProps> = ({ job,
             position: absolute !important;
             left: 0 !important;
             top: 0 !important;
-            width: ${A4_WIDTH_MM}mm !important;
-            min-height: ${A4_HEIGHT_MM}mm !important;
+            width: 210mm !important;
+            min-height: 297mm !important;
             margin: 0 !important;
             padding: 0 !important;
             box-sizing: border-box !important;
             background: white !important;
-            zoom: 1 !important;
-            transform: none !important;
             box-shadow: none !important;
             border-radius: 0 !important;
+            zoom: 1 !important;
+            transform: none !important;
             overflow: visible !important;
           }
-          #print-capture-area .printable-document,
-          #print-capture-area .page-container {
-            width: ${A4_WIDTH_MM}mm !important;
+          #print-capture-area .job-order-screen-scale {
+            zoom: 1 !important;
+            transform: none !important;
+          }
+          #print-capture-area .printable-document {
+            width: 210mm !important;
+            min-height: 297mm !important;
             margin: 0 !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+            background: white !important;
+          }
+          #print-capture-area .page-container {
+            width: 210mm !important;
+            min-height: 297mm !important;
+            height: 297mm !important;
+            max-width: 210mm !important;
+            margin: 0 !important;
+            padding: 10mm !important;
+            box-sizing: border-box !important;
+            page-break-after: always;
+            break-after: page;
+          }
+          #print-capture-area .page-container:last-child {
+            page-break-after: auto;
+            break-after: auto;
           }
         }
       `}</style>
 
-      <div className="bg-slate-100 rounded-xl shadow-2xl w-full max-w-[550px] h-[80vh] flex flex-col overflow-hidden transition-all duration-300">
-        <div className="p-4 bg-slate-800 text-white flex justify-between items-center shadow-md z-10 flex-none">
+      <div className="bg-slate-100 rounded-xl shadow-2xl w-full max-w-[550px] h-[80vh] flex flex-col overflow-hidden transition-all duration-300 print:max-w-none print:h-auto print:rounded-none print:shadow-none print:w-full print:overflow-visible">
+        <div className="p-4 bg-slate-800 text-white flex justify-between items-center shadow-md z-10 flex-none print:hidden">
           <h3 className="font-bold text-lg flex items-center gap-2">
             <Printer className="text-blue-400" />
             작업 지시서 미리보기
@@ -179,14 +201,9 @@ export const JobOrderPreviewModal: React.FC<JobOrderPreviewModalProps> = ({ job,
           </div>
         </div>
 
-        <div className="flex-1 overflow-auto bg-slate-200 p-4 md:p-6 flex justify-center items-start custom-scrollbar min-h-0">
-          {/* 화면만 축소. 인쇄/PDF는 zoom 무시하고 A4 실크기 */}
-          <div
-            id="print-capture-area"
-            className="shadow-2xl bg-white rounded-lg flex-none my-2 transition-all"
-            style={{ zoom: 0.62 }}
-          >
-            <div ref={componentRef}>
+        <div className="flex-1 overflow-auto bg-slate-200 p-4 md:p-6 flex justify-center items-start custom-scrollbar min-h-0 print:p-0 print:bg-white print:overflow-visible">
+          <div id="print-capture-area" className="shadow-2xl bg-white rounded-lg flex-none my-2 print:shadow-none print:rounded-none print:my-0">
+            <div ref={componentRef} className="job-order-screen-scale">
               <JobOrderDocument job={job} />
             </div>
           </div>
