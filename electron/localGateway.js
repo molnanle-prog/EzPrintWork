@@ -5,6 +5,7 @@ const os = require('os');
 
 const SITUATION_FILE = 'situation-mirror.json';
 const ARCHIVE_FILE = 'jobs-archive.json';
+const CHAT_FILE = 'chat-messages.json';
 const DEFAULT_GATEWAY_PORT = 3847;
 
 const CORS = {
@@ -295,6 +296,90 @@ class LocalGateway {
                         }
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                         res.end(JSON.stringify({ ok: true, updatedAt: now, count: jobs.length }));
+                        return;
+                    } catch (error) {
+                        res.writeHead(400, CORS);
+                        res.end(error?.message || 'invalid body');
+                        return;
+                    }
+                }
+
+                if (url.pathname === '/api/v1/chat' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const tenantId = url.searchParams.get('tenantId') || this.tenantId;
+                    const chat = this.readJsonFile(CHAT_FILE) || {
+                        version: 1,
+                        tenantId,
+                        updatedAt: new Date().toISOString(),
+                        messages: [],
+                    };
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        version: chat.version ?? 1,
+                        tenantId,
+                        updatedAt: chat.updatedAt || new Date().toISOString(),
+                        messages: Array.isArray(chat.messages) ? chat.messages : [],
+                    }));
+                    return;
+                }
+
+                if (url.pathname === '/api/v1/chat' && req.method === 'POST') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    if (!this.archiveRoot) {
+                        res.writeHead(503, CORS);
+                        res.end('NAS path not configured');
+                        return;
+                    }
+                    try {
+                        const raw = await readRequestBody(req);
+                        const body = JSON.parse(raw || '{}');
+                        const incoming = Array.isArray(body.messages) ? body.messages : [];
+                        const tenantId = body.tenantId || this.tenantId;
+                        const existing = this.readJsonFile(CHAT_FILE);
+                        const map = new Map();
+                        for (const m of existing?.messages || []) {
+                            if (m?.id) map.set(m.id, m);
+                        }
+                        for (const m of incoming) {
+                            if (!m?.id) continue;
+                            const prev = map.get(m.id);
+                            if (!prev) {
+                                map.set(m.id, m);
+                                continue;
+                            }
+                            const prevTs = Date.parse(prev.timestamp || prev.createdAt || '') || 0;
+                            const nextTs = Date.parse(m.timestamp || m.createdAt || '') || 0;
+                            map.set(m.id, nextTs >= prevTs ? { ...prev, ...m } : prev);
+                        }
+                        let messages = [...map.values()].sort((a, b) => {
+                            const ta = Date.parse(a.timestamp || a.createdAt || '') || 0;
+                            const tb = Date.parse(b.timestamp || b.createdAt || '') || 0;
+                            return ta - tb;
+                        });
+                        const MAX = 5000;
+                        if (messages.length > MAX) messages = messages.slice(messages.length - MAX);
+                        const now = new Date().toISOString();
+                        const payload = {
+                            version: 1,
+                            tenantId,
+                            updatedAt: now,
+                            messages,
+                        };
+                        if (!this.writeJsonFile(CHAT_FILE, payload)) {
+                            res.writeHead(500, CORS);
+                            res.end('write failed');
+                            return;
+                        }
+                        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: true, updatedAt: now, count: messages.length }));
                         return;
                     } catch (error) {
                         res.writeHead(400, CORS);

@@ -1,10 +1,16 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MessageCircle, X, Send, User, Bell, Users, Volume2, VolumeX, ArrowLeft, Moon, Sun, MessageSquare, AlertTriangle, Palette, Trello } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { ChatMessage, Staff } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
+import {
+  findStaffByAnyId,
+  findStaffForUser,
+  isSameLoggedInUser,
+  staffIdsEqual,
+} from '../../utils/staffMatch';
 
 export const ChatWidget: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
@@ -24,6 +30,7 @@ export const ChatWidget: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
 
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -41,6 +48,14 @@ export const ChatWidget: React.FC = () => {
     return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
   }, []);
 
+  // 모니터링 모드: 사내 채팅·알림 완전 숨김
+  useEffect(() => {
+    if (!isTvMode) return;
+    setIsOpen(false);
+    setNotificationPopup(null);
+    setHasUnread(false);
+  }, [isTvMode]);
+
   useEffect(() => {
     // Create Audio Element
     audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
@@ -57,15 +72,24 @@ export const ChatWidget: React.FC = () => {
 
     // Check if there are any unread messages from history upon mount
     if (initialMsgs.length > 0 && currentUser) {
-      // 나에게 수신된 메시지 중 가장 최근 메시지 추출
-      const myReceivedMsgs = initialMsgs.filter(m => m.senderId !== currentUser.id && (!m.receiverId || m.receiverId === currentUser.id));
+      const staffNow = db.getStaff();
+      // 나에게 수신된 메시지 중 가장 최근 메시지 추출 (uid / staff.id 혼용 대응)
+      const myReceivedMsgs = initialMsgs.filter(
+        (m) =>
+          !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
+          (!m.receiverId || isSameLoggedInUser(currentUser, m.receiverId, staffNow))
+      );
       if (myReceivedMsgs.length > 0) {
         const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
-        const currentStaff = db.getStaff().find(s => s.id === currentUser.id);
+        const currentStaff = findStaffForUser(staffNow, currentUser);
         const dbLastReadId = currentStaff?.lastReadMsgId;
         const lastConfirmedId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
         
         if (lastMsg.id !== lastConfirmedId && lastMsg.id !== dbLastReadId) {
+          // 모니터링 모드에서는 초기 채팅 알림도 띄우지 않음
+          if (localStorage.getItem('ezprint_tv_mode') === 'true') {
+            // skip
+          } else {
           // 아직 읽음 확인을 하지 않은 과거 메시지가 오프라인일 때 유입된 것이므로 로그인 즉시 팝업과 띵동 작동!
           setHasUnread(true);
           setNotificationPopup(lastMsg);
@@ -73,6 +97,7 @@ export const ChatWidget: React.FC = () => {
           setTimeout(() => {
             audioRef.current?.play().catch(e => console.log('Initial audio play bypassed by browser policy', e));
           }, 1000);
+          }
         }
       }
     }
@@ -89,25 +114,34 @@ export const ChatWidget: React.FC = () => {
         const newMsgs = latestMsgs.filter(msg => !prevIds.has(msg.id));
         
         if (newMsgs.length > 0) {
-          // 나에게 수신된 신규 메시지만 필터링
-          const myNewReceivedMsgs = newMsgs.filter(m => m.senderId !== currentUser?.id && (!m.receiverId || m.receiverId === currentUser?.id));
+          const staffNow = db.getStaff();
+          // 나에게 수신된 신규 메시지만 필터링 (uid / staff.id 혼용 대응)
+          const myNewReceivedMsgs = newMsgs.filter(
+            (m) =>
+              !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
+              (!m.receiverId || isSameLoggedInUser(currentUser, m.receiverId, staffNow))
+          );
           
           if (myNewReceivedMsgs.length > 0) {
             const lastMsg = myNewReceivedMsgs[myNewReceivedMsgs.length - 1];
 
             // 최초 로드 시 지연되어 들어온 기존 메시지인지 필터링 (DB 및 로컬 스토리지 읽음 기록 비교)
-            const currentStaff = db.getStaff().find(s => s.id === currentUser?.id);
+            const currentStaff = findStaffForUser(staffNow, currentUser);
             const dbLastReadId = currentStaff?.lastReadMsgId;
             const localLastReadId = currentUser ? localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`) : null;
             
             const isAlreadyRead = (lastMsg.id === dbLastReadId) || (lastMsg.id === localLastReadId);
 
             if (!isAlreadyRead) {
+                // 모니터링 모드에서는 채팅 알림·소리 무시
+                if (isTvMode) {
+                  // skip
+                } else {
                 // Determine if the relevant channel is currently open
                 // Global open & Global msg OR DM open & DM msg from sender
                 const isRelevantChannelOpen = isOpen && (
                     (activeChannel === null && !lastMsg.receiverId) || 
-                    (activeChannel === lastMsg.senderId)
+                    (activeChannel !== null && staffIdsEqual(activeChannel, lastMsg.senderId, staffNow))
                 );
 
                 if (!isRelevantChannelOpen) {
@@ -115,15 +149,17 @@ export const ChatWidget: React.FC = () => {
                      // 확인하지 않은 신규 메시지이므로 긴급 팝업 노출!
                      setNotificationPopup(lastMsg);
                      
-                     // Add to Unread Senders Set to blink the list item
+                     // Add to Unread Senders Set to blink the list item (staff 문서 id로 통일)
                      if (lastMsg.senderId) {
-                          setUnreadSenders(prevSet => new Set(prevSet).add(lastMsg.senderId));
+                          const senderStaff = findStaffByAnyId(staffNow, lastMsg.senderId);
+                          setUnreadSenders(prevSet => new Set(prevSet).add(senderStaff?.id || lastMsg.senderId));
                      }
                 }
                 
                 // 신규 실시간 메시지가 왔으므로 띵동 소리 재생!
                 if (soundEnabled) {
                    audioRef.current?.play().catch(e => console.log('Audio play failed', e));
+                }
                 }
             }
           }
@@ -133,7 +169,7 @@ export const ChatWidget: React.FC = () => {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [isOpen, activeChannel, currentUser, soundEnabled]);
+  }, [isOpen, activeChannel, currentUser, soundEnabled, isTvMode]);
 
   // When changing channel, remove that user from unread set
   useEffect(() => {
@@ -149,20 +185,27 @@ export const ChatWidget: React.FC = () => {
   useEffect(() => {
     if (isOpen && currentUser && messages.length > 0) {
       // 나에게 수신된 메시지 중 가장 최신의 메시지 ID를 확인 처리로 로컬스토리지에 저장
-      const myReceivedMsgs = messages.filter(m => m.senderId !== currentUser.id && (!m.receiverId || m.receiverId === currentUser.id));
+      const myReceivedMsgs = messages.filter(
+        (m) =>
+          !isSameLoggedInUser(currentUser, m.senderId, staff) &&
+          (!m.receiverId || isSameLoggedInUser(currentUser, m.receiverId, staff))
+      );
       if (myReceivedMsgs.length > 0) {
         const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
         localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, lastMsg.id);
         
-        // 파이어베이스(Firestore)에도 실시간 동기화 업데이트!
-        db.updateStaffLastReadMsgId(currentUser.id, lastMsg.id).catch(e => {
-            console.error("Failed to sync lastReadMsgId to Firestore:", e);
-        });
+        // 파이어베이스(Firestore)에도 실시간 동기화 업데이트! (staff 문서 id 사용)
+        const staffDocId = findStaffForUser(staff, currentUser)?.id;
+        if (staffDocId) {
+          db.updateStaffLastReadMsgId(staffDocId, lastMsg.id).catch(e => {
+              console.error("Failed to sync lastReadMsgId to Firestore:", e);
+          });
+        }
       }
       setHasUnread(false);
       setNotificationPopup(null);
     }
-  }, [isOpen, messages, currentUser]);
+  }, [isOpen, messages, currentUser, staff]);
 
   useEffect(() => {
     scrollToBottom();
@@ -176,10 +219,13 @@ export const ChatWidget: React.FC = () => {
     if ((!newMessage.trim() && !isCall) || !currentUser) return;
 
     const content = isCall ? "🚨 긴급 호출하였습니다! 확인 부탁드립니다." : newMessage;
+    const senderName =
+      myStaff?.name || currentUser.name || currentUser.displayName || '';
     
     const msg: ChatMessage = {
       id: Date.now().toString(),
       senderId: currentUser.id,
+      senderName: senderName || undefined,
       receiverId: activeChannel || undefined, // undefined for global
       content: content,
       timestamp: new Date().toISOString(),
@@ -192,8 +238,21 @@ export const ChatWidget: React.FC = () => {
     scrollToBottom();
   };
 
-  const getSenderInfo = (senderId: string) => {
-    return staff.find(s => s.id === senderId) || { name: '알수없음', avatarUrl: '' };
+  const getSenderInfo = (senderId: string, fallbackName?: string) => {
+    const found = findStaffByAnyId(staff, senderId);
+    if (found) {
+      return { name: found.name, avatarUrl: found.avatarUrl || '' };
+    }
+    if (isSameLoggedInUser(currentUser, senderId, staff)) {
+      return {
+        name: currentUser?.name || currentUser?.displayName || fallbackName || '나',
+        avatarUrl: currentUser?.avatarUrl || currentUser?.photoURL || '',
+      };
+    }
+    if (fallbackName?.trim()) {
+      return { name: fallbackName.trim(), avatarUrl: '' };
+    }
+    return { name: '알수없음', avatarUrl: '' };
   };
 
   const formatTime = (isoString: string) => {
@@ -217,13 +276,13 @@ export const ChatWidget: React.FC = () => {
 
   // 특정 메시지의 안 읽은 인원 수(unread count) 계산 함수
   const getUnreadCount = (msg: ChatMessage) => {
-    if (msg.senderId !== currentUser?.id) return 0;
+    if (!isSameLoggedInUser(currentUser, msg.senderId, staff)) return 0;
     
     const msgTime = new Date(msg.timestamp).getTime();
 
     if (msg.receiverId) {
       // 1:1 DM 방인 경우: 상대방 한 명이 읽었는지 판별
-      const otherStaff = staff.find(s => s.id === msg.receiverId);
+      const otherStaff = findStaffByAnyId(staff, msg.receiverId);
       if (!otherStaff) return 0;
       
       if (!otherStaff.lastReadMsgId) return 1; // 한 번도 대화방을 켜지 않음 -> 안읽음(1)
@@ -235,7 +294,9 @@ export const ChatWidget: React.FC = () => {
       return msgTime > otherLastReadTime ? 1 : 0;
     } else {
       // 전체 공지방인 경우: 나를 제외한 전체 사원 중에서 안 읽은 인원수 카운트 (카톡 단톡방 숫자 스타일)
-      const activeStaffMembers = staff.filter(s => s.id !== currentUser.id && s.active && !s.isDeleted);
+      const activeStaffMembers = staff.filter(
+        (s) => s.active && !s.isDeleted && !isSameLoggedInUser(currentUser, s.id, staff)
+      );
       let unreadCount = 0;
       
       activeStaffMembers.forEach(s => {
@@ -262,15 +323,22 @@ export const ChatWidget: React.FC = () => {
     if (!activeChannel) {
       return !msg.receiverId;
     } else {
-      return (msg.senderId === currentUser?.id && msg.receiverId === activeChannel) ||
-             (msg.senderId === activeChannel && msg.receiverId === currentUser?.id);
+      // DM: sender/receiver 가 staff.id 또는 Firebase uid 여도 매칭
+      const iSent =
+        isSameLoggedInUser(currentUser, msg.senderId, staff) &&
+        staffIdsEqual(msg.receiverId, activeChannel, staff);
+      const theySent =
+        staffIdsEqual(msg.senderId, activeChannel, staff) &&
+        isSameLoggedInUser(currentUser, msg.receiverId, staff);
+      return iSent || theySent;
     }
   });
 
   const handlePopupClick = () => {
       if (notificationPopup) {
           if (notificationPopup.receiverId) {
-              setActiveChannel(notificationPopup.senderId);
+              const senderStaff = findStaffByAnyId(staff, notificationPopup.senderId);
+              setActiveChannel(senderStaff?.id || notificationPopup.senderId);
           } else {
               setActiveChannel(null); 
           }
@@ -278,10 +346,13 @@ export const ChatWidget: React.FC = () => {
           setIsOpen(true);
           if (currentUser) {
               localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, notificationPopup.id);
-              // 파이어베이스에도 실시간 동기화 업데이트!
-              db.updateStaffLastReadMsgId(currentUser.id, notificationPopup.id).catch(e => {
-                  console.error("Failed to sync lastReadMsgId to Firestore on popup click:", e);
-              });
+              // 파이어베이스에도 실시간 동기화 업데이트! (staff 문서 id)
+              const staffDocId = findStaffForUser(staff, currentUser)?.id;
+              if (staffDocId) {
+                db.updateStaffLastReadMsgId(staffDocId, notificationPopup.id).catch(e => {
+                    console.error("Failed to sync lastReadMsgId to Firestore on popup click:", e);
+                });
+              }
           }
           setNotificationPopup(null);
           setHasUnread(false);
@@ -289,6 +360,8 @@ export const ChatWidget: React.FC = () => {
   };
 
   if (!currentUser) return null;
+  // 모니터링(TV) 모드에서는 사내 채팅·팝업·플로팅 버튼 전부 숨김
+  if (isTvMode) return null;
 
   // notificationPopup이 떠 있을 때는 화면 전체를 덮어야 하므로 z-index를 최고 수준(z-[9999])으로 높이고, 
   // 평소에는 z-50을 유지합니다.
@@ -312,7 +385,7 @@ export const ChatWidget: React.FC = () => {
                   <div className="p-8 flex flex-col items-center text-center">
                       <div className="relative mb-4">
                           <img 
-                            src={getSenderInfo(notificationPopup.senderId).avatarUrl} 
+                            src={getSenderInfo(notificationPopup.senderId, notificationPopup.senderName).avatarUrl} 
                             className="w-24 h-24 rounded-full border-4 border-slate-100 dark:border-slate-700 shadow-md object-cover" 
                             alt=""
                           />
@@ -322,7 +395,7 @@ export const ChatWidget: React.FC = () => {
                       </div>
                       
                       <h4 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-1">
-                          {getSenderInfo(notificationPopup.senderId).name}
+                          {getSenderInfo(notificationPopup.senderId, notificationPopup.senderName).name}
                       </h4>
                       <p className="text-sm text-blue-600 dark:text-blue-400 font-bold mb-4">
                           {notificationPopup.receiverId ? '1:1 메시지' : '전체 공지 메시지'}
@@ -389,8 +462,8 @@ export const ChatWidget: React.FC = () => {
 
               <div className="text-xs font-bold text-slate-400 px-2 mt-4 mb-2">직원 목록</div>
               
-              {staff.filter(s => s.id !== currentUser.id && !s.isDeleted && s.active).map(s => {
-                  const hasMessage = unreadSenders.has(s.id);
+              {staff.filter(s => !s.isDeleted && s.active && !isSameLoggedInUser(currentUser, s.id, staff)).map(s => {
+                  const hasMessage = unreadSenders.has(s.id) || (s.uid ? unreadSenders.has(s.uid) : false);
                   return (
                       <button 
                         key={s.id}
@@ -482,8 +555,8 @@ export const ChatWidget: React.FC = () => {
                 </div>
               )}
               {currentMessages.map((msg, idx) => {
-                const isMe = msg.senderId === currentUser.id;
-                const sender = getSenderInfo(msg.senderId);
+                const isMe = isSameLoggedInUser(currentUser, msg.senderId, staff);
+                const sender = getSenderInfo(msg.senderId, msg.senderName);
                 const isCall = msg.type === 'call';
                 
                 // 날짜 구분선 출력 조건 판단 (첫 번째 메시지이거나, 이전 메시지와 날짜가 다를 때)

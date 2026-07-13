@@ -7,7 +7,7 @@ import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanCard } from '../kanban/KanbanCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
-import { isJobAssignedToUser } from '../../utils/staffMatch';
+import { isJobAssignedToUser, getStaffIdForUser } from '../../utils/staffMatch';
 import {
   loadManagementCardViewMode,
   ManagementCardViewMode,
@@ -180,7 +180,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
         ...(job.history || []),
         {
           timestamp: new Date().toISOString(),
-          staffId: currentUser?.id || 'system',
+          staffId: getStaffIdForUser(staff, currentUser) || currentUser?.id || 'system',
           action: '관리카드 단계 이동',
           details: `${fromLabel} → ${toLabel}`,
         },

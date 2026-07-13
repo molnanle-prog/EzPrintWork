@@ -67,6 +67,7 @@ function formatBoardHiddenAt(value?: string): string {
 
 function getHiddenReasonLabel(job: Job): string {
   if (!job.boardHiddenAt) return '';
+  if (job.status === 'CANCELED' || job.boardHiddenReason === 'canceled') return '취소';
   if (isJobHiddenForManagementCard(job) || job.managementCardPinnedAt) return '관리카드';
   return '수동';
 }
@@ -270,7 +271,15 @@ export const WorkHistoryBoard: React.FC = () => {
                   <td className="px-3 py-2">{job.clientName}</td>
                   <td className="px-3 py-2 text-xs text-slate-600 dark:text-slate-300">{summarizeSubJob(job)}</td>
                   <td className="px-3 py-2">
-                    {statusLabelMap.get(job.status) || DEFAULT_STATUS_LABELS[job.status] || job.status}
+                    <span
+                      className={
+                        job.status === 'CANCELED'
+                          ? 'text-rose-600 dark:text-rose-400 font-semibold'
+                          : undefined
+                      }
+                    >
+                      {statusLabelMap.get(job.status) || DEFAULT_STATUS_LABELS[job.status] || job.status}
+                    </span>
                   </td>
                   <td className="px-3 py-2 whitespace-nowrap text-xs">
                     {job.boardHiddenAt ? (

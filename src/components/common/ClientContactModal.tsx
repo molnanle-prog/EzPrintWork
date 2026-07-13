@@ -3,6 +3,7 @@ import { Job } from '../../types';
 import { db } from '../../services/dataService';
 import { X, MessageCircle, Copy, Send, Check, Mail, Save, Settings, RotateCcw, AlertCircle, Smartphone, Wifi, Battery, Smile, Paperclip, MessageSquare } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { getStaffIdForUser } from '../../utils/staffMatch';
 
 interface ClientContactModalProps {
   job: Job;
@@ -40,6 +41,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const { currentUser } = useAuth();
+  const historyActorId = getStaffIdForUser(db.getStaff(), currentUser) || currentUser?.id || 'system';
 
   // 이전 문자 발송 이력 필터링 및 가공
   const smsHistory = (job.history || [])
@@ -213,7 +215,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
                             ...(job.history || []),
                             {
                                 timestamp: new Date().toISOString(),
-                                staffId: currentUser?.id || 'system',
+                                staffId: historyActorId,
                                 action: '문자 발송',
                                 details: `완료 문자 발송 성공 (수신: ${phone})\n내용: ${fullMsg}`
                             }
@@ -230,7 +232,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
                             ...(job.history || []),
                             {
                                 timestamp: new Date().toISOString(),
-                                staffId: currentUser?.id || 'system',
+                                staffId: historyActorId,
                                 action: '문자 발송 실패',
                                 details: `발송 실패: ${res.message} (수신: ${phone})`
                             }
@@ -252,7 +254,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
             ...(job.history || []),
             {
                 timestamp: new Date().toISOString(),
-                staffId: currentUser?.id || 'system',
+                staffId: historyActorId,
                 action: '문자 발송',
                 details: `앱 연동(휴대폰과 연결) 문자 발송 시도 (수신: ${phone})\n내용: ${fullMsg}`
             }
@@ -283,7 +285,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
           ...(job.history || []),
           {
               timestamp: new Date().toISOString(),
-              staffId: currentUser?.id || 'system',
+              staffId: historyActorId,
               action: '문자 발송 (카톡 복사)',
               details: `카카오톡 전송용 클립보드 복사 완료 (수신: ${phone})\n내용: ${getFullMessage()}`
           }

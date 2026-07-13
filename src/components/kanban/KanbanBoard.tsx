@@ -230,7 +230,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         
         newHistory.push({
             timestamp: new Date().toISOString(),
-            staffId: currentUser.id,
+            staffId: getStaffIdForUser(staff, currentUser) || currentUser.id,
             action: '칸반 이동',
             details: `${fromStatus} → ${toStatus}`
         });
@@ -293,7 +293,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                         if (res.success) {
                             newHistory.push({
                                 timestamp: new Date().toISOString(),
-                                staffId: currentUser.id,
+                                staffId: getStaffIdForUser(staff, currentUser) || currentUser.id,
                                 action: '문자 발송',
                                 details: `완료 문자 발송 성공 (수신: ${targetPhone})\n내용: ${res.sentContent}`
                             });
@@ -301,7 +301,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                         } else {
                             newHistory.push({
                                 timestamp: new Date().toISOString(),
-                                staffId: currentUser.id,
+                                staffId: getStaffIdForUser(staff, currentUser) || currentUser.id,
                                 action: '문자 발송 실패',
                                 details: `발송 실패: ${res.message} (수신: ${targetPhone})`
                             });

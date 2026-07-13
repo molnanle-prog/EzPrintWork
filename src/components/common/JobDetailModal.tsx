@@ -14,6 +14,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { syncClientFromJob } from '../../utils/clientSync';
 import { findQuoteForJob } from '../../utils/quoteJobSync';
 import { openQuotePreviewWindow } from '../../utils/quotePreviewStorage';
+import { getStaffIdForUser, resolveHistoryActorName } from '../../utils/staffMatch';
 import { toast } from 'sonner';
 
 
@@ -33,12 +34,13 @@ function getIconForAction(action: string): React.ReactNode {
         case '담당자 변경': return <UserCheck size={14} className="text-green-500" />;
         case '결제 상태 변경': return <CreditCard size={14} className="text-blue-500" />;
         case '작업 생성': return <PlusCircle size={14} className="text-sky-500" />;
+        case '작업 취소': return <FileX size={14} className="text-rose-500" />;
+        case '작업 복구': return <RotateCcw size={14} className="text-emerald-500" />;
         default: return <FileEdit size={14} className="text-orange-500" />;
     }
 }
 
 const HistoryTimeline: React.FC<{ history: JobHistoryLog[], staff: Staff[] }> = ({ history, staff }) => {
-    const getStaffName = (id: string) => staff.find(s => s.id === id)?.name || '시스템';
     const sortedHistory = [...history].sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     return (
@@ -54,7 +56,8 @@ const HistoryTimeline: React.FC<{ history: JobHistoryLog[], staff: Staff[] }> = 
                         </div>
                         <div className="flex-1 pb-1">
                             <p className="font-bold text-slate-700">
-                                {getStaffName(log.staffId)} <span className="font-normal text-slate-400 ml-1">{formatRealTime(log.timestamp)}</span>
+                                {resolveHistoryActorName(staff, log.staffId)}{' '}
+                                <span className="font-normal text-slate-400 ml-1">{formatRealTime(log.timestamp)}</span>
                             </p>
                             <p className="text-slate-600">
                                 <span className="font-semibold">{log.action}:</span> <span className="break-all">{log.details}</span>
@@ -214,6 +217,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
   
   const { showConfirm, showAlert } = useDialog();
   const { currentUser, canDeletePermanently } = useAuth();
+  /** 작업 이력 작성자 — Firebase uid가 아닌 staff 문서 id로 통일 */
+  const historyActorId = getStaffIdForUser(staff, currentUser) || currentUser?.id || 'system';
   const [pastJobs, setPastJobs] = useState<Job[]>([]);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [showQuoteCalculator, setShowQuoteCalculator] = useState(false);
@@ -454,7 +459,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
     if (isNew) {
         newHistory.push({
             timestamp: new Date().toISOString(),
-            staffId: currentUser.id,
+            staffId: historyActorId,
             action: '작업 생성',
             details: `'${editedJob.title || '제목 없음'}' 작업을 생성했습니다.`
         });
@@ -464,7 +469,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
         const statusNameMap = new Map(statusDefinitions.map(s => [s.key, s.label]));
 
         const pushChange = (action: string, details: string) => {
-            newHistory.push({ timestamp: new Date().toISOString(), staffId: currentUser.id, action, details });
+            newHistory.push({ timestamp: new Date().toISOString(), staffId: historyActorId, action, details });
         };
         
         if (originalJob.status !== updatedJob.status) pushChange('상태 변경', `${statusNameMap.get(originalJob.status) || originalJob.status} → ${statusNameMap.get(updatedJob.status) || updatedJob.status}`);
@@ -568,7 +573,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                 if (res.success) {
                     finalJob.history!.push({
                         timestamp: new Date().toISOString(),
-                        staffId: currentUser.id,
+                        staffId: historyActorId,
                         action: '문자 발송',
                         details: `완료 문자 발송 성공 (수신: ${finalJob.clientPhone})\n내용: ${res.sentContent}`
                     });
@@ -576,7 +581,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                 } else {
                     finalJob.history!.push({
                         timestamp: new Date().toISOString(),
-                        staffId: currentUser.id,
+                        staffId: historyActorId,
                         action: '문자 발송 실패',
                         details: `발송 실패: ${res.message} (수신: ${finalJob.clientPhone})`
                     });
@@ -617,20 +622,24 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
           showAlert("사용자 정보가 없어 작업을 취소할 수 없습니다.");
           return;
       }
-      if (await showConfirm(`'${editedJob.title}' 작업을 취소 처리하고 보관하시겠습니까?`)) {
+      if (await showConfirm(`'${editedJob.title}' 작업을 취소 처리하고 작업 내역에 보관하시겠습니까?`)) {
+          const canceledAt = new Date().toISOString();
           const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
           newHistory.push({
-              timestamp: new Date().toISOString(),
-              staffId: currentUser.id,
+              timestamp: canceledAt,
+              staffId: historyActorId,
               action: '작업 취소',
-              details: '소비자 요청으로 작업을 취소 및 보관 처리했습니다.'
+              details: `'${editedJob.title}' 작업을 취소했습니다. 작업 내역에서 확인할 수 있습니다.`
           });
 
           const finalJob: Job = {
               ...editedJob,
               status: 'CANCELED',
               paymentStatus: '취소',
-              history: newHistory
+              history: newHistory,
+              // 칸반에서는 숨기고 작업 내역에서 조회
+              boardHiddenAt: editedJob.boardHiddenAt || canceledAt,
+              boardHiddenReason: editedJob.boardHiddenReason || 'canceled',
           };
 
           try {
@@ -652,7 +661,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
           const newHistory: JobHistoryLog[] = [...(editedJob.history || [])];
           newHistory.push({
               timestamp: new Date().toISOString(),
-              staffId: currentUser.id,
+              staffId: historyActorId,
               action: '작업 복구',
               details: '취소 상태에서 일반 접수(RECEIVED) 단계로 복구 완료했습니다.'
           });
@@ -661,7 +670,14 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
               ...editedJob,
               status: 'RECEIVED',
               paymentStatus: '결제대기',
-              history: newHistory
+              history: newHistory,
+              ...(editedJob.boardHiddenReason === 'canceled'
+                  ? {
+                        boardHiddenAt: undefined,
+                        boardHiddenBy: undefined,
+                        boardHiddenReason: undefined,
+                    }
+                  : {}),
           };
 
           try {

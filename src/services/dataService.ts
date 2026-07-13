@@ -15,6 +15,7 @@ import { db as firestore, auth, storage } from './firebase';
 import { signOut } from 'firebase/auth';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
+import { chatMirrorService, mergeChatMessages } from './chatMirrorService';
 import { localDbBridge } from './localDbBridge';
 import { refreshLocalGateway } from './gatewayBridge';
 import type { SituationMirrorPayload } from './situationMirrorService';
@@ -162,8 +163,8 @@ const INITIAL_STATUS_DEFINITIONS: JobStatusDefinition[] = [
 
 /** 로그인 직후 동기화 — 소량·필수 데이터만 (읽기 비용 절감) */
 const CORE_STARTUP_COLLECTIONS = ['staff', 'clients', 'settings'] as const;
-/** 화면 진입 시에만 구독 — quotes/messages 등 */
-const LAZY_SYNC_COLLECTIONS = ['quotes', 'messages', 'leaves', 'papers', 'instructions'] as const;
+/** 화면 진입 시에만 구독 — quotes 등 (messages는 NAS 채팅 미러) */
+const LAZY_SYNC_COLLECTIONS = ['quotes', 'leaves', 'papers', 'instructions'] as const;
 const ARCHIVED_JOB_STATUSES = ['COMPLETED', 'CANCELED'] as const;
 const OUTSTANDING_PAYMENT_STATUSES = ['결제대기', '일부결제'] as const;
 /** 칸반 완료 칸: 결제완료 건은 최근 N일만 실시간 구독 */
@@ -544,6 +545,7 @@ export class DataService {
     private lastAppliedJobRevAt: string | null = null;
     private lastAppliedStaffAt: string | null = null;
     private lastAppliedClientsAt: string | null = null;
+    private lastAppliedMessagesAt: string | null = null;
     private lastAppliedSettingsAt: string | null = null;
     private lastLocalJobWriteAt = 0;
     private pulseHandling = false;
@@ -578,12 +580,13 @@ export class DataService {
 
     /**
      * Firestore 클라우드 저장 가능 여부.
-     * 웹: jobs는 항상 조회 전용. 관리자(메인·사내)는 설정·마스터 데이터 저장 허용.
+     * - jobs / clients: Firestore 저장 금지 (NAS·로컬 SQLite — 대량 데이터 비용·한도 방지)
+     * - 웹: 설정·마스터는 관리자만 저장
      */
     private canPersistToCloud(col?: string): boolean {
         if (!this.tenantId) return false;
-        // 업무 데이터(jobs/clients) — Firestore 저장 금지 (NAS·로컬 SQLite만)
-        if (col === 'jobs' || col === 'clients') return false;
+        // 업무 데이터(jobs/clients/messages) — Firestore 저장 금지 (NAS·로컬)
+        if (col === 'jobs' || col === 'clients' || col === 'messages') return false;
         if (!this.isWebMirrorMode()) return true;
         return this.isSyncAdmin();
     }
@@ -653,7 +656,10 @@ export class DataService {
             applied = true;
         }
         if (Array.isArray(situation.clients) && situation.clients.length > 0) {
-            this.data['clients'] = situation.clients as Client[];
+            this.data['clients'] = this.mergeClientsById(
+                (this.data['clients'] || []) as Client[],
+                situation.clients as Client[]
+            );
             applied = true;
         }
         if (situation.settings && typeof situation.settings === 'object') {
@@ -781,6 +787,7 @@ export class DataService {
         this.lastAppliedJobRevAt = null;
         this.lastAppliedStaffAt = null;
         this.lastAppliedClientsAt = null;
+        this.lastAppliedMessagesAt = null;
         this.lastAppliedSettingsAt = null;
         this.cloudDegraded = false;
         this.localOperationalReady = false;
@@ -1204,6 +1211,12 @@ export class DataService {
             return;
         }
 
+        // 취소 작업 — 칸반·상황판에는 안 보이지만 작업 내역·NAS 보관에 유지
+        if (job.status === 'CANCELED') {
+            this.supplementaryJobs.push(job);
+            return;
+        }
+
         if (job.status !== 'COMPLETED') return;
 
         if (OUTSTANDING_PAYMENT_STATUSES.includes(job.paymentStatus as (typeof OUTSTANDING_PAYMENT_STATUSES)[number])) {
@@ -1217,6 +1230,9 @@ export class DataService {
             cutoff.setDate(cutoff.getDate() - KANBAN_RECENT_PAID_COMPLETED_DAYS);
             if (completedAt.getTime() >= cutoff.getTime()) {
                 this.kanbanCompletedJobs.push(job);
+            } else {
+                // 오래된 결제완료도 작업 내역용으로 유지 (아카이브 병합 전 유실 방지)
+                this.supplementaryJobs.push(job);
             }
         }
     }
@@ -1397,19 +1413,26 @@ export class DataService {
 
     private async pullOperationalCloudData() {
         if (!this.tenantId) return;
-        await Promise.all([
-            this.pullCollectionDocs('clients'),
-            this.pullCollectionDocs('settings'),
-        ]);
+        // settings만 상시 클라우드. clients는 Firestore에 상시 두지 않음 (대량 → NAS/로컬)
+        await this.pullCollectionDocs('settings');
 
         if (this.isLocalPrimaryMode()) {
+            // 로컬 SQLite에 거래처가 비어 있을 때만 예전 Firestore 데이터를 1회 이관
+            if (((this.data['clients'] || []) as Client[]).length === 0) {
+                try {
+                    await this.pullCollectionDocs('clients');
+                    console.log('[DataService] legacy Firestore clients imported for local/NAS migration');
+                } catch (e) {
+                    console.warn('[DataService] legacy clients cloud pull skipped:', e);
+                }
+            }
             await this.pullJobsHot();
             return;
         }
 
         const fromMirror = await this.tryHydrateFromWebMirror();
         if (!fromMirror) {
-            console.warn('[DataService] web NAS mirror hydrate failed — Firestore jobs skipped');
+            console.warn('[DataService] web NAS mirror hydrate failed — Firestore jobs/clients skipped');
         }
     }
 
@@ -1544,13 +1567,61 @@ export class DataService {
         companyName?: string;
     }) {
         if (Array.isArray(situation.clients) && situation.clients.length > 0) {
-            this.data['clients'] = situation.clients as Client[];
+            // 통째 교체 금지 — 방금 로컬에 자동 등록한 거래처가 NAS 옛 미러에 덮여 사라지는 문제 방지
+            this.data['clients'] = this.mergeClientsById(
+                (this.data['clients'] || []) as Client[],
+                situation.clients as Client[]
+            );
         }
         if (situation.settings && typeof situation.settings === 'object') {
             this.mergeSettingsFromMirror(situation.settings as Record<string, unknown>, situation.companyName);
         } else if (situation.companyName?.trim()) {
             this.mirrorCompanyName = situation.companyName.trim();
         }
+    }
+
+    /** 거래처 id 기준 병합 — 로컬 신규 건 유지, 동일 id는 비어 있지 않은 필드 보강 */
+    private mergeClientsById(current: Client[], incoming: Client[]): Client[] {
+        const map = new Map<string, Client>();
+
+        const put = (c: Client) => {
+            if (!c?.id) return;
+            const prev = map.get(c.id);
+            if (!prev) {
+                map.set(c.id, { ...c });
+                return;
+            }
+            map.set(c.id, {
+                ...prev,
+                ...c,
+                name: (c.name || prev.name || '').trim() || prev.name,
+                contactPerson: c.contactPerson?.trim() ? c.contactPerson : prev.contactPerson,
+                phone: c.phone?.trim() ? c.phone : prev.phone,
+                email: c.email?.trim() ? c.email : prev.email,
+                address: c.address?.trim() ? c.address : prev.address,
+                note: c.note?.trim() ? c.note : prev.note,
+                businessRegistrationNumber:
+                    c.businessRegistrationNumber?.trim()
+                        ? c.businessRegistrationNumber
+                        : prev.businessRegistrationNumber,
+                contacts:
+                    c.contacts?.length && c.contacts.some((x) => x.name?.trim() || x.phone?.trim())
+                        ? c.contacts
+                        : prev.contacts || [],
+                sendSmsOnComplete:
+                    c.sendSmsOnComplete !== undefined ? c.sendSmsOnComplete : prev.sendSmsOnComplete,
+                customSmsNumber: c.customSmsNumber?.trim() ? c.customSmsNumber : prev.customSmsNumber,
+                prepaidBalance: c.prepaidBalance ?? prev.prepaidBalance,
+                prepaidLedger:
+                    c.prepaidLedger && c.prepaidLedger.length > 0
+                        ? c.prepaidLedger
+                        : prev.prepaidLedger,
+            });
+        };
+
+        for (const c of current) put(c);
+        for (const c of incoming) put(c);
+        return Array.from(map.values());
     }
 
     private applySituationMirrorJobsPartial(jobs: Job[]) {
@@ -1662,6 +1733,11 @@ export class DataService {
                         console.warn('[DataService] local db sync after NAS poll failed:', e)
                     );
                 }
+                this.notify();
+            }
+
+            // 사내 채팅은 별도 NAS 파일
+            if (await this.pollChatMirror()) {
                 this.notify();
             }
         } catch (e) {
@@ -1956,8 +2032,17 @@ export class DataService {
             const clientsAt = data.clientsAt as string | undefined;
             if (clientsAt && clientsAt !== this.lastAppliedClientsAt && !this.isLocalPulse('clientsAt', clientsAt)) {
                 this.lastAppliedClientsAt = clientsAt;
-                await this.pullCollectionDocs('clients');
+                // 거래처는 Firestore가 아니라 NAS 미러에서 동기화
+                if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
+                    await this.pollNasOperationalSync();
+                }
                 this.notify();
+            }
+
+            const messagesAt = data.messagesAt as string | undefined;
+            if (messagesAt && messagesAt !== this.lastAppliedMessagesAt && !this.isLocalPulse('messagesAt', messagesAt)) {
+                this.lastAppliedMessagesAt = messagesAt;
+                if (await this.pollChatMirror()) this.notify();
             }
 
             const settingsAt = data.settingsAt as string | undefined;
@@ -2118,9 +2203,110 @@ export class DataService {
         void this.pullLazyCollection('quotes');
     }
 
-    /** 채팅 위젯 마운트 시 호출 */
+    /** 채팅 위젯 마운트 시 호출 — NAS/게이트웨이/Storage */
     ensureMessagesSync() {
-        void this.pullLazyCollection('messages');
+        void this.hydrateMessagesFromMirror();
+    }
+
+    private chatMigratedKey(): string {
+        return `ezpw_chat_nas_migrated_${this.tenantId || 'x'}`;
+    }
+
+    private async hydrateMessagesFromMirror(): Promise<void> {
+        if (!this.tenantId) return;
+        try {
+            const payload = this.getIsElectron()
+                ? await chatMirrorService.readFromNas()
+                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrl());
+
+            if (payload?.messages?.length) {
+                this.data['messages'] = mergeChatMessages(
+                    (this.data['messages'] || []) as ChatMessage[],
+                    payload.messages
+                );
+                this.notify();
+            }
+
+            // 로컬/미러가 비어 있고 아직 이관 안 했으면 Firestore → NAS 1회
+            if (
+                ((this.data['messages'] || []) as ChatMessage[]).length === 0 &&
+                localStorage.getItem(this.chatMigratedKey()) !== '1'
+            ) {
+                await this.migrateMessagesFromFirestoreOnce();
+            }
+        } catch (e) {
+            console.warn('[DataService] chat mirror hydrate failed:', e);
+        }
+    }
+
+    private async migrateMessagesFromFirestoreOnce(): Promise<void> {
+        if (!this.tenantId) return;
+        try {
+            await this.pullCollectionDocs('messages');
+            const msgs = (this.data['messages'] || []) as ChatMessage[];
+            if (msgs.length > 0) {
+                const ok = await this.persistMessagesToNas(msgs);
+                if (ok) {
+                    console.log(`[DataService] migrated ${msgs.length} chat messages Firestore → NAS`);
+                }
+            }
+            localStorage.setItem(this.chatMigratedKey(), '1');
+        } catch (e) {
+            console.warn('[DataService] chat Firestore migration skipped:', e);
+            // 권한 등으로 실패해도 반복 시도 폭주 방지 — 다음 세션에 재시도 가능하도록 플래그는 안 함
+        }
+    }
+
+    private async persistMessagesToNas(messages: ChatMessage[]): Promise<boolean> {
+        if (!this.tenantId) return false;
+        const list = mergeChatMessages([], messages);
+
+        if (this.getIsElectron()) {
+            const ok = await chatMirrorService.publish(this.tenantId, list);
+            if (ok) await this.bumpMirrorSyncPulse();
+            return ok;
+        }
+
+        // 웹: 매장 PC 게이트웨이 우선, 실패 시 Storage
+        const viaGw = await chatMirrorService.publishViaGateway(
+            this.tenantId,
+            list,
+            this.getStoreGatewayUrl()
+        );
+        if (viaGw) {
+            await this.bumpMirrorSyncPulse();
+            return true;
+        }
+        const ok = await chatMirrorService.publish(this.tenantId, list);
+        if (ok) await this.bumpMirrorSyncPulse();
+        return ok;
+    }
+
+    private async pollChatMirror(): Promise<boolean> {
+        if (!this.tenantId) return false;
+        try {
+            const payload = this.getIsElectron()
+                ? await chatMirrorService.readFromNas()
+                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrl());
+            if (!payload?.messages) return false;
+
+            const merged = mergeChatMessages(
+                (this.data['messages'] || []) as ChatMessage[],
+                payload.messages
+            );
+            const prevLen = ((this.data['messages'] || []) as ChatMessage[]).length;
+            const changed =
+                merged.length !== prevLen ||
+                merged[merged.length - 1]?.id !==
+                    ((this.data['messages'] || []) as ChatMessage[])[prevLen - 1]?.id;
+            if (changed) {
+                this.data['messages'] = merged;
+                return true;
+            }
+        } catch (e) {
+            console.warn('[DataService] chat poll failed:', e);
+        }
+        return false;
     }
 
     /** 캘린더·휴가 화면 진입 시 호출 */
@@ -2446,6 +2632,9 @@ export class DataService {
 
             this.startNasMirrorPolling();
 
+            // 사내 채팅 NAS 미러 초기 로드
+            void this.hydrateMessagesFromMirror();
+
             if (!localPrimary && !this.webMirrorReady && this.getAllJobs().length === 0) {
                 void this.retryWebMirrorHydrateInBackground();
                 const gateway = this.getStoreGatewayUrl();
@@ -2767,7 +2956,28 @@ export class DataService {
         if (this.tenantId) {
             if (this.isLocalPrimaryMode() && this.isLocalOperationalCollection(col)) {
                 await this.persistToLocalCollection(col, newEntity);
-                this.scheduleLiveMirrorPush();
+                if (col === 'clients') {
+                    // 거래처 자동 등록은 NAS에 바로 반영해야 미러 폴링에 덮이지 않음
+                    this.flushLiveMirrorPushNow();
+                } else {
+                    this.scheduleLiveMirrorPush();
+                }
+                this.updateTenantActivity().catch(() => {});
+                return;
+            }
+            // 사내 채팅 — Firestore 금지, NAS chat-messages.json
+            if (col === 'messages') {
+                if (!newEntity.senderId && auth.currentUser) {
+                    newEntity.senderId = auth.currentUser.uid;
+                    this.data[col] = [...(this.data[col] || []).filter((e: any) => e.id !== newEntity.id), newEntity];
+                    this.notify();
+                }
+                const ok = await this.persistMessagesToNas((this.data['messages'] || []) as ChatMessage[]);
+                if (!ok) {
+                    throw new Error(
+                        '채팅 저장에 실패했습니다. 매장 PC NAS 경로·사내망 연결을 확인해 주세요.'
+                    );
+                }
                 this.updateTenantActivity().catch(() => {});
                 return;
             }
@@ -2775,12 +2985,14 @@ export class DataService {
                 throw new Error('web-readonly-jobs');
             }
             if (!this.canPersistToCloud(col)) {
+                if (col === 'clients') {
+                    throw new Error(
+                        '거래처는 매장 PC의 NAS/로컬 저장소에만 저장됩니다. PC 앱에서 작업·거래처를 등록해 주세요.'
+                    );
+                }
                 return;
             }
             try {
-                if (col === 'messages' && !newEntity.senderId && auth.currentUser) {
-                    newEntity.senderId = auth.currentUser.uid;
-                }
                 const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                 await setDoc(docRef, stripUndefinedForFirestore(newEntity));
                 if (col === 'jobs') {
@@ -2838,7 +3050,11 @@ export class DataService {
     private async persistEntity(col: string, id: string, updated: any, options?: { skipPulse?: boolean }) {
         if (this.tenantId && this.isLocalPrimaryMode() && this.isLocalOperationalCollection(col)) {
             await this.persistToLocalCollection(col, updated);
-            this.scheduleLiveMirrorPush();
+            if (col === 'clients') {
+                this.flushLiveMirrorPushNow();
+            } else {
+                this.scheduleLiveMirrorPush();
+            }
             this.updateTenantActivity().catch(() => {});
             return;
         }
@@ -2846,6 +3062,11 @@ export class DataService {
             throw new Error('web-readonly-jobs');
         }
         if (!this.canPersistToCloud(col)) {
+            if (col === 'clients') {
+                throw new Error(
+                    '거래처는 매장 PC의 NAS/로컬 저장소에만 저장됩니다. PC 앱에서 작업·거래처를 등록해 주세요.'
+                );
+            }
             return;
         }
         if (this.tenantId) {
@@ -2963,6 +3184,15 @@ export class DataService {
             if (this.isLocalPrimaryMode() && col === 'clients') {
                 const ok = await localDbBridge.deleteClient(this.tenantId, id);
                 if (!ok) throw new Error('local-db-client-delete-failed');
+                this.flushLiveMirrorPushNow();
+                return;
+            }
+            if (col === 'messages') {
+                const ok = await this.persistMessagesToNas((this.data['messages'] || []) as ChatMessage[]);
+                if (!ok) {
+                    throw new Error('채팅 삭제 반영에 실패했습니다. NAS 연결을 확인해 주세요.');
+                }
+                this.updateTenantActivity().catch(() => {});
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
@@ -3139,6 +3369,21 @@ export class DataService {
 
         const { id, ...data } = jobToSave;
         await this.updateEntity('jobs', id!, data);
+
+        // 취소 건은 NAS 보관(jobs-archive)에도 병합해 작업 내역에서 유실되지 않게 함
+        if (jobToSave.status === 'CANCELED' && this.tenantId && jobToSave.id) {
+            try {
+                await jobArchiveService.upsertArchivedJob(this.tenantId, jobToSave);
+                const idx = this.archivedJobs.findIndex((j) => j.id === jobToSave.id);
+                if (idx >= 0) this.archivedJobs[idx] = jobToSave;
+                else this.archivedJobs = [...this.archivedJobs, jobToSave];
+                this.rebuildArchiveMergedJobs();
+                this.notify();
+            } catch (e) {
+                console.warn('[updateJob] canceled job archive upsert failed:', e);
+            }
+        }
+
         try {
             await this.syncQuoteFromJob(jobToSave);
         } catch (e) {
@@ -3860,9 +4105,11 @@ export class DataService {
                 }
             }
 
-            // 2. Firestore 업로드 (jobs/clients 제외 — NAS·로컬 전용)
+            // 2. Firestore 업로드 (jobs/clients/messages 제외 — NAS·로컬 전용)
             if (this.tenantId) {
-                const cloudCollections = collections.filter((c) => c !== 'jobs' && c !== 'clients');
+                const cloudCollections = collections.filter(
+                    (c) => c !== 'jobs' && c !== 'clients' && c !== 'messages'
+                );
                 for (const col of cloudCollections) {
                     if (backup[col] && Array.isArray(backup[col])) {
                         const promises = backup[col].map(async (item: any) => {
@@ -4377,9 +4624,11 @@ export class DataService {
                 }
             }
 
-            // 2. Firestore 일괄 업로드 (jobs/clients 제외)
+            // 2. Firestore 일괄 업로드 (jobs/clients/messages 제외)
             if (this.tenantId) {
-                const cloudCollections = collections.filter((c) => c !== 'jobs' && c !== 'clients');
+                const cloudCollections = collections.filter(
+                    (c) => c !== 'jobs' && c !== 'clients' && c !== 'messages'
+                );
                 for (const col of cloudCollections) {
                     if (mergedData[col] && Array.isArray(mergedData[col])) {
                         const promises = mergedData[col].map(async (item: any) => {

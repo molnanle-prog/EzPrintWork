@@ -18,6 +18,64 @@ export function findStaffForUser(staffList: Staff[], user: AppUser | null | unde
     });
 }
 
+/** staff.id 또는 staff.uid 로 직원 찾기 (채팅 senderId 등) */
+export function findStaffByAnyId(staffList: Staff[], id?: string | null): Staff | undefined {
+    if (!id) return undefined;
+    const direct = staffList.find((s) => !s.isDeleted && (s.id === id || s.uid === id));
+    if (direct) return direct;
+    const lower = id.toLowerCase();
+    return staffList.find(
+        (s) =>
+            !s.isDeleted &&
+            ((s.loginId && s.loginId.toLowerCase() === lower) ||
+                (s.email && s.email.toLowerCase() === lower))
+    );
+}
+
+/** 작업 이력 staffId → 표시 이름 (uid / staff.id 혼용·시스템 로그 대응) */
+export function resolveHistoryActorName(
+    staffList: Staff[],
+    staffId?: string | null,
+    fallback = '알 수 없음'
+): string {
+    if (!staffId || staffId === 'system') return '시스템';
+    const found = findStaffByAnyId(staffList, staffId);
+    if (!found) return fallback;
+
+    const name = found.name?.trim() || '';
+    const loginId = found.loginId?.trim() || '';
+    // Auth 기본값(사용자/사원)만 있고 로그인 ID가 있으면 로그인 ID를 우선 표시
+    if (name && name !== '사용자' && name !== '사원') return name;
+    if (loginId) return loginId;
+    if (name) return name;
+    return fallback;
+}
+
+/** staff.id / Firebase uid 가 같은 사람을 가리키는지 */
+export function staffIdsEqual(a?: string | null, b?: string | null, staffList: Staff[] = []): boolean {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const sa = findStaffByAnyId(staffList, a);
+    const sb = findStaffByAnyId(staffList, b);
+    if (sa && sb) return sa.id === sb.id;
+    if (sa && (sa.id === b || sa.uid === b)) return true;
+    if (sb && (sb.id === a || sb.uid === a)) return true;
+    return false;
+}
+
+/** 로그인 사용자와 id(staff.id 또는 uid)가 본인인지 */
+export function isSameLoggedInUser(
+    user: AppUser | null | undefined,
+    id?: string | null,
+    staffList: Staff[] = []
+): boolean {
+    if (!user || !id) return false;
+    if (user.uid === id || user.id === id) return true;
+    const myStaff = findStaffForUser(staffList, user);
+    if (myStaff && (myStaff.id === id || myStaff.uid === id)) return true;
+    return staffIdsEqual(user.uid || user.id, id, staffList);
+}
+
 /** 작업에 배정된 staff id 목록 (레거시 assignedStaffId 포함) */
 export function getJobAssigneeIds(job: Job): string[] {
     const fromArray = job.assignedStaffIds || [];

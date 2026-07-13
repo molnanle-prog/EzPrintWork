@@ -106,7 +106,7 @@ export interface Job {
   boardHiddenAt?: string;
   boardHiddenBy?: string;
   /** 보드 숨김 사유 — 관리카드 이동 vs 수동 내리기 구분 */
-  boardHiddenReason?: 'management_card' | 'manual';
+  boardHiddenReason?: 'management_card' | 'manual' | 'canceled';
   /** 이 작업에 선불로 차감된 금액 */
   prepaidAppliedAmount?: number;
   /** 결제 시 선불 차감 사용 (기본 true — false면 별도 수금) */
@@ -200,6 +200,8 @@ export interface AdminInstruction {
 export interface ChatMessage {
   id: string;
   senderId: string;
+  /** 발신 시점에 저장 — staff.uid 미연동 시에도 이름 표시용 */
+  senderName?: string;
   receiverId?: string; 
   content: string;
   timestamp: string;
