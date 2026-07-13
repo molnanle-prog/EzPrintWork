@@ -93,8 +93,7 @@
       "deleteAppDataOnUninstall": true,
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
-      "shortcutName": "EzPrintWork",
-      "include": "build/installer.nsh"
+      "shortcutName": "EzPrintWork"
     }
   }
 }
