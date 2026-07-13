@@ -308,7 +308,29 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               const staffDoc = await getDoc(staffDocRef);
 
               if (staffDoc.exists()) {
-                /* already linked at uid */
+                const existing = staffDoc.data() || {};
+                const needsRestore =
+                  existing.isDeleted === true || existing.active === false || existing.deleted === true;
+                const patch: Record<string, unknown> = {
+                  uid: user.uid,
+                  active: true,
+                  isDeleted: false,
+                };
+                if (isMainOwner) {
+                  patch.isCompanyAdmin = true;
+                  if (!existing.name && (updatedUser.name || user.displayName)) {
+                    patch.name = updatedUser.name || user.displayName;
+                  }
+                } else if (existing.isCompanyAdmin !== true && existing.role !== 'admin') {
+                  // 사내 관리자(users.role=admin)인데 플래그가 없으면 보정
+                  patch.isCompanyAdmin = true;
+                }
+                if (needsRestore || isMainOwner || patch.isCompanyAdmin) {
+                  await setDoc(staffDocRef, patch, { merge: true });
+                  if (needsRestore) {
+                    console.log(`[AuthSelfHealing] Restored staff visibility for ${user.uid}`);
+                  }
+                }
               } else {
                 const loginIdNorm = String(
                   (updatedUser as any).loginId
@@ -317,35 +339,52 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 ).trim().toLowerCase();
 
                 let existingStaffId: string | null = null;
+                let existingStaffDeleted = false;
                 if (loginIdNorm) {
                   const byLogin = await getDocs(
                     query(staffCol, where('loginId', '==', loginIdNorm), limit(5))
                   );
                   for (const d of byLogin.docs) {
                     const s = d.data();
-                    if (s.isDeleted === true) continue;
-                    existingStaffId = d.id;
-                    break;
+                    if (s.isDeleted !== true) {
+                      existingStaffId = d.id;
+                      existingStaffDeleted = false;
+                      break;
+                    }
+                    if (!existingStaffId) {
+                      existingStaffId = d.id;
+                      existingStaffDeleted = true;
+                    }
                   }
                 }
 
                 if (existingStaffId) {
                   await setDoc(
                     doc(staffCol, existingStaffId),
-                    { uid: user.uid, active: true },
+                    {
+                      uid: user.uid,
+                      active: true,
+                      isDeleted: false,
+                      isCompanyAdmin: true,
+                    },
                     { merge: true }
                   );
-                  console.log(`[AuthSelfHealing] Linked existing staff ${existingStaffId} to uid ${user.uid}`);
+                  console.log(
+                    `[AuthSelfHealing] Linked existing staff ${existingStaffId} to uid ${user.uid}` +
+                      (existingStaffDeleted ? ' (restored from deleted)' : '')
+                  );
                 } else if (isMainOwner) {
                   await setDoc(staffDocRef, {
                     id: user.uid,
                     uid: user.uid,
                     name: updatedUser.name || (updatedUser as any).userName || user.displayName || '대표자',
                     role: (updatedUser as any).position || '대표자',
+                    isCompanyAdmin: true,
                     phone: (updatedUser as any).contactInfo || '',
                     phoneCompany: (updatedUser as any).contactInfo || '',
                     avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(updatedUser.name || '대표자')}`,
                     active: true,
+                    isDeleted: false,
                     email: user.email || updatedUser.email || '',
                     loginId: (updatedUser as any).loginId || user.email || '',
                     joinDate: (updatedUser as any).createdAt || new Date().toISOString()

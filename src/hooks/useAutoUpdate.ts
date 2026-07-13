@@ -18,9 +18,9 @@ function showWebUpdateNotice(
     setWebNotice: ReturnType<typeof useUpdateNotice>['setWebNotice'],
     result: UpdateCheckResult
 ) {
-    const buildId = result.manifest?.buildId;
+    const buildId = result.manifest?.buildId || `v-${result.manifest?.version || ''}`;
     const version = result.manifest?.version;
-    if (!buildId || !version) return;
+    if (!version) return;
 
     setWebNotice({ kind: 'web', version, buildId });
 }
@@ -28,13 +28,14 @@ function showWebUpdateNotice(
 export function useAutoUpdate() {
     const { notice, setWebNotice, clearWebNotice } = useUpdateNotice();
     const pendingBuildRef = useRef<string | null>(null);
+    const announcedRef = useRef<string | null>(null);
 
     const handleUpdate = useCallback(
         (result: UpdateCheckResult) => {
             if (hasElectronUpdater()) return;
 
-            const buildId = result.manifest?.buildId;
-            if (!buildId || !result.available) {
+            const buildId = result.manifest?.buildId || `v-${result.manifest?.version || ''}`;
+            if (!result.available || !result.manifest?.version) {
                 pendingBuildRef.current = null;
                 clearWebNotice();
                 return;
@@ -42,6 +43,15 @@ export function useAutoUpdate() {
 
             pendingBuildRef.current = buildId;
             showWebUpdateNotice(setWebNotice, result);
+
+            // 새 배포를 처음 감지했을 때 토스트로도 한 번 알림 (배너만 놓치는 경우 대비)
+            if (announcedRef.current !== buildId) {
+                announcedRef.current = buildId;
+                toast.message(`새 버전 v${result.manifest.version} 배포됨`, {
+                    description: '화면 오른쪽 위 알림에서 업데이트를 진행할 수 있습니다.',
+                    duration: 8000,
+                });
+            }
         },
         [setWebNotice, clearWebNotice]
     );
@@ -53,11 +63,23 @@ export function useAutoUpdate() {
             if (result.available) handleUpdate(result);
         });
 
+        // 시작 직후 재확인 (네트워크 지연·캐시 대비)
+        const earlyRetries = [15_000, 45_000, 120_000].map((ms) =>
+            window.setTimeout(() => {
+                void checkForUpdate().then((result) => {
+                    if (result.available) handleUpdate(result);
+                });
+            }, ms)
+        );
+
         const hasPendingNotice = notice != null;
         const intervalMs = hasPendingNotice ? POLL_MS_WHEN_PENDING : POLL_MS;
 
         const stop = startAutoUpdatePolling(handleUpdate, intervalMs);
-        return stop;
+        return () => {
+            stop();
+            earlyRetries.forEach((id) => window.clearTimeout(id));
+        };
     }, [handleUpdate, notice]);
 
     return {};

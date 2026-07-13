@@ -3329,8 +3329,17 @@ export class DataService {
     async dedupeStaffDuplicates(): Promise<number> {
         if (!this.tenantId || !this.isSyncAdmin()) return 0;
 
+        const currentUid = auth.currentUser?.uid || '';
+        const isProtectedStaff = (s: Staff) => {
+            // 로그인 본인·대표형(id===uid) 문서는 이름 중복 정리로 절대 삭제하지 않음
+            if (currentUid && (s.uid === currentUid || s.id === currentUid)) return true;
+            if (s.uid && s.id === s.uid) return true;
+            return false;
+        };
+
         const score = (s: Staff) => {
             let n = 0;
+            if (isProtectedStaff(s)) n += 1000;
             if (s.active !== false) n += 10;
             if (!s.isDeleted) n += 10;
             if (s.loginId) n += 5;
@@ -3345,7 +3354,9 @@ export class DataService {
             for (const group of groups.values()) {
                 if (group.length <= 1) continue;
                 const sorted = [...group].sort((a, b) => score(b) - score(a));
-                sorted.slice(1).forEach((s) => toRemove.add(s.id));
+                sorted.slice(1).forEach((s) => {
+                    if (!isProtectedStaff(s)) toRemove.add(s.id);
+                });
             }
         };
 
@@ -3383,6 +3394,8 @@ export class DataService {
 
         let removed = 0;
         for (const id of toRemove) {
+            const target = rows.find((s) => s.id === id);
+            if (target && isProtectedStaff(target)) continue;
             try {
                 await this.deleteStaff(id);
                 removed += 1;

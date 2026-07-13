@@ -111,7 +111,11 @@ export async function checkForUpdate(): Promise<UpdateCheckResult> {
     const currentBuildId = APP_BUILD_ID;
     const currentVersion = APP_VERSION;
 
-    const available = !!manifest?.buildId && isNewerBuild(manifest.buildId, currentBuildId);
+    const newerByVersion =
+        !!manifest?.version && isNewerVersion(String(manifest.version), currentVersion);
+    const newerByBuild =
+        !!manifest?.buildId && isNewerBuild(String(manifest.buildId), currentBuildId);
+    const available = newerByVersion || newerByBuild;
 
     if (manifest?.buildId) {
         localStorage.setItem(BUILD_ID_KEY, manifest.buildId);
@@ -177,6 +181,17 @@ export function startAutoUpdatePolling(
         });
     };
 
+    // 포커스/탭 복귀 시에도 즉시 확인 (백그라운드에서 놓친 배포 감지)
+    const onVisible = () => {
+        if (document.visibilityState === 'visible') run();
+    };
+    window.addEventListener('focus', run);
+    document.addEventListener('visibilitychange', onVisible);
+
     const timer = window.setInterval(run, intervalMs);
-    return () => window.clearInterval(timer);
+    return () => {
+        window.clearInterval(timer);
+        window.removeEventListener('focus', run);
+        document.removeEventListener('visibilitychange', onVisible);
+    };
 }

@@ -196,18 +196,36 @@ function setupAutoUpdater(win) {
 
     ipcMain.handle('get-app-version', () => app.getVersion());
 
-    const runInitialCheck = () => {
-        autoUpdater.checkForUpdates().catch((err) => {
-            console.warn('[AutoUpdater] check failed:', err?.message || err);
-        });
+    const runInitialCheck = (attempt = 1) => {
+        autoUpdater
+            .checkForUpdates()
+            .then((result) => {
+                if (result?.updateInfo?.version) {
+                    pendingUpdateVersion = result.updateInfo.version;
+                    sendUpdaterStatus({
+                        phase: 'available',
+                        version: result.updateInfo.version,
+                        currentVersion: app.getVersion(),
+                    });
+                }
+            })
+            .catch((err) => {
+                console.warn(`[AutoUpdater] check failed (try ${attempt}):`, err?.message || err);
+                if (attempt < 4) {
+                    setTimeout(() => runInitialCheck(attempt + 1), attempt * 8000);
+                }
+            });
     };
 
     if (win && !win.isDestroyed()) {
         win.webContents.once('did-finish-load', () => {
-            setTimeout(runInitialCheck, 1200);
+            setTimeout(() => runInitialCheck(1), 1500);
+            // 네트워크 지연 대비 추가 확인
+            setTimeout(() => runInitialCheck(1), 20000);
+            setTimeout(() => runInitialCheck(1), 60000);
         });
     } else {
-        setTimeout(runInitialCheck, 3000);
+        setTimeout(() => runInitialCheck(1), 3000);
     }
 }
 

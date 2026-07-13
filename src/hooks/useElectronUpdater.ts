@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
 import { ElectronUpdaterStatus } from '../types';
 import { useUpdateNotice } from '../contexts/UpdateNoticeContext';
+import { fetchDownloadManifest, isNewerVersion } from '../utils/autoUpdate';
 
 export function hasElectronUpdater(): boolean {
     return (
@@ -11,11 +12,14 @@ export function hasElectronUpdater(): boolean {
     );
 }
 
-const ELECTRON_UPDATE_POLL_MS = 5 * 60 * 1000;
+const ELECTRON_UPDATE_POLL_MS = 3 * 60 * 1000;
+const ELECTRON_EARLY_RETRY_MS = [8_000, 25_000, 60_000, 180_000];
 
 export function useElectronUpdater() {
     const { setDesktopNotice } = useUpdateNotice();
     const isDownloadingRef = useRef(false);
+    const announcedVersionRef = useRef<string | null>(null);
+    const hasAvailableNoticeRef = useRef(false);
 
     const installDesktopUpdate = useCallback(async () => {
         if (!window.electron?.updaterInstall) return;
@@ -27,6 +31,50 @@ export function useElectronUpdater() {
         await window.electron.updaterInstall();
     }, [setDesktopNotice]);
 
+    const announceAvailable = useCallback(
+        (version?: string, currentVersion?: string) => {
+            if (!version) return;
+            hasAvailableNoticeRef.current = true;
+            setDesktopNotice({
+                kind: 'desktop',
+                phase: 'available',
+                version,
+                currentVersion,
+            });
+            if (announcedVersionRef.current !== version) {
+                announcedVersionRef.current = version;
+                toast.message(`PC 앱 새 버전 v${version}`, {
+                    description: currentVersion
+                        ? `현재 v${currentVersion} → v${version} 업데이트가 있습니다.`
+                        : '화면 오른쪽 위 알림에서 업데이트를 시작하세요.',
+                    duration: 10000,
+                });
+            }
+        },
+        [setDesktopNotice]
+    );
+
+    /** electron-updater 피드 실패 시 download-manifest로 보조 감지 */
+    const checkManifestFallback = useCallback(async () => {
+        if (isDownloadingRef.current) return;
+        try {
+            const [manifest, currentVersion] = await Promise.all([
+                fetchDownloadManifest(),
+                window.electron?.getAppVersion?.() ?? Promise.resolve(undefined),
+            ]);
+            const installed = currentVersion || '';
+            if (
+                manifest?.version &&
+                installed &&
+                isNewerVersion(String(manifest.version), installed)
+            ) {
+                announceAvailable(String(manifest.version), installed);
+            }
+        } catch {
+            /* ignore */
+        }
+    }, [announceAvailable]);
+
     useEffect(() => {
         if (!hasElectronUpdater() || !window.electron?.onUpdaterStatus) return;
 
@@ -34,12 +82,7 @@ export function useElectronUpdater() {
             switch (status.phase) {
                 case 'available':
                     isDownloadingRef.current = false;
-                    setDesktopNotice({
-                        kind: 'desktop',
-                        phase: 'available',
-                        version: status.version,
-                        currentVersion: status.currentVersion,
-                    });
+                    announceAvailable(status.version, status.currentVersion);
                     break;
 
                 case 'downloading':
@@ -78,7 +121,11 @@ export function useElectronUpdater() {
 
                 case 'error':
                     isDownloadingRef.current = false;
-                    if (status.silent) break;
+                    if (status.silent) {
+                        // 백그라운드 실패 시에도 manifest 폴백으로 알림 시도
+                        void checkManifestFallback();
+                        break;
+                    }
                     setDesktopNotice({
                         kind: 'desktop',
                         phase: 'error',
@@ -88,7 +135,10 @@ export function useElectronUpdater() {
 
                 case 'none':
                     isDownloadingRef.current = false;
-                    setDesktopNotice(null);
+                    // 이미 표시 중인 업데이트 알림을 폴백/레이스로 지우지 않음
+                    if (!hasAvailableNoticeRef.current) {
+                        setDesktopNotice(null);
+                    }
                     break;
 
                 default:
@@ -97,19 +147,40 @@ export function useElectronUpdater() {
         });
 
         return () => unsubscribe();
-    }, [setDesktopNotice, installDesktopUpdate]);
+    }, [setDesktopNotice, installDesktopUpdate, announceAvailable, checkManifestFallback]);
 
-    // 앱 사용 중에도 주기적으로 GitHub Release 확인 (시작 시 1회만이 아님)
+    // 앱 사용 중 주기 확인 + 포커스 복귀 시 확인 + 시작 직후 재시도
     useEffect(() => {
         if (!hasElectronUpdater() || import.meta.env.DEV) return;
 
         const poll = () => {
-            void window.electron?.updaterCheck?.();
+            void window.electron?.updaterCheck?.().then((result) => {
+                if (result?.ok && result.updateInfo?.version) {
+                    announceAvailable(result.updateInfo.version, result.currentVersion);
+                } else if (!result?.ok || !result.updateInfo?.version) {
+                    void checkManifestFallback();
+                }
+            });
         };
 
+        poll();
+        const early = ELECTRON_EARLY_RETRY_MS.map((ms) => window.setTimeout(poll, ms));
         const timer = window.setInterval(poll, ELECTRON_UPDATE_POLL_MS);
-        return () => window.clearInterval(timer);
-    }, []);
+
+        const onFocus = () => poll();
+        const onVisible = () => {
+            if (document.visibilityState === 'visible') poll();
+        };
+        window.addEventListener('focus', onFocus);
+        document.addEventListener('visibilitychange', onVisible);
+
+        return () => {
+            window.clearInterval(timer);
+            early.forEach((id) => window.clearTimeout(id));
+            window.removeEventListener('focus', onFocus);
+            document.removeEventListener('visibilitychange', onVisible);
+        };
+    }, [announceAvailable, checkManifestFallback]);
 
     return { installDesktopUpdate };
 }

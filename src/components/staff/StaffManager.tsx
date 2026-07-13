@@ -54,7 +54,14 @@ export const StaffManager: React.FC = () => {
 
   const loadStaff = () => {
      // Exclude deleted staff AND system admin
-     setStaffList(db.getStaff().filter(s => !s.isDeleted && !isHiddenStaffId(s.id)));
+     const list = db.getStaff().filter(s => !s.isDeleted && !isHiddenStaffId(s.id));
+     list.sort((a, b) => {
+       const aOwner = isStaffMainOwner(a, tenantOwnerId) ? 0 : isAdminStaff(a) ? 1 : 2;
+       const bOwner = isStaffMainOwner(b, tenantOwnerId) ? 0 : isAdminStaff(b) ? 1 : 2;
+       if (aOwner !== bOwner) return aOwner - bOwner;
+       return (a.name || '').localeCompare(b.name || '', 'ko');
+     });
+     setStaffList(list);
      setJoinRequests(db.getJoinRequests());
   };
 
