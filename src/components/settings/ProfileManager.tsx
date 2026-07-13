@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { Staff } from '../../types';
@@ -10,6 +10,7 @@ import { doc, setDoc } from 'firebase/firestore';
 import { updatePassword } from 'firebase/auth';
 import { db as firestore, auth } from '../../services/firebase';
 import { MIN_STAFF_PASSWORD_LENGTH } from '../../utils/staffAuthProvision';
+import { findStaffForUser, isPlaceholderStaffName } from '../../utils/staffMatch';
 
 export const ProfileManager: React.FC = () => {
   const { currentUser, refreshUser } = useAuth();
@@ -26,56 +27,73 @@ export const ProfileManager: React.FC = () => {
   });
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' });
+  /** 사용자가 입력 중이면 subscribe로 폼을 덮어쓰지 않음 */
+  const isDirtyRef = useRef(false);
+  const suppressReloadUntilRef = useRef(0);
+
+  const applyStaffToForm = useCallback((matchedStaff: Staff | null) => {
+    if (!currentUser) return;
+    if (matchedStaff) {
+      setStaffData(matchedStaff);
+      const staffName = matchedStaff.name?.trim() || '';
+      const userName = (currentUser.displayName || currentUser.name || '').trim();
+      const name =
+        staffName && !isPlaceholderStaffName(staffName)
+          ? staffName
+          : userName && !isPlaceholderStaffName(userName)
+            ? userName
+            : staffName || userName;
+      setFormData({
+        name,
+        email: matchedStaff.email || currentUser.email || '',
+        phone: matchedStaff.phone || '',
+        phoneOffice: matchedStaff.phoneOffice || '',
+        phoneCompany: matchedStaff.phoneCompany || '',
+        extensionNumber: matchedStaff.extensionNumber || '',
+        password: ''
+      });
+    } else {
+      setStaffData(null);
+      setFormData({
+        name: currentUser.displayName || currentUser.name || '',
+        email: currentUser.email || '',
+        phone: '',
+        phoneOffice: '',
+        phoneCompany: '',
+        extensionNumber: '',
+        password: ''
+      });
+    }
+  }, [currentUser]);
+
+  const loadProfile = useCallback((force = false) => {
+    if (!currentUser) return;
+    if (!force) {
+      if (isDirtyRef.current) return;
+      if (Date.now() < suppressReloadUntilRef.current) return;
+    }
+
+    const matchedStaff = findStaffForUser(db.getStaff(), currentUser) || null;
+    applyStaffToForm(matchedStaff);
+  }, [currentUser, applyStaffToForm]);
 
   useEffect(() => {
     if (!currentUser) return;
+    isDirtyRef.current = false;
+    loadProfile(true);
 
-    const loadProfile = () => {
-      // 1. db.getStaff() 목록에서 현재 사용자 매칭 시도 (uid, email, id 기준)
-      const allStaff = db.getStaff();
-      const matchedStaff = allStaff.find(
-        (s) =>
-          (s.uid && s.uid === currentUser.uid) ||
-          (s.email && s.email.toLowerCase() === currentUser.email.toLowerCase()) ||
-          s.id === currentUser.uid
-      );
-
-      if (matchedStaff) {
-        setStaffData(matchedStaff);
-        setFormData({
-          name: matchedStaff.name || currentUser.displayName || currentUser.name || '',
-          email: matchedStaff.email || currentUser.email || '',
-          phone: matchedStaff.phone || '',
-          phoneOffice: matchedStaff.phoneOffice || '',
-          phoneCompany: matchedStaff.phoneCompany || '',
-          extensionNumber: matchedStaff.extensionNumber || '',
-          password: ''
-        });
-      } else {
-        // 매칭되는 Staff 데이터가 없는 경우 (예: 테넌트 소유자/관리자 최초 로그인 등)
-        setStaffData(null);
-        setFormData({
-          name: currentUser.displayName || currentUser.name || '',
-          email: currentUser.email || '',
-          phone: '',
-          phoneOffice: '',
-          phoneCompany: '',
-          extensionNumber: '',
-          password: ''
-        });
-      }
-    };
-
-    loadProfile();
-
-    // 데이터 변경 감지 시 실시간 동기화
     const unsubscribe = db.subscribe(() => {
-      loadProfile();
+      loadProfile(false);
     });
     return () => unsubscribe();
-  }, [currentUser]);
+  }, [currentUser, loadProfile]);
+
+  const markDirty = () => {
+    isDirtyRef.current = true;
+  };
 
   const handlePhoneChange = (field: 'phone' | 'phoneOffice' | 'phoneCompany', value: string) => {
+    markDirty();
     setFormData((prev) => ({
       ...prev,
       [field]: formatPhoneNumber(value)
@@ -109,33 +127,42 @@ export const ProfileManager: React.FC = () => {
         await updatePassword(auth.currentUser, newPassword.toLowerCase());
       }
 
-      // 직원이 매칭된 경우 또는 현재 로그인한 사용자가 관리자인 경우 프로필 저장을 허용합니다.
-      if (staffData || currentUser.role === 'admin') {
-        const isNewStaff = !staffData;
+      // 저장 직전 최신 매칭 — 중복 addStaff 방지, 기존 staff 문서 id 유지(작업 이력 안정)
+      const matchedNow = findStaffForUser(db.getStaff(), currentUser) || staffData;
+
+      if (matchedNow || currentUser.role === 'admin') {
+        const base = matchedNow;
         const updatedStaff: Staff = {
-          ...(staffData || {}),
-          id: staffData ? staffData.id : currentUser.uid,
+          ...(base || {}),
+          id: base ? base.id : currentUser.uid,
           uid: currentUser.uid,
           name: formData.name.trim(),
           phone: formData.phone,
           phoneOffice: formData.phoneOffice,
           phoneCompany: formData.phoneCompany,
           extensionNumber: formData.extensionNumber,
-          role: staffData ? staffData.role : '대표자',
+          role: base ? base.role : '대표자',
+          isCompanyAdmin: base?.isCompanyAdmin ?? (currentUser.role === 'admin'),
           active: true,
+          isDeleted: false,
           email: formData.email.trim() || currentUser.email || '',
-          avatarUrl: staffData?.avatarUrl || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(formData.name.trim())}`,
-          joinDate: staffData?.joinDate || new Date().toISOString()
+          avatarUrl: base?.avatarUrl || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(formData.name.trim())}`,
+          joinDate: base?.joinDate || new Date().toISOString(),
+          loginId: base?.loginId || currentUser.loginId || currentUser.email || '',
         };
 
-        // 1. 테넌트 내부 직원 컬렉션에 저장 (평문 password 미저장)
-        if (isNewStaff) {
-          await db.addStaff(updatedStaff);
-        } else {
+        if (base) {
           await db.updateStaff(updatedStaff);
+        } else {
+          // 관리자인데 staff가 전혀 없을 때만 1회 생성 (기존 문서 재조회 후에도 없을 때)
+          const recheck = findStaffForUser(db.getStaff(), currentUser);
+          if (recheck) {
+            await db.updateStaff({ ...updatedStaff, id: recheck.id, role: recheck.role, loginId: recheck.loginId || updatedStaff.loginId });
+          } else {
+            await db.addStaff(updatedStaff);
+          }
         }
 
-        // 2. 글로벌 users 컬렉션에도 정보 실시간 동기화 업데이트
         await setDoc(doc(firestore, 'users', currentUser.uid), {
           displayName: formData.name.trim(),
           name: formData.name.trim(),
@@ -144,8 +171,11 @@ export const ProfileManager: React.FC = () => {
         }, { merge: true });
 
         await refreshUser();
-        setFormData((prev) => ({ ...prev, password: '' }));
-        
+        isDirtyRef.current = false;
+        suppressReloadUntilRef.current = Date.now() + 2500;
+        setStaffData(updatedStaff);
+        setFormData((prev) => ({ ...prev, password: '', name: formData.name.trim() }));
+
         setStatus({
           type: 'success',
           message: newPassword && currentUser.role !== 'admin'
@@ -153,269 +183,232 @@ export const ProfileManager: React.FC = () => {
             : '개인정보가 성공적으로 업데이트되었습니다.',
         });
       } else {
-        // 직원이 매칭되지 않는 특수한 경우 (사원 계정인데 목록에 없는 예외 케이스)
-        setStatus({ 
-          type: 'error', 
-          message: '사내 직원 명단에 등록되지 않은 임시 계정입니다. 상세 정보 수정은 관리자 권한을 통해 "직원 관리" 메뉴에서 등록 및 수정해 주세요.' 
+        setStatus({
+          type: 'error',
+          message: '사내 직원 명단에 등록되지 않은 임시 계정입니다. 상세 정보 수정은 관리자 권한을 통해 "직원 관리" 메뉴에서 등록 및 수정해 주세요.'
         });
       }
     } catch (error: any) {
-      console.error('Profile update error:', error);
-      const code = error?.code || '';
-      if (code === 'auth/requires-recent-login') {
-        setStatus({ type: 'error', message: '비밀번호 변경을 위해 다시 로그인한 뒤 시도해 주세요.' });
-      } else {
-        setStatus({ type: 'error', message: error.message || '저장 중 오류가 발생했습니다.' });
-      }
+      console.error(error);
+      setStatus({ type: 'error', message: error.message || '업데이트 중 오류가 발생했습니다.' });
     } finally {
       setIsSaving(false);
-      // 알림 메시지 자동 초기화 (4초 뒤)
-      setTimeout(() => {
-        setStatus({ type: null, message: '' });
-      }, 4000);
     }
   };
 
-  if (!currentUser) {
-    return (
-      <div className="flex items-center justify-center h-full text-slate-500">
-        사용자 정보를 불러올 수 없습니다. 로그인이 필요합니다.
-      </div>
-    );
-  }
+  if (!currentUser) return null;
+
+  const isSocialLogin = currentUser.email && !currentUser.email.endsWith('@ez-hub.kr');
 
   return (
-    <div className="max-w-4xl p-8 space-y-8 animate-in fade-in duration-500">
-      {/* Header */}
-      <div>
-        <h3 className="text-2xl font-black text-slate-800 dark:text-slate-100 flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-600 rounded-xl flex items-center justify-center text-white shadow-lg shadow-blue-600/20">
-            <User size={22} />
-          </div>
-          {currentUser.role === 'admin' ? '관리자 정보 변경' : '개인정보 변경'}
-        </h3>
-        <p className="text-slate-500 dark:text-slate-400 mt-2 text-sm font-medium">
-          {currentUser.role === 'admin'
-            ? '관리자 본인의 프로필 및 정보 권한을 직접 관리하고 확인합니다.'
-            : '본인의 프로필, 다중 연락처 및 로그인 비밀번호를 직접 관리하고 수정할 수 있습니다.'}
-        </p>
+    <div className="max-w-4xl mx-auto animate-in fade-in duration-500">
+      <div className="flex items-center gap-3 mb-8">
+        <div className="w-10 h-10 rounded-xl bg-indigo-500/10 flex items-center justify-center text-indigo-500">
+          <User size={20} />
+        </div>
+        <div>
+          <h2 className="text-xl font-bold text-slate-800 dark:text-white">
+            {currentUser.role === 'admin' ? '관리자 정보 변경' : '개인정보 변경'}
+          </h2>
+          <p className="text-sm text-slate-500">계정에 연결된 프로필과 연락처를 관리합니다.</p>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Left Side: Avatar Card */}
-        <div className="bg-white dark:bg-slate-800 rounded-3xl p-6 border border-slate-200 dark:border-slate-700 shadow-sm flex flex-col items-center justify-center text-center space-y-4">
-          <div className="relative">
-            {currentUser.photoURL || staffData?.avatarUrl ? (
-              <img
-                src={currentUser.photoURL || staffData?.avatarUrl}
-                alt={currentUser.displayName}
-                className="w-28 h-28 rounded-full border-4 border-blue-50 dark:border-slate-700 object-cover shadow-md"
-              />
-            ) : (
-              <div className="w-28 h-28 rounded-full bg-slate-100 dark:bg-slate-700 flex items-center justify-center border-4 border-blue-50 dark:border-slate-800 text-slate-300 dark:text-slate-500">
-                <User size={56} />
+        {/* Left Sidebar Profile Card */}
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-8 flex flex-col items-center text-center shadow-sm relative overflow-hidden">
+            <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-br from-indigo-500/20 to-purple-500/20" />
+            
+            <div className="relative mt-4 mb-4">
+              <div className="w-24 h-24 rounded-full border-4 border-white dark:border-slate-900 shadow-xl overflow-hidden bg-slate-100">
+                <img 
+                  src={currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(currentUser.displayName || 'user')}`} 
+                  alt={currentUser.displayName}
+                  className="w-full h-full object-cover"
+                />
               </div>
-            )}
-            <div className="absolute -bottom-1 -right-1 bg-blue-600 text-white rounded-full p-2 border-2 border-white dark:border-slate-800 shadow-md">
-              <Shield size={16} />
+              <div className="absolute bottom-0 right-0 w-8 h-8 bg-indigo-500 text-white rounded-full border-4 border-white dark:border-slate-900 flex items-center justify-center shadow-lg">
+                <Shield size={12} fill="currentColor" />
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-1">
-            <h4 className="text-xl font-bold text-slate-800 dark:text-slate-100">
+            <h3 className="text-lg font-bold text-slate-800 dark:text-white mb-1">
               {currentUser.displayName || currentUser.name}
-            </h4>
-            <div className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full text-xs font-bold border border-blue-100 dark:border-blue-900/50">
-              {currentUser.role === 'admin' ? '관리자' : '사내 직원'}
+            </h3>
+            <div className="px-3 py-1 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-bold rounded-full uppercase tracking-wider mb-4">
+              {currentUser.role === 'admin' ? '관리자' : '사원'}
             </div>
-          </div>
-
-          <div className="w-full border-t border-slate-100 dark:border-slate-700 pt-4 space-y-2.5 text-left text-xs text-slate-500 dark:text-slate-400 font-medium">
-            <div className="flex items-center gap-2">
-              <Mail size={14} className="text-slate-400 shrink-0" />
-              <span className="truncate">{currentUser.email}</span>
-            </div>
-            {staffData?.joinDate && (
-              <div className="flex items-center gap-2">
-                <Building size={14} className="text-slate-400 shrink-0" />
-                <span>가입일: {new Date(staffData.joinDate).toLocaleDateString()}</span>
+            
+            <div className="w-full space-y-3 pt-4 border-t border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                <Mail size={14} className="text-slate-400" />
+                <span className="truncate">{currentUser.email}</span>
               </div>
-            )}
+              <div className="flex items-center gap-3 text-xs text-slate-500">
+                <CheckCircle2 size={14} className="text-emerald-500" />
+                <span>가입일: {new Date(staffData?.joinDate || Date.now()).toLocaleDateString()}</span>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Right Side: Form */}
+        {/* Right Form Area */}
         <div className="lg:col-span-2">
-          <form onSubmit={handleSubmit} className="bg-white dark:bg-slate-800 rounded-3xl p-8 border border-slate-200 dark:border-slate-700 shadow-sm space-y-6">
-            
-            {/* Status Feedback Alerts */}
+          <form onSubmit={handleSubmit} className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 p-8 shadow-sm space-y-6">
             {status.type && (
-              <div
-                className={`p-4 rounded-2xl flex items-start gap-3 border text-sm font-medium animate-in slide-in-from-top-2 duration-300
-                  ${
-                    status.type === 'success'
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-800 dark:bg-emerald-950/20 dark:border-emerald-800 dark:text-emerald-400'
-                      : 'bg-rose-50 border-rose-200 text-rose-800 dark:bg-rose-950/20 dark:border-rose-800 dark:text-rose-400'
-                  }`}
-              >
-                {status.type === 'success' ? (
-                  <CheckCircle2 size={18} className="shrink-0 text-emerald-500 mt-0.5" />
-                ) : (
-                  <AlertCircle size={18} className="shrink-0 text-rose-500 mt-0.5" />
-                )}
-                <span>{status.message}</span>
+              <div className={`p-4 rounded-2xl flex items-center gap-3 text-sm font-medium animate-in slide-in-from-top-2 ${
+                status.type === 'success' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400' : 'bg-rose-50 text-rose-700 dark:bg-rose-500/10 dark:text-rose-400'
+              }`}>
+                {status.type === 'success' ? <CheckCircle2 size={18} /> : <AlertCircle size={18} />}
+                {status.message}
               </div>
             )}
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Name */}
-              <div className="space-y-1.5 col-span-1 md:col-span-2">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <User size={13} /> 이름 <span className="text-rose-500">*</span>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <User size={12} /> 이름 <span className="text-rose-500">*</span>
                 </label>
-                <input
-                  type="text"
+                <input 
+                  type="text" 
                   required
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
                   value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  placeholder="실명을 입력해 주세요"
+                  onChange={(e) => {
+                    markDirty();
+                    setFormData({ ...formData, name: e.target.value });
+                  }}
+                  placeholder="실명을 입력하세요"
                 />
               </div>
 
-              {/* Setting Email */}
-              <div className="space-y-1.5 col-span-1 md:col-span-2">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Mail size={13} /> 설정 이메일 (화면 노출용 비즈니스 메일)
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Mail size={12} /> 설정 이메일
                 </label>
-                <input
-                  type="email"
+                <input 
+                  type="email" 
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
                   value={formData.email}
-                  onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-medium text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  placeholder="예: contact@company.com"
+                  onChange={(e) => {
+                    markDirty();
+                    setFormData({ ...formData, email: e.target.value });
+                  }}
+                  placeholder="contact@example.com"
                 />
-                <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">
-                  로그인에 쓰는 이메일과 별도로, 직원 관리 목록 및 메신저 프로필에 표시될 연락처 이메일입니다.
-                </p>
               </div>
 
-              {/* Personal Phone */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Phone size={13} /> 개인 연락처
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Phone size={12} /> 개인 연락처
                 </label>
-                <input
-                  type="text"
+                <input 
+                  type="text" 
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
                   value={formData.phone}
                   onChange={(e) => handlePhoneChange('phone', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                   placeholder="010-0000-0000"
                 />
               </div>
 
-              {/* Office Phone */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Building size={13} /> 사무실 연락처
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Building size={12} /> 사무실 연락처
                 </label>
-                <input
-                  type="text"
+                <input 
+                  type="text" 
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
                   value={formData.phoneOffice}
                   onChange={(e) => handlePhoneChange('phoneOffice', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                   placeholder="사무실 전화번호"
                 />
               </div>
 
-              {/* Company Phone */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <PhoneCall size={13} /> 회사 연락처
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <PhoneCall size={12} /> 회사 연락처
                 </label>
-                <input
-                  type="text"
+                <input 
+                  type="text" 
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
                   value={formData.phoneCompany}
                   onChange={(e) => handlePhoneChange('phoneCompany', e.target.value)}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  placeholder="회사 지정 스마트폰 번호"
+                  placeholder="회사 대표/업무용 번호"
                 />
               </div>
 
-              {/* Extension Number */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <PhoneCall size={13} /> 사내 내선 번호
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Phone size={12} /> 사내 내선 번호
                 </label>
-                <input
-                  type="text"
+                <input 
+                  type="text" 
+                  className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
                   value={formData.extensionNumber}
-                  onChange={(e) => setFormData({ ...formData, extensionNumber: e.target.value })}
-                  className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                  placeholder="예: 101"
+                  onChange={(e) => {
+                    markDirty();
+                    setFormData({ ...formData, extensionNumber: e.target.value });
+                  }}
+                  placeholder="예: 201"
                 />
               </div>
-
-              {/* Password — Firebase Auth만 (Firestore 평문 저장 안 함) */}
-              <div className="space-y-1.5 col-span-1 md:col-span-2">
-                <label className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
-                  <Lock size={13} /> {currentUser.role === 'admin' ? '관리자 비밀번호 (변경 불가)' : '로그인 비밀번호 변경'}
-                </label>
-                {currentUser.role === 'admin' ? (
-                  <div className="w-full bg-slate-100 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-800 rounded-2xl px-4 py-3.5 text-xs font-semibold text-slate-500 dark:text-slate-400 flex items-center gap-2">
-                    <span>💡 구글 소셜 로그인 계정은 구글 보안 설정을 통해 비밀번호를 변경해야 합니다. 본 시스템에서는 소셜 계정의 비밀번호 변경을 지원하지 않습니다.</span>
-                  </div>
-                ) : (
-                  <>
-                    <input
-                      type="password"
-                      value={formData.password}
-                      onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                      className="w-full bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl px-4 py-3 text-sm font-mono text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
-                      placeholder="변경할 때만 입력 (비워두면 유지)"
-                      autoComplete="new-password"
-                    />
-                    <p className="text-[10px] text-slate-400 dark:text-slate-500 leading-tight">
-                      비밀번호는 Firebase Auth에만 저장됩니다. 변경 시에만 입력하세요.
-                    </p>
-                  </>
-                )}
-              </div>
             </div>
 
-            <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 p-4 flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <p className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1">
-                  프로그램 버전
-                </p>
-                <p className="text-sm font-black text-slate-800 dark:text-slate-100">
+            {/* Password Section */}
+            <div className="pt-6 border-t border-slate-100 dark:border-slate-800 space-y-4">
+              <div className="flex items-center justify-between">
+                <h4 className="text-sm font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                  <Lock size={16} className="text-slate-400" /> 보안 설정
+                </h4>
+              </div>
+              
+              {isSocialLogin ? (
+                <div className="p-4 bg-slate-50 dark:bg-slate-950 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-xs text-slate-500 leading-relaxed">
+                  구글 소셜 로그인 계정은 시스템 내에서 비밀번호를 변경할 수 없습니다. 구글 계정의 보안 설정을 통해 관리해 주세요.
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">새 비밀번호 (변경 시에만 입력)</label>
+                  <input 
+                    type="password" 
+                    className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-2xl outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium"
+                    value={formData.password}
+                    onChange={(e) => {
+                      markDirty();
+                      setFormData({ ...formData, password: e.target.value });
+                    }}
+                    placeholder="••••••••"
+                    autoComplete="new-password"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="pt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                <span className="font-mono">
                   v{APP_VERSION}
-                </p>
-                <p className="text-[10px] text-slate-400 mt-0.5 font-mono truncate max-w-xs">
-                  build {APP_BUILD_ID}
-                </p>
+                  <span className="text-slate-400 ml-1">(build {APP_BUILD_ID})</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => void runManualUpdateCheck(setWebNotice, setDesktopNotice)}
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition-colors"
+                >
+                  <RefreshCw size={12} />
+                  업데이트 확인
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => void runManualUpdateCheck(setWebNotice, setDesktopNotice)}
-                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors"
-              >
-                <RefreshCw size={15} />
-                업데이트 확인
-              </button>
-            </div>
-
-            {/* Submit Button */}
-            <div className="flex justify-end pt-4">
-              <button
-                type="submit"
+              <button 
+                type="submit" 
                 disabled={isSaving}
-                className="inline-flex items-center justify-center gap-2 px-6 py-3.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold text-sm transition-all shadow-md shadow-blue-600/10 active:scale-95 disabled:opacity-50 shrink-0"
+                className="flex items-center justify-center gap-2 px-8 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white rounded-2xl font-bold text-sm shadow-lg shadow-indigo-500/20 transition-all active:scale-95"
               >
                 {isSaving ? (
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 ) : (
-                  <Save size={16} />
+                  <Save size={18} />
                 )}
                 정보 업데이트
               </button>

@@ -32,17 +32,29 @@ export type StaffAuthSnapshot = {
   isCompanyAdmin: boolean;
 };
 
-/** 로그인 사용자의 staff 문서 직책·사내관리자 여부 조회 */
+/** 로그인 사용자의 staff 문서 직책·사내관리자 여부 조회 — 중복 시 정보·권한 많은 문서 우선 */
 export async function lookupStaffAuthSnapshot(
   tenantId: string,
   uid: string,
   loginId?: string | null
 ): Promise<StaffAuthSnapshot | null> {
   const staffCol = collection(db, `tenants/${tenantId}/staff`);
+  const { scoreStaffRecord, isPlaceholderStaffName } = await import('./staffMatch');
 
-  const toSnapshot = (data: Record<string, unknown>): StaffAuthSnapshot => {
+  type Cand = { id: string; data: Record<string, unknown> };
+  const candidates: Cand[] = [];
+  const seen = new Set<string>();
+
+  const pushCand = (id: string, data: Record<string, unknown>) => {
+    if (seen.has(id)) return;
+    if (data.isDeleted === true) return;
+    seen.add(id);
+    candidates.push({ id, data });
+  };
+
+  const toSnapshot = (id: string, data: Record<string, unknown>): StaffAuthSnapshot => {
     const normalized = normalizeStaffRecord({
-      id: String(data.id || uid),
+      id: String(data.id || id),
       name: String(data.name || ''),
       role: String(data.role || data.position || ''),
       isCompanyAdmin: data.isCompanyAdmin === true,
@@ -58,29 +70,58 @@ export async function lookupStaffAuthSnapshot(
     };
   };
 
+  const scoreCand = (c: Cand) => {
+    const s = {
+      id: c.id,
+      name: String(c.data.name || ''),
+      role: String(c.data.role || c.data.position || ''),
+      isCompanyAdmin: c.data.isCompanyAdmin === true,
+      phone: String(c.data.phone || ''),
+      phoneCompany: String(c.data.phoneCompany || ''),
+      phoneOffice: String(c.data.phoneOffice || ''),
+      avatarUrl: String(c.data.avatarUrl || ''),
+      active: c.data.active !== false,
+      email: String(c.data.email || ''),
+      loginId: String(c.data.loginId || ''),
+      uid: String(c.data.uid || ''),
+      joinDate: String(c.data.joinDate || ''),
+      extensionNumber: String(c.data.extensionNumber || ''),
+      isDeleted: false,
+    };
+    let n = scoreStaffRecord(s as import('../types').Staff);
+    if (c.data.isCompanyAdmin === true || c.data.role === 'admin') n += 80;
+    if (c.id === uid && isPlaceholderStaffName(String(c.data.name || ''))) n -= 50;
+    return n;
+  };
+
   try {
     const uidDoc = await getDoc(doc(staffCol, uid));
-    if (uidDoc.exists() && uidDoc.data().isDeleted !== true) {
-      return toSnapshot(uidDoc.data() as Record<string, unknown>);
-    }
+    if (uidDoc.exists()) pushCand(uidDoc.id, uidDoc.data() as Record<string, unknown>);
   } catch (err) {
     console.warn('[StaffRole] uid lookup failed:', err);
+  }
+
+  try {
+    const byUid = await getDocs(query(staffCol, where('uid', '==', uid), limit(5)));
+    byUid.docs.forEach((d) => pushCand(d.id, d.data() as Record<string, unknown>));
+  } catch (err) {
+    console.warn('[StaffRole] uid field lookup failed:', err);
   }
 
   const normalizedLogin = loginId?.trim().toLowerCase();
   if (normalizedLogin) {
     try {
       const snap = await getDocs(query(staffCol, where('loginId', '==', normalizedLogin), limit(5)));
-      for (const d of snap.docs) {
-        const data = d.data();
-        if (data.isDeleted !== true) return toSnapshot(data as Record<string, unknown>);
-      }
+      snap.docs.forEach((d) => pushCand(d.id, d.data() as Record<string, unknown>));
     } catch (err) {
       console.warn('[StaffRole] loginId lookup failed:', err);
     }
   }
 
-  return null;
+  if (candidates.length === 0) return null;
+
+  const best = [...candidates].sort((a, b) => scoreCand(b) - scoreCand(a) || a.id.localeCompare(b.id))[0];
+  return toSnapshot(best.id, best.data);
 }
 
 /** @deprecated lookupStaffAuthSnapshot 사용 */

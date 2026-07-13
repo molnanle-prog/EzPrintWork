@@ -1,35 +1,79 @@
 import { AppUser, Job, Staff } from '../types';
 
-/** 로그인 사용자와 staff 명단 매칭 (프로필·휴가 등록 공통) */
-export function findStaffForUser(staffList: Staff[], user: AppUser | null | undefined): Staff | undefined {
-    if (!user) return undefined;
+/** Auth/가입 기본값 — 실명으로 취급하지 않음 */
+const PLACEHOLDER_STAFF_NAMES = new Set([
+    '',
+    '사용자',
+    '사원',
+    '대표자',
+    '웹 가입자',
+    '사원명',
+    '이름',
+]);
 
-    const userEmail = user.email?.toLowerCase() || '';
-    const userLoginId = ((user as AppUser & { loginId?: string }).loginId || '').toLowerCase();
-
-    return staffList.find((s) => {
-        if (s.isDeleted) return false;
-        if (s.uid && s.uid === user.uid) return true;
-        if (s.id === user.uid) return true;
-        if (s.id === user.id) return true;
-        if (userEmail && s.email?.toLowerCase() === userEmail) return true;
-        if (userLoginId && s.loginId?.toLowerCase() === userLoginId) return true;
-        return false;
-    });
+export function isPlaceholderStaffName(name?: string | null): boolean {
+    const t = (name || '').trim();
+    if (!t) return true;
+    return PLACEHOLDER_STAFF_NAMES.has(t);
 }
 
-/** staff.id 또는 staff.uid 로 직원 찾기 (채팅 senderId 등) */
+/** 같은 사람 후보 중 정보·실명이 가장 풍부한 staff 문서 선택 (작업 이력 staffId 안정화) */
+export function scoreStaffRecord(s: Staff): number {
+    let n = 0;
+    if (s.active !== false) n += 10;
+    if (!s.isDeleted) n += 10;
+    if (s.loginId?.trim()) n += 8;
+    if (s.uid?.trim()) n += 5;
+    if (s.extensionNumber?.trim()) n += 4;
+    if (s.phone?.trim() || s.phoneCompany?.trim() || s.phoneOffice?.trim()) n += 6;
+    const email = s.email?.trim() || '';
+    if (email && !email.endsWith('@ez-hub.jp')) n += 4;
+    if (s.name?.trim() && !isPlaceholderStaffName(s.name)) n += 100;
+    const role = s.role?.trim() || '';
+    if (role && role !== 'admin' && role !== 'staff' && !isPlaceholderStaffName(role)) n += 10;
+    if (s.isCompanyAdmin) n += 3;
+    if (s.joinDate) n += 1;
+    return n;
+}
+
+export function pickBestStaff(candidates: Staff[]): Staff | undefined {
+    const alive = candidates.filter((s) => !s.isDeleted);
+    if (alive.length === 0) return undefined;
+    return [...alive].sort(
+        (a, b) => scoreStaffRecord(b) - scoreStaffRecord(a) || String(a.id).localeCompare(String(b.id))
+    )[0];
+}
+
+function staffMatchesUser(s: Staff, user: AppUser): boolean {
+    if (s.isDeleted) return false;
+    const userEmail = user.email?.toLowerCase() || '';
+    const userLoginId = ((user as AppUser & { loginId?: string }).loginId || '').toLowerCase();
+    if (s.uid && s.uid === user.uid) return true;
+    if (s.id === user.uid) return true;
+    if (s.id === user.id) return true;
+    if (userEmail && s.email?.toLowerCase() === userEmail) return true;
+    if (userLoginId && s.loginId?.toLowerCase() === userLoginId) return true;
+    return false;
+}
+
+/** 로그인 사용자와 staff 명단 매칭 (프로필·휴가·작업 이력 공통) — 중복 시 가장 완전한 문서 */
+export function findStaffForUser(staffList: Staff[], user: AppUser | null | undefined): Staff | undefined {
+    if (!user) return undefined;
+    return pickBestStaff(staffList.filter((s) => staffMatchesUser(s, user)));
+}
+
+/** staff.id 또는 staff.uid 로 직원 찾기 (채팅 senderId·이력 등) — 중복 시 최선 문서 */
 export function findStaffByAnyId(staffList: Staff[], id?: string | null): Staff | undefined {
     if (!id) return undefined;
-    const direct = staffList.find((s) => !s.isDeleted && (s.id === id || s.uid === id));
-    if (direct) return direct;
     const lower = id.toLowerCase();
-    return staffList.find(
-        (s) =>
-            !s.isDeleted &&
-            ((s.loginId && s.loginId.toLowerCase() === lower) ||
-                (s.email && s.email.toLowerCase() === lower))
-    );
+    const matches = staffList.filter((s) => {
+        if (s.isDeleted) return false;
+        if (s.id === id || s.uid === id) return true;
+        if (s.loginId && s.loginId.toLowerCase() === lower) return true;
+        if (s.email && s.email.toLowerCase() === lower) return true;
+        return false;
+    });
+    return pickBestStaff(matches);
 }
 
 /** 작업 이력 staffId → 표시 이름 (uid / staff.id 혼용·시스템 로그 대응) */
@@ -44,8 +88,7 @@ export function resolveHistoryActorName(
 
     const name = found.name?.trim() || '';
     const loginId = found.loginId?.trim() || '';
-    // Auth 기본값(사용자/사원)만 있고 로그인 ID가 있으면 로그인 ID를 우선 표시
-    if (name && name !== '사용자' && name !== '사원') return name;
+    if (name && !isPlaceholderStaffName(name)) return name;
     if (loginId) return loginId;
     if (name) return name;
     return fallback;

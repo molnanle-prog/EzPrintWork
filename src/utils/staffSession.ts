@@ -159,11 +159,12 @@ export async function releaseStaffSessionOnFirestore(
     /* optional */
   }
 
+  // 접속 상태만 갱신 — name 절대 덮어쓰지 않음 (실명 오염 방지)
   await Promise.allSettled(
     [...staffIds].map((staffId) =>
       setDoc(
         doc(db, `tenants/${opts.tenantId}/staff`, staffId),
-        { uid: opts.uid, ...(opts.name ? { name: opts.name } : {}), ...offline },
+        { uid: opts.uid, ...offline },
         { merge: true }
       )
     )

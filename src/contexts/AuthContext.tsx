@@ -206,19 +206,28 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
       
-      // [이름 오버라이트 방지] 기존 DB에 저장된 실제 사용자 정의 이름이 존재한다면, 소셜 로그인 시 구글 계정명으로 무조건 덮어씌워지는 오류를 원천 차단합니다.
-      const existingName = userDoc.exists() ? ((userDoc.data() as any).name || (userDoc.data() as any).displayName || '') : '';
-      const finalName = (existingName && existingName !== '대표자' && existingName !== '웹 가입자' && existingName !== '사용자')
-        ? existingName
-        : (user.displayName || '사용자');
+      // [이름 오버라이트 방지] 실명은 유지. Google displayName / '사용자'로 users·staff를 덮지 않음.
+      const existingName = userDoc.exists()
+        ? String((userDoc.data() as any).name || (userDoc.data() as any).displayName || '').trim()
+        : '';
+      const keepExistingName =
+        !!existingName &&
+        existingName !== '대표자' &&
+        existingName !== '웹 가입자' &&
+        existingName !== '사용자' &&
+        existingName !== '사원';
 
-      const socialProfileData = {
+      const socialProfileData: Record<string, string> = {
         email: user.email || '',
-        displayName: finalName,
-        name: finalName,
         photoURL: user.photoURL || '',
-        avatarUrl: user.photoURL || ''
+        avatarUrl: user.photoURL || '',
       };
+      // placeholder 이름일 때만 채움 — Google 계정명으로 실명을 절대 덮지 않음
+      if (!keepExistingName) {
+        const fillName = existingName || user.displayName || '사용자';
+        socialProfileData.displayName = fillName;
+        socialProfileData.name = fillName;
+      }
 
       if (userDoc.exists()) {
         let userData = userDoc.data() as AppUser;
@@ -270,11 +279,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const updatedUser = {
           ...userData,
           ...socialProfileData,
+          ...(keepExistingName
+            ? { name: existingName, displayName: existingName }
+            : {}),
           role: effectiveRole,
           loginId,
         };
 
-        // Firestore에 소셜 최신 프로필 자동 동기화 (비동기 수행)
+        // Firestore 동기화 — 실명이 있으면 name/displayName 필드를 보내지 않음
         setDoc(doc(db, 'users', user.uid), socialProfileData, { merge: true }).catch(err => {
           console.error("Failed to sync social profile to Firestore users:", err);
         });
@@ -318,8 +330,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                 };
                 if (isMainOwner) {
                   patch.isCompanyAdmin = true;
-                  if (!existing.name && (updatedUser.name || user.displayName)) {
-                    patch.name = updatedUser.name || user.displayName;
+                  const existingStaffName = String(existing.name || '').trim();
+                  const preferredName = String(
+                    updatedUser.name || (updatedUser as any).userName || ''
+                  ).trim();
+                  // 빈/placeholder 이름일 때만 채움 — Google displayName으로 실명 덮지 않음
+                  if (
+                    (!existingStaffName ||
+                      existingStaffName === '사용자' ||
+                      existingStaffName === '사원' ||
+                      existingStaffName === '대표자' ||
+                      existingStaffName === '웹 가입자') &&
+                    preferredName &&
+                    preferredName !== '사용자' &&
+                    preferredName !== '사원' &&
+                    preferredName !== user.displayName
+                  ) {
+                    patch.name = preferredName;
                   }
                 } else if (existing.isCompanyAdmin !== true && existing.role !== 'admin') {
                   // 사내 관리자(users.role=admin)인데 플래그가 없으면 보정
@@ -337,10 +364,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   || (user.email?.endsWith('@ez-hub.kr') ? user.email.split('@')[0] : '')
                   || ''
                 ).trim().toLowerCase();
+                const emailNorm = String(user.email || updatedUser.email || '').trim().toLowerCase();
 
                 let existingStaffId: string | null = null;
                 let existingStaffDeleted = false;
-                if (loginIdNorm) {
+
+                // uid 필드가 다른 문서에 이미 있으면 그걸 연결 (staff/{uid} 중복 생성 방지)
+                try {
+                  const byUidField = await getDocs(
+                    query(staffCol, where('uid', '==', user.uid), limit(5))
+                  );
+                  for (const d of byUidField.docs) {
+                    const s = d.data();
+                    if (s.isDeleted !== true) {
+                      existingStaffId = d.id;
+                      existingStaffDeleted = false;
+                      break;
+                    }
+                    if (!existingStaffId) {
+                      existingStaffId = d.id;
+                      existingStaffDeleted = true;
+                    }
+                  }
+                } catch { /* optional */ }
+
+                if (!existingStaffId && loginIdNorm) {
                   const byLogin = await getDocs(
                     query(staffCol, where('loginId', '==', loginIdNorm), limit(5))
                   );
@@ -358,6 +406,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                   }
                 }
 
+                if (!existingStaffId && emailNorm) {
+                  try {
+                    const byEmail = await getDocs(
+                      query(staffCol, where('email', '==', emailNorm), limit(5))
+                    );
+                    for (const d of byEmail.docs) {
+                      const s = d.data();
+                      if (s.isDeleted !== true) {
+                        existingStaffId = d.id;
+                        existingStaffDeleted = false;
+                        break;
+                      }
+                      if (!existingStaffId) {
+                        existingStaffId = d.id;
+                        existingStaffDeleted = true;
+                      }
+                    }
+                  } catch { /* optional */ }
+                }
+
                 if (existingStaffId) {
                   await setDoc(
                     doc(staffCol, existingStaffId),
@@ -365,7 +433,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       uid: user.uid,
                       active: true,
                       isDeleted: false,
-                      isCompanyAdmin: true,
+                      ...(isMainOwner || updatedUser.role === 'admin'
+                        ? { isCompanyAdmin: true }
+                        : {}),
                     },
                     { merge: true }
                   );
@@ -374,15 +444,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
                       (existingStaffDeleted ? ' (restored from deleted)' : '')
                   );
                 } else if (isMainOwner) {
+                  const ownerName =
+                    String(updatedUser.name || (updatedUser as any).userName || '').trim() ||
+                    '대표자';
                   await setDoc(staffDocRef, {
                     id: user.uid,
                     uid: user.uid,
-                    name: updatedUser.name || (updatedUser as any).userName || user.displayName || '대표자',
+                    name: ownerName,
                     role: (updatedUser as any).position || '대표자',
                     isCompanyAdmin: true,
                     phone: (updatedUser as any).contactInfo || '',
                     phoneCompany: (updatedUser as any).contactInfo || '',
-                    avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(updatedUser.name || '대표자')}`,
+                    avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(ownerName)}`,
                     active: true,
                     isDeleted: false,
                     email: user.email || updatedUser.email || '',
@@ -746,7 +819,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       tenantId: currentUser.tenantId,
       email: currentUser.email || firebaseUser.email,
       loginId,
-      name: currentUser.name || currentUser.displayName,
     });
 
     return () => {
@@ -754,11 +826,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         uid: firebaseUser.uid,
         tenantId: currentUser.tenantId!,
         email: currentUser.email || firebaseUser.email,
-        name: currentUser.name || currentUser.displayName,
       });
       stopPresenceSession();
     };
-  }, [currentUser?.tenantId, currentUser?.email, currentUser?.name, currentUser?.displayName, firebaseUser?.uid, firebaseUser?.email]);
+  }, [currentUser?.tenantId, currentUser?.email, currentUser?.loginId, firebaseUser?.uid, firebaseUser?.email]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -856,12 +927,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const uid = firebaseUser?.uid;
     const tenantId = currentUser?.tenantId;
     const email = currentUser?.email || firebaseUser?.email;
-    const name = currentUser?.name || currentUser?.displayName || firebaseUser?.displayName;
 
     stopPresenceSession();
     if (uid && tenantId) {
       try {
-        await releaseStaffSessionOnFirestore(db, { uid, tenantId, email, name });
+        await releaseStaffSessionOnFirestore(db, { uid, tenantId, email });
       } catch (err) {
         console.warn('[StaffSession] release on logout failed:', err);
         await setPresenceOffline();
@@ -875,7 +945,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     await signOut(auth);
     setCurrentUser(null);
     setFirebaseUser(null);
-  }, [firebaseUser?.uid, firebaseUser?.email, firebaseUser?.displayName, currentUser?.tenantId, currentUser?.email, currentUser?.name, currentUser?.displayName]);
+  }, [firebaseUser?.uid, firebaseUser?.email, currentUser?.tenantId, currentUser?.email]);
 
   // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료
   useEffect(() => {

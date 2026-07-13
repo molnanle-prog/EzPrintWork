@@ -3526,7 +3526,32 @@ export class DataService {
     }
 
     async addStaff(staff: Staff) {
-        await this.addEntity('staff', this.stripStaffPasswordForPersist(staff));
+        const cleaned = this.stripStaffPasswordForPersist(staff);
+        // 동일 uid/loginId 문서가 있으면 신규 생성 대신 기존 문서 갱신 (중복·이력 staffId 분기 방지)
+        const existing = (this.data['staff'] || []) as Staff[];
+        const uid = cleaned.uid?.trim() || (cleaned.id && cleaned.id.length > 20 ? cleaned.id : '');
+        const loginNorm = cleaned.loginId?.trim().toLowerCase() || '';
+        const match =
+            existing.find(
+                (s) =>
+                    !s.isDeleted &&
+                    ((uid && (s.uid === uid || s.id === uid)) ||
+                        (loginNorm && s.loginId?.trim().toLowerCase() === loginNorm))
+            ) || null;
+        if (match) {
+            await this.updateStaff({
+                ...match,
+                ...cleaned,
+                id: match.id,
+                uid: cleaned.uid || match.uid || uid || match.id,
+                name:
+                    cleaned.name && cleaned.name.trim()
+                        ? cleaned.name
+                        : match.name,
+            });
+            return;
+        }
+        await this.addEntity('staff', cleaned);
     }
     async updateStaff(staff: Staff) {
         const cleaned = this.stripStaffPasswordForPersist(staff);
@@ -3545,10 +3570,22 @@ export class DataService {
     }
     async updateStaffLastReadMsgId(staffId: string, lastReadMsgId: string) { await this.updateEntity('staff', staffId, { lastReadMsgId }); }
     async deleteStaff(id: string) {
+        const staffList = (this.data['staff'] || []) as Staff[];
+        const staff = staffList.find((s: Staff) => s.id === id);
         await this.updateEntity('staff', id, { isDeleted: true, active: false });
-        const staff = (this.data['staff'] || []).find((s: Staff) => s.id === id);
         const uid = staff?.uid || (staff?.id && staff.id.length > 20 ? staff.id : undefined);
         if (uid) {
+            // 같은 uid를 쓰는 다른 활성 staff가 남아 있으면 users 비활성화 금지 (중복 정리 시 로그인 차단 방지)
+            const stillLinked = staffList.some(
+                (s) =>
+                    s.id !== id &&
+                    !s.isDeleted &&
+                    s.active !== false &&
+                    (s.uid === uid || s.id === uid)
+            );
+            if (stillLinked) {
+                return;
+            }
             try {
                 await setDoc(doc(firestore, 'users', uid), {
                     active: false,
@@ -3574,33 +3611,36 @@ export class DataService {
     async dedupeStaffDuplicates(): Promise<number> {
         if (!this.tenantId || !this.isSyncAdmin()) return 0;
 
-        const currentUid = auth.currentUser?.uid || '';
-        const isProtectedStaff = (s: Staff) => {
-            // 로그인 본인·대표형(id===uid) 문서는 이름 중복 정리로 절대 삭제하지 않음
-            if (currentUid && (s.uid === currentUid || s.id === currentUid)) return true;
-            if (s.uid && s.id === s.uid) return true;
-            return false;
-        };
+        const { isPlaceholderStaffName, scoreStaffRecord } = await import('../utils/staffMatch');
 
         const score = (s: Staff) => {
-            let n = 0;
-            if (isProtectedStaff(s)) n += 1000;
-            if (s.active !== false) n += 10;
-            if (!s.isDeleted) n += 10;
-            if (s.loginId) n += 5;
-            if (s.uid) n += 3;
-            if (s.extensionNumber) n += 2;
-            if (s.phone || s.phoneCompany || s.phoneOffice) n += 2;
-            if (s.joinDate) n += 1;
+            // 실명·연락처가 풍부한 문서를 우선 — id===uid 빈 껍데기는 낮은 점수
+            let n = scoreStaffRecord(s);
+            if (s.id === s.uid && isPlaceholderStaffName(s.name)) n -= 40;
             return n;
         };
 
+        /** loginId/uid 그룹에서 점수 낮은 쪽 제거 (보호 예외 없이 — 빈 중복 제거가 목적) */
         const markDuplicates = (groups: Map<string, Staff[]>, toRemove: Set<string>) => {
             for (const group of groups.values()) {
                 if (group.length <= 1) continue;
-                const sorted = [...group].sort((a, b) => score(b) - score(a));
+                const sorted = [...group].sort(
+                    (a, b) => score(b) - score(a) || String(a.id).localeCompare(String(b.id))
+                );
+                const keeper = sorted[0];
                 sorted.slice(1).forEach((s) => {
-                    if (!isProtectedStaff(s)) toRemove.add(s.id);
+                    // keeper와 동일 문서가 아니면 제거. 실명이 서로 다르고 둘 다 실명이면 보존
+                    if (
+                        !isPlaceholderStaffName(s.name) &&
+                        !isPlaceholderStaffName(keeper.name) &&
+                        s.name.trim() !== keeper.name.trim() &&
+                        s.loginId &&
+                        keeper.loginId &&
+                        s.loginId.toLowerCase() !== keeper.loginId.toLowerCase()
+                    ) {
+                        return;
+                    }
+                    toRemove.add(s.id);
                 });
             }
         };
@@ -3627,21 +3667,25 @@ export class DataService {
         }
         markDuplicates(byUid, toRemove);
 
-        const byName = new Map<string, Staff[]>();
-        for (const s of rows) {
-            if (toRemove.has(s.id)) continue;
-            const key = s.name?.trim();
-            if (!key) continue;
-            if (!byName.has(key)) byName.set(key, []);
-            byName.get(key)!.push(s);
-        }
-        markDuplicates(byName, toRemove);
+        // 이름만 같은 서로 다른 직원은 삭제하지 않음 (byName 제거)
 
+        // keeper에 uid가 없고 loser에만 있으면 keeper로 uid를 옮긴 뒤 loser 삭제
         let removed = 0;
         for (const id of toRemove) {
             const target = rows.find((s) => s.id === id);
-            if (target && isProtectedStaff(target)) continue;
+            if (!target) continue;
             try {
+                // 삭제 전에 같은 uid/login 그룹 keeper에 uid 연결 보강
+                const uidKey = target.uid?.trim();
+                if (uidKey) {
+                    const peers = rows.filter(
+                        (s) => !toRemove.has(s.id) && s.uid === uidKey && s.id !== id
+                    );
+                    const keeper = peers.sort((a, b) => score(b) - score(a))[0];
+                    if (keeper && !keeper.uid) {
+                        await this.updateStaff({ ...keeper, uid: uidKey });
+                    }
+                }
                 await this.deleteStaff(id);
                 removed += 1;
             } catch (e) {
