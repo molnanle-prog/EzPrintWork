@@ -402,9 +402,15 @@ export interface IElectronAPI {
     currentVersion: string;
     updateInfo?: { version: string; releaseDate?: string } | null;
     error?: string;
+    busy?: boolean;
   }>;
-  updaterDownload?: () => Promise<{ ok: boolean; error?: string }>;
-  updaterInstall?: () => Promise<{ ok: boolean }>;
+  updaterDownload?: () => Promise<{
+    ok: boolean;
+    error?: string;
+    busy?: boolean;
+    alreadyLatest?: boolean;
+  }>;
+  updaterInstall?: () => Promise<{ ok: boolean; busy?: boolean }>;
   onUpdaterStatus?: (callback: (payload: ElectronUpdaterStatus) => void) => () => void;
   createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; paths?: string[]; error?: string }>;
   getOpenAtLogin?: () => Promise<{ ok: boolean; enabled: boolean; supported?: boolean; error?: string }>;

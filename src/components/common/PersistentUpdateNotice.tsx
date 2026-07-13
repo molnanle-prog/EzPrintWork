@@ -161,7 +161,13 @@ export const PersistentUpdateNotice: React.FC = () => {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => void window.electron?.updaterDownload?.()}
+              onClick={() => {
+                void window.electron?.updaterDownload?.().then((result) => {
+                  if (result?.alreadyLatest) {
+                    clearDesktopNotice();
+                  }
+                });
+              }}
               disabled={!hasElectronUpdater()}
               className="flex-1 inline-flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold"
             >

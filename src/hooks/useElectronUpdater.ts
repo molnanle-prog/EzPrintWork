@@ -14,27 +14,60 @@ export function hasElectronUpdater(): boolean {
 
 const ELECTRON_UPDATE_POLL_MS = 3 * 60 * 1000;
 const ELECTRON_EARLY_RETRY_MS = [8_000, 25_000, 60_000, 180_000];
+const STARTED_UPDATE_KEY = 'ezpw_desktop_update_started';
+
+function readStartedUpdateVersion(): string | null {
+    try {
+        return sessionStorage.getItem(STARTED_UPDATE_KEY);
+    } catch {
+        return null;
+    }
+}
+
+function markUpdateStarted(version?: string) {
+    if (!version) return;
+    try {
+        sessionStorage.setItem(STARTED_UPDATE_KEY, version);
+    } catch {
+        /* ignore */
+    }
+}
+
+function clearStartedUpdate() {
+    try {
+        sessionStorage.removeItem(STARTED_UPDATE_KEY);
+    } catch {
+        /* ignore */
+    }
+}
 
 export function useElectronUpdater() {
     const { setDesktopNotice } = useUpdateNotice();
     const isDownloadingRef = useRef(false);
+    const isInstallingRef = useRef(false);
     const announcedVersionRef = useRef<string | null>(null);
-    const hasAvailableNoticeRef = useRef(false);
-
-    const installDesktopUpdate = useCallback(async () => {
-        if (!window.electron?.updaterInstall) return;
-        setDesktopNotice({
-            kind: 'desktop',
-            phase: 'installing',
-            message: '설치 프로그램을 실행합니다. 앱 창이 곧 닫힙니다.',
-        });
-        await window.electron.updaterInstall();
-    }, [setDesktopNotice]);
+    const activeTargetVersionRef = useRef<string | null>(null);
 
     const announceAvailable = useCallback(
         (version?: string, currentVersion?: string) => {
-            if (!version) return;
-            hasAvailableNoticeRef.current = true;
+            if (!version || isDownloadingRef.current || isInstallingRef.current) return;
+
+            // 이미 설치본이 같거나 더 새면 알림 끔
+            if (currentVersion && !isNewerVersion(version, currentVersion)) {
+                activeTargetVersionRef.current = null;
+                clearStartedUpdate();
+                setDesktopNotice(null);
+                return;
+            }
+
+            // 이전에 같은 버전 업데이트를 시작했으면 재알림 억제
+            const started = readStartedUpdateVersion();
+            if (started && started === version && currentVersion && !isNewerVersion(version, currentVersion)) {
+                setDesktopNotice(null);
+                return;
+            }
+
+            activeTargetVersionRef.current = version;
             setDesktopNotice({
                 kind: 'desktop',
                 phase: 'available',
@@ -54,9 +87,9 @@ export function useElectronUpdater() {
         [setDesktopNotice]
     );
 
-    /** electron-updater 피드 실패 시 download-manifest로 보조 감지 */
+    /** electron-updater 피드 실패 시 download-manifest로 보조 감지 (다운로드는 반드시 check 후) */
     const checkManifestFallback = useCallback(async () => {
-        if (isDownloadingRef.current) return;
+        if (isDownloadingRef.current || isInstallingRef.current) return;
         try {
             const [manifest, currentVersion] = await Promise.all([
                 fetchDownloadManifest(),
@@ -68,12 +101,17 @@ export function useElectronUpdater() {
                 installed &&
                 isNewerVersion(String(manifest.version), installed)
             ) {
+                // 폴백만으로 배너는 띄우되, 실제 다운로드 전 main에서 check 재수행
                 announceAvailable(String(manifest.version), installed);
+            } else if (installed) {
+                clearStartedUpdate();
+                activeTargetVersionRef.current = null;
+                setDesktopNotice(null);
             }
         } catch {
             /* ignore */
         }
-    }, [announceAvailable]);
+    }, [announceAvailable, setDesktopNotice]);
 
     useEffect(() => {
         if (!hasElectronUpdater() || !window.electron?.onUpdaterStatus) return;
@@ -81,12 +119,15 @@ export function useElectronUpdater() {
         const unsubscribe = window.electron.onUpdaterStatus((status: ElectronUpdaterStatus) => {
             switch (status.phase) {
                 case 'available':
+                    if (isDownloadingRef.current || isInstallingRef.current) break;
                     isDownloadingRef.current = false;
                     announceAvailable(status.version, status.currentVersion);
                     break;
 
                 case 'downloading':
                     isDownloadingRef.current = true;
+                    isInstallingRef.current = false;
+                    if (status.version) markUpdateStarted(status.version);
                     setDesktopNotice({
                         kind: 'desktop',
                         phase: 'downloading',
@@ -97,32 +138,28 @@ export function useElectronUpdater() {
                     break;
 
                 case 'downloaded':
-                    isDownloadingRef.current = false;
-                    setDesktopNotice({
-                        kind: 'desktop',
-                        phase: 'installing',
-                        version: status.version,
-                        currentVersion: status.currentVersion,
-                        message: '다운로드 완료 — 설치 프로그램을 실행합니다.',
-                    });
-                    void installDesktopUpdate();
-                    break;
-
                 case 'installing':
+                    // 메인이 이미 quitAndInstall 함 — 렌더러에서 중복 설치 호출하지 않음
                     isDownloadingRef.current = false;
+                    isInstallingRef.current = true;
+                    if (status.version) markUpdateStarted(status.version);
                     setDesktopNotice({
                         kind: 'desktop',
                         phase: 'installing',
                         version: status.version,
                         currentVersion: status.currentVersion,
-                        message: status.message,
+                        message:
+                            status.message ||
+                            (status.phase === 'downloaded'
+                                ? '다운로드 완료 — 설치 프로그램을 실행합니다.'
+                                : '설치 프로그램을 실행합니다.'),
                     });
                     break;
 
                 case 'error':
                     isDownloadingRef.current = false;
+                    isInstallingRef.current = false;
                     if (status.silent) {
-                        // 백그라운드 실패 시에도 manifest 폴백으로 알림 시도
                         void checkManifestFallback();
                         break;
                     }
@@ -135,10 +172,10 @@ export function useElectronUpdater() {
 
                 case 'none':
                     isDownloadingRef.current = false;
-                    // 이미 표시 중인 업데이트 알림을 폴백/레이스로 지우지 않음
-                    if (!hasAvailableNoticeRef.current) {
-                        setDesktopNotice(null);
-                    }
+                    isInstallingRef.current = false;
+                    activeTargetVersionRef.current = null;
+                    clearStartedUpdate();
+                    setDesktopNotice(null);
                     break;
 
                 default:
@@ -147,17 +184,26 @@ export function useElectronUpdater() {
         });
 
         return () => unsubscribe();
-    }, [setDesktopNotice, installDesktopUpdate, announceAvailable, checkManifestFallback]);
+    }, [setDesktopNotice, announceAvailable, checkManifestFallback]);
 
     // 앱 사용 중 주기 확인 + 포커스 복귀 시 확인 + 시작 직후 재시도
     useEffect(() => {
         if (!hasElectronUpdater() || import.meta.env.DEV) return;
 
         const poll = () => {
+            if (isDownloadingRef.current || isInstallingRef.current) return;
             void window.electron?.updaterCheck?.().then((result) => {
+                if (isDownloadingRef.current || isInstallingRef.current) return;
+                if (result?.busy) return;
+
                 if (result?.ok && result.updateInfo?.version) {
                     announceAvailable(result.updateInfo.version, result.currentVersion);
-                } else if (!result?.ok || !result.updateInfo?.version) {
+                } else if (result?.ok && !result.updateInfo?.version) {
+                    // 최신 — 알림 제거
+                    activeTargetVersionRef.current = null;
+                    clearStartedUpdate();
+                    setDesktopNotice(null);
+                } else if (!result?.ok) {
                     void checkManifestFallback();
                 }
             });
@@ -180,9 +226,9 @@ export function useElectronUpdater() {
             window.removeEventListener('focus', onFocus);
             document.removeEventListener('visibilitychange', onVisible);
         };
-    }, [announceAvailable, checkManifestFallback]);
+    }, [announceAvailable, checkManifestFallback, setDesktopNotice]);
 
-    return { installDesktopUpdate };
+    return {};
 }
 
 /** 설정 화면 등 수동 확인 (Electron 전용) */
@@ -203,6 +249,12 @@ export async function manualElectronUpdateCheck(
     }
 
     if (result.updateInfo?.version) {
+        const current = result.currentVersion || '';
+        if (current && !isNewerVersion(result.updateInfo.version, current)) {
+            setDesktopNotice(null);
+            toast.success(`데스크톱 앱 v${current} — 최신 설치본입니다.`);
+            return true;
+        }
         setDesktopNotice({
             kind: 'desktop',
             phase: 'available',

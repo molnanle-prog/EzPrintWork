@@ -1,6 +1,6 @@
 {
   "name": "ezprintwork",
-  "version": "1.6.8",
+  "version": "1.6.9",
   "author": "EzPrintWork",
   "description": "인쇄소 통합 관리 시스템",
   "main": "electron/main.js",
