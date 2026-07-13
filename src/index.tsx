@@ -6,6 +6,9 @@ import { DialogProvider } from './contexts/DialogContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 import './index.css';
 import { db } from './services/dataService';
+import { installSelectAllOnFocus } from './utils/selectAllOnFocus';
+
+installSelectAllOnFocus();
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {

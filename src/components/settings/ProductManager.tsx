@@ -1,9 +1,15 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { db, isBookletProductType, getErrorMessage } from '../../services/dataService';
 import { JobTypeDefinition } from '../../types';
-import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors } from 'lucide-react';
+import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors, X } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
+
+function focusRequiredInput(input: HTMLInputElement | null) {
+  if (!input) return;
+  input.focus();
+  input.select();
+}
 
 export const ProductManager: React.FC = () => {
   const [definitions, setDefinitions] = useState<JobTypeDefinition[]>([]);
@@ -19,6 +25,11 @@ export const ProductManager: React.FC = () => {
   const [draftProcessingsCover, setDraftProcessingsCover] = useState<string[]>([]);
   const [draftProcessingsInner, setDraftProcessingsInner] = useState<string[]>([]);
   const [processingsDirty, setProcessingsDirty] = useState(false);
+
+  const newTypeInputRef = useRef<HTMLInputElement>(null);
+  const newSizeInputRef = useRef<HTMLInputElement>(null);
+  const newPaperInputRef = useRef<HTMLInputElement>(null);
+  const newWeightInputRef = useRef<HTMLInputElement>(null);
 
   const { showConfirm, showAlert } = useDialog();
 
@@ -146,14 +157,20 @@ export const ProductManager: React.FC = () => {
   // --- Type Management ---
 
   const handleAddType = async () => {
-      if (!newTypeName.trim()) return;
+      const trimmed = newTypeName.trim();
+      if (!trimmed) {
+          await showAlert('필수 입력 항목입니다.\n새 품목명을 입력해 주세요.');
+          focusRequiredInput(newTypeInputRef.current);
+          return;
+      }
       const latestDefs = db.getProductDefinitions();
-      if (latestDefs.find(d => d.name === newTypeName)) {
-          showAlert('이미 존재하는 작업 종류입니다.');
+      if (latestDefs.find(d => d.name === trimmed)) {
+          await showAlert('이미 존재하는 작업 종류입니다.\n다른 품목명을 입력해 주세요.');
+          focusRequiredInput(newTypeInputRef.current);
           return;
       }
       const newDef: JobTypeDefinition = {
-          name: newTypeName,
+          name: trimmed,
           sizes: ['규격외'],
           paperTypes: ['기본'],
           paperWeights: ['기본']
@@ -165,7 +182,8 @@ export const ProductManager: React.FC = () => {
           setNewTypeName('');
           setSelectedType(newDef);
       } catch (error) {
-          showAlert('품목 추가 실패: ' + getErrorMessage(error));
+          await showAlert('품목 추가 실패: ' + getErrorMessage(error));
+          focusRequiredInput(newTypeInputRef.current);
       }
   };
 
@@ -194,8 +212,23 @@ export const ProductManager: React.FC = () => {
 
   // --- Option Management ---
 
+  const getOptionInputRef = (category: 'sizes' | 'paperTypes' | 'paperWeights') => {
+      if (category === 'sizes') return newSizeInputRef;
+      if (category === 'paperTypes') return newPaperInputRef;
+      return newWeightInputRef;
+  };
+
   const handleAddOption = async (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string, setter: (v: string) => void) => {
-      if (!selectedType || !value.trim()) return;
+      if (!selectedType) return;
+
+      const categoryName = category === 'sizes' ? '규격' : category === 'paperTypes' ? '용지' : '평량';
+      const inputRef = getOptionInputRef(category);
+
+      if (!value.trim()) {
+          await showAlert(`필수 입력 항목입니다.\n${categoryName} 값을 입력해 주세요.`);
+          focusRequiredInput(inputRef.current);
+          return;
+      }
       
       let finalValue = value.trim();
 
@@ -221,7 +254,8 @@ export const ProductManager: React.FC = () => {
       if (!currentType) return;
 
       if (currentType[category].includes(finalValue)) {
-          setter(''); 
+          await showAlert(`이미 존재하는 ${categoryName}입니다.\n다른 값을 입력해 주세요.`);
+          focusRequiredInput(inputRef.current);
           return;
       }
 
@@ -233,7 +267,8 @@ export const ProductManager: React.FC = () => {
           setSelectedType(updatedDef);
           setter('');
       } catch (error) {
-          showAlert('옵션 추가 실패: ' + getErrorMessage(error));
+          await showAlert('옵션 추가 실패: ' + getErrorMessage(error));
+          focusRequiredInput(inputRef.current);
       }
   };
 
@@ -291,6 +326,7 @@ export const ProductManager: React.FC = () => {
               <div className="p-3 border-b border-slate-200 dark:border-slate-700">
                   <div className="flex gap-2">
                       <input 
+                          ref={newTypeInputRef}
                           value={newTypeName}
                           onChange={(e) => setNewTypeName(e.target.value)}
                           placeholder="새 품목명 (예: 전단지)"
@@ -344,6 +380,7 @@ export const ProductManager: React.FC = () => {
                               </h4>
                               <div className="flex gap-2">
                                   <input 
+                                      ref={newSizeInputRef}
                                       value={newSize} 
                                       onChange={(e) => setNewSize(e.target.value)}
                                       className={inputClass}
@@ -373,6 +410,7 @@ export const ProductManager: React.FC = () => {
                               </h4>
                               <div className="flex gap-2">
                                   <input 
+                                      ref={newPaperInputRef}
                                       value={newPaper} 
                                       onChange={(e) => setNewPaper(e.target.value)}
                                       className={inputClass}
@@ -402,6 +440,7 @@ export const ProductManager: React.FC = () => {
                               </h4>
                               <div className="flex gap-2">
                                   <input 
+                                      ref={newWeightInputRef}
                                       value={newWeight} 
                                       onChange={(e) => setNewWeight(e.target.value)}
                                       className={inputClass}
