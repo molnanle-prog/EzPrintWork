@@ -23,6 +23,7 @@ import {
     applyArchiveRootFromSettings,
     clearCompanyArchiveRootOverride,
     getArchiveRootPath,
+    getEffectiveArchiveRootPath,
     getTenantArchiveRootFromSettings,
     setArchiveRootPath,
     setCompanyArchiveRootOverride,
@@ -566,6 +567,23 @@ export class DataService {
     private mirrorCompanyName: string | null = null;
     /** 삭제된 job ID — 미러·다른 PC·웹에 전파해 중복 복원 방지 */
     private jobTombstones = new Map<string, number>();
+    /** 회사 NAS 헬스 — 실패 시 전원 동일하게 쓰기 차단 */
+    private companyNasHealthy: boolean | null = null;
+    private companyNasHealthError: string | null = null;
+    private companyNasHealthPath: string | null = null;
+    /** 관리자가 경로를 바꾼 뒤 직원에게 ‘지금 연결’ 유도 */
+    private pendingArchiveReconnect = false;
+    private pendingArchiveReconnectPath: string | null = null;
+    private lastAppliedArchiveRootPath: string | null = null;
+    private lastAppliedArchiveRootAt: string | null = null;
+    private archiveReconnectInProgress = false;
+    /** 짧은 NAS 끊김 유예 — 이 시간 지나야 전원 작업 잠금 */
+    private static readonly NAS_GRACE_MS = 45_000;
+    private static readonly NAS_MONITOR_MS = 12_000;
+    private nasUnhealthySince: number | null = null;
+    private nasHealthMonitorTimer: ReturnType<typeof setInterval> | null = null;
+    /** local = PC→NAS 직접, gateway = 허브 PC LAN(같은 NAS 파일) */
+    private companyNasChannel: 'local' | 'gateway' | null = null;
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
@@ -612,12 +630,254 @@ export class DataService {
         return getTenantArchiveRootFromSettings(this.getSettingsObj());
     }
 
+    private pathsEqualIgnoreSlash(a: string | null | undefined, b: string | null | undefined): boolean {
+        const na = String(a || '').replace(/[\\/]+$/, '').toLowerCase();
+        const nb = String(b || '').replace(/[\\/]+$/, '').toLowerCase();
+        return na === nb;
+    }
+
     private enforceCompanyArchiveRoot(): boolean {
+        const settingsPath = getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() || null;
+        const current = this.lastAppliedArchiveRootPath;
+
+        // 다른 PC(관리자)가 경로를 바꾼 경우 — 즉시 전환하지 않고 재연결 유도
+        // (새 빈 폴더를 자동 poll 하면 로컬이 비는 사고 방지)
+        if (
+            settingsPath &&
+            current &&
+            !this.pathsEqualIgnoreSlash(settingsPath, current) &&
+            !this.isLocalPulse('settingsAt', this.lastAppliedSettingsAt)
+        ) {
+            this.pendingArchiveReconnect = true;
+            this.pendingArchiveReconnectPath = settingsPath;
+            this.notify();
+            return false;
+        }
+
         const applied = applyArchiveRootFromSettings(this.getSettingsObj());
+        const next = getEffectiveArchiveRootPath()?.trim() || null;
+        if (next) this.lastAppliedArchiveRootPath = next;
         if (applied) {
             void this.refreshStoreGateway();
         }
         return applied;
+    }
+
+    getCompanyNasHealth(): {
+        healthy: boolean | null;
+        path: string | null;
+        error: string | null;
+        pendingReconnect: boolean;
+        pendingPath: string | null;
+        channel: 'local' | 'gateway' | null;
+        inGrace: boolean;
+    } {
+        return {
+            healthy: this.companyNasHealthy,
+            path: this.companyNasHealthPath || getEffectiveArchiveRootPath(),
+            error: this.companyNasHealthError,
+            pendingReconnect: this.pendingArchiveReconnect,
+            pendingPath: this.pendingArchiveReconnectPath,
+            channel: this.companyNasChannel,
+            inGrace: this.nasUnhealthySince != null && this.companyNasHealthy !== false,
+        };
+    }
+
+    /** 회사 NAS 경로가 지정된 Electron에서만 — 미확인/실패·재연결 대기 시 운영 쓰기 금지 */
+    private shouldBlockOperationalNasWrite(): boolean {
+        if (!this.getIsElectron()) return false;
+        const companyPath = getTenantArchiveRootFromSettings(this.getSettingsObj());
+        if (!companyPath?.trim() && !getEffectiveArchiveRootPath()) return false;
+        if (this.pendingArchiveReconnect) return true;
+        if (this.companyNasHealthy === false) return true;
+        return false;
+    }
+
+    /** 경로 재연결 전 — 작업·거래처·메신저·견적 자체를 막고 전원 동일 상태 유지 */
+    private isOperationalCollection(col: string): boolean {
+        return col === 'jobs' || col === 'clients' || col === 'messages' || col === 'quotes';
+    }
+
+    private assertOperationalWriteAllowed(col: string): void {
+        if (!this.isOperationalCollection(col)) return;
+        if (!this.getIsElectron()) return;
+        if (this.pendingArchiveReconnect) {
+            throw new Error(
+                '회사 NAS 경로가 변경되었습니다. 상단의 「지금 연결」을 누른 뒤에만 작업할 수 있습니다.'
+            );
+        }
+        if (this.companyNasHealthy === false) {
+            throw new Error(
+                '회사 NAS에 연결되지 않았습니다. 「지금 연결」 후 작업을 진행해 주세요.'
+            );
+        }
+    }
+
+    /** UI — 경로 재연결 대기 중에는 작업 불가 */
+    isOperationalWorkLocked(): boolean {
+        return this.getIsElectron() && (this.pendingArchiveReconnect || this.companyNasHealthy === false);
+    }
+
+    private stopNasHealthMonitor() {
+        if (this.nasHealthMonitorTimer) {
+            clearInterval(this.nasHealthMonitorTimer);
+            this.nasHealthMonitorTimer = null;
+        }
+    }
+
+    private startNasHealthMonitor() {
+        this.stopNasHealthMonitor();
+        if (!this.getIsElectron()) return;
+        this.nasHealthMonitorTimer = setInterval(() => {
+            void this.checkCompanyNasHealth(false);
+        }, DataService.NAS_MONITOR_MS);
+    }
+
+    private markCompanyNasOk(channel: 'local' | 'gateway', path: string | null) {
+        const wasLocked = this.companyNasHealthy === false;
+        this.companyNasHealthy = true;
+        this.companyNasHealthError = null;
+        this.companyNasHealthPath = path;
+        this.companyNasChannel = channel;
+        this.nasUnhealthySince = null;
+        this.notify();
+        if (wasLocked && !this.pendingArchiveReconnect) {
+            void this.pollNasOperationalSync();
+            void this.hydrateMessagesFromMirror();
+            toast.success(
+                channel === 'gateway'
+                    ? '사내 게이트웨이로 NAS에 다시 연결되었습니다.'
+                    : '회사 NAS 연결이 복구되었습니다.'
+            );
+        }
+    }
+
+    private markCompanyNasFail(error: string, path: string | null): boolean {
+        const now = Date.now();
+        if (this.nasUnhealthySince == null) this.nasUnhealthySince = now;
+        this.companyNasHealthPath = path;
+        this.companyNasHealthError = error;
+        const elapsed = now - this.nasUnhealthySince;
+        if (elapsed < DataService.NAS_GRACE_MS) {
+            // 짧은 끊김 — 아직 잠금하지 않음 (재시도 중)
+            if (this.companyNasHealthy !== false) {
+                this.companyNasHealthy = true;
+            }
+            this.notify();
+            return true;
+        }
+        const newlyLocked = this.companyNasHealthy !== false;
+        this.companyNasHealthy = false;
+        this.companyNasChannel = null;
+        this.notify();
+        if (newlyLocked) {
+            toast.error(
+                '회사 NAS·게이트웨이 연결이 불안정합니다. 연결될 때까지 작업이 잠깁니다. (전원 동일)',
+                { duration: 9000 }
+            );
+        }
+        return false;
+    }
+
+    async checkCompanyNasHealth(forceWriteProbe = false): Promise<boolean> {
+        if (!this.getIsElectron() || !this.tenantId) {
+            this.companyNasHealthy = null;
+            return true;
+        }
+        void forceWriteProbe;
+        const path = getEffectiveArchiveRootPath()?.trim() || null;
+        this.companyNasHealthPath = path;
+        if (!path) {
+            const configured = !!getTenantArchiveRootFromSettings(this.getSettingsObj());
+            if (!configured) {
+                this.companyNasHealthy = null;
+                this.companyNasHealthError = null;
+                this.nasUnhealthySince = null;
+                this.notify();
+                return true;
+            }
+            return this.markCompanyNasFail('회사 NAS 경로를 적용하지 못했습니다.', null);
+        }
+
+        // 1) PC → NAS 직접
+        try {
+            const probe = await jobArchiveService.ensureArchiveFolderReady(this.tenantId);
+            if (probe.ok) {
+                this.markCompanyNasOk('local', path);
+                return true;
+            }
+        } catch (e) {
+            console.warn('[DataService] local NAS probe failed:', e);
+        }
+
+        // 2) 허브 PC 게이트웨이 — 회사 archiveRootPath 와 같은 폴더만 허용
+        const gw = this.getStoreGatewayUrl();
+        if (gw) {
+            try {
+                const { isStoreGatewayServingCompanyPath } = await import('./gatewayBridge');
+                const servesCompany = await isStoreGatewayServingCompanyPath(gw, path, this.tenantId);
+                if (servesCompany) {
+                    const mirror = await situationMirrorService.readViaGatewayOnly(this.tenantId, gw);
+                    if (mirror) {
+                        this.markCompanyNasOk('gateway', path);
+                        return true;
+                    }
+                } else if (await (await import('./gatewayBridge')).isStoreGatewayReachable(gw, this.tenantId)) {
+                    console.warn(
+                        '[DataService] gateway reachable but archiveRoot ≠ company path — ignored to prevent split'
+                    );
+                }
+            } catch (e) {
+                console.warn('[DataService] gateway NAS probe failed:', e);
+            }
+        }
+
+        return this.markCompanyNasFail(
+            gw
+                ? 'NAS 직접 연결과 회사경로 게이트웨이 모두 실패했습니다.'
+                : 'NAS 폴더 접근 실패 (게이트웨이 URL 없음)',
+            path
+        );
+    }
+
+    /** 경로 변경 알림에서 ‘지금 연결’ — 회사 경로 재적용 + 미러 재로드 */
+    async reconnectCompanyArchiveRoot(): Promise<{ ok: boolean; error?: string }> {
+        if (this.archiveReconnectInProgress) {
+            return { ok: false, error: '이미 연결 중입니다.' };
+        }
+        this.archiveReconnectInProgress = true;
+        try {
+            await this.pullCollectionDocs('settings');
+            const target =
+                this.pendingArchiveReconnectPath ||
+                getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() ||
+                null;
+            if (!target) {
+                return { ok: false, error: '회사 NAS 경로가 없습니다. 관리자에게 문의하세요.' };
+            }
+            setCompanyArchiveRootOverride(target);
+            this.lastAppliedArchiveRootPath = target;
+            const healthy = await this.checkCompanyNasHealth(true);
+            if (!healthy) {
+                return {
+                    ok: false,
+                    error:
+                        this.companyNasHealthError ||
+                        'NAS에 연결할 수 없습니다. Z: 드라이브·공유 폴더를 확인해 주세요.',
+                };
+            }
+            await this.pollNasOperationalSync();
+            await this.hydrateMessagesFromMirror();
+            void this.refreshStoreGateway();
+            this.pendingArchiveReconnect = false;
+            this.pendingArchiveReconnectPath = null;
+            this.notify();
+            return { ok: true };
+        } catch (e) {
+            return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        } finally {
+            this.archiveReconnectInProgress = false;
+        }
     }
 
     /** Firestore settings.main.storeGatewayUrl — 웹·태블릿 NAS/LAN 조회 */
@@ -797,8 +1057,18 @@ export class DataService {
         this.webMirrorReady = false;
         this.lastNasMirrorAt = null;
         this.lastNasArchiveAt = null;
+        this.companyNasHealthy = null;
+        this.companyNasHealthError = null;
+        this.companyNasHealthPath = null;
+        this.pendingArchiveReconnect = false;
+        this.pendingArchiveReconnectPath = null;
+        this.lastAppliedArchiveRootPath = null;
+        this.lastAppliedArchiveRootAt = null;
+        this.nasUnhealthySince = null;
+        this.companyNasChannel = null;
         clearCompanyArchiveRootOverride();
         this.stopNasMirrorPolling();
+        this.stopNasHealthMonitor();
         this.archivedJobs = [];
         this.archiveLoaded = false;
         this.archiveInitializing = false;
@@ -816,6 +1086,7 @@ export class DataService {
         this.unsubscribeList = [];
         this.stopSyncPulse();
         this.stopNasMirrorPolling();
+        this.stopNasHealthMonitor();
         this.stopPaymentJobsSync();
 
         this.tenantId = null;
@@ -840,6 +1111,15 @@ export class DataService {
         this.localPulseMarkers.clear();
         this.lastNasMirrorAt = null;
         this.lastNasArchiveAt = null;
+        this.companyNasHealthy = null;
+        this.companyNasHealthError = null;
+        this.companyNasHealthPath = null;
+        this.pendingArchiveReconnect = false;
+        this.pendingArchiveReconnectPath = null;
+        this.lastAppliedArchiveRootPath = null;
+        this.lastAppliedArchiveRootAt = null;
+        this.nasUnhealthySince = null;
+        this.companyNasChannel = null;
         clearCompanyArchiveRootOverride();
         this.rebuildMergedJobs();
         this.notify();
@@ -1273,6 +1553,10 @@ export class DataService {
 
     async pushLiveMirrors(): Promise<void> {
         if (!this.tenantId || this.isWebMirrorMode()) return;
+        if (this.shouldBlockOperationalNasWrite()) {
+            console.warn('[DataService] live mirror push blocked — company NAS not ready/reconnect pending');
+            return;
+        }
         const tenantId = this.tenantId;
         const jobs = this.getAllJobs();
         const staff = (this.data['staff'] || []) as Staff[];
@@ -1300,7 +1584,17 @@ export class DataService {
                 deletedJobs: tombstoneMapToPayload(this.jobTombstones),
             });
             mirrorUpdatedAt = payload.updatedAt;
-            published = (await situationMirrorService.publish(tenantId, payload)) || published;
+            let sitOk = await situationMirrorService.publish(tenantId, payload);
+            if (!sitOk) {
+                const gw = await this.getTrustedStoreGatewayUrl();
+                if (gw) {
+                    sitOk = await situationMirrorService.publishViaGateway(tenantId, payload, gw);
+                    if (sitOk) this.companyNasChannel = 'gateway';
+                }
+            } else {
+                this.companyNasChannel = 'local';
+            }
+            published = sitOk || published;
         } catch (e) {
             console.warn('[DataService] situation mirror failed:', e);
         }
@@ -1316,12 +1610,24 @@ export class DataService {
 
     private async refreshStoreGateway() {
         if (!this.getIsElectron() || !this.tenantId) return;
-        const root = getArchiveRootPath();
+        // 회사 경로만 게이트웨이에 바인딩 — 다른 폴더 서비스 금지
+        const root =
+            getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() ||
+            getEffectiveArchiveRootPath() ||
+            null;
+        if (!root) {
+            await refreshLocalGateway(null, this.tenantId);
+            return;
+        }
         const info = await refreshLocalGateway(root, this.tenantId);
         const lanUrl = info?.lanUrls?.[0]?.trim().replace(/\/$/, '') || null;
         if (!lanUrl) return;
+        // 게이트웨이가 회사 경로를 서비스할 때만 Firestore에 허브 URL 게시
+        if (info?.archiveRoot && !this.pathsEqualIgnoreSlash(info.archiveRoot, root)) {
+            console.warn('[DataService] skip storeGatewayUrl publish — gateway root ≠ company path');
+            return;
+        }
 
-        // 아침 허브: 누가 PC 켜고 로그인해도 Firestore에 LAN URL 자동 게시
         if (lanUrl !== this.lastPublishedGatewayUrl && lanUrl !== this.getStoreGatewayUrl()) {
             this.lastPublishedGatewayUrl = lanUrl;
             await this.saveStoreGatewayUrl(lanUrl).catch((e) =>
@@ -1330,6 +1636,18 @@ export class DataService {
         } else if (lanUrl !== this.lastPublishedGatewayUrl) {
             this.lastPublishedGatewayUrl = lanUrl;
         }
+    }
+
+    /** 회사 NAS 경로를 서비스하는 게이트웨이만 반환 (불일치면 null) */
+    private async getTrustedStoreGatewayUrl(): Promise<string | null> {
+        const gw = this.getStoreGatewayUrl();
+        const companyPath =
+            getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() ||
+            getEffectiveArchiveRootPath();
+        if (!gw || !companyPath) return null;
+        const { isStoreGatewayServingCompanyPath } = await import('./gatewayBridge');
+        const ok = await isStoreGatewayServingCompanyPath(gw, companyPath, this.tenantId);
+        return ok ? gw : null;
     }
 
     private stopNasMirrorPolling() {
@@ -1690,7 +2008,13 @@ export class DataService {
             }
 
             const situation = this.getIsElectron()
-                ? await situationMirrorService.readFromNas(this.tenantId)
+                ? (await situationMirrorService.readFromNas(this.tenantId)) ||
+                  (await (async () => {
+                      const gw = await this.getTrustedStoreGatewayUrl();
+                      return gw
+                          ? situationMirrorService.readViaGatewayOnly(this.tenantId!, gw)
+                          : null;
+                  })())
                 : await this.fetchWebMirrorPayload();
 
             if (situation?.updatedAt && situation.updatedAt !== this.lastNasMirrorAt) {
@@ -1810,7 +2134,7 @@ export class DataService {
         }
         const now = new Date().toISOString();
         const payload: Record<string, unknown> = { ...patch, pulseAt: now };
-        for (const key of ['jobsAt', 'staffAt', 'clientsAt', 'settingsAt', 'quotesAt', 'messagesAt', 'leavesAt', 'papersAt', 'instructionsAt', 'mirrorAt'] as const) {
+        for (const key of ['jobsAt', 'staffAt', 'clientsAt', 'settingsAt', 'quotesAt', 'messagesAt', 'leavesAt', 'papersAt', 'instructionsAt', 'mirrorAt', 'archiveRootAt'] as const) {
             if (key in patch) this.markLocalPulse(key, String(patch[key]));
         }
         if (patch.jobRev && typeof patch.jobRev === 'object' && patch.jobRev !== null && 'at' in (patch.jobRev as object)) {
@@ -2049,8 +2373,18 @@ export class DataService {
             }
 
             const settingsAt = data.settingsAt as string | undefined;
-            if (settingsAt && settingsAt !== this.lastAppliedSettingsAt && !this.isLocalPulse('settingsAt', settingsAt)) {
-                this.lastAppliedSettingsAt = settingsAt;
+            const archiveRootAt = data.archiveRootAt as string | undefined;
+            const settingsChanged =
+                !!settingsAt &&
+                settingsAt !== this.lastAppliedSettingsAt &&
+                !this.isLocalPulse('settingsAt', settingsAt);
+            const archiveRootChanged =
+                !!archiveRootAt &&
+                archiveRootAt !== this.lastAppliedArchiveRootAt &&
+                !this.isLocalPulse('archiveRootAt', archiveRootAt);
+            if (settingsChanged || archiveRootChanged) {
+                if (settingsAt) this.lastAppliedSettingsAt = settingsAt;
+                if (archiveRootAt) this.lastAppliedArchiveRootAt = archiveRootAt;
                 await this.pullCollectionDocs('settings');
                 this.notify();
             }
@@ -2262,10 +2596,22 @@ export class DataService {
 
     private async persistMessagesToNas(messages: ChatMessage[]): Promise<boolean> {
         if (!this.tenantId) return false;
+        if (this.getIsElectron() && this.shouldBlockOperationalNasWrite()) {
+            return false;
+        }
         const list = mergeChatMessages([], messages);
 
         if (this.getIsElectron()) {
-            const ok = await chatMirrorService.publish(this.tenantId, list);
+            let ok = await chatMirrorService.publish(this.tenantId, list);
+            if (!ok) {
+                const gw = await this.getTrustedStoreGatewayUrl();
+                if (gw) {
+                    ok = await chatMirrorService.publishViaGateway(this.tenantId, list, gw);
+                    if (ok) this.companyNasChannel = 'gateway';
+                }
+            } else {
+                this.companyNasChannel = 'local';
+            }
             if (ok) await this.bumpMirrorSyncPulse();
             return ok;
         }
@@ -2288,9 +2634,15 @@ export class DataService {
     private async pollChatMirror(): Promise<boolean> {
         if (!this.tenantId) return false;
         try {
-            const payload = this.getIsElectron()
+            let payload = this.getIsElectron()
                 ? await chatMirrorService.readFromNas()
                 : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrl());
+            if (!payload?.messages && this.getIsElectron()) {
+                const gw = await this.getTrustedStoreGatewayUrl();
+                if (gw) {
+                    payload = await chatMirrorService.readViaGatewayOnly(this.tenantId, gw);
+                }
+            }
             if (!payload?.messages) return false;
 
             const merged = mergeChatMessages(
@@ -2660,6 +3012,19 @@ export class DataService {
             // 사내 채팅 NAS 미러 초기 로드
             void this.hydrateMessagesFromMirror();
 
+            // 회사 NAS 헬스체크 — 실패 시 전원 동일하게 쓰기 차단 (유예 후 잠금, 게이트웨이 보조)
+            if (this.getIsElectron()) {
+                void this.checkCompanyNasHealth(true).then((ok) => {
+                    if (!ok && getTenantArchiveRootFromSettings(this.getSettingsObj())) {
+                        toast.error(
+                            '회사 NAS에 연결하지 못했습니다. 경로·Z:·사내 게이트웨이를 확인하세요.',
+                            { duration: 10000 }
+                        );
+                    }
+                });
+                this.startNasHealthMonitor();
+            }
+
             if (!localPrimary && !this.webMirrorReady && this.getAllJobs().length === 0) {
                 void this.retryWebMirrorHydrateInBackground();
                 const gateway = this.getStoreGatewayUrl();
@@ -2977,6 +3342,7 @@ export class DataService {
     }
 
     private async addEntity(col: string, entity: any) {
+        this.assertOperationalWriteAllowed(col);
         const id = entity.id || this.generateId();
         const now = new Date().toISOString();
         const newEntity = {
@@ -3136,6 +3502,7 @@ export class DataService {
     }
 
     private async updateEntity(col: string, id: string, entity: any) {
+        this.assertOperationalWriteAllowed(col);
         if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
             const existing = this.archivedJobs.find((j) => j.id === id);
             if (!existing || !this.tenantId) return;
@@ -3179,6 +3546,7 @@ export class DataService {
     }
 
     private async deleteEntity(col: string, id: string) {
+        this.assertOperationalWriteAllowed(col);
         if (col === 'jobs') {
             this.recordJobTombstone(id);
             await this.purgeJobFromArchiveLayers(id);
@@ -3962,6 +4330,9 @@ export class DataService {
 
         setArchiveRootPath(path);
         setCompanyArchiveRootOverride(path);
+        this.lastAppliedArchiveRootPath = path;
+        this.pendingArchiveReconnect = false;
+        this.pendingArchiveReconnectPath = null;
         const settings = this.getSettingsObj();
         settings[TENANT_ARCHIVE_ROOT_SETTINGS_KEY] = path;
         this.data['settings'] = [settings];
@@ -3973,17 +4344,22 @@ export class DataService {
 
         if (this.tenantId) {
             try {
+                const now = new Date().toISOString();
                 await setDoc(
                     doc(firestore, 'tenants', this.tenantId, 'settings', 'main'),
                     stripUndefinedForFirestore({ [TENANT_ARCHIVE_ROOT_SETTINGS_KEY]: path }),
                     { merge: true }
                 );
-                await this.bumpSyncPulse({ settingsAt: new Date().toISOString() });
+                await this.bumpSyncPulse({
+                    settingsAt: now,
+                    archiveRootAt: now,
+                });
             } catch (e) {
                 console.warn('[DataService] archive root path cloud save failed:', e);
             }
         }
 
+        void this.checkCompanyNasHealth(true);
         void this.refreshStoreGateway();
     }
 

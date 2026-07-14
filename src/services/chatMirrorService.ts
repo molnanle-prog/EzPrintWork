@@ -115,22 +115,38 @@ export class ChatMirrorService {
         };
     }
 
-    /** Electron: NAS 원본 + Storage 비동기. 웹: Storage 또는 게이트웨이 */
+    /** Electron: NAS 원본 읽기→merge→쓰기. Storage는 비동기 보조(사내 Electron 일관성과 분리). */
     async publish(tenantId: string, messages: ChatMessage[]): Promise<boolean> {
         if (!tenantId) return false;
-        const payload = this.buildPayload(tenantId, messages);
-        const content = JSON.stringify(payload, null, 2);
 
         if (this.isElectron()) {
             let nasOk = false;
             const root = await this.resolveMirrorRoot();
             if (root) {
-                nasOk = await this.writeLocalWithRetry(this.joinPath(root, CHAT_FILE_NAME), content);
+                const filePath = this.joinPath(root, CHAT_FILE_NAME);
+                let existing: ChatMessage[] = [];
+                try {
+                    const raw = await this.readLocalWithRetry(filePath);
+                    if (raw) {
+                        const parsed = JSON.parse(raw) as ChatMirrorPayload;
+                        if (Array.isArray(parsed?.messages)) existing = parsed.messages;
+                    }
+                } catch {
+                    existing = [];
+                }
+                const merged = mergeChatMessages(existing, messages);
+                const payload = this.buildPayload(tenantId, merged);
+                const content = JSON.stringify(payload, null, 2);
+                nasOk = await this.writeLocalWithRetry(filePath, content);
+                if (nasOk) {
+                    void this.uploadStorageAsync(tenantId, content);
+                }
             }
-            void this.uploadStorageAsync(tenantId, content);
             return nasOk;
         }
 
+        const payload = this.buildPayload(tenantId, messages);
+        const content = JSON.stringify(payload, null, 2);
         try {
             const blob = new Blob([content], { type: 'application/json' });
             await uploadBytes(ref(storage, this.storageObjectPath(tenantId)), blob, {
@@ -215,6 +231,34 @@ export class ChatMirrorService {
             };
         }
         return gatewayPayload || storagePayload;
+    }
+
+    /** Electron NAS 실패 시 — 허브 게이트웨이만 (Storage 혼용 안 함) */
+    async readViaGatewayOnly(
+        tenantId: string,
+        gatewayBaseUrl?: string | null
+    ): Promise<ChatMirrorPayload | null> {
+        if (!tenantId) return null;
+        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
+        if (!base) return null;
+        try {
+            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+            const token = deriveStoreGatewayToken(tenantId);
+            const res = await fetch(
+                `${base}/api/v1/chat?tenantId=${encodeURIComponent(tenantId)}`,
+                {
+                    cache: 'no-store',
+                    headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+                }
+            );
+            if (!res.ok) return null;
+            const data = (await res.json()) as ChatMirrorPayload;
+            if (!Array.isArray(data?.messages)) return null;
+            return data;
+        } catch (error) {
+            console.warn('[ChatMirror] gateway-only read failed:', error);
+            return null;
+        }
     }
 
     /** 웹에서 매장 PC 게이트웨이로 채팅 저장 시도 (LAN) */

@@ -113,35 +113,24 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
             if (!picked) return;
 
             if (currentRoot && currentRoot.replace(/[\\/]+$/, '') !== picked.replace(/[\\/]+$/, '')) {
-                const doMigrate = await showConfirm(
-                    '기존 NAS 폴더의 데이터 파일을 새 폴더로 복사할까요?\n\n' +
-                    `원본: ${currentRoot}\n` +
-                    `대상: ${picked}\n\n` +
-                    `복사 대상: ${ARCHIVE_FILE_NAME}, situation-mirror.json, chat-messages.json\n` +
-                    '(대상에 같은 파일이 있으면 덮어쓰지 않습니다)'
-                );
-                if (doMigrate) {
-                    showStatus('기존 데이터 파일 복사 중…', 'info');
-                    const mig = await jobArchiveService.migrateOperationalFiles(currentRoot, picked);
-                    if (!mig.ok) {
-                        showStatus(mig.error || '데이터 복사에 실패했습니다.', 'error');
-                        await showAlert(`복사 실패: ${mig.error || 'unknown'}\n경로 변경을 취소합니다.`);
-                        return;
-                    }
-                    setMigrateFromPath(currentRoot);
-                    showStatus(
-                        `복사 완료 · ${mig.copied.length}개 파일` +
-                        (mig.skipped.length ? ` · 건너뜀 ${mig.skipped.length}개` : '') +
-                        ' — 이제 「연결 테스트 후 회사에 저장」을 눌러 주세요.',
-                        'success'
+                showStatus('기존 NAS 자료를 새 폴더로 복사하는 중…', 'info');
+                const mig = await jobArchiveService.migrateOperationalFiles(currentRoot, picked);
+                if (!mig.ok) {
+                    showStatus(mig.error || '데이터 복사에 실패했습니다.', 'error');
+                    await showAlert(
+                        `자료 자동 이전이 실패해 경로를 바꿀 수 없습니다.\n${mig.error || 'unknown'}\n\n` +
+                        '원본 폴더에 접근 가능한지 확인한 뒤 다시 시도해 주세요.'
                     );
-                } else {
-                    setMigrateFromPath(currentRoot);
-                    showStatus(
-                        '복사 없이 새 폴더만 선택했습니다. 빈 폴더면 작업·거래처가 비어 보일 수 있습니다. 반드시 테스트 후 저장하세요.',
-                        'info'
-                    );
+                    return;
                 }
+                setMigrateFromPath(currentRoot);
+                showStatus(
+                    `자료 이전 완료 · 복사 ${mig.copied.length}개` +
+                    (mig.skipped.length ? ` · 이미 있음 ${mig.skipped.length}개` : '') +
+                    '\n「연결 테스트 후 회사에 저장」을 눌러 새 경로를 확정하세요.\n' +
+                    '옛 폴더 정리는 관리자가 직접 하시면 됩니다.',
+                    'success'
+                );
             }
 
             setSelectedPath(picked);

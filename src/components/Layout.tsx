@@ -3,6 +3,7 @@ import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, 
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
+import { CompanyNasBanner } from './common/CompanyNasBanner';
 import { CompletedJobSearchModal } from './kanban/CompletedJobSearchModal';
 import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
@@ -444,6 +445,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
               </button>
           </div>
       </div>
+
+      <CompanyNasBanner />
 
       <div className="flex-1 flex overflow-hidden relative">
         {/* Sidebar - Hover based expansion */}

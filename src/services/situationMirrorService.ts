@@ -210,6 +210,78 @@ export class SituationMirrorService {
     }
 
     /**
+     * LAN 게이트웨이만 (Firebase Storage 혼용 금지 — 회사 일괄 상태 유지).
+     * Electron이 NAS 직접 접근 실패 시 허브 PC의 같은 NAS 파일을 읽는다.
+     */
+    async readViaGatewayOnly(
+        tenantId: string,
+        gatewayBaseUrl?: string | null
+    ): Promise<SituationMirrorPayload | null> {
+        if (!tenantId) return null;
+        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
+        if (!base) return null;
+        try {
+            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+            const token = deriveStoreGatewayToken(tenantId);
+            const res = await fetch(
+                `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
+                {
+                    cache: 'no-store',
+                    headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+                }
+            );
+            if (!res.ok) return null;
+            const data = (await res.json()) as Partial<SituationMirrorPayload> & {
+                jobs?: Job[];
+                updatedAt?: string;
+            };
+            return {
+                version: data.version ?? MIRROR_VERSION,
+                tenantId,
+                updatedAt: data.updatedAt || new Date().toISOString(),
+                companyName: data.companyName,
+                kanbanLayout: data.kanbanLayout,
+                statusDefinitions: data.statusDefinitions,
+                jobs: data.jobs || [],
+                deletedJobs: data.deletedJobs,
+                clients: data.clients,
+                settings: data.settings,
+                staff: data.staff,
+            };
+        } catch (error) {
+            console.warn('[SituationMirror] gateway-only read failed:', error);
+            return null;
+        }
+    }
+
+    /** Electron NAS 쓰기 실패 시 — 허브 게이트웨이로 같은 situation-mirror 병합 저장 */
+    async publishViaGateway(
+        tenantId: string,
+        payload: SituationMirrorPayload,
+        gatewayBaseUrl?: string | null
+    ): Promise<boolean> {
+        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
+        if (!base || !tenantId) return false;
+        try {
+            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+            const token = deriveStoreGatewayToken(tenantId);
+            const res = await fetch(`${base}/api/v1/mirror`, {
+                method: 'POST',
+                cache: 'no-store',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
+                },
+                body: JSON.stringify(payload),
+            });
+            return res.ok;
+        } catch (error) {
+            console.warn('[SituationMirror] gateway publish failed:', error);
+            return false;
+        }
+    }
+
+    /**
      * 외부 웹 — 사내 게이트웨이(LAN) 우선, 없으면 Storage.
      * gatewayBaseUrl 예: http://192.168.0.10:3847
      */

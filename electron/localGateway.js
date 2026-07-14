@@ -177,6 +177,8 @@ class LocalGateway {
             port: this.port,
             baseUrl: this.port ? `http://127.0.0.1:${this.port}` : '',
             lanUrls: this.port ? this.getLanAddresses().map((ip) => `http://${ip}:${this.port}`) : [],
+            archiveRoot: this.archiveRoot || null,
+            tenantId: this.tenantId || null,
         };
     }
 
@@ -380,6 +382,84 @@ class LocalGateway {
                         }
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                         res.end(JSON.stringify({ ok: true, updatedAt: now, count: messages.length }));
+                        return;
+                    } catch (error) {
+                        res.writeHead(400, CORS);
+                        res.end(error?.message || 'invalid body');
+                        return;
+                    }
+                }
+
+                if (url.pathname === '/api/v1/mirror' && req.method === 'POST') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    if (!this.archiveRoot) {
+                        res.writeHead(503, CORS);
+                        res.end('NAS path not configured');
+                        return;
+                    }
+                    try {
+                        const raw = await readRequestBody(req);
+                        const body = JSON.parse(raw || '{}');
+                        const tenantId = body.tenantId || this.tenantId;
+                        const now = new Date().toISOString();
+                        const existing = this.readJsonFile(SITUATION_FILE);
+                        const incomingJobs = Array.isArray(body.jobs) ? body.jobs : [];
+                        const tombstones = this.buildTombstoneMap([
+                            ...(existing?.deletedJobs || []),
+                            ...(body.deletedJobs || []),
+                        ]);
+                        const mergedJobs = this.filterJobsByTombstones(
+                            this.mergeJobs(existing?.jobs, incomingJobs),
+                            tombstones
+                        );
+                        const clientsMap = new Map();
+                        for (const c of existing?.clients || []) {
+                            if (c?.id) clientsMap.set(c.id, c);
+                        }
+                        for (const c of body.clients || []) {
+                            if (c?.id) clientsMap.set(c.id, c);
+                        }
+                        const payload = {
+                            version: body.version ?? existing?.version ?? 1,
+                            tenantId,
+                            updatedAt: now,
+                            companyName: body.companyName || existing?.companyName,
+                            kanbanLayout: body.kanbanLayout || existing?.kanbanLayout,
+                            statusDefinitions: body.statusDefinitions || existing?.statusDefinitions,
+                            jobs: mergedJobs,
+                            deletedJobs: [...tombstones.entries()].map(([id, ms]) => ({
+                                id,
+                                deletedAt: new Date(ms).toISOString(),
+                            })),
+                            clients: [...clientsMap.values()],
+                            settings: body.settings || existing?.settings || {},
+                            staff: body.staff || existing?.staff || [],
+                        };
+                        if (!this.writeJsonFile(SITUATION_FILE, payload)) {
+                            res.writeHead(500, CORS);
+                            res.end('write failed');
+                            return;
+                        }
+                        const archive = this.readJsonFile(ARCHIVE_FILE);
+                        if (archive || incomingJobs.length) {
+                            const archMerged = this.filterJobsByTombstones(
+                                this.mergeJobs(archive?.jobs, incomingJobs),
+                                tombstones
+                            );
+                            this.writeJsonFile(ARCHIVE_FILE, {
+                                version: archive?.version ?? 1,
+                                tenantId,
+                                updatedAt: now,
+                                jobs: archMerged,
+                                deletedJobs: payload.deletedJobs,
+                            });
+                        }
+                        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: true, updatedAt: now, count: mergedJobs.length }));
                         return;
                     } catch (error) {
                         res.writeHead(400, CORS);
