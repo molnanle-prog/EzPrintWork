@@ -49,7 +49,7 @@ function gatewayHeaders(tenantId?: string | null): HeadersInit {
     return token ? { 'X-Ezpw-Gateway-Token': token } : {};
 }
 
-/** Electron 매장 PC — 반드시 회사 archiveRoot 만 게이트웨이에 바인딩 */
+/** Electron 매장 PC — 반드시 회사 archiveRoot 만 게이트웨이에 바인딩 (가능하면 UNC) */
 export async function refreshLocalGateway(
     archiveRoot: string | null,
     tenantId: string | null
@@ -58,7 +58,18 @@ export async function refreshLocalGateway(
         return null;
     }
     try {
-        const boundRoot = archiveRoot?.replace(/[\\/]$/, '') || null;
+        let root = archiveRoot?.replace(/[\\/]$/, '') || null;
+        if (root && window.electron.resolveUncPath) {
+            try {
+                const r = await window.electron.resolveUncPath(root);
+                if (r?.ok && r.path && String(r.path).startsWith('\\\\')) {
+                    root = r.path.replace(/[\\/]$/, '');
+                }
+            } catch {
+                /* keep original */
+            }
+        }
+        const boundRoot = root;
         await window.electron.gatewaySetConfig({
             archiveRoot: boundRoot,
             tenantId,

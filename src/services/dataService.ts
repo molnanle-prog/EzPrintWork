@@ -25,6 +25,10 @@ import {
     getArchiveRootPath,
     getEffectiveArchiveRootPath,
     getTenantArchiveRootFromSettings,
+    isDriveLetterPath,
+    isNasOrNetworkPath,
+    isUncPath,
+    resolveArchivePathToUnc,
     setArchiveRootPath,
     setCompanyArchiveRootOverride,
     TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
@@ -785,7 +789,25 @@ export class DataService {
             return true;
         }
         void forceWriteProbe;
-        const path = getEffectiveArchiveRootPath()?.trim() || null;
+
+        // Z: 등 매핑 드라이브로 저장된 회사 경로 → UNC 자동 교정(관리자)
+        try {
+            await this.maybeCorrectDriveLetterArchiveRoot();
+        } catch (e) {
+            console.warn('[DataService] maybeCorrectDriveLetterArchiveRoot:', e);
+        }
+
+        let path = getEffectiveArchiveRootPath()?.trim() || null;
+        // 게이트웨이/헬스 직전 — 로컬에 매핑이 있으면 UNC로 풀어 접근·비교
+        if (path && isDriveLetterPath(path)) {
+            try {
+                const resolved = await resolveArchivePathToUnc(path);
+                if (resolved.ok && isUncPath(resolved.path)) {
+                    path = resolved.path;
+                    setCompanyArchiveRootOverride(path);
+                }
+            } catch { /* keep original */ }
+        }
         this.companyNasHealthPath = path;
         if (!path) {
             const configured = !!getTenantArchiveRootFromSettings(this.getSettingsObj());
@@ -4323,11 +4345,26 @@ export class DataService {
         await this.updateSetting('quoteTemplate', template);
     }
 
-    /** 매장 NAS 경로 — Firestore settings에 저장해 모든 PC가 동일 경로 사용 */
+    /** 매장 NAS 경로 — Firestore settings에 저장해 모든 PC가 동일 UNC 경로 사용 */
     async saveArchiveRootPath(archiveRootPath: string): Promise<void> {
-        const path = archiveRootPath?.trim();
-        if (!path) return;
+        const raw = archiveRootPath?.trim();
+        if (!raw) return;
 
+        const resolved = await resolveArchivePathToUnc(raw);
+        if (!resolved.ok) {
+            throw new Error(resolved.error || 'NAS 경로를 UNC로 변환하지 못했습니다.');
+        }
+        // NAS/네트워크로 쓰는 경로(D~Z 매핑)만 UNC 강제 — C: 로컬 기본 폴더는 허용
+        if (isNasOrNetworkPath(raw) || isNasOrNetworkPath(resolved.path)) {
+            if (!isUncPath(resolved.path)) {
+                throw new Error(
+                    resolved.error ||
+                        '회사 NAS는 네트워크 절대경로(\\\\서버\\공유)로만 저장할 수 있습니다.'
+                );
+            }
+        }
+
+        const path = resolved.path;
         setArchiveRootPath(path);
         setCompanyArchiveRootOverride(path);
         this.lastAppliedArchiveRootPath = path;
@@ -4361,6 +4398,35 @@ export class DataService {
 
         void this.checkCompanyNasHealth(true);
         void this.refreshStoreGateway();
+    }
+
+    /** Firestore에 Z: 등 드라이브 경로가 남아 있으면 Electron 관리자 PC에서 UNC로 1회 교정 */
+    private archiveUncCorrectAttempted = false;
+    async maybeCorrectDriveLetterArchiveRoot(): Promise<string | null> {
+        if (this.archiveUncCorrectAttempted) return null;
+        if (!this.getIsElectron() || !this.tenantId || !this.isSyncAdmin()) return null;
+        const current = getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() || null;
+        if (!current || !isDriveLetterPath(current) || !isNasOrNetworkPath(current)) return null;
+
+        this.archiveUncCorrectAttempted = true;
+        try {
+            const resolved = await resolveArchivePathToUnc(current);
+            if (!resolved.ok || !isUncPath(resolved.path)) {
+                console.warn('[DataService] archive Z:→UNC auto-correct skipped:', resolved.error);
+                return null;
+            }
+            if (this.pathsEqualIgnoreSlash(current, resolved.path)) return null;
+            await this.saveArchiveRootPath(resolved.path);
+            console.log(`[DataService] archive root auto-corrected: ${current} → ${resolved.path}`);
+            toast.success('회사 NAS 경로를 네트워크 절대경로(UNC)로 교정했습니다.', {
+                description: resolved.path,
+                duration: 8000,
+            });
+            return resolved.path;
+        } catch (e) {
+            console.warn('[DataService] archive UNC auto-correct failed:', e);
+            return null;
+        }
     }
 
     /** 사내 웹/태블릿 — LAN 게이트웨이 URL (Storage 폴백 전 우선) */

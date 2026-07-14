@@ -113,30 +113,87 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
 });
 
-// --- 드라이브 문자 -> 원격 UNC 경로 자동 변환 헬퍼 함수 ---
+// --- 드라이브 문자 -> 원격 UNC(네트워크 절대경로) 변환 ---
+function joinUncBase(uncBase, relativePath) {
+    const base = String(uncBase || '').replace(/[\\/]+$/, '');
+    const rel = String(relativePath || '').replace(/^[\\/]+/, '');
+    if (!rel) return base;
+    // path.win32.join이 UNC(//server/share)를 깨뜨리지 않도록 직접 결합
+    return `${base}\\${rel}`;
+}
+
+function resolveMappedDriveViaNetUse(driveLetter) {
+    const { execSync } = require('child_process');
+    const drive = `${driveLetter.toUpperCase()}:`;
+    const output = execSync(`net use ${drive}`, {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+        windowsHide: true,
+    });
+    const remoteMatch = output.match(/(?:Remote name|원격 이름)\s+([^\r\n]+)/i);
+    if (!remoteMatch) return null;
+    const unc = remoteMatch[1].trim();
+    return unc.startsWith('\\\\') ? unc : null;
+}
+
+function resolveMappedDriveViaPowerShell(driveLetter) {
+    const { execSync } = require('child_process');
+    const drive = `${driveLetter.toUpperCase()}:`;
+    // Get-SmbMapping 우선, 실패 시 WScript.Network EnumNetworkDrives
+    const script = [
+        `$d='${drive}'`,
+        `try { $m=Get-SmbMapping -LocalPath $d -EA SilentlyContinue; if($m.RemotePath){ Write-Output $m.RemotePath; exit 0 } } catch {}`,
+        `$n=New-Object -ComObject WScript.Network`,
+        `$e=$n.EnumNetworkDrives()`,
+        `for($i=0;$i -lt $e.Count();$i+=2){ if($e.Item($i) -ieq $d){ Write-Output $e.Item($i+1); exit 0 } }`,
+    ].join('; ');
+    const output = execSync(
+        `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${JSON.stringify(script)}`,
+        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, timeout: 10000 }
+    );
+    const unc = String(output || '')
+        .trim()
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .find((l) => l.startsWith('\\\\'));
+    return unc || null;
+}
+
 function resolveUncPath(localPath) {
     if (!localPath) return localPath;
-    const match = localPath.match(/^([A-Za-z]):\\(.*)/);
+    const normalized = String(localPath).replace(/\//g, '\\');
+    if (normalized.startsWith('\\\\')) return normalized;
+
+    const match = normalized.match(/^([A-Za-z]):\\(.*)$/);
     if (!match) return localPath;
-    
-    const drive = match[1].toUpperCase() + ':';
+
+    const driveLetter = match[1];
     const relativePath = match[2];
-    
+
     try {
-        const { execSync } = require('child_process');
-        const output = execSync(`net use ${drive}`, { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'] });
-        const remoteMatch = output.match(/(?:Remote name|원격 이름)\s+([^\r\n]+)/i);
-        if (remoteMatch) {
-            const uncBase = remoteMatch[1].trim();
-            // Windows 경로 백슬래시 슬래시 구분선 안전 결합
-            const joined = path.join(uncBase, relativePath);
+        let uncBase = null;
+        try {
+            uncBase = resolveMappedDriveViaNetUse(driveLetter);
+        } catch (e) {
+            console.warn(`[UNC Resolver] net use failed for ${driveLetter}:`, e.message || e);
+        }
+        if (!uncBase) {
+            try {
+                uncBase = resolveMappedDriveViaPowerShell(driveLetter);
+            } catch (e) {
+                console.warn(`[UNC Resolver] PowerShell mapping failed for ${driveLetter}:`, e.message || e);
+            }
+        }
+        if (uncBase) {
+            const joined = joinUncBase(uncBase, relativePath);
             console.log(`[UNC Resolver] Resolved ${localPath} -> ${joined}`);
             return joined;
         }
     } catch (e) {
-        // Fail silent, return original
+        console.warn('[UNC Resolver] unexpected error:', e.message || e);
     }
-    return localPath;
+    console.warn(`[UNC Resolver] Keeping drive path (no mapping found): ${localPath}`);
+    return normalized;
 }
 
 // --- 폴더 연결 및 권한 검사 ---
@@ -172,12 +229,29 @@ ipcMain.handle('select-directory', async () => {
     return canceled ? null : resolveUncPath(filePaths[0]);
 });
 
-// 2. 파일 또는 폴더 선택 (작업 등록용)
+/** 렌더러 저장 직전 — 드라이브 문자를 UNC로 재변환 */
+ipcMain.handle('resolve-unc-path', async (_event, inputPath) => {
+    if (!inputPath || typeof inputPath !== 'string') {
+        return { ok: false, path: inputPath || null, unc: false, error: '경로가 없습니다.' };
+    }
+    const resolved = resolveUncPath(inputPath.trim());
+    const unc = typeof resolved === 'string' && resolved.startsWith('\\\\');
+    const stillDrive = typeof resolved === 'string' && /^[A-Za-z]:\\/.test(resolved);
+    return {
+        ok: true,
+        path: resolved,
+        unc,
+        stillDrive,
+        changed: resolved !== inputPath.trim().replace(/\//g, '\\'),
+    };
+});
+
+// 2. 파일 또는 폴더 선택 (작업 등록용) — UNC 강제
 ipcMain.handle('select-file-or-folder', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({
         properties: ['openFile', 'openDirectory']
     });
-    return canceled ? null : filePaths[0];
+    return canceled ? null : resolveUncPath(filePaths[0]);
 });
 
 // 2.1. 새 데이터베이스 파일 생성

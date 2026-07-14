@@ -404,14 +404,24 @@ export class JobArchiveService {
     async migrateOperationalFiles(
         oldRoot: string,
         newRoot: string
-    ): Promise<{ ok: boolean; copied: string[]; skipped: string[]; error?: string }> {
+    ): Promise<{ ok: boolean; copied: string[]; skipped: string[]; error?: string; sameLocation?: boolean }> {
         const copied: string[] = [];
         const skipped: string[] = [];
         if (!this.isElectron() || !oldRoot?.trim() || !newRoot?.trim()) {
             return { ok: false, copied, skipped, error: '경로 이전이 가능한 환경이 아닙니다.' };
         }
         if (oldRoot.replace(/[\\/]+$/, '') === newRoot.replace(/[\\/]+$/, '')) {
-            return { ok: true, copied, skipped };
+            return { ok: true, copied, skipped, sameLocation: true };
+        }
+
+        // Z: 와 \\server\share 가 동일 물리 경로면 복사 없이 성공 (경로 문자열만 바꾸면 됨)
+        try {
+            const { archivePathsSamePhysicalLocation } = await import('../utils/archiveStorage');
+            if (await archivePathsSamePhysicalLocation(oldRoot, newRoot)) {
+                return { ok: true, copied, skipped, sameLocation: true };
+            }
+        } catch {
+            /* fall through to copy */
         }
 
         const fileNames = [

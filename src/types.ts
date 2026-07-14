@@ -378,7 +378,16 @@ export interface IElectronAPI {
   checkFileExists: (path: string) => Promise<boolean>; 
   exists: (path: string) => Promise<boolean>;
   selectDirectory: () => Promise<string | null>; 
-  selectFileOrFolder: () => Promise<string | null>; 
+  selectFileOrFolder: () => Promise<string | null>;
+  /** 드라이브 문자(Z:) → UNC(\\server\share) 변환 */
+  resolveUncPath?: (path: string) => Promise<{
+    ok: boolean;
+    path: string | null;
+    unc: boolean;
+    stillDrive?: boolean;
+    changed?: boolean;
+    error?: string;
+  }>;
   createDatabaseFile: (content: string) => Promise<string | null>; 
   startWatch: (path: string) => void; 
   onFileChange: (callback: (path: string) => void) => void;

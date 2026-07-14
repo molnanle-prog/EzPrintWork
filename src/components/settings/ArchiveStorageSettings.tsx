@@ -11,10 +11,15 @@ import { useDialog } from '../../contexts/DialogContext';
 import {
     ARCHIVE_FILE_NAME,
     DEFAULT_ARCHIVE_FOLDER_NAME,
+    archivePathsSamePhysicalLocation,
     getArchiveRootPath,
+    isDriveLetterPath,
     isNasOrNetworkPath,
+    isUncPath,
     markArchiveSetupDone,
+    resolveArchivePathToUnc,
     setArchiveRootPath,
+    setCompanyArchiveRootOverride,
     TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
 } from '../../utils/archiveStorage';
 
@@ -63,12 +68,24 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
 
     const persistArchivePath = async (path: string | null) => {
         if (!path?.trim() || !tenantId || !canManageCompany) return;
-        await db.saveArchiveRootPath(path.trim());
+        const resolved = await resolveArchivePathToUnc(path.trim());
+        if (!resolved.ok) {
+            throw new Error(resolved.error || 'UNC 경로 변환 실패');
+        }
+        if (isNasOrNetworkPath(path) && !isUncPath(resolved.path)) {
+            throw new Error(
+                '회사 NAS는 네트워크 절대경로(\\\\서버\\공유)로만 저장됩니다.\n' +
+                'Z: 같은 드라이브 문자 대신 탐색기에서 \\\\nas2dual\\... 경로로 열어 선택해 주세요.'
+            );
+        }
+        await db.saveArchiveRootPath(resolved.path);
+        setSelectedPath(resolved.path);
         await refreshGatewayInfo();
         const lanUrl = (await getLocalGatewayInfo())?.lanUrls?.[0];
         if (lanUrl) {
             await db.saveStoreGatewayUrl(lanUrl);
         }
+        return resolved;
     };
 
     useEffect(() => {
@@ -79,16 +96,36 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
         }).catch(() => {});
     }, [isElectron]);
 
+    const showStatus = (message: string, type: 'info' | 'success' | 'error') => {
+        setStatusMessage(message);
+        setStatusType(type);
+    };
+
+    // 이미 Firestore에 Z: 가 있으면 관리자 Electron에서 UNC로 자동 교정 시도
+    useEffect(() => {
+        if (!isElectron || !canManageCompany || !companyPath) return;
+        if (!isDriveLetterPath(companyPath) || !isNasOrNetworkPath(companyPath)) return;
+        void (async () => {
+            try {
+                const corrected = await db.maybeCorrectDriveLetterArchiveRoot();
+                if (corrected) {
+                    setSelectedPath(corrected);
+                    showStatus(
+                        `드라이브 경로를 네트워크 절대경로로 교정했습니다.\n${corrected}`,
+                        'success'
+                    );
+                }
+            } catch (e) {
+                console.warn('[ArchiveStorageSettings] UNC auto-correct:', e);
+            }
+        })();
+    }, [isElectron, canManageCompany, companyPath]);
+
     useEffect(() => {
         if (selectedPath) {
             setShowNasGuide(isNasOrNetworkPath(selectedPath));
         }
     }, [selectedPath]);
-
-    const showStatus = (message: string, type: 'info' | 'success' | 'error') => {
-        setStatusMessage(message);
-        setStatusType(type);
-    };
 
     const handleSelectFolder = async () => {
         if (!isElectron || !canManageCompany) return;
@@ -112,31 +149,77 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
             const picked = await window.electron.selectDirectory();
             if (!picked) return;
 
-            if (currentRoot && currentRoot.replace(/[\\/]+$/, '') !== picked.replace(/[\\/]+$/, '')) {
-                showStatus('기존 NAS 자료를 새 폴더로 복사하는 중…', 'info');
-                const mig = await jobArchiveService.migrateOperationalFiles(currentRoot, picked);
-                if (!mig.ok) {
-                    showStatus(mig.error || '데이터 복사에 실패했습니다.', 'error');
-                    await showAlert(
-                        `자료 자동 이전이 실패해 경로를 바꿀 수 없습니다.\n${mig.error || 'unknown'}\n\n` +
-                        '원본 폴더에 접근 가능한지 확인한 뒤 다시 시도해 주세요.'
-                    );
-                    return;
-                }
-                setMigrateFromPath(currentRoot);
+            const uncCheck = await resolveArchivePathToUnc(picked);
+            if ((isNasOrNetworkPath(picked) || isDriveLetterPath(picked)) && !uncCheck.ok) {
+                showStatus(uncCheck.error || 'UNC 변환 실패', 'error');
+                await showAlert(uncCheck.error || '네트워크 절대경로로 변환하지 못했습니다.');
+                return;
+            }
+            const effectivePicked = uncCheck.ok ? uncCheck.path : picked;
+            if (uncCheck.changed && isUncPath(effectivePicked)) {
                 showStatus(
-                    `자료 이전 완료 · 복사 ${mig.copied.length}개` +
-                    (mig.skipped.length ? ` · 이미 있음 ${mig.skipped.length}개` : '') +
-                    '\n「연결 테스트 후 회사에 저장」을 눌러 새 경로를 확정하세요.\n' +
-                    '옛 폴더 정리는 관리자가 직접 하시면 됩니다.',
+                    `드라이브 문자를 네트워크 경로로 변환했습니다.\n${effectivePicked}`,
+                    'info'
+                );
+            }
+
+            const samePhysical =
+                !!currentRoot &&
+                (await archivePathsSamePhysicalLocation(currentRoot, effectivePicked));
+
+            if (currentRoot && !samePhysical) {
+                showStatus('기존 NAS 자료를 새 폴더로 복사하는 중…', 'info');
+                const mig = await jobArchiveService.migrateOperationalFiles(currentRoot, effectivePicked);
+                if (!mig.ok) {
+                    // 새 경로에 이미 데이터 있고 접근 가능하면 Z→UNC 교정처럼 강제 진행 허용
+                    const destOk = await window.electron.checkDirectoryStatus?.(effectivePicked);
+                    const forceOk = await showConfirm(
+                        `자료 자동 이전이 실패했습니다.\n${mig.error || 'unknown'}\n\n` +
+                        (destOk?.success
+                            ? '새 경로에는 접근할 수 있습니다. 복사 없이 회사 경로만 UNC로 바꿀까요?\n(같은 NAS를 Z:와 \\\\서버\\공유 로만 다르게 적은 경우가 해당됩니다.)'
+                            : '새 폴더 접근도 확인되지 않았습니다. 그래도 경로만 저장할까요?')
+                    );
+                    if (!forceOk) {
+                        showStatus(mig.error || '데이터 복사에 실패했습니다.', 'error');
+                        return;
+                    }
+                    showStatus(
+                        '복사 없이 경로만 변경합니다. 「연결 테스트 후 회사에 저장」을 눌러 확정하세요.',
+                        'info'
+                    );
+                } else if (mig.sameLocation) {
+                    showStatus(
+                        '같은 NAS입니다. 경로 표기만 네트워크 절대경로(UNC)로 바꿉니다.\n「연결 테스트 후 회사에 저장」을 눌러 주세요.',
+                        'success'
+                    );
+                } else {
+                    setMigrateFromPath(currentRoot);
+                    showStatus(
+                        `자료 이전 완료 · 복사 ${mig.copied.length}개` +
+                        (mig.skipped.length ? ` · 이미 있음 ${mig.skipped.length}개` : '') +
+                        '\n「연결 테스트 후 회사에 저장」을 눌러 새 경로를 확정하세요.\n' +
+                        '옛 폴더 정리는 관리자가 직접 하시면 됩니다.',
+                        'success'
+                    );
+                }
+            } else if (samePhysical && currentRoot && !isUncPath(currentRoot) && isUncPath(effectivePicked)) {
+                showStatus(
+                    '같은 NAS입니다. Z: 대신 네트워크 절대경로(UNC)로 저장됩니다.\n「연결 테스트 후 회사에 저장」을 눌러 확정하세요.',
                     'success'
                 );
             }
 
-            setSelectedPath(picked);
-            setArchiveRootPath(picked);
+            setSelectedPath(effectivePicked);
+            setArchiveRootPath(effectivePicked);
+            // Firestore 회사 경로가 Z:여도 로컬 override를 UNC로 맞춰 테스트가 새 경로를 쓰게 함
+            setCompanyArchiveRootOverride(effectivePicked);
             if (!currentRoot) {
-                showStatus('폴더를 선택했습니다. 연결 테스트를 진행해 주세요.', 'info');
+                showStatus(
+                    isUncPath(effectivePicked)
+                        ? `폴더를 선택했습니다 (UNC).\n${effectivePicked}\n연결 테스트를 진행해 주세요.`
+                        : '폴더를 선택했습니다. 연결 테스트를 진행해 주세요.',
+                    'info'
+                );
             }
         } catch (e: unknown) {
             showStatus(`폴더 선택 오류: ${e instanceof Error ? e.message : String(e)}`, 'error');
@@ -157,10 +240,22 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
         setTesting(true);
         showStatus('폴더 읽기/쓰기 테스트 중…', 'info');
         try {
-            const pathToSave = selectedPath || defaultPathLabel;
-            if (pathToSave) {
-                setArchiveRootPath(pathToSave);
+            let pathToSave = selectedPath || defaultPathLabel;
+            if (!pathToSave) {
+                showStatus('저장할 경로가 없습니다.', 'error');
+                return;
             }
+            // 저장 전 UNC 확정 — 화면에 UNC를 골라도 override가 옛 Z:면 테스트가 Z:로 감
+            const resolved = await resolveArchivePathToUnc(pathToSave);
+            if (isNasOrNetworkPath(pathToSave) && !resolved.ok) {
+                showStatus(resolved.error || 'UNC 변환 실패', 'error');
+                await showAlert(resolved.error || '네트워크 절대경로로 변환하지 못했습니다.');
+                return;
+            }
+            pathToSave = resolved.ok ? resolved.path : pathToSave;
+            setSelectedPath(pathToSave);
+            setArchiveRootPath(pathToSave);
+            setCompanyArchiveRootOverride(pathToSave);
 
             const ready = await jobArchiveService.ensureArchiveFolderReady(tenantId);
             if (!ready.ok) {
@@ -169,21 +264,27 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
             }
             markArchiveSetupDone();
             const flushed = await jobArchiveService.flushPendingQueue(tenantId);
-            if (pathToSave) await persistArchivePath(pathToSave);
+            const persisted = await persistArchivePath(pathToSave);
+            const savedPath = persisted?.path || pathToSave;
 
             const fromNote = migrateFromPath
                 ? `\n(이전 경로: ${migrateFromPath})`
                 : '';
+            const uncNote = isUncPath(savedPath)
+                ? `\n저장 경로(UNC): ${savedPath}`
+                : '';
             showStatus(
                 flushed > 0
-                    ? `설정 완료 · 회사 공통 NAS 경로로 저장됨 (다른 PC 자동 적용) · 대기 ${flushed}건 반영${fromNote}`
-                    : `회사 공통 NAS 경로가 저장되었습니다. 다른 PC·직원은 자동으로 같은 경로를 사용합니다.${fromNote}`,
+                    ? `설정 완료 · 회사 공통 NAS(UNC)로 저장됨 · 대기 ${flushed}건 반영${uncNote}${fromNote}`
+                    : `회사 공통 NAS 경로가 네트워크 절대경로로 저장되었습니다. 다른 PC·직원은 같은 경로를 사용합니다.${uncNote}${fromNote}`,
                 'success'
             );
             setMigrateFromPath(null);
             onConfigured?.();
         } catch (e: unknown) {
-            showStatus(`테스트 실패: ${e instanceof Error ? e.message : String(e)}`, 'error');
+            const msg = e instanceof Error ? e.message : String(e);
+            showStatus(`테스트/저장 실패: ${msg}`, 'error');
+            await showAlert(msg);
         } finally {
             setTesting(false);
         }
@@ -217,8 +318,10 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                     <Lock className="w-5 h-5 text-slate-500 mt-0.5 shrink-0" />
                     <div>
                         <h3 className="font-bold text-slate-800 dark:text-slate-200">회사 NAS 경로 (관리자 설정)</h3>
-                        <p className="text-xs text-slate-600 dark:text-slate-400 mt-1 leading-relaxed">
-                            NAS 경로는 <strong>관리자가 1회 설정</strong>하면 모든 PC·직원에게 자동 적용됩니다. 직원은 경로를 변경할 수 없습니다.
+                        <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                            NAS 경로는 <strong>관리자가 1회 설정</strong>하면 모든 PC·직원에게 자동 적용됩니다.
+                            저장 시 <strong>네트워크 절대경로(UNC, \\서버\공유)</strong>로 저장되어 Z: 드라이브 유무와 무관하게 동일하게 보입니다.
+                            직원은 경로를 변경할 수 없습니다.
                         </p>
                     </div>
                 </div>
@@ -254,7 +357,8 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                         회사 NAS 경로 (전 PC 공통)
                     </h3>
                     <p className="text-xs text-slate-600 dark:text-slate-400 mt-2 leading-relaxed">
-                        <strong>관리자가 1회 설정</strong>하면 Firestore에 저장되고, <strong>모든 PC·직원 앱이 같은 NAS</strong>를 강제로 사용합니다 ({ARCHIVE_FILE_NAME}, situation-mirror.json).
+                        <strong>관리자가 1회 설정</strong>하면 Firestore에 <strong>네트워크 절대경로(UNC)</strong>로 저장되고, <strong>모든 PC·직원 앱이 같은 NAS</strong>를 사용합니다 ({ARCHIVE_FILE_NAME}, situation-mirror.json).
+                        Z: 드라이브 매핑 여부와 관계없이 직원·관리자 화면이 동일해야 합니다.
                         직원 목록은 Firestore, <strong>작업·거래처는 이 NAS</strong>에 있습니다.
                     </p>
                 </div>
@@ -351,10 +455,11 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
                         NAS 또는 사내 공유 폴더 연결 방법
                     </p>
                     <ol className="list-decimal pl-4 space-y-2">
-                        <li>Windows 탐색기에서 NAS 공유 폴더를 먼저 연결합니다. (예: <code>\\NAS\ezprint</code> 또는 드라이브 <code>Z:</code>)</li>
-                        <li>「NAS 폴더 선택」→ 「연결 테스트 후 회사에 저장」 — <strong>한 번만</strong> 하면 됩니다.</li>
+                        <li>Windows 탐색기에서 NAS를 <strong>\\서버\공유</strong> 형태로 엽니다. (예: <code>\\nas2dual\공유폴더</code>)</li>
+                        <li>드라이브 문자(Z:)로 선택해도 저장 시 자동으로 UNC로 변환됩니다. 변환 실패 시 Z: 대신 UNC로 직접 선택해 주세요.</li>
+                        <li>「NAS 폴더 선택」→ 「연결 테스트 후 회사에 저장」 — <strong>한 번만</strong> 하면 전 PC가 같은 UNC를 사용합니다.</li>
                         <li>경로를 바꿀 때는 기존 파일 복사를 확인한 뒤 저장하세요.</li>
-                        <li>다른 PC·직원은 로그인만 하면 <strong>같은 경로가 자동 적용</strong>됩니다 ({TENANT_ARCHIVE_ROOT_SETTINGS_KEY}).</li>
+                        <li>다른 PC·직원은 로그인만 하면 <strong>같은 UNC 경로가 자동 적용</strong>됩니다 ({TENANT_ARCHIVE_ROOT_SETTINGS_KEY}).</li>
                     </ol>
                 </div>
             )}
