@@ -116,6 +116,11 @@ function setupAutoUpdater(win) {
     autoUpdater.autoInstallOnAppQuit = false;
     autoUpdater.allowDowngrade = false;
     autoUpdater.autoUpdaterCacheDirName = 'ezprintwork-updater';
+    // CDN/프록시 캐시로 stale latest.yml을 받지 않도록
+    autoUpdater.requestHeaders = {
+        'Cache-Control': 'no-cache',
+        Pragma: 'no-cache',
+    };
 
     autoUpdater.setFeedURL({
         provider: 'generic',

@@ -3,7 +3,6 @@ import React, { useState, useEffect } from 'react';
 import { db } from '../../services/dataService';
 import { StaffManager } from '../staff/StaffManager';
 import { PaperManager } from './PaperManager';
-import { ClientManager } from './ClientManager';
 import { PriceManager } from './PriceManager';
 import { BackupManager } from './BackupManager';
 import { ArchiveManager } from './ArchiveManager';
@@ -14,7 +13,7 @@ import { SmsManager } from './SmsManager'; // Added
 import { ProfileManager } from './ProfileManager';
 import { ProcessingManager } from './ProcessingManager';
 import { PlanManager } from './PlanManager';
-import { Users, ScrollText, Building2, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown, Archive, Info } from 'lucide-react';
+import { Users, ScrollText, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown, Archive, Info } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { isRootSettingsTab, isStaffOperationsSettingsTab } from '../../utils/adminAccess';
 
@@ -57,7 +56,6 @@ export const SettingsView: React.FC = () => {
         case 'product': return <ProductManager />; 
         case 'processing': return <ProcessingManager />;
         case 'paper': return isAdmin ? <PaperManager /> : null;
-        case 'client': return <ClientManager />;
         case 'price': return isAdmin ? <PriceManager /> : null;
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
         case 'archive': return canAccessRootSettings ? <ArchiveManager /> : null;
@@ -75,7 +73,6 @@ export const SettingsView: React.FC = () => {
     { id: 'product', label: '상품 관리', icon: Package, adminOnly: false, staffAllowed: true, rootOnly: false, tooltip: '상품 규격/용지/가공 옵션 관리' }, 
     { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: false, staffAllowed: true, rootOnly: false, tooltip: '후가공 항목 추가·수정·정리' },
     { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '재고 용지 등록·재고량·단가 관리' },
-    { id: 'client', label: '거래처', icon: Building2, adminOnly: false, staffAllowed: true, rootOnly: false, tooltip: '거래처/담당자/연락처 관리' },
     { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '기본 단가·견적 계산 기준 설정' },
     { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '문자 발송 연동키·발신 정보 설정' },
     { id: 'archive', label: '이력 아카이브', icon: Archive, adminOnly: true, staffAllowed: false, rootOnly: true, tooltip: '자동 운영: 1년 초과 이력 보관 경로/NAS 설정' },

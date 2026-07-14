@@ -1,14 +1,14 @@
 name: Release Desktop App
 
+# 로컬 deploy:app(GH_TOKEN)이 Release에 exe+latest.yml을 올린 뒤
+# 태그 푸시로 Actions가 다시 빌드하면 sha512이 어긋나 자동업데이트가 실패합니다.
+# → 태그 자동 트리거 제거. 필요 시 Actions 탭에서 workflow_dispatch만 사용.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'package.json 버전과 동일해야 함 (예: 1.2.6)'
+        description: 'package.json 버전과 동일해야 함 (예: 1.7.2)'
         required: false
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write

@@ -233,13 +233,33 @@ async function writeDownloadManifestFromGithub({
     let yml = ymlAsset;
     yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
     yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
+    if (!/sha512:\s+\S+/.test(yml)) {
+      throw new Error('GitHub latest.yml에 sha512이 없습니다 — 자동업데이트 무결성 검사용');
+    }
     fs.writeFileSync(ymlPath, yml);
     log('✓ latest.yml (GitHub Release) → ez-hub.kr/downloads/', colors.green);
   } catch (err) {
-    log(`* latest.yml GitHub 복사 실패 — manifest만 적용: ${err.message}`, colors.yellow);
-    const fallbackYml = `version: ${appVersion}\nfiles:\n  - url: ${githubDownloadUrl}\n    size: ${size}\npath: ${setupExeName}\nreleaseDate: '${releaseDate || new Date().toISOString()}'\n`;
-    fs.writeFileSync(ymlPath, fallbackYml);
-    log('✓ latest.yml (fallback) 작성', colors.yellow);
+    log(`* latest.yml GitHub 복사 실패: ${err.message}`, colors.yellow);
+    // 로컬 electron-builder latest.yml(sha512 포함)을 쓰고 URL만 GitHub로 교체
+    const localYmlPath = path.join(
+      path.resolve(__dirname, '..'),
+      process.env.ELECTRON_BUILD_OUTPUT || 'release',
+      'latest.yml'
+    );
+    if (fs.existsSync(localYmlPath)) {
+      let yml = fs.readFileSync(localYmlPath, 'utf-8');
+      yml = yml.replace(/^path: .+$/m, `path: ${setupExeName}`);
+      yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubDownloadUrl}`);
+      if (!/sha512:\s+\S+/.test(yml)) {
+        throw new Error('로컬 latest.yml에도 sha512이 없습니다. electron-builder 산출물을 확인하세요.');
+      }
+      fs.writeFileSync(ymlPath, yml);
+      log('✓ latest.yml (로컬 builder 산출물, sha512 유지)', colors.green);
+    } else {
+      throw new Error(
+        `latest.yml 동기화 실패 — sha512 없는 fallback은 쓰지 않습니다: ${err.message}`
+      );
+    }
   }
 }
 

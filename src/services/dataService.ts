@@ -529,6 +529,9 @@ export class DataService {
     private quotesBootstrapInProgress = false;
     private lastWriteErrorToastAt = 0;
     private lastWriteErrorToastKey = '';
+    /** LicenseFlow 버전 표용 — NAS 모드 포함 tenant 활동 보고 쓰로틀 */
+    private lastTenantActivityAt = 0;
+    private static readonly TENANT_ACTIVITY_MIN_INTERVAL_MS = 2 * 60 * 1000;
     private syncUserRole: 'admin' | 'staff' | 'superadmin' | null = null;
     /** jobs 핫 캐시 — 로그인 1회 pull + pulse 시 변경분만 getDoc */
     private operationalJobs: Job[] = [];
@@ -2430,7 +2433,7 @@ export class DataService {
         return false;
     }
 
-    /** staff·settings — Electron 로컬 DB가 있으면 클라우드 실패 시 계속 진행 */
+    /** staff·settings — Electron 로컬 DB가 있어도 staff는 Firestore SSOT라 반드시 재시도 */
     private async pullCloudConfigDocs(softFail: boolean): Promise<void> {
         try {
             await this.pullCollectionDocs('staff');
@@ -2439,7 +2442,29 @@ export class DataService {
         } catch (error) {
             if (!softFail) throw error;
             console.warn('[DataService] cloud staff/settings pull skipped (local fallback):', error);
+            // soft-fail 시에도 직원 목록은 NAS/SQLite에 없으므로 별도 재시도
+            try {
+                await this.pullCollectionDocs('staff');
+            } catch (staffErr) {
+                console.warn('[DataService] staff retry after soft-fail also failed:', staffErr);
+            }
+            try {
+                await this.pullCollectionDocs('settings');
+                this.enforceCompanyArchiveRoot();
+            } catch (settingsErr) {
+                console.warn('[DataService] settings retry after soft-fail also failed:', settingsErr);
+            }
         }
+
+        // 직원이 비어 있으면 한 번 더 (일시 permission/네트워크)
+        if (((this.data['staff'] || []) as Staff[]).length === 0) {
+            try {
+                await this.pullCollectionDocs('staff');
+            } catch (emptyRetryErr) {
+                console.warn('[DataService] staff empty-retry failed:', emptyRetryErr);
+            }
+        }
+
         await this.ensureCompanyInfoFromCloud().catch((e) =>
             console.warn('[DataService] companyInfo refresh skipped:', e)
         );
@@ -2891,28 +2916,44 @@ export class DataService {
     }
 
     async updateTenantActivity() {
-        if (!this.tenantId || !this.isSyncAdmin() || this.isLocalPrimaryMode()) return;
+        // NAS/로컬 우선에서도 버전·활동만 Firestore에 보고 (작업·거래처는 미포함)
+        if (!this.tenantId || !this.isSyncAdmin()) return;
+        const now = Date.now();
+        if (now - this.lastTenantActivityAt < DataService.TENANT_ACTIVITY_MIN_INTERVAL_MS) return;
+        this.lastTenantActivityAt = now;
+
         try {
             const companyName = this.getCompanyInfo().name || 'EzPrintWork';
             const jobsCount = this.data['jobs']?.length || 0;
             const staffCount = this.data['staff']?.filter(s => s.active && !s.isDeleted).length || 0;
             const clientsCount = this.data['clients']?.length || 0;
-            
+            let reportVersion = APP_VERSION;
+            try {
+                if (typeof window !== 'undefined' && window.electron?.getAppVersion) {
+                    const installed = await window.electron.getAppVersion();
+                    if (installed?.trim()) reportVersion = installed.trim().replace(/^v/i, '');
+                }
+            } catch {
+                /* APP_VERSION fallback */
+            }
+
             const tenantDocRef = doc(firestore, 'tenants', this.tenantId);
             await setDoc(tenantDocRef, {
                 companyName,
                 lastActiveAt: new Date().toISOString(),
-                appVersion: APP_VERSION,
-                lastAppVersion: APP_VERSION,
+                appVersion: reportVersion,
+                lastAppVersion: reportVersion,
                 stats: {
                     jobsCount,
                     staffCount,
                     clientsCount,
-                    appVersion: APP_VERSION,
+                    appVersion: reportVersion,
                 }
             }, { merge: true });
         } catch (e) {
             console.error("[LicenseMonitor] Failed to update tenant activity:", e);
+            // 실패 시 쓰로틀 해제해 다음 기회에 재시도
+            this.lastTenantActivityAt = 0;
         }
     }
 

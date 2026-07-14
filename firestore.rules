@@ -370,7 +370,12 @@ service cloud.firestore {
 
       // STAFF — 로그인 전 loginId 조회 허용 (비밀번호는 앱에서 검증)
       match /staff/{staffId} {
-        allow read: if isMember(tenantId) || isStaffPreAuthRead() || isStaffEmailAuth() || (!isSignedIn() && isReasonableListQuery());
+        // LicenseFlow 슈퍼관리자·회사 멤버·로그인 전 조회
+        allow read: if isSuperAdmin()
+          || isMember(tenantId)
+          || isStaffPreAuthRead()
+          || isStaffEmailAuth()
+          || (!isSignedIn() && isReasonableListQuery());
         allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
           || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()))
           || (isTenantOwner(tenantId) && request.auth.uid == staffId && isValidId(staffId) && isValidStaff(incoming()));

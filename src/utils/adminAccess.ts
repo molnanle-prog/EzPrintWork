@@ -3,13 +3,13 @@
  *
  * - 메인 관리자 (Tenant Owner): tenants.ownerId — 요금제·백업 포함 전체 회사 관리
  * - 사내 관리자 (Company Admin): staff.isCompanyAdmin + users.role admin — 직원 관리·마스터 데이터·삭제·정리
- * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·상품/후가공·거래처 등록·수정
+ * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·상품/후가공·거래처(사이드 메뉴) 등록·수정
  */
 
 import type { Staff } from '../types';
 
 /** 설정 > 직원도 접근 가능한 운영 메뉴 */
-export const STAFF_OPERATIONS_SETTINGS_TAB_IDS = ['product', 'processing', 'client'] as const;
+export const STAFF_OPERATIONS_SETTINGS_TAB_IDS = ['product', 'processing'] as const;
 
 export type StaffOperationsSettingsTabId = (typeof STAFF_OPERATIONS_SETTINGS_TAB_IDS)[number];
 
@@ -28,7 +28,7 @@ export function isStaffOperationsSettingsTab(tabId: string): tabId is StaffOpera
     return (STAFF_OPERATIONS_SETTINGS_TAB_IDS as readonly string[]).includes(tabId);
 }
 
-/** 상품·후가공·거래처 등록/수정 — 로그인한 회사 구성원 */
+/** 상품·후가공 설정 — 로그인한 회사 구성원 (거래처는 사이드 메뉴) */
 export function canAccessStaffOperationsSettings(ctx: CompanyPermissionContext): boolean {
     return !!ctx.userUid;
 }

@@ -1,4 +1,4 @@
-import { Client, ClientContact } from '../types';
+import { Client, ClientContact, PrepaidLedgerEntry } from '../types';
 import { db } from '../services/dataService';
 import { getPreferredSmsNumber } from './clientSms';
 
@@ -66,12 +66,48 @@ function mergeContacts(primary: Client, secondary: Client): ClientContact[] {
     return merged.length > 0 ? merged : [{ name: '', phone: '', department: '담당자' }];
 }
 
+/** 양쪽 선불 이력을 시간순으로 합치고 balanceAfter를 다시 계산 */
+function mergePrepaidLedgers(primary: Client, secondary: Client): PrepaidLedgerEntry[] | undefined {
+    const rows = [
+        ...(primary.prepaidLedger || []).map((e) => ({ ...e })),
+        ...(secondary.prepaidLedger || []).map((e) => ({ ...e })),
+    ];
+    if (rows.length === 0) return undefined;
+
+    rows.sort((a, b) => {
+        const ta = a.timestamp || '';
+        const tb = b.timestamp || '';
+        if (ta !== tb) return ta.localeCompare(tb);
+        return (a.id || '').localeCompare(b.id || '');
+    });
+
+    let running = 0;
+    return rows.map((entry) => {
+        running += Number(entry.amount) || 0;
+        return { ...entry, balanceAfter: running };
+    });
+}
+
 function buildMergedClient(primary: Client, secondary: Client): Client {
     const contacts = mergeContacts(primary, secondary);
     const primaryContact = contacts[0] || { name: '', phone: '', department: '담당자' };
     const mergedNote = mergeNotes(primary.note, secondary.note, secondary.name);
     const mergeStamp = `[거래처 합침] ${new Date().toLocaleDateString('ko-KR')} '${secondary.name}' → '${primary.name}'`;
     const note = mergedNote ? `${mergedNote}\n${mergeStamp}` : mergeStamp;
+
+    const prepaidLedger = mergePrepaidLedgers(primary, secondary);
+    const prepaidSum =
+        (primary.prepaidBalance || 0) + (secondary.prepaidBalance || 0);
+    const prepaidFromLedger =
+        prepaidLedger && prepaidLedger.length > 0
+            ? prepaidLedger[prepaidLedger.length - 1].balanceAfter
+            : undefined;
+    const prepaidBalance =
+        prepaidFromLedger !== undefined
+            ? prepaidFromLedger
+            : prepaidSum > 0
+              ? prepaidSum
+              : undefined;
 
     const merged: Client = {
         ...primary,
@@ -84,10 +120,8 @@ function buildMergedClient(primary: Client, secondary: Client): Client {
         contacts,
         sendSmsOnComplete: primary.sendSmsOnComplete !== false || secondary.sendSmsOnComplete !== false,
         customSmsNumber: primary.customSmsNumber?.trim() || secondary.customSmsNumber?.trim() || '',
-        prepaidBalance:
-            (primary.prepaidBalance || 0) + (secondary.prepaidBalance || 0) > 0
-                ? (primary.prepaidBalance || 0) + (secondary.prepaidBalance || 0)
-                : undefined,
+        prepaidBalance,
+        prepaidLedger,
     };
 
     if (!merged.customSmsNumber && merged.sendSmsOnComplete !== false) {
@@ -155,4 +189,4 @@ export async function mergeClients(primaryId: string, secondaryId: string): Prom
         contactsMerged: Math.max(contactsMerged, 0),
     };
 }
-
+

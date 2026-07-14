@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2 } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -308,6 +308,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     { id: 'kanban', label: '작업진행', icon: Trello },
     { id: 'calendar', label: '달력', icon: Calendar },
     { id: 'history', label: '작업내역', icon: History },
+    { id: 'customers', label: '거래처관리', icon: Building2 },
     { id: 'quotes', label: '견적서관리', icon: FileText },
     { id: 'payments', label: '결제상황', icon: CreditCard },
   ];

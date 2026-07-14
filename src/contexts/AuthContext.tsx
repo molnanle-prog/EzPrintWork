@@ -66,7 +66,7 @@ interface AuthContextType {
   canManageStaff: boolean;
   canManageClientMaster: boolean;
   canManageInstructions: boolean;
-  /** 상품·후가공·거래처 등록/수정 (일반 직원 포함) */
+  /** 상품·후가공 설정 (일반 직원 포함) */
   canAccessStaffOperationsSettings: boolean;
 }
 

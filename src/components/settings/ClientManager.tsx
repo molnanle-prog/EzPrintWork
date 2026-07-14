@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact, PrepaidLedgerEntry } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History } from 'lucide-react';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History, ArrowUpDown } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
 import {
@@ -13,7 +13,7 @@ import {
   type SmsReceiveMode,
 } from '../../utils/clientSms';
 import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
-import { normalizePrepaidBalance, canDeletePrepaidLedgerEntry } from '../../utils/prepaidBalance';
+import { normalizePrepaidBalance, canDeletePrepaidLedgerEntry, getJobOutstandingAmount } from '../../utils/prepaidBalance';
 import { useAuth } from '../../contexts/AuthContext';
 
 function prepaidLedgerTypeLabel(type: PrepaidLedgerEntry['type']): string {
@@ -27,6 +27,12 @@ function prepaidLedgerTypeLabel(type: PrepaidLedgerEntry['type']): string {
     default:
       return '조정';
   }
+}
+
+type ClientSortKey = 'name' | 'jobs' | 'receivable' | 'prepaid';
+
+function defaultSortDir(key: ClientSortKey): 'asc' | 'desc' {
+  return key === 'name' ? 'asc' : 'desc';
 }
 
 function prepaidLedgerSummary(row: PrepaidLedgerEntry): string {
@@ -48,6 +54,8 @@ export const ClientManager: React.FC = () => {
   const { canManageClientMaster, currentUser } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [sortKey, setSortKey] = useState<ClientSortKey>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
   const [mergePickIds, setMergePickIds] = useState<string[]>([]);
@@ -81,8 +89,11 @@ export const ClientManager: React.FC = () => {
       prepaidBalance: 0,
   });
 
+  const [dataRev, setDataRev] = useState(0);
+
   const loadClients = () => {
       setClients(db.getClients());
+      setDataRev((n) => n + 1);
   };
 
   useEffect(() => {
@@ -91,27 +102,72 @@ export const ClientManager: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
+  /** 거래처명별 작업 건수·미수 합계 (목록 카드용) */
+  const clientListStats = useMemo(() => {
+    const jobCountByName = new Map<string, number>();
+    const receivableByName = new Map<string, number>();
+    for (const job of db.getAllJobs()) {
+      const key = (job.clientName || '').trim();
+      if (!key) continue;
+      jobCountByName.set(key, (jobCountByName.get(key) || 0) + 1);
+      const outstanding = getJobOutstandingAmount(job);
+      if (outstanding > 0) {
+        receivableByName.set(key, (receivableByName.get(key) || 0) + outstanding);
+      }
+    }
+    return { jobCountByName, receivableByName };
+  }, [dataRev]);
+
   const filteredClients = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return clients;
+    const filtered = !q
+      ? [...clients]
+      : clients.filter((client) => {
+          if (client.name.toLowerCase().includes(q)) return true;
+          if (client.contactPerson?.toLowerCase().includes(q)) return true;
+          if (client.phone?.includes(q)) return true;
+          if (client.businessRegistrationNumber?.includes(q)) return true;
+          if (client.address?.toLowerCase().includes(q)) return true;
+          if (client.note?.toLowerCase().includes(q)) return true;
+          if (client.customSmsNumber?.includes(q)) return true;
+          if (client.contacts?.some((contact) =>
+            contact.name?.toLowerCase().includes(q) ||
+            contact.phone?.includes(q) ||
+            contact.email?.toLowerCase().includes(q) ||
+            contact.department?.toLowerCase().includes(q)
+          )) return true;
+          return false;
+        });
 
-    return clients.filter((client) => {
-      if (client.name.toLowerCase().includes(q)) return true;
-      if (client.contactPerson?.toLowerCase().includes(q)) return true;
-      if (client.phone?.includes(q)) return true;
-      if (client.businessRegistrationNumber?.includes(q)) return true;
-      if (client.address?.toLowerCase().includes(q)) return true;
-      if (client.note?.toLowerCase().includes(q)) return true;
-      if (client.customSmsNumber?.includes(q)) return true;
-      if (client.contacts?.some((contact) =>
-        contact.name?.toLowerCase().includes(q) ||
-        contact.phone?.includes(q) ||
-        contact.email?.toLowerCase().includes(q) ||
-        contact.department?.toLowerCase().includes(q)
-      )) return true;
-      return false;
+    const dir = sortDir === 'asc' ? 1 : -1;
+    filtered.sort((a, b) => {
+      const nameA = a.name.trim();
+      const nameB = b.name.trim();
+      if (sortKey === 'name') {
+        return nameA.localeCompare(nameB, 'ko') * dir;
+      }
+      if (sortKey === 'jobs') {
+        const diff =
+          (clientListStats.jobCountByName.get(nameA) || 0) -
+          (clientListStats.jobCountByName.get(nameB) || 0);
+        if (diff !== 0) return diff * dir;
+        return nameA.localeCompare(nameB, 'ko');
+      }
+      if (sortKey === 'receivable') {
+        const diff =
+          (clientListStats.receivableByName.get(nameA) || 0) -
+          (clientListStats.receivableByName.get(nameB) || 0);
+        if (diff !== 0) return diff * dir;
+        return nameA.localeCompare(nameB, 'ko');
+      }
+      // prepaid
+      const diff = normalizePrepaidBalance(a.prepaidBalance) - normalizePrepaidBalance(b.prepaidBalance);
+      if (diff !== 0) return diff * dir;
+      return nameA.localeCompare(nameB, 'ko');
     });
-  }, [clients, searchQuery]);
+
+    return filtered;
+  }, [clients, searchQuery, sortKey, sortDir, clientListStats]);
 
   const mergeFilteredClients = useMemo(() => {
     const q = mergeSearchQuery.trim().toLowerCase();
@@ -180,11 +236,12 @@ export const ClientManager: React.FC = () => {
     const preview = getClientMergePreview(primary, secondary);
     const confirmed = await showConfirm(
       `[거래처 합치기]\n\n` +
-      `유지: '${primary.name}'\n` +
-      `흡수: '${secondary.name}' (삭제됨)\n\n` +
-      `• 작업 ${preview.totalJobs}건 → '${primary.name}'으로 통합\n` +
-      `• 견적 ${preview.totalQuotes}건 → '${primary.name}'으로 통합\n` +
-      `• 담당자/연락처 정보 병합\n\n` +
+      `유지(최종명): '${primary.name}'\n` +
+      `합쳐질 쪽: '${secondary.name}' → '${primary.name}'으로 이전\n\n` +
+      `• 작업 ${preview.totalJobs}건 통합\n` +
+      `• 견적 ${preview.totalQuotes}건 통합\n` +
+      `• 담당자·연락처·선불 이력 병합\n` +
+      `• '${secondary.name}' 카드만 삭제 (내역은 유지)\n\n` +
       `이 작업은 되돌릴 수 없습니다. 진행하시겠습니까?`
     );
     if (!confirmed) return;
@@ -502,10 +559,36 @@ export const ClientManager: React.FC = () => {
                   </button>
               )}
           </div>
-          <div className="text-sm text-slate-500 dark:text-slate-400 font-medium shrink-0 px-1">
-              {searchQuery.trim()
-                  ? `검색 결과 ${filteredClients.length.toLocaleString()}건 / 전체 ${clients.length.toLocaleString()}건`
-                  : `전체 ${clients.length.toLocaleString()}건`}
+          <div className="flex items-center gap-2 shrink-0">
+              <select
+                  value={sortKey}
+                  onChange={(e) => {
+                      const next = e.target.value as ClientSortKey;
+                      setSortKey(next);
+                      setSortDir(defaultSortDir(next));
+                  }}
+                  className="px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                  title="정렬 기준"
+              >
+                  <option value="name">거래처명</option>
+                  <option value="jobs">작업건별</option>
+                  <option value="receivable">미수금별</option>
+                  <option value="prepaid">선불별</option>
+              </select>
+              <button
+                  type="button"
+                  onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+                  className="inline-flex items-center gap-1.5 px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors"
+                  title={sortDir === 'asc' ? '오름차순 (클릭 시 내림차순)' : '내림차순 (클릭 시 오름차순)'}
+              >
+                  <ArrowUpDown size={16} />
+                  {sortDir === 'asc' ? '오름차순' : '내림차순'}
+              </button>
+              <div className="text-sm text-slate-500 dark:text-slate-400 font-medium px-1">
+                  {searchQuery.trim()
+                      ? `검색 결과 ${filteredClients.length.toLocaleString()}건 / 전체 ${clients.length.toLocaleString()}건`
+                      : `전체 ${clients.length.toLocaleString()}건`}
+              </div>
           </div>
       </div>
 
@@ -522,87 +605,136 @@ export const ClientManager: React.FC = () => {
               <p className="text-sm mt-1">다른 검색어를 입력하거나 검색어를 지워 전체 목록을 확인해 주세요.</p>
           </div>
       ) : (
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
           {filteredClients.map(client => (
-              <div key={client.id} className="border border-slate-200 dark:border-slate-700 rounded-xl p-5 hover:shadow-md transition-all relative group bg-white dark:bg-slate-700">
-                  <div className="flex justify-between items-start mb-3">
-                      <div>
-                          <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg flex items-center gap-2 flex-wrap">
+              <div
+                  key={client.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => handleEdit(client)}
+                  onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleEdit(client);
+                      }
+                  }}
+                  className="border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 hover:shadow-md hover:border-blue-300 dark:hover:border-blue-500 transition-all relative group bg-white dark:bg-slate-700 cursor-pointer text-left"
+                  title="클릭하면 거래처 정보를 수정합니다"
+              >
+                  <div
+                    className="absolute top-2 right-2 z-10 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleEdit(client);
+                        }}
+                        className="p-1 text-blue-500 hover:bg-blue-50 dark:hover:bg-slate-600 rounded transition-colors bg-white/90 dark:bg-slate-700/90 shadow-sm"
+                        title="정보 수정"
+                    >
+                        <Edit2 size={15} />
+                    </button>
+                    {canManageClientMaster && (
+                    <button 
+                        onClick={(e) => {
+                            e.stopPropagation();
+                            handleDelete(client.id, client.name);
+                        }}
+                        className="p-1 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors bg-white/90 dark:bg-slate-700/90 shadow-sm"
+                        title="삭제"
+                    >
+                        <Trash2 size={15} />
+                    </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2 min-h-[1.75rem]">
+                      <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+                          <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg truncate">
                              {client.name}
-                             <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold select-none border transition-colors ${
-                                 client.sendSmsOnComplete !== false
-                                     ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50'
-                                     : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/50'
-                             }`}>
-                                 {client.sendSmsOnComplete !== false ? '알림 ON' : '알림 OFF'}
-                             </span>
                           </h4>
-                          <div className="flex flex-wrap gap-1 mt-1">
-                              {client.businessRegistrationNumber && (
-                                  <span className="text-[10px] bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-500 font-mono">
-                                      {client.businessRegistrationNumber}
-                                  </span>
-                              )}
-                              {client.sendSmsOnComplete !== false && (
-                                  <span className="text-[10px] bg-blue-50 dark:bg-blue-950/20 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded border border-blue-200 dark:border-blue-900/50 font-medium" title="알림 수신 번호">
-                                      수신: {resolveClientSmsNumber(client) || '번호 없음'}
-                                  </span>
-                              )}
-                              {normalizePrepaidBalance(client.prepaidBalance) > 0 && (
-                                  <span className="text-[10px] bg-indigo-50 dark:bg-indigo-950/20 text-indigo-700 dark:text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-200 dark:border-indigo-900/50 font-bold" title="선불 잔액">
-                                      선불 {normalizePrepaidBalance(client.prepaidBalance).toLocaleString()}원
-                                  </span>
-                              )}
+                          <span
+                            className="text-xs px-1.5 py-0.5 rounded-md font-bold bg-slate-100 dark:bg-slate-600 text-slate-600 dark:text-slate-200 border border-slate-200 dark:border-slate-500 shrink-0 tabular-nums"
+                            title="이 거래처 작업 건수"
+                          >
+                            {(clientListStats.jobCountByName.get(client.name.trim()) || 0).toLocaleString()}건
+                          </span>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold select-none border shrink-0 transition-colors ${
+                              client.sendSmsOnComplete !== false
+                                  ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-900/50'
+                                  : 'bg-rose-50 dark:bg-rose-950/20 text-rose-600 dark:text-rose-400 border-rose-200 dark:border-rose-900/50'
+                          }`}>
+                              {client.sendSmsOnComplete !== false ? '알림 ON' : '알림 OFF'}
+                          </span>
+                          {client.businessRegistrationNumber && (
+                              <span className="text-[10px] bg-slate-100 dark:bg-slate-600 text-slate-500 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-500 font-mono shrink-0">
+                                  {client.businessRegistrationNumber}
+                              </span>
+                          )}
+                      </div>
+                      {(() => {
+                        const prepaid = normalizePrepaidBalance(client.prepaidBalance);
+                        const receivable = clientListStats.receivableByName.get(client.name.trim()) || 0;
+                        if (prepaid <= 0 && receivable <= 0) return null;
+                        return (
+                          <div className="ml-auto flex items-center gap-1.5 shrink-0">
+                            {prepaid > 0 && (
+                              <span
+                                className="text-sm font-bold text-indigo-700 dark:text-indigo-300 whitespace-nowrap tabular-nums px-2 py-0.5 rounded border bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/50"
+                                title="선불 잔액"
+                              >
+                                선불 {prepaid.toLocaleString()}원
+                              </span>
+                            )}
+                            {receivable > 0 && (
+                              <span
+                                className="text-sm font-bold text-rose-600 dark:text-rose-400 whitespace-nowrap tabular-nums px-2 py-0.5 rounded border bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/50"
+                                title="미수 금액"
+                              >
+                                미수 {receivable.toLocaleString()}원
+                              </span>
+                            )}
                           </div>
-                      </div>
-                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
-                            onClick={() => handleEdit(client)}
-                            className="p-1.5 text-blue-500 hover:bg-blue-50 dark:hover:bg-slate-600 rounded transition-colors"
-                            title="정보 수정"
-                        >
-                            <Edit2 size={16} />
-                        </button>
-                        {canManageClientMaster && (
-                        <button 
-                            onClick={() => handleDelete(client.id, client.name)}
-                            className="p-1.5 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 rounded transition-colors"
-                            title="삭제"
-                        >
-                            <Trash2 size={16} />
-                        </button>
-                        )}
-                      </div>
+                        );
+                      })()}
                   </div>
                   
                   {/* Contacts List */}
-                  <div className="space-y-2 mt-2 border-t border-slate-100 dark:border-slate-600 pt-3">
+                  <div className="space-y-1 mt-1.5 border-t border-slate-100 dark:border-slate-600 pt-1.5">
                       {client.contacts && client.contacts.length > 0 ? (
                           client.contacts.slice(0, 2).map((contact, idx) => (
-                              <div key={idx} className="flex flex-col text-sm">
-                                  <div className="flex items-center gap-2 font-medium text-slate-700 dark:text-slate-200">
-                                      <User size={14} className="text-slate-400" />
-                                      {contact.name} 
-                                      {contact.department && <span className="text-xs text-slate-400">({contact.department})</span>}
-                                  </div>
-                                  <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400 pl-6 text-xs">
-                                      {contact.phone}
-                                  </div>
+                              <div key={idx} className="flex items-center gap-2 text-lg leading-snug min-w-0">
+                                  <User size={17} className="text-slate-400 shrink-0" />
+                                  <span className="font-bold text-slate-700 dark:text-slate-200 truncate">
+                                      {contact.name}
+                                      {contact.department ? (
+                                          <span className="text-sm font-medium text-slate-400"> ({contact.department})</span>
+                                      ) : null}
+                                  </span>
+                                  {contact.phone ? (
+                                      <span className="ml-auto shrink-0 text-lg font-bold text-blue-600 dark:text-blue-400 tabular-nums text-right">
+                                          {contact.phone}
+                                      </span>
+                                  ) : null}
                               </div>
                           ))
                       ) : (
                           // Fallback for legacy data
-                          <div className="flex flex-col text-sm">
-                              <div className="flex items-center gap-2 font-medium text-slate-700 dark:text-slate-200">
-                                  <User size={14} className="text-slate-400" />
+                          <div className="flex items-center gap-2 text-lg leading-snug min-w-0">
+                              <User size={17} className="text-slate-400 shrink-0" />
+                              <span className="font-bold text-slate-700 dark:text-slate-200 truncate">
                                   {client.contactPerson}
-                              </div>
-                              <div className="text-slate-500 dark:text-slate-400 pl-6 text-xs">{client.phone}</div>
+                              </span>
+                              {client.phone ? (
+                                  <span className="ml-auto shrink-0 text-lg font-bold text-blue-600 dark:text-blue-400 tabular-nums text-right">
+                                      {client.phone}
+                                  </span>
+                              ) : null}
                           </div>
                       )}
                       
                       {client.contacts && client.contacts.length > 2 && (
-                          <div className="text-xs text-slate-400 pl-6 italic">
+                          <div className="text-sm text-slate-400 pl-6 italic">
                               + 외 {client.contacts.length - 2}명
                           </div>
                       )}
@@ -991,7 +1123,8 @@ export const ClientManager: React.FC = () => {
                             거래처 합치기
                         </h2>
                         <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
-                            중복 등록된 거래처 2개를 선택하고, 유지할 상호명을 정한 뒤 작업·견적 내역을 함께 합칩니다.
+                            중복 거래처 2개를 고른 뒤, <strong className="text-amber-700 dark:text-amber-300">유지할 상호명</strong>을 선택합니다.
+                            작업·견적·담당자·선불이력은 소실 없이 합쳐집니다.
                         </p>
                     </div>
                     <button onClick={() => setIsMergeModalOpen(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors">
@@ -1000,6 +1133,14 @@ export const ClientManager: React.FC = () => {
                 </div>
 
                 <div className="flex-1 overflow-y-auto custom-scrollbar p-6 space-y-6">
+                    <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/20 px-4 py-3 text-xs text-amber-900 dark:text-amber-100 space-y-1.5 leading-relaxed">
+                        <p className="font-bold text-sm">합치기 안내</p>
+                        <p>1) 합칠 거래처 <strong>2개</strong>를 선택합니다.</p>
+                        <p>2) <strong>「유지」</strong> 로 고른 상호명이 <strong>최종 거래처명</strong>이 됩니다. (다른 이름은 사라지고 작업·견적이 이 이름으로 바뀝니다)</p>
+                        <p>3) 담당자·연락처·주소·메모·사업자번호·문자설정은 서로 비어 있는 칸을 채우며, 담당자는 중복만 빼고 모두 남깁니다.</p>
+                        <p>4) <strong>선불 잔액·선불 이력</strong>과 <strong>작업/견적 내역</strong>도 함께 합쳐집니다.</p>
+                    </div>
+
                     <div>
                         <div className="flex items-center justify-between mb-3">
                             <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200">1. 합칠 거래처 2개 선택</h4>
@@ -1080,9 +1221,11 @@ export const ClientManager: React.FC = () => {
 
                     {mergeSelectedClients.length === 2 && (
                         <div className="space-y-4 animate-in fade-in duration-200">
-                            <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200">2. 유지할 거래처명 선택</h4>
-                            <p className="text-xs text-slate-500 dark:text-slate-400">
-                                선택한 상호명이 최종 거래처명이 되며, 다른 거래처의 작업·견적·담당자 정보가 이쪽으로 합쳐집니다.
+                            <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200">2. 유지할 거래처명 선택 (최종 이름)</h4>
+                            <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
+                                아래 카드 중 하나를 눌러 <span className="font-bold text-amber-700 dark:text-amber-300">「유지」</span>를 정하세요.
+                                예: 「춘천인쇄」와 「춘천 인쇄」가 있으면, 남기고 싶은 철자·상호를 고르면 됩니다.
+                                선택하지 않은 쪽의 작업·견적·담당자·선불은 전부 유지 쪽으로 옮겨지고, 그 거래처 카드만 삭제됩니다.
                             </p>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -1142,8 +1285,10 @@ export const ClientManager: React.FC = () => {
                                     <ul className="text-xs text-blue-700 dark:text-blue-300 space-y-1">
                                         <li>• 작업 {mergePreview.totalJobs}건 통합 ({mergePreview.primaryJobs}건 + {mergePreview.secondaryJobs}건)</li>
                                         <li>• 견적 {mergePreview.totalQuotes}건 통합 ({mergePreview.primaryQuotes}건 + {mergePreview.secondaryQuotes}건)</li>
-                                        <li>• 담당자·연락처·주소 등 빈 정보는 서로 보완, 중복 연락처는 제거</li>
-                                        <li>• '{mergePreview.secondaryName}' 거래처는 삭제됩니다</li>
+                                        <li>• 담당자·연락처는 양쪽 모두 남기고 중복만 제거</li>
+                                        <li>• 선불 잔액·선불 이력도 합침 (소실 없음)</li>
+                                        <li>• 메모·주소·사업자번호 등 빈 정보는 서로 보완</li>
+                                        <li>• '{mergePreview.secondaryName}' 거래처 카드만 삭제 (내역은 '{mergePreview.primaryName}'으로 유지)</li>
                                     </ul>
                                 </div>
                             )}

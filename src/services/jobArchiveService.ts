@@ -397,6 +397,80 @@ export class JobArchiveService {
         return result.success;
     }
 
+    /**
+     * NAS/아카이브 경로 이전 — 핵심 운영 파일을 oldRoot → newRoot 로 복사.
+     * 대상에 파일이 이미 있으면 덮어쓰지 않음(기존 데이터 보호).
+     */
+    async migrateOperationalFiles(
+        oldRoot: string,
+        newRoot: string
+    ): Promise<{ ok: boolean; copied: string[]; skipped: string[]; error?: string }> {
+        const copied: string[] = [];
+        const skipped: string[] = [];
+        if (!this.isElectron() || !oldRoot?.trim() || !newRoot?.trim()) {
+            return { ok: false, copied, skipped, error: '경로 이전이 가능한 환경이 아닙니다.' };
+        }
+        if (oldRoot.replace(/[\\/]+$/, '') === newRoot.replace(/[\\/]+$/, '')) {
+            return { ok: true, copied, skipped };
+        }
+
+        const fileNames = [
+            ARCHIVE_FILE_NAME,
+            'situation-mirror.json',
+            'chat-messages.json',
+            ARCHIVE_README_NAME,
+        ];
+
+        try {
+            const status = await window.electron.checkDirectoryStatus?.(newRoot.replace(/[\\/]$/, ''));
+            if (status && !status.success) {
+                return { ok: false, copied, skipped, error: status.error || '새 폴더 접근 실패' };
+            }
+
+            for (const name of fileNames) {
+                const from = this.joinPath(oldRoot, name);
+                const to = this.joinPath(newRoot, name);
+                const srcExists = await window.electron.exists?.(from);
+                if (!srcExists) {
+                    skipped.push(`${name} (원본 없음)`);
+                    continue;
+                }
+                const destExists = await window.electron.exists?.(to);
+                if (destExists) {
+                    skipped.push(`${name} (대상에 이미 있음)`);
+                    continue;
+                }
+                const read = await window.electron.readFile(from);
+                if (!read?.success || read.data == null) {
+                    return {
+                        ok: false,
+                        copied,
+                        skipped,
+                        error: `${name} 읽기 실패: ${read?.error || 'unknown'}`,
+                    };
+                }
+                const write = await window.electron.saveFile(to, read.data);
+                if (!write?.success) {
+                    return {
+                        ok: false,
+                        copied,
+                        skipped,
+                        error: `${name} 쓰기 실패: ${write?.error || 'unknown'}`,
+                    };
+                }
+                copied.push(name);
+            }
+            return { ok: true, copied, skipped };
+        } catch (e: unknown) {
+            return {
+                ok: false,
+                copied,
+                skipped,
+                error: e instanceof Error ? e.message : String(e),
+            };
+        }
+    }
+
     isConfiguredNasPath(): boolean {
         const root = getArchiveRootPath();
         return !!root && isNasOrNetworkPath(root);
