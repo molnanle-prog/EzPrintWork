@@ -2,13 +2,17 @@ import { Job, JobStatusDefinition, KanbanLayoutConfig, Staff, Client } from '../
 import { ref, uploadBytes, getBytes } from 'firebase/storage';
 import { storage } from './firebase';
 import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
+import { isJobPinnedToManagementCard } from '../utils/managementCard';
+import { isJobBoardHidden } from '../utils/jobBoardVisibility';
 import {
     ARCHIVE_USE_DEFAULT_KEY,
     DEFAULT_ARCHIVE_FOLDER_NAME,
     getArchiveRootPath,
     getEffectiveArchiveRootPath,
     hasCompanyArchiveRootConfigured,
+    setCompanyArchiveRootOverride,
 } from '../utils/archiveStorage';
+import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 
 const MIRROR_VERSION = 1;
 const SITUATION_FILE_NAME = 'situation-mirror.json';
@@ -56,12 +60,19 @@ export class SituationMirrorService {
         return `tenants/${tenantId}/mirror/${SITUATION_FILE_NAME}`;
     }
 
-    async resolveMirrorRoot(): Promise<string | null> {
+    async resolveMirrorRoot(tenantId?: string | null): Promise<string | null> {
         if (!this.isElectron()) return null;
 
         const effective = getEffectiveArchiveRootPath();
         if (effective?.trim()) {
             const trimmed = effective.trim();
+            return trimmed.endsWith(this.getSep()) ? trimmed : `${trimmed}${this.getSep()}`;
+        }
+
+        const known = tenantId ? readLastKnownArchiveRootPath(tenantId) : null;
+        if (known?.trim()) {
+            setCompanyArchiveRootOverride(known.trim());
+            const trimmed = known.trim();
             return trimmed.endsWith(this.getSep()) ? trimmed : `${trimmed}${this.getSep()}`;
         }
 
@@ -109,9 +120,21 @@ export class SituationMirrorService {
             deletedJobs?: { id: string; deletedAt: string }[];
         }
     ): SituationMirrorPayload {
+        // 칸반 보드 작업 + 관리카드/보드숨김 작업(핀·내리기 동기화용)
+        // 외부 상황판은 읽을 때 filterJobsForOperationalBoard 로 다시 걸러야 함
         const boardJobs = filterJobsForOperationalBoard(input.jobs, {
             includeStatusKeys: ['QUOTE'],
         });
+        const visibilityJobs = (input.jobs || []).filter(
+            (j) => j?.id && (isJobPinnedToManagementCard(j) || isJobBoardHidden(j))
+        );
+        const byId = new Map<string, Job>();
+        for (const job of boardJobs) {
+            if (job?.id) byId.set(job.id, job);
+        }
+        for (const job of visibilityJobs) {
+            if (job?.id) byId.set(job.id, job);
+        }
         return {
             version: MIRROR_VERSION,
             tenantId,
@@ -119,7 +142,7 @@ export class SituationMirrorService {
             companyName: input.companyName,
             kanbanLayout: input.kanbanLayout,
             statusDefinitions: input.statusDefinitions,
-            jobs: boardJobs,
+            jobs: Array.from(byId.values()),
             deletedJobs: input.deletedJobs?.length ? input.deletedJobs : undefined,
             clients: input.clients || [],
             settings: input.settings || {},
@@ -143,7 +166,7 @@ export class SituationMirrorService {
         let nasOk = false;
 
         if (this.isElectron()) {
-            const root = await this.resolveMirrorRoot();
+            const root = await this.resolveMirrorRoot(tenantId);
             if (root) {
                 const localPath = this.joinPath(root, SITUATION_FILE_NAME);
                 nasOk = await this.writeLocalWithRetry(localPath, content);

@@ -29,6 +29,11 @@ export const OnboardingPage: React.FC = () => {
       return;
     }
 
+    if (!ownerPhone.trim()) {
+      toast.error('관리자 연락처는 필수입니다. 문제 발생 시 연락드릴 번호를 입력해 주세요.');
+      return;
+    }
+
     if (!joinCode.trim() || joinCode.trim().length < 6) {
       toast.error('회사 입장 코드는 최소 6글자 이상이어야 합니다.');
       return;
@@ -36,7 +41,7 @@ export const OnboardingPage: React.FC = () => {
 
     const formattedPhone = formatPhoneNumber(ownerPhone.trim());
     if (!isValidPhoneNumber(formattedPhone)) {
-      toast.error('연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
+      toast.error('관리자 연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
       return;
     }
 
@@ -216,7 +221,10 @@ export const OnboardingPage: React.FC = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-400 ml-1">연락처 *</label>
+                <label className="text-xs font-bold text-slate-400 ml-1 flex items-center gap-1.5">
+                  <Phone size={12} className="text-blue-400" />
+                  관리자 연락처 *
+                </label>
                 <input 
                   type="tel"
                   value={ownerPhone}
@@ -224,7 +232,11 @@ export const OnboardingPage: React.FC = () => {
                   placeholder="010-1234-5678"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
                   required
+                  autoComplete="tel"
                 />
+                <span className="text-[10px] text-amber-500/90 block pl-1 font-medium">
+                  필수입니다. 서비스 장애·요금제 문의 시 통화할 대표(관리자) 휴대폰 번호입니다.
+                </span>
               </div>
 
               <div className="space-y-2">

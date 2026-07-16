@@ -103,16 +103,24 @@ export interface Job {
   filePath?: string; 
   thumbnailUrl?: string;
   /** 보드(칸반/달력/상황판)에서만 숨김. 이력/검색에는 남김 */
-  boardHiddenAt?: string;
-  boardHiddenBy?: string;
+  boardHiddenAt?: string | null;
+  boardHiddenBy?: string | null;
   /** 보드 숨김 사유 — 관리카드 이동 vs 수동 내리기 구분 */
-  boardHiddenReason?: 'management_card' | 'manual' | 'canceled';
+  boardHiddenReason?: 'management_card' | 'manual' | 'canceled' | null;
   /** 이 작업에 선불로 차감된 금액 */
   prepaidAppliedAmount?: number;
   /** 결제 시 선불 차감 사용 (기본 true — false면 별도 수금) */
   usePrepaidForPayment?: boolean;
   /** 관리카드로 올린 시각 — 회사 공통(작업 문서), 개인별 아님 */
-  managementCardPinnedAt?: string;
+  managementCardPinnedAt?: string | null;
+  /** 마지막 수정 시각 — 표시/보조 정렬용. PC 간 병합 승패 판단은 rev 우선 */
+  updatedAt?: string;
+  /**
+   * 동기화용 리비전 번호 — 수정마다 +1. 여러 PC가 NAS로 병합할 때
+   * 시스템 시계가 서로 달라도(clock skew) 정확한 선후 관계를 보장하기 위함.
+   * 값이 없는 옛 데이터는 updatedAt(시각)으로 대체 비교.
+   */
+  rev?: number;
 }
 
 export interface Staff {
@@ -327,6 +335,10 @@ export interface Tenant {
   createdAt: string;
   businessNumber?: string;
   joinCode?: string;
+  /** 대표(메인 관리자) 연락처 — 최초 가입 필수, 장애·문의 통화용 */
+  ownerPhone?: string;
+  /** ownerPhone 별칭 (관리 프로그램 호환) */
+  contactPhone?: string;
 }
 
 export interface AppUser {
@@ -340,6 +352,8 @@ export interface AppUser {
   tenantId: string | null;
   role: 'admin' | 'staff' | 'superadmin';
   loginId?: string;
+  /** 대표·직원 연락처 */
+  contactInfo?: string;
 }
 
 export interface AuthData {

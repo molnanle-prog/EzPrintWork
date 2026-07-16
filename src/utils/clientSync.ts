@@ -1,4 +1,4 @@
-import { Client, Job } from '../types';
+import { Client, ClientContact, Job } from '../types';
 import { db } from '../services/dataService';
 import { getPreferredSmsNumber } from './clientSms';
 
@@ -7,6 +7,11 @@ export type ClientSyncResult = 'none' | 'created' | 'updated';
 /** 상호명 비교용 정규화 (앞뒤 공백·연속 공백 제거) */
 export function normalizeClientName(name?: string | null): string {
     return (name || '').trim().replace(/\s+/g, ' ');
+}
+
+/** 담당자명 비교용 정규화 */
+export function normalizeContactName(name?: string | null): string {
+    return (name || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /** 동일 상호명 거래처 찾기 (정규화 후 비교) */
@@ -19,14 +24,36 @@ export function findClientByNormalizedName(
     return clients.find((c) => normalizeClientName(c.name) === key);
 }
 
+/** 거래처 contacts 배열 정규화 (레거시 contactPerson/phone 보정) */
+export function getClientContacts(client: Client): ClientContact[] {
+    if (client.contacts?.length) {
+        return client.contacts.map((c) => ({ ...c }));
+    }
+    if (client.contactPerson?.trim() || client.phone?.trim()) {
+        return [{
+            name: client.contactPerson || '',
+            phone: client.phone || '',
+            department: '담당자',
+        }];
+    }
+    return [];
+}
+
 function buildContactsFromJob(contactPerson: string, clientPhone: string) {
     return [{ name: contactPerson, phone: clientPhone, department: '담당자' }];
 }
 
+function contactNameEquals(a?: string | null, b?: string | null): boolean {
+    const na = normalizeContactName(a);
+    const nb = normalizeContactName(b);
+    return !!na && !!nb && na === nb;
+}
+
 /**
- * 작업 저장 시 거래처 자동 등록 / 담당자·연락처 빈 칸 반영.
+ * 작업 저장 시 거래처 자동 등록 / 담당자 동기화.
  * - 상호명이 목록에 없으면 신규 생성
- * - 있으면 있으면 담당자·연락처가 비어 있으면 작업 입력값으로 채움
+ * - 담당자가 비어 있으면 작업 입력값으로 채움
+ * - 이미 담당자가 있는데 다른 이름을 입력하면 contacts에 새 담당자로 추가
  * - linkedClientId 힌트가 있어도 상호명이 바뀌었으면 무시하고 이름 기준으로 재매칭
  */
 export async function syncClientFromJob(
@@ -44,7 +71,6 @@ export async function syncClientFromJob(
     let client: Client | undefined;
     if (clientIdHint) {
         const hinted = clients.find((c) => c.id === clientIdHint);
-        // 힌트 id가 가리키는 상호와 현재 입력 상호가 같아야만 사용
         if (hinted && normalizeClientName(hinted.name) === name) {
             client = hinted;
         }
@@ -81,12 +107,12 @@ export async function syncClientFromJob(
         return 'created';
     }
 
-    // 기존 거래처 — 빈 필드만 작업 입력값으로 보강
     if (!contactPerson && !clientPhone) return 'none';
 
-    const contacts = client.contacts?.length
-        ? client.contacts.map((c) => ({ ...c }))
-        : buildContactsFromJob(client.contactPerson || '', client.phone || '');
+    const contacts = getClientContacts(client);
+    if (contacts.length === 0) {
+        contacts.push({ name: '', phone: '', department: '담당자' });
+    }
 
     const updated: Client = {
         ...client,
@@ -95,34 +121,62 @@ export async function syncClientFromJob(
     };
     let changed = false;
 
-    if (contactPerson && !updated.contactPerson?.trim()) {
-        updated.contactPerson = contactPerson;
-        changed = true;
-    }
-    if (clientPhone && !updated.phone?.trim()) {
-        updated.phone = clientPhone;
-        changed = true;
+    const matchedIdx = contactPerson
+        ? updated.contacts.findIndex((c) => contactNameEquals(c.name, contactPerson))
+        : -1;
+
+    if (contactPerson && matchedIdx < 0) {
+        const hasAnyNamedContact = updated.contacts.some((c) => c.name?.trim());
+        if (!hasAnyNamedContact) {
+            // 담당자 없음 → 첫 슬롯(대표)에 채움
+            const primary = { ...updated.contacts[0] };
+            primary.name = contactPerson;
+            if (clientPhone) primary.phone = clientPhone;
+            updated.contacts[0] = primary;
+            changed = true;
+        } else {
+            // 다른 담당자명 → 새 담당자로 추가 (대표 순서는 유지)
+            updated.contacts.push({
+                name: contactPerson,
+                phone: clientPhone,
+                department: '담당자',
+            });
+            changed = true;
+        }
+    } else if (matchedIdx >= 0 && clientPhone) {
+        const existing = updated.contacts[matchedIdx];
+        if (!existing.phone?.trim()) {
+            updated.contacts[matchedIdx] = { ...existing, phone: clientPhone };
+            changed = true;
+        }
+    } else if (!contactPerson && clientPhone) {
+        // 이름 없이 연락처만 — 대표 연락처가 비어 있을 때만 보강
+        const primary = updated.contacts[0];
+        if (primary && !primary.phone?.trim()) {
+            updated.contacts[0] = { ...primary, phone: clientPhone };
+            changed = true;
+        }
+        if (!updated.phone?.trim()) {
+            updated.phone = clientPhone;
+            changed = true;
+        }
     }
 
-    const primary = updated.contacts[0] || {
-        name: '',
-        phone: '',
-        department: '담당자',
-    };
-    const nextPrimary = { ...primary };
-
-    if (contactPerson && !primary.name?.trim()) {
-        nextPrimary.name = contactPerson;
-        changed = true;
-    }
-    if (clientPhone && !primary.phone?.trim()) {
-        nextPrimary.phone = clientPhone;
-        changed = true;
+    // 레거시 대표 필드 — 비어 있을 때만 contacts[0] 기준으로 채움
+    const primary = updated.contacts[0];
+    if (primary) {
+        if (!updated.contactPerson?.trim() && primary.name?.trim()) {
+            updated.contactPerson = primary.name;
+            changed = true;
+        }
+        if (!updated.phone?.trim() && primary.phone?.trim()) {
+            updated.phone = primary.phone;
+            changed = true;
+        }
     }
 
     if (!changed) return 'none';
 
-    updated.contacts = [nextPrimary, ...updated.contacts.slice(1)];
     if (!updated.customSmsNumber?.trim()) {
         updated.customSmsNumber = getPreferredSmsNumber(updated);
     }

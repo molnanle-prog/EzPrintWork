@@ -114,6 +114,7 @@ app.on('window-all-closed', () => {
 });
 
 // --- 드라이브 문자 -> 원격 UNC(네트워크 절대경로) 변환 ---
+// cmd.exe / powershell을 거치지 않음 (안랩 Safe Transaction 오탐 방지: execFileSync 직접 실행)
 function joinUncBase(uncBase, relativePath) {
     const base = String(uncBase || '').replace(/[\\/]+$/, '');
     const rel = String(relativePath || '').replace(/^[\\/]+/, '');
@@ -122,41 +123,40 @@ function joinUncBase(uncBase, relativePath) {
     return `${base}\\${rel}`;
 }
 
-function resolveMappedDriveViaNetUse(driveLetter) {
-    const { execSync } = require('child_process');
-    const drive = `${driveLetter.toUpperCase()}:`;
-    const output = execSync(`net use ${drive}`, {
-        encoding: 'utf8',
-        stdio: ['pipe', 'pipe', 'ignore'],
-        windowsHide: true,
-    });
-    const remoteMatch = output.match(/(?:Remote name|원격 이름)\s+([^\r\n]+)/i);
-    if (!remoteMatch) return null;
-    const unc = remoteMatch[1].trim();
+function getSystem32Exe(exeName) {
+    const root = process.env.SystemRoot || 'C:\\Windows';
+    return path.join(root, 'System32', exeName);
+}
+
+/** 영구 매핑: HKCU\Network\{문자}\RemotePath (reg.exe 직접 실행, cmd 미사용) */
+function resolveMappedDriveViaRegistry(driveLetter) {
+    const { execFileSync } = require('child_process');
+    const letter = String(driveLetter || '').toUpperCase();
+    if (!/^[A-Z]$/.test(letter)) return null;
+    const output = execFileSync(
+        getSystem32Exe('reg.exe'),
+        ['query', `HKCU\\Network\\${letter}`, '/v', 'RemotePath'],
+        { encoding: 'utf8', windowsHide: true, timeout: 5000 }
+    );
+    const match = String(output || '').match(/RemotePath\s+REG_\w+\s+(\\\\[^\r\n]+)/i);
+    if (!match) return null;
+    const unc = match[1].trim();
     return unc.startsWith('\\\\') ? unc : null;
 }
 
-function resolveMappedDriveViaPowerShell(driveLetter) {
-    const { execSync } = require('child_process');
-    const drive = `${driveLetter.toUpperCase()}:`;
-    // Get-SmbMapping 우선, 실패 시 WScript.Network EnumNetworkDrives
-    const script = [
-        `$d='${drive}'`,
-        `try { $m=Get-SmbMapping -LocalPath $d -EA SilentlyContinue; if($m.RemotePath){ Write-Output $m.RemotePath; exit 0 } } catch {}`,
-        `$n=New-Object -ComObject WScript.Network`,
-        `$e=$n.EnumNetworkDrives()`,
-        `for($i=0;$i -lt $e.Count();$i+=2){ if($e.Item($i) -ieq $d){ Write-Output $e.Item($i+1); exit 0 } }`,
-    ].join('; ');
-    const output = execSync(
-        `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ${JSON.stringify(script)}`,
-        { encoding: 'utf8', stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, timeout: 10000 }
+/** 세션 매핑 포함: net.exe 직접 실행 (cmd 미사용) */
+function resolveMappedDriveViaNetUse(driveLetter) {
+    const { execFileSync } = require('child_process');
+    const drive = `${String(driveLetter || '').toUpperCase()}:`;
+    const output = execFileSync(
+        getSystem32Exe('net.exe'),
+        ['use', drive],
+        { encoding: 'utf8', windowsHide: true, timeout: 5000 }
     );
-    const unc = String(output || '')
-        .trim()
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .find((l) => l.startsWith('\\\\'));
-    return unc || null;
+    const remoteMatch = String(output || '').match(/(?:Remote name|원격 이름)\s+([^\r\n]+)/i);
+    if (!remoteMatch) return null;
+    const unc = remoteMatch[1].trim();
+    return unc.startsWith('\\\\') ? unc : null;
 }
 
 function resolveUncPath(localPath) {
@@ -173,15 +173,15 @@ function resolveUncPath(localPath) {
     try {
         let uncBase = null;
         try {
-            uncBase = resolveMappedDriveViaNetUse(driveLetter);
+            uncBase = resolveMappedDriveViaRegistry(driveLetter);
         } catch (e) {
-            console.warn(`[UNC Resolver] net use failed for ${driveLetter}:`, e.message || e);
+            // 영구 매핑이 없으면 ERROR_FILE_NOT_FOUND 등 — 세션 매핑으로 재시도
         }
         if (!uncBase) {
             try {
-                uncBase = resolveMappedDriveViaPowerShell(driveLetter);
+                uncBase = resolveMappedDriveViaNetUse(driveLetter);
             } catch (e) {
-                console.warn(`[UNC Resolver] PowerShell mapping failed for ${driveLetter}:`, e.message || e);
+                console.warn(`[UNC Resolver] net use failed for ${driveLetter}:`, e.message || e);
             }
         }
         if (uncBase) {

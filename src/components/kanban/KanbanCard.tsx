@@ -118,8 +118,9 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     try {
       await db.pinJobToManagementCard(job.id);
       toast.success('관리카드로 올렸습니다. 칸반에서는 숨겨집니다.');
-    } catch {
-      toast.error('관리카드로 올리기에 실패했습니다.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '관리카드로 올리기에 실패했습니다.';
+      toast.error(msg);
     }
   };
 
@@ -131,9 +132,10 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     }
     try {
       await db.unpinJobFromManagementCard(job.id);
-      toast.success('칸반으로 내렸습니다.');
-    } catch {
-      toast.error('칸반으로 내리기에 실패했습니다.');
+      toast.success('칸반으로 내렸습니다. 다른 PC에도 곧 반영됩니다.');
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '칸반으로 내리기에 실패했습니다.';
+      toast.error(msg);
     }
   };
 

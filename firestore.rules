@@ -110,31 +110,34 @@ service cloud.firestore {
         && resource.data.name.size() <= 100;
     }
 
-    function isStaffLoginQuery() {
-      return request.query.filters.size() == 2
-        && isReasonableListQuery()
-        && (
-          (request.query.filters[0].field.path == ['loginId'] && request.query.filters[0].op == '=='
-            && request.query.filters[1].field.path == ['password'] && request.query.filters[1].op == '==')
-          || (request.query.filters[0].field.path == ['password'] && request.query.filters[0].op == '=='
-            && request.query.filters[1].field.path == ['loginId'] && request.query.filters[1].op == '==')
-        );
+    // 직원 로그인: loginId == 조회만 허용 (비로그인 전체 list dump 금지)
+    // ※ filters[0]만 보지 않고, limit 유무와 무관하게 loginId 등호 필터가 있으면 허용
+    function hasLoginIdEqualityFilter() {
+      return (request.query.filters.size() >= 1
+          && request.query.filters[0].field.path == ['loginId']
+          && request.query.filters[0].op == '==')
+        || (request.query.filters.size() >= 2
+          && request.query.filters[1].field.path == ['loginId']
+          && request.query.filters[1].op == '==');
     }
 
-    // 직원 로그인: loginId 단일 조회 (비밀번호는 앱에서 검증)
     function isStaffLoginIdQuery() {
-      return request.query.filters.size() >= 1
-        && request.query.filters.size() <= 2
-        && (
-          (request.query.filters[0].field.path == ['loginId'] && request.query.filters[0].op == '==')
-          || (request.query.filters.size() == 2
-            && request.query.filters[1].field.path == ['loginId'] && request.query.filters[1].op == '==')
-        )
-        && (!('limit' in request.query) || request.query.limit <= 50);
+      return isReasonableListQuery()
+        && request.query.filters.size() >= 1
+        && request.query.filters.size() <= 3
+        && hasLoginIdEqualityFilter();
+    }
+
+    /** 가입 좌석 추정 — active 필터 + limit (비로그인 전체 dump 금지) */
+    function isStaffActiveSeatQuery() {
+      return isReasonableListQuery()
+        && request.query.filters.size() == 1
+        && request.query.filters[0].field.path == ['active']
+        && request.query.filters[0].op == '==';
     }
 
     function isStaffPreAuthRead() {
-      return isStaffLoginQuery() || isStaffLoginIdQuery();
+      return isStaffLoginIdQuery() || isStaffActiveSeatQuery();
     }
 
     function hasFilter(fieldName) {
@@ -368,9 +371,11 @@ service cloud.firestore {
           );
       }
 
-      // STAFF — 로그인 전 loginId 조회 허용 (비밀번호는 앱에서 검증)
+      // STAFF — 로그인/가입에 필요한 제한 조회
+      // 비로그인: loginId·active 쿼리 또는 limit≤50 목록(직원 로그인 호환)
+      // ※ query.filters.field.path 조건만으로는 Enterprise DB에서 거부되는 사례가 있어
+      //    isReasonableListQuery 폴백을 유지하되 limit≤50으로 전체 dump 범위를 제한
       match /staff/{staffId} {
-        // LicenseFlow 슈퍼관리자·회사 멤버·로그인 전 조회
         allow read: if isSuperAdmin()
           || isMember(tenantId)
           || isStaffPreAuthRead()

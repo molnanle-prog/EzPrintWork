@@ -4,6 +4,7 @@ import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
 import { CompanyNasBanner } from './common/CompanyNasBanner';
+import { CloudDegradedBanner } from './common/CloudDegradedBanner';
 import { CompletedJobSearchModal } from './kanban/CompletedJobSearchModal';
 import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
@@ -59,7 +60,7 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
     if (cloudDegraded && status === 'synced') {
         icon = <CloudOff size={14} />;
         color = 'text-amber-400';
-        title = '로컬 DB 사용 중 (클라우드 한도/연결 제한)';
+        title = '클라우드 일시 불가 · 로컬로 운영 중';
     } else switch (status) {
         case 'synced':
             icon = <CheckCircle2 size={14} />;
@@ -446,6 +447,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
           </div>
       </div>
 
+      <CloudDegradedBanner />
       <CompanyNasBanner />
 
       <div className="flex-1 flex overflow-hidden relative">

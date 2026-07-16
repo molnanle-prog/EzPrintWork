@@ -1,6 +1,8 @@
 import { Job } from '../types';
 import { ref, uploadBytes, getBytes } from 'firebase/storage';
 import { storage } from './firebase';
+import { isIncomingJobNewer } from '../utils/jobRevision';
+import { applyIncomingJobVisibilityClears, mergeJobVisibilityFields } from '../utils/jobVisibilitySync';
 import {
     ARCHIVE_FILE_NAME,
     ARCHIVE_README_NAME,
@@ -12,7 +14,9 @@ import {
     sleep,
     getEffectiveArchiveRootPath,
     hasCompanyArchiveRootConfigured,
+    setCompanyArchiveRootOverride,
 } from '../utils/archiveStorage';
+import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 
 const ARCHIVE_VERSION = 1;
 const WRITE_RETRY_DELAYS_MS = [0, 1200, 3000];
@@ -47,12 +51,20 @@ export class JobArchiveService {
         return `${normalized}${name}`;
     }
 
-    async resolveArchiveRoot(): Promise<string | null> {
+    async resolveArchiveRoot(tenantId?: string | null): Promise<string | null> {
         if (!this.isElectron()) return null;
 
         const effective = getEffectiveArchiveRootPath();
         if (effective?.trim()) {
             const trimmed = effective.trim();
+            return trimmed.endsWith(this.getSep()) ? trimmed : `${trimmed}${this.getSep()}`;
+        }
+
+        // 회사 경로가 settings에만 있고 override 전이면 last-known 복원 (문서 폴더로 갈라지지 않게)
+        const known = tenantId ? readLastKnownArchiveRootPath(tenantId) : null;
+        if (known?.trim()) {
+            setCompanyArchiveRootOverride(known.trim());
+            const trimmed = known.trim();
             return trimmed.endsWith(this.getSep()) ? trimmed : `${trimmed}${this.getSep()}`;
         }
 
@@ -68,7 +80,7 @@ export class JobArchiveService {
     }
 
     async getArchiveFilePath(tenantId: string): Promise<string | null> {
-        const root = await this.resolveArchiveRoot();
+        const root = await this.resolveArchiveRoot(tenantId);
         if (!root) return null;
         return this.joinPath(root, ARCHIVE_FILE_NAME);
     }
@@ -96,8 +108,27 @@ export class JobArchiveService {
 
     private mergeJobs(existing: Job[], incoming: Job[]): Job[] {
         const map = new Map<string, Job>();
-        for (const job of existing) map.set(job.id, job);
-        for (const job of incoming) map.set(job.id, job);
+        for (const job of existing) {
+            if (job?.id) map.set(job.id, job);
+        }
+        for (const job of incoming) {
+            if (!job?.id) continue;
+            const prev = map.get(job.id);
+            if (!prev) {
+                map.set(job.id, job);
+                continue;
+            }
+            // rev(리비전) 우선 비교 — PC 간 시스템 시계가 달라도(clock skew) 정확한 선후 판단
+            if (isIncomingJobNewer(job, prev)) {
+                const merged = applyIncomingJobVisibilityClears(
+                    { ...prev, ...job } as Record<string, unknown>,
+                    job as unknown as Record<string, unknown>
+                ) as Job;
+                map.set(job.id, mergeJobVisibilityFields(merged, prev, job));
+            } else {
+                map.set(job.id, mergeJobVisibilityFields({ ...prev }, prev, job));
+            }
+        }
         return Array.from(map.values());
     }
 
@@ -162,6 +193,7 @@ export class JobArchiveService {
             '',
             '작업이 저장될 때마다 이 폴더에 즉시 백업됩니다.',
                     `- 상황판(외부 웹용): situation-mirror.json`,
+                    `- 접속/세션: presence-sessions.json`,
                     `- 사내 채팅: chat-messages.json`,
             `- 전체 작업 이력: ${ARCHIVE_FILE_NAME}`,
             '',

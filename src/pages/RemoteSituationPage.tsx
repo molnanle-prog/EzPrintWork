@@ -5,6 +5,7 @@ import { db } from '../services/dataService';
 import { Job, JobStatusDefinition } from '../types';
 import { RefreshCw, WifiOff, Eye } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
+import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
 
 const DEFAULT_STATUSES: JobStatusDefinition[] = [
     { key: 'QUOTE', label: '견적' },
@@ -75,7 +76,11 @@ export const RemoteSituationPage: React.FC = () => {
         : DEFAULT_STATUSES;
 
     const columns = useMemo(
-        () => groupJobsByStatus(payload?.jobs || [], statuses),
+        () =>
+            groupJobsByStatus(
+                filterJobsForOperationalBoard(payload?.jobs || [], { includeStatusKeys: ['QUOTE'] }),
+                statuses
+            ),
         [payload?.jobs, statuses]
     );
 

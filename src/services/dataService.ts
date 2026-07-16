@@ -16,6 +16,7 @@ import { signOut } from 'firebase/auth';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
 import { chatMirrorService, mergeChatMessages } from './chatMirrorService';
+import { presenceSessionService } from './presenceSessionService';
 import { localDbBridge } from './localDbBridge';
 import { refreshLocalGateway } from './gatewayBridge';
 import type { SituationMirrorPayload } from './situationMirrorService';
@@ -33,6 +34,11 @@ import {
     setCompanyArchiveRootOverride,
     TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
 } from '../utils/archiveStorage';
+import {
+    readLastKnownArchiveRootPath,
+    readLastKnownTenantPlan,
+    saveLastKnownArchiveRootPath,
+} from '../utils/lastKnownTenantPlan';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
 import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances, normalizePrepaidBalance, appendPrepaidLedger, removeAndRecalculatePrepaidLedger, canDeletePrepaidLedgerEntry } from '../utils/prepaidBalance';
 import { isManagementCardExpired, shouldShowInManagementCards } from '../utils/managementCard';
@@ -47,6 +53,14 @@ import {
     tombstoneMapToPayload,
     type JobTombstone,
 } from '../utils/jobTombstones';
+import {
+    applyIncomingJobVisibilityClears,
+    jobVisibilityClearPatch,
+    stripClearedJobVisibilityFields,
+    mergeJobVisibilityFields,
+    JOB_VISIBILITY_CLEAR_FIELDS,
+} from '../utils/jobVisibilitySync';
+import { isIncomingJobNewer, nextJobRev } from '../utils/jobRevision';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
 import { filterJobTitleOptions, normalizeStaffRecord, isReservedStaffAuthRole } from '../utils/adminAccess';
 import { APP_VERSION } from '../utils/autoUpdate';
@@ -528,6 +542,7 @@ export class DataService {
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
     private syncPulseUnsub: (() => void) | null = null;
+    private configPollTimer: ReturnType<typeof setInterval> | null = null;
     private lastPublishedGatewayUrl: string | null = null;
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
@@ -660,11 +675,35 @@ export class DataService {
 
         const applied = applyArchiveRootFromSettings(this.getSettingsObj());
         const next = getEffectiveArchiveRootPath()?.trim() || null;
-        if (next) this.lastAppliedArchiveRootPath = next;
+        if (next) {
+            this.lastAppliedArchiveRootPath = next;
+            if (this.tenantId) {
+                saveLastKnownArchiveRootPath(this.tenantId, next);
+            }
+        }
         if (applied) {
             void this.refreshStoreGateway();
         }
         return applied;
+    }
+
+    /** Firestore settings 실패 시 — 직전 정상 회사 경로만 복원 (빈 경로로 덮지 않음) */
+    private restoreArchiveRootFromLastKnown(): boolean {
+        if (!this.tenantId) return false;
+        const knownPath = readLastKnownArchiveRootPath(this.tenantId);
+        if (!knownPath) return false;
+        const current = getEffectiveArchiveRootPath()?.trim() || null;
+        if (current && this.pathsEqualIgnoreSlash(current, knownPath)) {
+            this.lastAppliedArchiveRootPath = current;
+            return true;
+        }
+        const changed = setCompanyArchiveRootOverride(knownPath);
+        this.lastAppliedArchiveRootPath = knownPath;
+        console.warn(
+            `[DataService] settings 미수신 → last-known NAS 경로 복원: ${knownPath}`
+        );
+        if (changed) void this.refreshStoreGateway();
+        return true;
     }
 
     getCompanyNasHealth(): {
@@ -1020,9 +1059,13 @@ export class DataService {
         }
         if (this.tenantId === tenantId && this.syncStatus === 'synced') return true;
 
+        /** 서버 응답을 한 번이라도 받음 (소속 불일치 판별용) */
+        let sawServerProfile = false;
+
         for (let attempt = 0; attempt < 10; attempt++) {
             try {
                 const userSnap = await getDocFromServer(doc(firestore, 'users', effectiveUid));
+                sawServerProfile = true;
                 const profileTenant = userSnap.data()?.tenantId;
                 if (userSnap.exists() && profileTenant === tenantId) {
                     await this.waitForAuthToken();
@@ -1034,6 +1077,43 @@ export class DataService {
             }
             await new Promise((r) => setTimeout(r, 250));
         }
+
+        // 서버가 프로필을 돌려줬는데 소속이 다름/없음 → 로컬 폴백 금지 (잘못된 테넌트 기동 방지)
+        if (sawServerProfile) {
+            console.warn(
+                '[DataService] setTenantWhenReady: 서버 프로필 소속 불일치 — 동기화 보류'
+            );
+            this.lastSyncError = 'profile-tenant-mismatch';
+            this.syncStatus = 'disconnected';
+            this.notify();
+            return false;
+        }
+
+        // 전 시도가 네트워크/일시 오류 — 직전 정상 스냅샷·로컬 DB만으로 업무 기동
+        const known = readLastKnownTenantPlan(tenantId);
+        const uidMatches =
+            !known?.uid || known.uid === effectiveUid || known.user?.uid === effectiveUid;
+        let hasLocalData = false;
+        if (this.getIsElectron() && localDbBridge.isAvailable()) {
+            try {
+                const bundle = await localDbBridge.loadTenant(tenantId);
+                hasLocalData =
+                    bundle.jobCount > 0 ||
+                    bundle.clients.length > 0 ||
+                    !!bundle.settings;
+            } catch {
+                /* ignore */
+            }
+        }
+        if (uidMatches && ((known?.tenantId === tenantId && !!known.paymentStatus) || hasLocalData)) {
+            console.warn(
+                '[DataService] setTenantWhenReady: 네트워크 장애 — last-known/로컬로 기동 (cloudDegraded 가능)'
+            );
+            await this.waitForAuthToken();
+            this.setTenant(tenantId);
+            return true;
+        }
+
         console.warn('[DataService] setTenantWhenReady: 프로필 미확인 — 동기화 시작 보류(데이터 손실 방지)');
         this.lastSyncError = 'profile-not-ready';
         this.syncStatus = 'disconnected';
@@ -1573,28 +1653,84 @@ export class DataService {
         }, LIVE_MIRROR_PUSH_DEBOUNCE_MS);
     }
 
-    async pushLiveMirrors(): Promise<void> {
-        if (!this.tenantId || this.isWebMirrorMode()) return;
+    /** NAS + Storage 즉시 미러 — true면 회사 공유 저장 성공 */
+    async pushLiveMirrors(): Promise<boolean> {
+        if (!this.tenantId || this.isWebMirrorMode()) return false;
         if (this.shouldBlockOperationalNasWrite()) {
             console.warn('[DataService] live mirror push blocked — company NAS not ready/reconnect pending');
-            return;
+            return false;
         }
         const tenantId = this.tenantId;
-        const jobs = this.getAllJobs();
+        // NAS에 통째 덮어쓰기 금지 — 다른 PC의 더 최신(관리카드 내리기 등)이 유실됨
+        let jobs = this.getAllJobs();
+        try {
+            const nasSnap = await jobArchiveService.readNasArchiveSnapshot(tenantId);
+            if (nasSnap?.jobs?.length) {
+                const merged = this.mergeJobsByUpdatedAt(nasSnap.jobs, jobs);
+                const changed =
+                    merged.length !== jobs.length ||
+                    merged.some((j) => {
+                        const local = jobs.find((x) => x.id === j.id);
+                        if (!local) return true;
+                        return (
+                            this.jobTimestampMs(j) !== this.jobTimestampMs(local) ||
+                            !!j.managementCardPinnedAt !== !!local.managementCardPinnedAt ||
+                            !!j.boardHiddenAt !== !!local.boardHiddenAt
+                        );
+                    });
+                jobs = merged;
+                if (changed) {
+                    this.applyImportedJobs(jobs);
+                    if (this.isLocalPrimaryMode()) {
+                        await this.persistAllToLocalDb().catch((err) =>
+                            console.warn('[DataService] local db after NAS merge failed:', err)
+                        );
+                    }
+                    this.notify();
+                }
+            }
+        } catch (e) {
+            console.warn('[DataService] NAS merge-before-push skipped:', e);
+        }
         const staff = (this.data['staff'] || []) as Staff[];
         const clients = (this.data['clients'] || []) as Client[];
         const settings = this.getSettingsObj();
-        let published = false;
-
+        let archiveOk = false;
+        let situationOk = false;
         let mirrorUpdatedAt: string | null = null;
 
         try {
-            published = (await jobArchiveService.syncLiveJobsMirror(tenantId, jobs)) || published;
+            archiveOk = await jobArchiveService.syncLiveJobsMirror(tenantId, jobs);
+            if (!archiveOk) {
+                const gw = await this.getTrustedStoreGatewayUrl();
+                if (gw) {
+                    const { postJobsPartialViaGateway } = await import('./gatewayBridge');
+                    const partial = await postJobsPartialViaGateway(gw, tenantId, jobs);
+                    archiveOk = partial.ok;
+                    if (archiveOk) this.companyNasChannel = 'gateway';
+                }
+            } else {
+                this.companyNasChannel = 'local';
+            }
         } catch (e) {
             console.warn('[DataService] live jobs mirror failed:', e);
         }
 
         try {
+            const presenceFile = await presenceSessionService.read(tenantId, this.getStoreGatewayUrl());
+            const presenceByUid = presenceFile?.sessions || {};
+            const staffWithPresence = staff.map((s) => {
+                const row = s as Staff & { uid?: string; isOnline?: boolean; online?: boolean; lastActive?: string };
+                const uid = row.uid || row.id;
+                const p = uid ? presenceByUid[uid] : null;
+                if (!p) return row;
+                return {
+                    ...row,
+                    isOnline: p.isOnline,
+                    online: p.online,
+                    lastActive: p.lastActive,
+                };
+            });
             const payload = situationMirrorService.buildPayload(tenantId, {
                 jobs,
                 clients,
@@ -1602,32 +1738,41 @@ export class DataService {
                 companyName: this.getCompanyInfo()?.name,
                 kanbanLayout: this.getSettingsObj()?.kanbanLayout,
                 statusDefinitions: this.getStatusDefinitions(),
-                staff,
+                staff: staffWithPresence,
                 deletedJobs: tombstoneMapToPayload(this.jobTombstones),
             });
             mirrorUpdatedAt = payload.updatedAt;
-            let sitOk = await situationMirrorService.publish(tenantId, payload);
-            if (!sitOk) {
+            situationOk = await situationMirrorService.publish(tenantId, payload);
+            if (!situationOk) {
                 const gw = await this.getTrustedStoreGatewayUrl();
                 if (gw) {
-                    sitOk = await situationMirrorService.publishViaGateway(tenantId, payload, gw);
-                    if (sitOk) this.companyNasChannel = 'gateway';
+                    situationOk = await situationMirrorService.publishViaGateway(tenantId, payload, gw);
+                    if (situationOk) this.companyNasChannel = 'gateway';
                 }
             } else {
                 this.companyNasChannel = 'local';
             }
-            published = sitOk || published;
         } catch (e) {
             console.warn('[DataService] situation mirror failed:', e);
         }
 
+        const published = archiveOk || situationOk;
         if (published && mirrorUpdatedAt) {
             this.lastNasMirrorAt = mirrorUpdatedAt;
-            this.lastNasArchiveAt = mirrorUpdatedAt;
-            await this.bumpMirrorSyncPulse();
+            // archive 파일 updatedAt 과 혼동하지 않도록 archive 마커는 성공 시에만 맞춤
+            if (archiveOk) {
+                try {
+                    const snap = await jobArchiveService.readNasArchiveSnapshot(tenantId);
+                    if (snap?.updatedAt) this.lastNasArchiveAt = snap.updatedAt;
+                    else this.lastNasArchiveAt = mirrorUpdatedAt;
+                } catch {
+                    this.lastNasArchiveAt = mirrorUpdatedAt;
+                }
+            }
         }
 
         void this.refreshStoreGateway();
+        return published;
     }
 
     private async refreshStoreGateway() {
@@ -1861,8 +2006,17 @@ export class DataService {
                 map.set(job.id, job);
                 continue;
             }
-            const useIncoming = this.jobTimestampMs(job) >= this.jobTimestampMs(prev);
-            map.set(job.id, useIncoming ? { ...prev, ...job } : prev);
+            const useIncoming = isIncomingJobNewer(job, prev);
+            let merged: Job;
+            if (useIncoming) {
+                merged = applyIncomingJobVisibilityClears(
+                    { ...prev, ...job } as Record<string, unknown>,
+                    job as unknown as Record<string, unknown>
+                ) as Job;
+            } else {
+                merged = { ...prev };
+            }
+            map.set(job.id, mergeJobVisibilityFields(merged, prev, job));
         }
         return Array.from(map.values());
     }
@@ -1974,12 +2128,27 @@ export class DataService {
         const incomingById = new Map<string, Job>();
         for (const job of incoming) incomingById.set(job.id!, job);
 
-        // 보드에 보이는 범위(접수~완료 최근)만 authoritative하게 맞춰서 PC 간 화면 불일치 제거.
+        // 보드에 보이는 범위 — 미러에서 빠진 보드 작업 수렴용
+        // 관리카드/숨김 작업도 incoming에 있으면 반드시 머지(내리기 동기화)
         const boardIds = new Set(
             filterJobsForOperationalBoard(current, { includeStatusKeys: ['QUOTE'] })
                 .map((job) => job.id)
                 .filter(Boolean)
         );
+
+        const mergeOne = (local: Job, mirrored: Job): Job => {
+            const useIncoming = isIncomingJobNewer(mirrored, local);
+            let merged: Job;
+            if (useIncoming) {
+                merged = applyIncomingJobVisibilityClears(
+                    { ...local, ...mirrored } as Record<string, unknown>,
+                    mirrored as unknown as Record<string, unknown>
+                ) as Job;
+            } else {
+                merged = { ...local };
+            }
+            return mergeJobVisibilityFields(merged, local, mirrored);
+        };
 
         const next: Job[] = [];
         for (const job of current) {
@@ -1987,14 +2156,16 @@ export class DataService {
             if (isJobTombstoned(job.id, this.jobTombstones, this.jobTimestampMs(job))) {
                 continue;
             }
-            if (!boardIds.has(job.id)) {
-                next.push(job);
-                continue;
-            }
             const mirrored = incomingById.get(job.id);
             if (mirrored) {
-                next.push({ ...job, ...mirrored });
+                next.push(mergeOne(job, mirrored));
                 incomingById.delete(job.id);
+                continue;
+            }
+            if (!boardIds.has(job.id)) {
+                // 관리카드 등 — 미러에 없어도 로컬 유지(다른 PC가 아직 안 올린 경우)
+                next.push(job);
+                continue;
             }
             // boardIds에 있고 mirrored에 없으면 원격에서 빠진 것으로 간주하고 제거(수렴 목적)
         }
@@ -2012,6 +2183,9 @@ export class DataService {
         if (!this.tenantId || document.visibilityState !== 'visible') return;
         try {
             let changed = false;
+            let mergedJobs: Job[] | null = null;
+
+            const takeJobs = () => mergedJobs ?? this.getAllJobs();
 
             const archiveSnap = this.getIsElectron()
                 ? await jobArchiveService.readNasArchiveSnapshot(this.tenantId)
@@ -2023,8 +2197,7 @@ export class DataService {
             ) {
                 this.lastNasArchiveAt = archiveSnap.updatedAt;
                 if (archiveSnap.jobs.length > 0) {
-                    const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), archiveSnap.jobs);
-                    this.applyImportedJobs(merged);
+                    mergedJobs = this.mergeJobsByUpdatedAt(takeJobs(), archiveSnap.jobs);
                     changed = true;
                 }
             }
@@ -2047,22 +2220,6 @@ export class DataService {
                     changed = true;
                 }
 
-                const useFullMerge =
-                    !!archiveSnap?.jobs?.length ||
-                    (!this.getIsElectron() && (situation.jobs?.length || 0) > 0);
-
-                if (!archiveSnap?.updatedAt || archiveSnap.updatedAt !== situation.updatedAt) {
-                    if (situation.jobs?.length) {
-                        if (useFullMerge) {
-                            const merged = this.mergeJobsByUpdatedAt(this.getAllJobs(), situation.jobs);
-                            this.applyImportedJobs(merged);
-                        } else {
-                            this.applySituationMirrorJobsPartial(situation.jobs);
-                        }
-                        changed = true;
-                    }
-                }
-
                 if (
                     (situation.clients?.length || 0) > 0 ||
                     (situation.settings && Object.keys(situation.settings).length > 0)
@@ -2074,6 +2231,17 @@ export class DataService {
                 if (changed && !this.getIsElectron()) {
                     this.webMirrorReady = true;
                 }
+            }
+
+            // 관리카드·보드숨김 — 미러 updatedAt이 같아도 매 폴링마다 병합
+            // (직원 PC가 칸반만 옮겨 rev가 높으면 핀을 놓치는 문제 방지)
+            if (situation?.jobs?.length) {
+                mergedJobs = this.mergeJobsByUpdatedAt(takeJobs(), situation.jobs);
+                changed = true;
+            }
+
+            if (mergedJobs) {
+                this.applyImportedJobs(mergedJobs);
             }
 
             if (changed) {
@@ -2114,6 +2282,29 @@ export class DataService {
             this.syncPulseUnsub();
             this.syncPulseUnsub = null;
         }
+        if (this.configPollTimer) {
+            clearInterval(this.configPollTimer);
+            this.configPollTimer = null;
+        }
+    }
+
+    /** 로컬/웹 — Firestore onSnapshot pulse 대신 staff/settings 저빈도 폴링 */
+    private startConfigPolling() {
+        if (this.configPollTimer) {
+            clearInterval(this.configPollTimer);
+            this.configPollTimer = null;
+        }
+        const tick = async () => {
+            if (!this.tenantId) return;
+            try {
+                await this.pullCollectionDocs('staff');
+                await this.pullCollectionDocs('settings');
+                this.notify();
+            } catch (e) {
+                console.warn('[DataService] config poll failed:', e);
+            }
+        };
+        this.configPollTimer = setInterval(() => void tick(), 3 * 60_000);
     }
 
     private stopAllLazySync() {
@@ -2151,6 +2342,16 @@ export class DataService {
 
     private async bumpSyncPulse(patch: Record<string, unknown>) {
         if (!this.tenantId || (this.isWebMirrorMode() && !this.isSyncAdmin())) return;
+        // 로컬/웹 — 업무 동기화는 NAS 폴링. Firestore pulse는 staff/settings 등 저빈도만 유지
+        if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
+            const allowed = ['staffAt', 'settingsAt', 'archiveRootAt', 'quotesAt', 'leavesAt', 'papersAt', 'instructionsAt'];
+            const filtered: Record<string, unknown> = {};
+            for (const key of allowed) {
+                if (key in patch) filtered[key] = patch[key];
+            }
+            if (Object.keys(filtered).length === 0) return;
+            patch = filtered;
+        }
         if (this.isLocalPrimaryMode() && ('jobsAt' in patch || 'jobRev' in patch || 'jobBatchRev' in patch)) {
             return;
         }
@@ -2173,8 +2374,8 @@ export class DataService {
     }
 
     private async bumpMirrorSyncPulse() {
-        const now = new Date().toISOString();
-        await this.bumpSyncPulse({ mirrorAt: now });
+        // NAS 폴링(1~2초)이 이미 대체 — Firestore mirrorAt 쓰기 제거
+        return;
     }
 
     private async bumpJobSyncPulse(jobId: string, op: 'upsert' | 'delete') {
@@ -2427,6 +2628,11 @@ export class DataService {
     private subscribeSyncPulse() {
         if (!this.tenantId) return;
         this.stopSyncPulse();
+        // 로컬 SQLite / 웹 미러 — 업무는 NAS 폴링, 설정·직원은 3분 폴링 (Firestore pulse 제거)
+        if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
+            this.startConfigPolling();
+            return;
+        }
         this.syncPulseUnsub = onSnapshot(
             this.getSyncPulseRef(),
             (snap) => {
@@ -2708,6 +2914,8 @@ export class DataService {
     /** 캘린더 월 이동 시 — 해당 월±1 완료 작업만 추가 로드 (읽기 최소화) */
     async ensureCalendarJobsSync(year: number, month: number) {
         if (!this.tenantId) return;
+        // 로컬/웹 미러 모드 — Firestore jobs 금지, NAS·SQLite만 사용
+        if (this.isFirestoreJobsForbidden()) return;
 
         const monthsToLoad: { year: number; month: number }[] = [];
         for (const offset of [-1, 0, 1]) {
@@ -2827,7 +3035,14 @@ export class DataService {
                 this.enforceCompanyArchiveRoot();
             } catch (settingsErr) {
                 console.warn('[DataService] settings retry after soft-fail also failed:', settingsErr);
+                // settings 실패 시에도 직전 회사 NAS 경로는 유지
+                this.restoreArchiveRootFromLastKnown();
             }
+        }
+
+        // soft-fail 후에도 경로가 비면 last-known 복원
+        if (!getEffectiveArchiveRootPath()?.trim()) {
+            this.restoreArchiveRootFromLastKnown();
         }
 
         // 직원이 비어 있으면 한 번 더 (일시 permission/네트워크)
@@ -2939,9 +3154,11 @@ export class DataService {
         this.cloudDegraded = true;
         this.syncStatus = 'synced';
         this.isReady = true;
+        this.restoreArchiveRootFromLastKnown();
         this.startNasMirrorPolling();
         this.finishSessionPull();
         toast.warning(message, { duration: 6000 });
+        this.notify();
     }
 
     private async startSyncing() {
@@ -2979,8 +3196,26 @@ export class DataService {
 
         const localPrimary = this.isLocalPrimaryMode();
 
+        // 테넌트 전환 직후 override가 비워지므로, 클라우드 전에 last-known 경로 선적용
+        this.restoreArchiveRootFromLastKnown();
+
         const authReady = await this.waitForAuthToken();
         if (!authReady) {
+            if (localPrimary) {
+                try {
+                    const loaded = await this.loadLocalPrimaryData();
+                    if (loaded) {
+                        this.localOperationalReady = true;
+                        this.enterCloudDegradedMode(
+                            '인증 일시 불가 — 로컬 데이터로 계속 운영합니다.'
+                        );
+                        this.scheduleReconnect();
+                        return;
+                    }
+                } catch (e) {
+                    console.warn('[DataService] local bootstrap without auth failed:', e);
+                }
+            }
             this.lastSyncError = 'auth-not-ready';
             this.syncStatus = 'disconnected';
             this.notify();
@@ -3074,7 +3309,7 @@ export class DataService {
             const recoverableCodes = ['resource-exhausted', 'unavailable', 'pull-failed', 'permission-denied', 'auth-not-ready'];
 
             if (this.localOperationalReady && recoverableCodes.includes(code)) {
-                this.enterCloudDegradedMode('클라우드 연결 문제 — 로컬 데이터로 계속 사용합니다.');
+                this.enterCloudDegradedMode('클라우드 일시 불가 — 로컬 데이터로 계속 운영합니다.');
                 return;
             }
 
@@ -3084,8 +3319,8 @@ export class DataService {
                     this.localOperationalReady = true;
                     this.enterCloudDegradedMode(
                         code === 'permission-denied'
-                            ? '클라우드 권한 문제 — 로컬·미러 데이터로 계속 사용합니다. 로그아웃 후 다시 로그인하면 동기화가 복구됩니다.'
-                            : '클라우드 연결 문제 — 저장된 로컬·미러 데이터로 계속 사용합니다.'
+                            ? '클라우드 권한 문제 — 로컬·미러로 계속 운영합니다. 복구 후 자동 재동기화됩니다.'
+                            : '클라우드 일시 불가 — 저장된 로컬·미러로 계속 운영합니다.'
                     );
                     return;
                 }
@@ -3095,7 +3330,7 @@ export class DataService {
                 const hydrated = await this.tryHydrateFromMirrors();
                 if (hydrated) {
                     this.localOperationalReady = true;
-                    this.enterCloudDegradedMode('Firestore 한도 초과 — 저장된 미러 데이터로 계속 사용합니다.');
+                    this.enterCloudDegradedMode('클라우드 일시 불가 — 저장된 미러로 계속 운영합니다.');
                     return;
                 }
             }
@@ -3158,9 +3393,9 @@ export class DataService {
         const now = new Date().toISOString();
         const ownerName = user.displayName || user.email?.split('@')[0] || '대표';
         const ownerEmail = user.email || '';
-        const ownerPhoneFormatted = formatPhoneNumber(ownerPhone?.trim() || '');
-        if (!isValidPhoneNumber(ownerPhoneFormatted)) {
-            throw new Error('연락처를 올바르게 입력해주세요.');
+        const ownerPhoneFormatted = formatPhoneNumber(String(ownerPhone || '').trim());
+        if (!ownerPhoneFormatted || !isValidPhoneNumber(ownerPhoneFormatted)) {
+            throw new Error('관리자 연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
         }
 
         const staffCount = Math.max(1, Math.min(999, initialStaffCount));
@@ -3175,12 +3410,15 @@ export class DataService {
             createdAt: now,
             businessNumber: businessNumber?.trim() || '',
             joinCode: joinCode.trim(),
+            ownerPhone: ownerPhoneFormatted,
+            contactPhone: ownerPhoneFormatted,
         };
 
         const defaultSettings = this.getDefaultSettings(name.trim());
         if (businessNumber?.trim()) {
             defaultSettings.companyInfo.businessNumber = businessNumber.trim();
         }
+        defaultSettings.companyInfo.phone = ownerPhoneFormatted;
 
         const batch = writeBatch(firestore);
         batch.set(tenantRef, {
@@ -3371,7 +3609,7 @@ export class DataService {
             ...entity,
             id,
             createdAt: entity.createdAt || now,
-            ...(col === 'jobs' ? { updatedAt: entity.updatedAt || now } : {}),
+            ...(col === 'jobs' ? { updatedAt: entity.updatedAt || now, rev: entity.rev ?? 1 } : {}),
         };
 
         if (col === 'jobs') {
@@ -3445,7 +3683,18 @@ export class DataService {
         if (col === 'jobs') {
             const existing = this.getAllJobs().find((j) => j.id === id);
             if (!existing) return null;
-            const updated = { ...existing, ...entity, updatedAt: new Date().toISOString() };
+            const updated = stripClearedJobVisibilityFields({
+                ...existing,
+                ...entity,
+                updatedAt: new Date().toISOString(),
+                rev: nextJobRev(existing),
+            } as Job);
+            // null 클리어는 NAS JSON에 남겨 다른 PC 머지 롤백 방지
+            for (const key of JOB_VISIBILITY_CLEAR_FIELDS) {
+                if (entity[key] === null) {
+                    (updated as any)[key] = null;
+                }
+            }
             this.placeJobInLocalCache(updated);
             this.rebuildMergedJobs();
             return updated;
@@ -3528,7 +3777,12 @@ export class DataService {
         if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
             const existing = this.archivedJobs.find((j) => j.id === id);
             if (!existing || !this.tenantId) return;
-            const updated = { ...existing, ...entity, updatedAt: new Date().toISOString() } as Job;
+            const updated = {
+                ...existing,
+                ...entity,
+                updatedAt: new Date().toISOString(),
+                rev: nextJobRev(existing),
+            } as Job;
             const ok = await jobArchiveService.upsertArchivedJob(this.tenantId, updated);
             if (!ok) throw new Error('보관 이력 업데이트에 실패했습니다.');
             this.archivedJobs = this.archivedJobs.map((j) => (j.id === id ? updated : j));
@@ -3559,12 +3813,49 @@ export class DataService {
         }
     }
 
-    private flushLiveMirrorPushNow() {
+    private flushLiveMirrorPushNow(): Promise<boolean> {
         if (this.liveMirrorPushTimer) {
             clearTimeout(this.liveMirrorPushTimer);
             this.liveMirrorPushTimer = null;
         }
-        void this.pushLiveMirrors();
+        return this.pushLiveMirrors();
+    }
+
+    /** 칸반 → 관리카드로 올리기 (회사 공통 — 칸반에서 자동 숨김) */
+    async pinJobToManagementCard(jobId: string) {
+        const target = this.getAllJobs().find((job) => job.id === jobId);
+        if (!target) return;
+        const pinnedAt = new Date().toISOString();
+        await this.updateEntity('jobs', jobId, {
+            managementCardPinnedAt: pinnedAt,
+            boardHiddenAt: pinnedAt,
+            boardHiddenReason: 'management_card',
+        });
+        const ok = await this.flushLiveMirrorPushNow();
+        if (!ok) {
+            throw new Error(
+                '관리카드로 올렸지만 회사 NAS에 반영되지 않았습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+            );
+        }
+    }
+
+    /** 관리카드 → 칸반으로 내리기 (회사 공통) */
+    async unpinJobFromManagementCard(jobId: string) {
+        const target = this.getAllJobs().find((job) => job.id === jobId);
+        if (!target) return;
+        const restoreKanban = target.boardHiddenReason === 'management_card';
+        await this.updateEntity('jobs', jobId, {
+            ...jobVisibilityClearPatch(['managementCardPinnedAt']),
+            ...(restoreKanban
+                ? jobVisibilityClearPatch(['boardHiddenAt', 'boardHiddenBy', 'boardHiddenReason'])
+                : {}),
+        });
+        const ok = await this.flushLiveMirrorPushNow();
+        if (!ok) {
+            throw new Error(
+                '칸반으로 내렸지만 회사 NAS에 반영되지 않았습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+            );
+        }
     }
 
     private async deleteEntity(col: string, id: string) {
@@ -3800,14 +4091,15 @@ export class DataService {
 
         const { id, ...data } = jobToSave;
         await this.updateEntity('jobs', id!, data);
+        const savedJob = this.getAllJobs().find((j) => j.id === id) || jobToSave;
 
         // 취소 건은 NAS 보관(jobs-archive)에도 병합해 작업 내역에서 유실되지 않게 함
-        if (jobToSave.status === 'CANCELED' && this.tenantId && jobToSave.id) {
+        if (savedJob.status === 'CANCELED' && this.tenantId && savedJob.id) {
             try {
-                await jobArchiveService.upsertArchivedJob(this.tenantId, jobToSave);
-                const idx = this.archivedJobs.findIndex((j) => j.id === jobToSave.id);
-                if (idx >= 0) this.archivedJobs[idx] = jobToSave;
-                else this.archivedJobs = [...this.archivedJobs, jobToSave];
+                await jobArchiveService.upsertArchivedJob(this.tenantId, savedJob);
+                const idx = this.archivedJobs.findIndex((j) => j.id === savedJob.id);
+                if (idx >= 0) this.archivedJobs[idx] = savedJob;
+                else this.archivedJobs = [...this.archivedJobs, savedJob];
                 this.rebuildArchiveMergedJobs();
                 this.notify();
             } catch (e) {
@@ -3835,38 +4127,9 @@ export class DataService {
         if (!target) return;
         const restoreFromManagementCard = target.boardHiddenReason === 'management_card';
         await this.updateEntity('jobs', jobId, {
-            boardHiddenAt: undefined,
-            boardHiddenBy: undefined,
-            boardHiddenReason: undefined,
-            ...(restoreFromManagementCard ? { managementCardPinnedAt: undefined } : {}),
-        });
-    }
-
-    /** 칸반 → 관리카드로 올리기 (회사 공통 — 칸반에서 자동 숨김) */
-    async pinJobToManagementCard(jobId: string) {
-        const target = this.getAllJobs().find((job) => job.id === jobId);
-        if (!target) return;
-        const pinnedAt = new Date().toISOString();
-        await this.updateEntity('jobs', jobId, {
-            managementCardPinnedAt: pinnedAt,
-            boardHiddenAt: pinnedAt,
-            boardHiddenReason: 'management_card',
-        });
-    }
-
-    /** 관리카드 → 칸반으로 내리기 (회사 공통) */
-    async unpinJobFromManagementCard(jobId: string) {
-        const target = this.getAllJobs().find((job) => job.id === jobId);
-        if (!target) return;
-        const restoreKanban = target.boardHiddenReason === 'management_card';
-        await this.updateEntity('jobs', jobId, {
-            managementCardPinnedAt: undefined,
-            ...(restoreKanban
-                ? {
-                      boardHiddenAt: undefined,
-                      boardHiddenBy: undefined,
-                      boardHiddenReason: undefined,
-                  }
+            ...jobVisibilityClearPatch(['boardHiddenAt', 'boardHiddenBy', 'boardHiddenReason']),
+            ...(restoreFromManagementCard
+                ? jobVisibilityClearPatch(['managementCardPinnedAt'])
                 : {}),
         });
     }

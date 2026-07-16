@@ -25,8 +25,11 @@ import {
     getLocalStaffSessionId,
     setLocalStaffSessionId,
     isRemoteStaffSessionActive,
-    claimStaffSessionOnFirestore,
+    claimStaffSessionOnNas,
 } from '../utils/staffSession';
+import { presenceSessionService } from '../services/presenceSessionService';
+import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
+import { setCompanyArchiveRootOverride } from '../utils/archiveStorage';
 import { useDialog } from '../contexts/DialogContext';
 import type { AppUser } from '../types';
 
@@ -119,9 +122,7 @@ export const LoginPage: React.FC = () => {
         if (prefs.keepLoggedIn && prefs.loginId) {
             setLoginId(prefs.loginId);
         }
-        if (prefs.keepLoggedIn && prefs.loginPassword) {
-            setPassword(prefs.loginPassword);
-        }
+        // 비밀번호는 localStorage에 저장하지 않음 (보안)
         setRememberCompany(prefs.rememberCompany);
         setSaveCredentials(prefs.keepLoggedIn);
     }, []);
@@ -377,7 +378,7 @@ export const LoginPage: React.FC = () => {
 
         try {
             const { collection, query, where, limit, getDocs, doc, getDoc, setDoc } = await import('firebase/firestore');
-            const { db } = await import('../services/firebase');
+            const { db: firestoreDb } = await import('../services/firebase');
             const { setPersistence, browserLocalPersistence, browserSessionPersistence } = await import('firebase/auth');
 
             persistLoginPrefs({
@@ -392,7 +393,7 @@ export const LoginPage: React.FC = () => {
                 saveCredentials ? browserLocalPersistence : browserSessionPersistence
             );
 
-            const staffCol = collection(db, `tenants/${selectedTenantId}/staff`);
+            const staffCol = collection(firestoreDb, `tenants/${selectedTenantId}/staff`);
             const loginNorm = loginId.trim().toLowerCase();
             const snap = await getDocs(
                 query(staffCol, where('loginId', '==', loginNorm), limit(10))
@@ -425,17 +426,24 @@ export const LoginPage: React.FC = () => {
 
             const tenantId = selectedTenantId; // 서브컬렉션 소속이므로 selectedTenantId가 곧 tenantId가 됩니다.
 
-            let freshStaffData = userData;
+            const knownArchive = readLastKnownArchiveRootPath(tenantId);
+            if (knownArchive) setCompanyArchiveRootOverride(knownArchive);
+
+            let sessionRecord = null as Awaited<ReturnType<typeof presenceSessionService.readEntry>>;
             try {
-                const freshSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
-                if (freshSnap.exists()) {
-                    freshStaffData = freshSnap.data();
+                const uidHint = typeof userData.uid === 'string' ? userData.uid : '';
+                if (uidHint) {
+                    sessionRecord = await presenceSessionService.readEntry(
+                        tenantId,
+                        uidHint,
+                        db.getStoreGatewayUrl()
+                    );
                 }
             } catch {
-                /* fresh staff lookup optional */
+                /* NAS session lookup optional */
             }
 
-            if (isRemoteStaffSessionActive(freshStaffData, getLocalStaffSessionId())) {
+            if (isRemoteStaffSessionActive(sessionRecord, getLocalStaffSessionId())) {
                 const proceed = await showConfirm(
                     '현재 다른 곳에서 같은 아이디로 로그인되어 있습니다.\n기존 접속을 종료하고 여기에서 로그인하시겠습니까?'
                 );
@@ -448,7 +456,7 @@ export const LoginPage: React.FC = () => {
             const newSessionId = createStaffSessionId();
             setLocalStaffSessionId(newSessionId, saveCredentials);
 
-            const tenantDocRef = doc(db, 'tenants', tenantId);
+            const tenantDocRef = doc(firestoreDb, 'tenants', tenantId);
             const tenantDocSnap = await getDoc(tenantDocRef);
             let tenantName = '';
             if (tenantDocSnap.exists()) {
@@ -519,7 +527,7 @@ export const LoginPage: React.FC = () => {
                 let latestStaffRole = staffRoleForAuth;
                 let latestIsCompanyAdmin = userData.isCompanyAdmin === true;
                 try {
-                    const staffDocSnap = await getDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id));
+                    const staffDocSnap = await getDoc(doc(firestoreDb, `tenants/${tenantId}/staff`, userDoc.id));
                     if (staffDocSnap.exists()) {
                         const staffData = staffDocSnap.data();
                         latestStaffRole = staffData.role || latestStaffRole;
@@ -547,15 +555,19 @@ export const LoginPage: React.FC = () => {
                     throw new Error('회사 소속 정보 저장에 실패했습니다.');
                 }
 
-                await claimStaffSessionOnFirestore(db, {
+                await claimStaffSessionOnNas({
                     uid: firebaseUid,
                     tenantId,
                     staffDocId: userDoc.id,
                     sessionId: newSessionId,
+                    loginId: rawLoginId,
+                    name: staffDisplayName,
+                    email: auth.currentUser?.email || authEmail,
+                    gatewayBaseUrl: db.getStoreGatewayUrl(),
                 });
 
                 try {
-                    await setDoc(doc(db, `tenants/${tenantId}/staff`, userDoc.id), {
+                    await setDoc(doc(firestoreDb, `tenants/${tenantId}/staff`, userDoc.id), {
                         uid: firebaseUid,
                         active: true,
                     }, { merge: true });
@@ -749,7 +761,10 @@ export const LoginPage: React.FC = () => {
               tenantData.maxStaff
             );
             const staffColRef = collection(db, `tenants/${tenantId}/staff`);
-            const staffSnap = await getDocs(staffColRef);
+            // 비로그인 전체 list 금지(rules) — active 직원만으로 좌석 추정
+            const staffSnap = await getDocs(
+                query(staffColRef, where('active', '==', true), limit(50))
+            );
             const staffRows = staffSnap.docs
               .map((d) => ({ id: d.id, ...d.data() } as import('../types').Staff))
               .filter((s) => s.isDeleted !== true && s.active !== false);

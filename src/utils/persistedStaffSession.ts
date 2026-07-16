@@ -20,8 +20,9 @@ export function readPersistedStaffSession(): PersistedStaffSession | null {
 
     const plan = (localStorage.getItem('customTenantPlan') as 'free' | 'pro') || 'free';
     const planCode = localStorage.getItem('customTenantPlanCode') || plan;
+    const paymentStatus = localStorage.getItem('customTenantPaymentStatus') || undefined;
 
-    return { user, plan, planCode };
+    return { user, plan, planCode, paymentStatus };
   } catch {
     return null;
   }

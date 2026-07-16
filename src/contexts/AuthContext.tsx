@@ -1,10 +1,11 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline } from '../services/firebase';
+import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline, setPresenceGatewayUrl } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
+import { presenceSessionService } from '../services/presenceSessionService';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
-import { getMaxStaffForPlan, isProPlan } from '../utils/planLimits';
+import { getMaxStaffForPlan, isProPlan, shouldShowTenantAds } from '../utils/planLimits';
 import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
 import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
@@ -19,13 +20,21 @@ import {
   clearPersistedStaffSession,
   writePersistedStaffSession,
 } from '../utils/persistedStaffSession';
+import {
+  clearLastKnownTenantPlanForUid,
+  readLastKnownArchiveRootPath,
+  readLastKnownTenantPlan,
+  readLastKnownTenantPlanByUid,
+  saveLastKnownTenantPlan,
+  type LastKnownTenantUser,
+} from '../utils/lastKnownTenantPlan';
 import { useDialog } from './DialogContext';
 import {
   getLocalStaffSessionId,
   getLocalStaffSessionClaimedAt,
   clearLocalStaffSessionId,
   isRemoteSessionNewerThanLocal,
-  releaseStaffSessionOnFirestore,
+  releaseStaffSessionOnNas,
 } from '../utils/staffSession';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
@@ -93,20 +102,121 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [tenantPlan, setTenantPlan] = useState<'free' | 'pro'>('free');
   const [tenantPlanCode, setTenantPlanCode] = useState<string>('free');
   const [maxStaff, setMaxStaff] = useState<number>(1);
-  const [tenantPaymentStatus, setTenantPaymentStatus] = useState<string>('UNPAID');
+  /** 서버/스냅샷 확인 전 — UNPAID 기본값으로 광고가 튀지 않게 비워 둠 */
+  const [tenantPaymentStatus, setTenantPaymentStatus] = useState<string>('');
+  const [tenantPlanReady, setTenantPlanReady] = useState(false);
   const [tenantOwnerId, setTenantOwnerId] = useState<string | null>(null);
+  const [tenantLicenseExpiresAt, setTenantLicenseExpiresAt] = useState<string | null>(null);
   const [staffRecordRole, setStaffRecordRole] = useState<string | null>(null);
   const [staffIsCompanyAdmin, setStaffIsCompanyAdmin] = useState<boolean>(false);
   const [loading, setLoading] = useState(true);
 
-  const applyTenantSnapshot = (tenantData: any) => {
+  const persistOpsSnapshot = (args: {
+    tenantId: string;
+    plan: 'free' | 'pro';
+    planCode: string;
+    paymentStatus: string;
+    licenseExpiresAt?: string | null;
+    maxStaff?: number | null;
+    ownerId?: string | null;
+    uid?: string | null;
+    user?: AppUser | null;
+    userRole?: string | null;
+    staffIsCompanyAdmin?: boolean;
+    staffRecordRole?: string | null;
+  }) => {
+    const userSnap: LastKnownTenantUser | undefined = args.user
+      ? {
+          uid: args.user.uid,
+          id: args.user.id || args.user.uid,
+          email: args.user.email || '',
+          displayName: args.user.displayName || args.user.name || '',
+          name: args.user.name || args.user.displayName || '',
+          photoURL: args.user.photoURL || '',
+          avatarUrl: args.user.avatarUrl || args.user.photoURL || '',
+          tenantId: args.user.tenantId,
+          role: args.user.role,
+          loginId: (args.user as AppUser & { loginId?: string }).loginId,
+        }
+      : undefined;
+    saveLastKnownTenantPlan({
+      tenantId: args.tenantId,
+      plan: args.plan,
+      planCode: args.planCode,
+      paymentStatus: args.paymentStatus,
+      licenseExpiresAt: args.licenseExpiresAt ?? null,
+      maxStaff: args.maxStaff ?? null,
+      ownerId: args.ownerId ?? null,
+      uid: args.uid || args.user?.uid || undefined,
+      userRole: args.userRole ?? args.user?.role ?? null,
+      staffIsCompanyAdmin: args.staffIsCompanyAdmin,
+      staffRecordRole: args.staffRecordRole,
+      archiveRootPath: readLastKnownArchiveRootPath(args.tenantId),
+      user: userSnap,
+    });
+  };
+
+  /** Firestore에서 읽은 정상 스냅샷 적용 + last-known 저장 */
+  const applyTenantSnapshot = (tenantData: any, tenantIdForCache?: string) => {
     const plan = determineTenantPlan(tenantData);
-    setTenantPlan(plan);
     const code = String(tenantData?.plan || 'free');
+    const paymentStatus = String(tenantData?.paymentStatus || 'UNPAID').toUpperCase();
+    const expiresAt = tenantData?.licenseExpiresAt
+      ? String(tenantData.licenseExpiresAt)
+      : null;
+    const max = getMaxStaffForPlan(code, tenantData?.paymentStatus, tenantData?.maxStaff);
+    const ownerId = tenantData?.ownerId || null;
+
+    setTenantPlan(plan);
     setTenantPlanCode(code);
-    setTenantPaymentStatus(String(tenantData?.paymentStatus || 'UNPAID').toUpperCase());
-    setMaxStaff(getMaxStaffForPlan(code, tenantData?.paymentStatus, tenantData?.maxStaff));
-    setTenantOwnerId(tenantData?.ownerId || null);
+    setTenantPaymentStatus(paymentStatus);
+    setTenantLicenseExpiresAt(expiresAt);
+    setMaxStaff(max);
+    setTenantOwnerId(ownerId);
+    setTenantPlanReady(true);
+
+    const cacheTenantId =
+      String(tenantIdForCache || tenantData?.id || currentUser?.tenantId || '').trim();
+    if (cacheTenantId) {
+      saveLastKnownTenantPlan({
+        tenantId: cacheTenantId,
+        plan,
+        planCode: code,
+        paymentStatus,
+        licenseExpiresAt: expiresAt,
+        maxStaff: max,
+        ownerId,
+        archiveRootPath: readLastKnownArchiveRootPath(cacheTenantId),
+      });
+    }
+  };
+
+  /** Firestore 일시 실패 시 — 마지막 정상 요금제·권한 복원 (광고형 오판 방지) */
+  const restoreLastKnownTenantPlan = (tenantId?: string | null): boolean => {
+    const known = readLastKnownTenantPlan(tenantId);
+    if (!known) {
+      setTenantPlanReady(false);
+      return false;
+    }
+    setTenantPlan(known.plan);
+    setTenantPlanCode(known.planCode);
+    setTenantPaymentStatus(known.paymentStatus);
+    setTenantLicenseExpiresAt(known.licenseExpiresAt ? String(known.licenseExpiresAt) : null);
+    setMaxStaff(
+      getMaxStaffForPlan(known.planCode, known.paymentStatus, known.maxStaff)
+    );
+    if (known.ownerId) setTenantOwnerId(known.ownerId);
+    if (typeof known.staffIsCompanyAdmin === 'boolean') {
+      setStaffIsCompanyAdmin(known.staffIsCompanyAdmin);
+    }
+    if (known.staffRecordRole !== undefined) {
+      setStaffRecordRole(known.staffRecordRole ?? null);
+    }
+    setTenantPlanReady(true);
+    console.warn(
+      `[TenantPlan] Firestore 조회 실패 → last-known 복원 (${known.paymentStatus}/${known.planCode})`
+    );
+    return true;
   };
 
   const isTenantOwner = isTenantOwnerUser(currentUser?.uid, tenantOwnerId);
@@ -118,6 +228,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     staffRecordRole,
     staffIsCompanyAdmin,
   };
+
+  /** 광고형(AD/UNPAID)만 true — 서버/스냅샷 확인 전에는 광고 숨김 */
+  const showsAds =
+    tenantPlanReady &&
+    shouldShowTenantAds(tenantPlanCode, tenantPaymentStatus, tenantLicenseExpiresAt);
   const hasAdminAccess = hasCompanyAdminAccess(permissionCtx) || currentUser?.email === 'molnanle@gmail.com';
   const isSiteAdmin = hasAdminAccess && !isTenantOwner;
   const canAccessAdminSettings = hasAdminAccess;
@@ -128,9 +243,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canManageClientMasterFlag = canManageClientMaster(permissionCtx);
   const canManageInstructionsFlag = canManageInstructions(permissionCtx);
   const canAccessStaffOperationsSettingsFlag = canAccessStaffOperationsSettings(permissionCtx);
-
-  /** determineTenantPlan과 동일 — 광고형(AD)만 true */
-  const showsAds = tenantPlan === 'free';
 
   const assertStaffNotDeleted = async (tenantId: string, user: User, loginId?: string | null) => {
     const staffCol = collection(db, `tenants/${tenantId}/staff`);
@@ -296,16 +408,44 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         
         if (updatedUser.tenantId) {
           await assertStaffNotDeleted(updatedUser.tenantId, user, loginId);
-          const tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
-          if (tenantDoc.exists()) {
-              const tenantData = tenantDoc.data();
-              applyTenantSnapshot(tenantData);
+          let tenantDoc: Awaited<ReturnType<typeof getDoc>> | null = null;
+          try {
+            tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
+            if (tenantDoc.exists()) {
+              const tenantData = tenantDoc.data() as Record<string, unknown>;
+              applyTenantSnapshot(tenantData, updatedUser.tenantId);
+              const plan = determineTenantPlan(tenantData);
+              const planCode = String(tenantData?.plan || 'free');
+              const paymentStatus = String(tenantData?.paymentStatus || 'UNPAID').toUpperCase();
               if (isStaffKeepLoggedIn()) {
-                const plan = determineTenantPlan(tenantData);
-                const planCode = String(tenantData?.plan || 'free');
-                const paymentStatus = String(tenantData?.paymentStatus || 'UNPAID').toUpperCase();
                 writePersistedStaffSession(updatedUser, plan, planCode, paymentStatus);
               }
+              persistOpsSnapshot({
+                tenantId: updatedUser.tenantId,
+                plan,
+                planCode,
+                paymentStatus,
+                licenseExpiresAt: tenantData?.licenseExpiresAt
+                  ? String(tenantData.licenseExpiresAt)
+                  : null,
+                maxStaff: getMaxStaffForPlan(
+                  planCode,
+                  paymentStatus,
+                  typeof tenantData?.maxStaff === 'number' ? tenantData.maxStaff : null
+                ),
+                ownerId: tenantData?.ownerId ? String(tenantData.ownerId) : null,
+                uid: user.uid,
+                user: updatedUser,
+                userRole: updatedUser.role,
+                staffIsCompanyAdmin: resolvedStaffIsCompanyAdmin,
+                staffRecordRole: resolvedStaffRole,
+              });
+            } else {
+              restoreLastKnownTenantPlan(updatedUser.tenantId);
+            }
+          } catch (tenantErr) {
+            console.warn('[TenantPlan] tenant getDoc failed during profile load:', tenantErr);
+            restoreLastKnownTenantPlan(updatedUser.tenantId);
           }
           await dataService.setTenantWhenReady(updatedUser.tenantId, user.uid);
 
@@ -313,7 +453,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           // 테넌트 owner만 staff 문서 자동 생성. 사내 관리자는 기존 staff에 uid만 연결(중복 생성 방지).
           if (updatedUser.role === 'admin') {
             try {
-              const tenantOwnerId = tenantDoc.exists() ? String(tenantDoc.data()?.ownerId || '') : '';
+              const tenantOwnerId = tenantDoc?.exists()
+                ? String((tenantDoc.data() as Record<string, unknown> | undefined)?.ownerId || '')
+                : '';
               const isMainOwner = !!tenantOwnerId && tenantOwnerId === user.uid;
               const staffCol = collection(db, `tenants/${updatedUser.tenantId}/staff`);
               const staffDocRef = doc(staffCol, user.uid);
@@ -552,9 +694,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setCurrentUser(newUser);
           dataService.setSyncUserRole(newUser.role);
           if (tenantId) {
-            const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
-            if (tenantDoc.exists()) {
-              applyTenantSnapshot(tenantDoc.data());
+            try {
+              const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
+              if (tenantDoc.exists()) {
+                applyTenantSnapshot(tenantDoc.data(), tenantId);
+              } else {
+                restoreLastKnownTenantPlan(tenantId);
+              }
+            } catch (tenantErr) {
+              console.warn('[TenantPlan] tenant getDoc failed (heal path):', tenantErr);
+              restoreLastKnownTenantPlan(tenantId);
             }
             await dataService.setTenantWhenReady(tenantId, user.uid);
           }
@@ -617,9 +766,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           setCurrentUser(newUser);
           dataService.setSyncUserRole(newUser.role);
           if (tenantId) {
-            const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
-            if (tenantDoc.exists()) {
-              applyTenantSnapshot(tenantDoc.data());
+            try {
+              const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
+              if (tenantDoc.exists()) {
+                applyTenantSnapshot(tenantDoc.data(), tenantId);
+              } else {
+                restoreLastKnownTenantPlan(tenantId);
+              }
+            } catch (tenantErr) {
+              console.warn('[TenantPlan] tenant getDoc failed (signup path):', tenantErr);
+              restoreLastKnownTenantPlan(tenantId);
             }
             await dataService.setTenantWhenReady(tenantId, user.uid);
           }
@@ -627,34 +783,60 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       }
     } catch (error) {
       if (error instanceof Error && error.message === 'DELETED_STAFF') {
+        // 삭제/비활성 확정 — 캐시·스냅샷으로 절대 복원하지 않음
+        console.warn('[Auth] Deleted staff account blocked from login');
+        clearPersistedStaffSession();
+        clearLastKnownTenantPlanForUid(user.uid);
         try {
-          const customRaw =
-            sessionStorage.getItem('customUser') || localStorage.getItem('customUser');
-          if (customRaw) {
-            const customUser = JSON.parse(customRaw) as AppUser;
-            if (customUser?.tenantId && customUser.uid === user.uid) {
-              setCurrentUser(customUser);
-              dataService.setSyncUserRole(customUser.role);
-              await dataService.setTenantWhenReady(customUser.tenantId, user.uid);
-              return;
-            }
-          }
+          dataService.clearSession();
         } catch {
           /* ignore */
         }
-        const healedDeleted = await healStaffUserProfile(user);
-        if (healedDeleted?.tenantId) {
-          setCurrentUser(healedDeleted);
-          dataService.setSyncUserRole(healedDeleted.role);
-          await dataService.setTenantWhenReady(healedDeleted.tenantId, user.uid);
-          return;
-        }
-        console.warn('[Auth] Deleted staff account blocked from login');
         await signOut(auth);
         setCurrentUser(null);
+        setFirebaseUser(null);
+        setTenantPlanReady(false);
         return;
       }
       console.error("Error fetching user profile:", error);
+
+      // Firestore 일시 장애 — 직전 정상 스냅샷으로 세션 유지 (로그아웃 방지)
+      const knownOps = readLastKnownTenantPlanByUid(user.uid);
+      if (knownOps?.user?.tenantId || knownOps?.tenantId) {
+        const tenantId = String(knownOps.user?.tenantId || knownOps.tenantId);
+        const restoredUser: AppUser = {
+          uid: user.uid,
+          id: user.uid,
+          email: knownOps.user?.email || user.email || '',
+          displayName:
+            knownOps.user?.displayName ||
+            knownOps.user?.name ||
+            user.displayName ||
+            '사용자',
+          name:
+            knownOps.user?.name ||
+            knownOps.user?.displayName ||
+            user.displayName ||
+            '사용자',
+          photoURL: knownOps.user?.photoURL || user.photoURL || '',
+          avatarUrl:
+            knownOps.user?.avatarUrl ||
+            knownOps.user?.photoURL ||
+            user.photoURL ||
+            '',
+          tenantId,
+          role: (knownOps.userRole || knownOps.user?.role || 'staff') as AppUser['role'],
+          loginId: knownOps.user?.loginId,
+        } as AppUser;
+        console.warn(
+          `[Auth] Profile fetch failed — last-known ops bootstrap (${tenantId})`
+        );
+        setCurrentUser(restoredUser);
+        dataService.setSyncUserRole(restoredUser.role);
+        restoreLastKnownTenantPlan(tenantId);
+        await dataService.setTenantWhenReady(tenantId, user.uid);
+        return;
+      }
 
       const pendingStaff = readPendingStaffProfile(user.email);
       if (pendingStaff?.tenantId) {
@@ -670,6 +852,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           role: pendingStaff.role,
         });
         dataService.setSyncUserRole(pendingStaff.role);
+        restoreLastKnownTenantPlan(pendingStaff.tenantId);
         await dataService.setTenantWhenReady(pendingStaff.tenantId, user.uid);
         return;
       }
@@ -678,6 +861,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (healed?.tenantId) {
         setCurrentUser(healed);
         dataService.setSyncUserRole(healed.role);
+        restoreLastKnownTenantPlan(healed.tenantId);
         await dataService.setTenantWhenReady(healed.tenantId, user.uid);
         return;
       }
@@ -690,6 +874,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           if (customUser?.tenantId) {
             setCurrentUser(customUser);
             dataService.setSyncUserRole(customUser.role);
+            restoreLastKnownTenantPlan(customUser.tenantId);
             await dataService.setTenantWhenReady(customUser.tenantId, user.uid);
             return;
           }
@@ -713,6 +898,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         }
         console.error('[Auth] Profile fetch failed for verified user — signing out to prevent duplicate onboarding');
+        // 스냅샷이 있으면 위에서 이미 복원됨. 여기까지 온 경우만 로그아웃.
         await signOut(auth);
         setCurrentUser(null);
         return;
@@ -750,8 +936,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginCustomSession = (user: AppUser, plan: 'free' | 'pro', planCode?: string, paymentStatus?: string) => {
     const keepLoggedIn = isStaffKeepLoggedIn();
     const code = planCode || (plan === 'pro' ? 'pro' : 'free');
+    const pay = String(paymentStatus || (plan === 'pro' ? 'PAID' : 'AD')).toUpperCase();
     if (keepLoggedIn) {
-      writePersistedStaffSession(user, plan, code, paymentStatus);
+      writePersistedStaffSession(user, plan, code, pay);
     } else {
       clearPersistedStaffSession();
     }
@@ -761,7 +948,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCurrentUser(user);
     setTenantPlan(plan);
     setTenantPlanCode(code);
-    setMaxStaff(getMaxStaffForPlan(code, paymentStatus));
+    setTenantPaymentStatus(pay);
+    setMaxStaff(getMaxStaffForPlan(code, pay));
+    setTenantPlanReady(true);
+    if (user.tenantId) {
+      persistOpsSnapshot({
+        tenantId: user.tenantId,
+        plan,
+        planCode: code,
+        paymentStatus: pay,
+        licenseExpiresAt: null,
+        maxStaff: getMaxStaffForPlan(code, pay),
+        ownerId: null,
+        uid: user.uid,
+        user,
+        userRole: user.role,
+      });
+    }
     dataService.setSyncUserRole(user.role);
     if (user.tenantId && user.uid) {
       void dataService.setTenantWhenReady(user.tenantId, user.uid);
@@ -777,21 +980,33 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   // 요금제 — 로그인 시 1회 조회 (onSnapshot 제거로 읽기 절감)
   useEffect(() => {
-    if (!currentUser || !currentUser.tenantId) {
+    if (!currentUser?.tenantId) {
+      setTenantPlanReady(false);
       return;
     }
 
-    const tenantRef = doc(db, 'tenants', currentUser.tenantId);
+    const tenantId = currentUser.tenantId;
+    // 네트워크보다 먼저 last-known 적용 → 광고/권한 깜빡임 방지
+    restoreLastKnownTenantPlan(tenantId);
+
+    const tenantRef = doc(db, 'tenants', tenantId);
     let cancelled = false;
 
     const refreshPlan = async () => {
       try {
         const snap = await getDoc(tenantRef);
-        if (!cancelled && snap.exists()) {
-          applyTenantSnapshot(snap.data());
+        if (cancelled) return;
+        if (snap.exists()) {
+          applyTenantSnapshot(snap.data(), tenantId);
+        } else {
+          // 문서가 잠깐 안 보이면 광고형으로 떨어뜨리지 않음
+          restoreLastKnownTenantPlan(tenantId);
         }
       } catch (err) {
         console.warn('[TenantPlan] getDoc failed:', err);
+        if (!cancelled) {
+          restoreLastKnownTenantPlan(tenantId);
+        }
       }
     };
 
@@ -804,7 +1019,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.tenantId]);
 
-  // 로그인 중 온라인 상태를 Firestore에 기록 (관리 프로그램 연동)
+  // 로그인 중 온라인 상태 — NAS presence-sessions.json (Firestore 미사용)
   useEffect(() => {
     if (!currentUser?.tenantId || !firebaseUser?.uid) {
       stopPresenceSession();
@@ -814,22 +1029,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const loginId = currentUser.loginId
       || (firebaseUser.email?.endsWith('@ez-hub.kr') ? firebaseUser.email.split('@')[0] : undefined);
 
+    setPresenceGatewayUrl(dataService.getStoreGatewayUrl());
     startPresenceSession({
       uid: firebaseUser.uid,
       tenantId: currentUser.tenantId,
       email: currentUser.email || firebaseUser.email,
       loginId,
+      name: currentUser.name || currentUser.displayName,
     });
 
     return () => {
-      void releaseStaffSessionOnFirestore(db, {
+      void releaseStaffSessionOnNas({
         uid: firebaseUser.uid,
         tenantId: currentUser.tenantId!,
         email: currentUser.email || firebaseUser.email,
+        loginId,
+        gatewayBaseUrl: dataService.getStoreGatewayUrl(),
       });
       stopPresenceSession();
     };
-  }, [currentUser?.tenantId, currentUser?.email, currentUser?.loginId, firebaseUser?.uid, firebaseUser?.email]);
+  }, [currentUser?.tenantId, currentUser?.email, currentUser?.loginId, currentUser?.name, currentUser?.displayName, firebaseUser?.uid, firebaseUser?.email]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -931,7 +1150,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     stopPresenceSession();
     if (uid && tenantId) {
       try {
-        await releaseStaffSessionOnFirestore(db, { uid, tenantId, email });
+        await releaseStaffSessionOnNas({
+          uid,
+          tenantId,
+          email,
+          loginId: currentUser?.loginId,
+          gatewayBaseUrl: dataService.getStoreGatewayUrl(),
+        });
       } catch (err) {
         console.warn('[StaffSession] release on logout failed:', err);
         await setPresenceOffline();
@@ -947,26 +1172,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setFirebaseUser(null);
   }, [firebaseUser?.uid, firebaseUser?.email, currentUser?.tenantId, currentUser?.email]);
 
-  // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료
+  // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료 (NAS 폴링)
   useEffect(() => {
     const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
     if (!isDesktopApp) return;
 
     sessionKickedRef.current = false;
-    if (!firebaseUser?.uid || !currentUser?.loginId) return;
+    if (!firebaseUser?.uid || !currentUser?.loginId || !currentUser?.tenantId) return;
 
     const localSid = getLocalStaffSessionId();
     const localClaimedAt = getLocalStaffSessionClaimedAt();
     if (!localSid) return;
 
-    const userRef = doc(db, 'users', firebaseUser.uid);
+    const tenantId = currentUser.tenantId;
+    const uid = firebaseUser.uid;
 
     const checkRemoteSession = async () => {
       try {
-        const snap = await getDoc(userRef);
-        if (!snap.exists() || sessionKickedRef.current) return;
-        const data = snap.data();
-        if (!isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
+        if (sessionKickedRef.current) return;
+        setPresenceGatewayUrl(dataService.getStoreGatewayUrl());
+        const data = await presenceSessionService.readEntry(
+          tenantId,
+          uid,
+          dataService.getStoreGatewayUrl()
+        );
+        if (!data || !isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
 
         sessionKickedRef.current = true;
         await showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
@@ -977,10 +1207,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
 
     void checkRemoteSession();
-    const intervalId = window.setInterval(() => void checkRemoteSession(), 45_000);
+    const intervalId = window.setInterval(() => void checkRemoteSession(), 90_000);
 
     return () => window.clearInterval(intervalId);
-  }, [firebaseUser?.uid, currentUser?.loginId, showAlert, logout]);
+  }, [firebaseUser?.uid, currentUser?.loginId, currentUser?.tenantId, showAlert, logout]);
 
   console.log('AuthProvider State:', { hasFirebaseUser: !!firebaseUser, hasCurrentUser: !!currentUser, loading });
 

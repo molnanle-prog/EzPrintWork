@@ -1,11 +1,12 @@
-/** 직원 계정 단일 접속 — activeSessionId로 동시 로그인 방지 */
+/** 직원 계정 단일 접속 — NAS presence-sessions.json 기준 (Firestore 폴백 없음) */
 
 export const STAFF_SESSION_STORAGE_KEY = 'ezprint_staff_session_id';
 export const STAFF_SESSION_CLAIMED_AT_KEY = 'ezprint_staff_session_claimed_at';
 export const STAFF_SESSION_PERSIST_KEY = 'ezprint_staff_session_id_persist';
 export const STAFF_SESSION_CLAIMED_AT_PERSIST_KEY = 'ezprint_staff_session_claimed_at_persist';
 
-export const SESSION_STALE_MS = 2 * 60 * 1000;
+/** heartbeat 2분 + 여유 — NAS lastActive 기준 */
+export const SESSION_STALE_MS = 5 * 60 * 1000;
 
 export function getLocalStaffSessionId(): string | null {
   try {
@@ -113,60 +114,60 @@ export function staffSessionFirestoreFields(sessionId: string) {
   };
 }
 
-export async function claimStaffSessionOnFirestore(
-  db: import('firebase/firestore').Firestore,
-  opts: { uid: string; tenantId: string; staffDocId: string; sessionId: string }
-): Promise<void> {
-  const { doc, setDoc } = await import('firebase/firestore');
-  const sessionFields = staffSessionFirestoreFields(opts.sessionId);
-  const now = new Date().toISOString();
-  const presence = { isOnline: true, online: true, lastActive: now, ...sessionFields };
-
-  await setDoc(doc(db, 'users', opts.uid), presence, { merge: true });
-  await setDoc(doc(db, `tenants/${opts.tenantId}/staff`, opts.staffDocId), {
+/** NAS/게이트웨이에 세션 claim — Firestore 미사용 */
+export async function claimStaffSessionOnNas(opts: {
+  uid: string;
+  tenantId: string;
+  staffDocId: string;
+  sessionId: string;
+  loginId?: string | null;
+  name?: string | null;
+  email?: string | null;
+  gatewayBaseUrl?: string | null;
+}): Promise<boolean> {
+  const { presenceSessionService } = await import('../services/presenceSessionService');
+  return presenceSessionService.claimSession({
+    tenantId: opts.tenantId,
     uid: opts.uid,
-    active: true,
-    ...presence,
-  }, { merge: true });
+    sessionId: opts.sessionId,
+    staffDocId: opts.staffDocId,
+    loginId: opts.loginId,
+    name: opts.name,
+    email: opts.email,
+    gatewayBaseUrl: opts.gatewayBaseUrl,
+  });
 }
 
-export async function releaseStaffSessionOnFirestore(
-  db: import('firebase/firestore').Firestore,
-  opts: { uid: string; tenantId: string; email?: string | null; name?: string | null }
+/** @deprecated claimStaffSessionOnNas 사용 */
+export async function claimStaffSessionOnFirestore(
+  _db: import('firebase/firestore').Firestore,
+  opts: { uid: string; tenantId: string; staffDocId: string; sessionId: string; loginId?: string | null }
 ): Promise<void> {
-  const { doc, setDoc, collection, query, where, getDocs, limit } = await import('firebase/firestore');
-  const now = new Date().toISOString();
-  const offline = {
-    isOnline: false,
-    online: false,
-    lastActive: now,
-    lastLogout: now,
-  };
-
-  await setDoc(doc(db, 'users', opts.uid), {
-    uid: opts.uid,
-    email: opts.email || '',
-    ...offline,
-  }, { merge: true });
-
-  const staffIds = new Set<string>([opts.uid]);
-  try {
-    const byUid = await getDocs(
-      query(collection(db, `tenants/${opts.tenantId}/staff`), where('uid', '==', opts.uid), limit(5))
-    );
-    byUid.docs.forEach((d) => staffIds.add(d.id));
-  } catch {
-    /* optional */
+  const ok = await claimStaffSessionOnNas(opts);
+  if (!ok) {
+    console.warn('[StaffSession] NAS claim skipped — archive path/gateway unavailable');
   }
+}
 
-  // 접속 상태만 갱신 — name 절대 덮어쓰지 않음 (실명 오염 방지)
-  await Promise.allSettled(
-    [...staffIds].map((staffId) =>
-      setDoc(
-        doc(db, `tenants/${opts.tenantId}/staff`, staffId),
-        { uid: opts.uid, ...offline },
-        { merge: true }
-      )
-    )
-  );
+/** NAS/게이트웨이 오프라인 표시 */
+export async function releaseStaffSessionOnNas(opts: {
+  uid: string;
+  tenantId: string;
+  email?: string | null;
+  loginId?: string | null;
+  gatewayBaseUrl?: string | null;
+}): Promise<boolean> {
+  const { presenceSessionService } = await import('../services/presenceSessionService');
+  return presenceSessionService.releaseSession(opts);
+}
+
+/** @deprecated releaseStaffSessionOnNas 사용 */
+export async function releaseStaffSessionOnFirestore(
+  _db: import('firebase/firestore').Firestore,
+  opts: { uid: string; tenantId: string; email?: string | null; name?: string | null; loginId?: string | null }
+): Promise<void> {
+  const ok = await releaseStaffSessionOnNas(opts);
+  if (!ok) {
+    console.warn('[StaffSession] NAS release skipped — archive path/gateway unavailable');
+  }
 }

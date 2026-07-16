@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Job, Priority, Staff, PaymentStatus, Client, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
+import { Job, Priority, Staff, PaymentStatus, Client, ClientContact, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
 import { findClientByName, normalizePrepaidBalance, getJobPrepaidBreakdown, getPrepaidSlotForJob } from '../../utils/prepaidBalance';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2 } from 'lucide-react';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
@@ -11,7 +11,7 @@ import { calcQuoteTotals } from '../../utils/quoteCalculator';
 import { useDialog } from '../../contexts/DialogContext';
 import { LocalPathInput } from './LocalPathInput';
 import { useAuth } from '../../contexts/AuthContext';
-import { syncClientFromJob } from '../../utils/clientSync';
+import { syncClientFromJob, getClientContacts, findClientByNormalizedName, normalizeContactName } from '../../utils/clientSync';
 import { findQuoteForJob } from '../../utils/quoteJobSync';
 import { openQuotePreviewWindow } from '../../utils/quotePreviewStorage';
 import { getStaffIdForUser, resolveHistoryActorName } from '../../utils/staffMatch';
@@ -214,6 +214,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
   const [clientSearchField, setClientSearchField] = useState<'company' | 'person'>('company');
   const [clientSearchQuery, setClientSearchQuery] = useState('');
   const [linkedClientId, setLinkedClientId] = useState<string | null>(null);
+  const [linkedContacts, setLinkedContacts] = useState<ClientContact[]>([]);
+  const [showContactPicker, setShowContactPicker] = useState(false);
   
   const { showConfirm, showAlert } = useDialog();
   const { currentUser, canDeletePermanently } = useAuth();
@@ -264,6 +266,24 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
     }, 500);
     return () => clearTimeout(timer);
   }, [editedJob.clientName, isNew]);
+
+  // 상호명으로 거래처를 찾아 담당자 목록 연결 (편집/신규 공통 — 복수 담당자 선택용)
+  useEffect(() => {
+    const name = editedJob.clientName?.trim();
+    if (!name) {
+      setLinkedClientId(null);
+      setLinkedContacts([]);
+      return;
+    }
+    const matched = findClientByNormalizedName(db.getClients(), name);
+    if (matched) {
+      setLinkedClientId(matched.id);
+      setLinkedContacts(getClientContacts(matched));
+    } else {
+      setLinkedClientId(null);
+      setLinkedContacts([]);
+    }
+  }, [editedJob.clientName]);
 
   const updateCurrentSubJob = (updates: Partial<JobItem>) => {
       const newSubJobs = [...(editedJob.subJobs || [])];
@@ -673,9 +693,9 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
               history: newHistory,
               ...(editedJob.boardHiddenReason === 'canceled'
                   ? {
-                        boardHiddenAt: undefined,
-                        boardHiddenBy: undefined,
-                        boardHiddenReason: undefined,
+                        boardHiddenAt: null,
+                        boardHiddenBy: null,
+                        boardHiddenReason: null,
                     }
                   : {}),
           };
@@ -847,8 +867,13 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
       if (field === 'company') {
           setEditedJob({ ...editedJob, clientName: query });
           setLinkedClientId(null);
+          setLinkedContacts([]);
+          setShowContactPicker(false);
       }
-      if (field === 'person') setEditedJob({ ...editedJob, contactPerson: query });
+      if (field === 'person') {
+          setEditedJob({ ...editedJob, contactPerson: query });
+          setShowContactPicker(false);
+      }
       runClientSearch(query, field);
   };
 
@@ -857,18 +882,46 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
       runClientSearch(query, field);
   };
 
-  const selectClient = (client: Client) => {
-      const primaryContact = client.contacts?.[0];
+  const applyContactToJob = (contact: ClientContact | undefined) => {
+      setEditedJob((prev) => ({
+          ...prev,
+          contactPerson: contact?.name || '',
+          clientPhone: contact?.phone ? formatPhoneNumber(contact.phone) : (contact ? '' : prev.clientPhone),
+      }));
+  };
+
+  const selectClient = (client: Client, preferredContact?: ClientContact) => {
+      const contacts = getClientContacts(client);
       setLinkedClientId(client.id);
+      setLinkedContacts(contacts);
+
+      let contact = preferredContact;
+      if (!contact && clientSearchField === 'person' && clientSearchQuery) {
+          const q = clientSearchQuery.trim().toLowerCase();
+          contact = contacts.find(
+              (c) => c.name?.toLowerCase().includes(q) || (c.phone || '').includes(q)
+          );
+      }
+      if (!contact && contacts.length >= 1) {
+          contact = contacts[0];
+      }
+
       setEditedJob({
           ...editedJob,
           clientName: client.name,
-          contactPerson: primaryContact?.name || client.contactPerson || '',
-          clientPhone: primaryContact?.phone || client.phone || '',
+          contactPerson: contact?.name || '',
+          clientPhone: contact?.phone ? formatPhoneNumber(contact.phone) : '',
       });
       setShowClientSearch(false);
       setClientSearchResults([]);
       setClientSearchQuery('');
+      // 담당자 2명 이상이면 선택 UI 표시 (수동으로 다른 담당자 고를 수 있게)
+      setShowContactPicker(contacts.length > 1);
+  };
+
+  const selectLinkedContact = (contact: ClientContact) => {
+      applyContactToJob(contact);
+      setShowContactPicker(false);
   };
 
   const getDisplayTime = (isoString: string) => {
@@ -1202,18 +1255,72 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                                 autoComplete="off"
                             />
                         </div>
-                        <div className="flex items-center gap-1.5 w-36 sm:w-44 relative">
+                        <div className="flex items-center gap-1.5 w-36 sm:w-52 relative">
                             <User size={14} className="text-slate-400 shrink-0" />
                             <span className="text-xs font-bold text-slate-500 shrink-0 select-none">담당 :</span>
                             <input 
                                 value={editedJob.contactPerson || ''}
                                 onChange={(e) => handleClientSearch(e.target.value, 'person')}
                                 onFocus={() => handleClientInputFocus('person')}
-                                onBlur={() => setTimeout(() => setShowClientSearch(false), 200)}
+                                onBlur={() => setTimeout(() => {
+                                    setShowClientSearch(false);
+                                    setShowContactPicker(false);
+                                }, 200)}
                                 className="bg-transparent border-b-2 border-slate-200 focus:border-blue-500 focus:outline-none text-slate-600 w-full placeholder-slate-300 py-1 transition-colors text-sm"
                                 placeholder="담당자명"
                                 autoComplete="off"
                             />
+                            {linkedContacts.length > 1 && (
+                                <button
+                                    type="button"
+                                    title="담당자 선택"
+                                    onMouseDown={(e) => e.preventDefault()}
+                                    onClick={() => {
+                                        setShowClientSearch(false);
+                                        setShowContactPicker((v) => !v);
+                                    }}
+                                    className="shrink-0 p-1 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-100"
+                                >
+                                    <ChevronDown size={14} />
+                                </button>
+                            )}
+                            {showContactPicker && linkedContacts.length > 1 && (
+                                <div className="absolute left-0 right-0 top-full mt-1 z-[75] bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden">
+                                    <div className="px-3 py-2 border-b border-slate-100 bg-slate-50">
+                                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wide">
+                                            담당자 선택 ({linkedContacts.length}명)
+                                        </span>
+                                    </div>
+                                    <div className="max-h-40 overflow-y-auto custom-scrollbar">
+                                        {linkedContacts.map((contact, idx) => {
+                                            const selected =
+                                                normalizeContactName(contact.name) ===
+                                                normalizeContactName(editedJob.contactPerson);
+                                            return (
+                                                <button
+                                                    key={`${contact.name}-${contact.phone}-${idx}`}
+                                                    type="button"
+                                                    onMouseDown={(e) => e.preventDefault()}
+                                                    onClick={() => selectLinkedContact(contact)}
+                                                    className={`w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 transition-colors ${
+                                                        selected ? 'bg-blue-50/80' : ''
+                                                    }`}
+                                                >
+                                                    <p className="text-sm font-bold text-slate-800 truncate">
+                                                        {contact.name || '(이름 없음)'}
+                                                        {idx === 0 && (
+                                                            <span className="ml-1.5 text-[10px] font-bold text-blue-600">대표</span>
+                                                        )}
+                                                    </p>
+                                                    <p className="text-[11px] text-slate-500 truncate">
+                                                        {[contact.phone, contact.department].filter(Boolean).join(' · ') || '연락처 없음'}
+                                                    </p>
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
                         </div>
                         <div className="flex items-center gap-1.5 w-40 sm:w-52">
                             <Phone size={14} className="text-slate-400 shrink-0" />
@@ -1248,22 +1355,38 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                                 ) : (
                                     <div className="max-h-48 overflow-y-auto custom-scrollbar">
                                         {clientSearchResults.map((client) => {
-                                            const primaryContact = client.contacts?.[0];
-                                            const contactName = primaryContact?.name || client.contactPerson;
-                                            const contactPhone = primaryContact?.phone || client.phone;
+                                            const contacts = getClientContacts(client);
+                                            const q = clientSearchQuery.trim().toLowerCase();
+                                            const matchedContact =
+                                                clientSearchField === 'person' && q
+                                                    ? contacts.find(
+                                                          (c) =>
+                                                              c.name?.toLowerCase().includes(q) ||
+                                                              (c.phone || '').includes(q)
+                                                      )
+                                                    : undefined;
+                                            const preview = matchedContact || contacts[0];
+                                            const contactName = preview?.name || client.contactPerson;
+                                            const contactPhone = preview?.phone || client.phone;
+                                            const extraCount = Math.max(0, contacts.length - 1);
 
                                             return (
                                                 <button
                                                     key={client.id}
                                                     type="button"
                                                     onMouseDown={(e) => e.preventDefault()}
-                                                    onClick={() => selectClient(client)}
+                                                    onClick={() => selectClient(client, matchedContact)}
                                                     className="w-full text-left px-3 py-2.5 hover:bg-blue-50 border-b border-slate-100 last:border-b-0 transition-colors flex items-center justify-between gap-3"
                                                 >
                                                     <div className="min-w-0">
                                                         <p className="text-sm font-bold text-slate-800 truncate">{client.name}</p>
                                                         <p className="text-[11px] text-slate-500 truncate">
                                                             {[contactName, contactPhone].filter(Boolean).join(' · ') || '연락처 없음'}
+                                                            {extraCount > 0 && (
+                                                                <span className="ml-1 text-blue-600 font-medium">
+                                                                    외 {extraCount}명
+                                                                </span>
+                                                            )}
                                                         </p>
                                                     </div>
                                                     <span className="text-[10px] font-bold text-blue-600 shrink-0">선택</span>

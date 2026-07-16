@@ -6,6 +6,7 @@ const os = require('os');
 const SITUATION_FILE = 'situation-mirror.json';
 const ARCHIVE_FILE = 'jobs-archive.json';
 const CHAT_FILE = 'chat-messages.json';
+const PRESENCE_FILE = 'presence-sessions.json';
 const DEFAULT_GATEWAY_PORT = 3847;
 
 const CORS = {
@@ -95,7 +96,68 @@ class LocalGateway {
         }
     }
 
+    mergeJobVisibilityFields(base, prev, incoming) {
+        const CLEAR_FIELDS = [
+            'managementCardPinnedAt',
+            'boardHiddenAt',
+            'boardHiddenBy',
+            'boardHiddenReason',
+        ];
+        const prevPinned = !!prev.managementCardPinnedAt;
+        const incomingPinned = !!incoming.managementCardPinnedAt;
+        const incomingWins = this.isIncomingJobNewer(incoming, prev);
+
+        let visibility = {};
+        const pickVis = (j) => {
+            const o = {};
+            if (j.managementCardPinnedAt) o.managementCardPinnedAt = j.managementCardPinnedAt;
+            if (j.boardHiddenAt) o.boardHiddenAt = j.boardHiddenAt;
+            if (j.boardHiddenBy) o.boardHiddenBy = j.boardHiddenBy;
+            if (j.boardHiddenReason) o.boardHiddenReason = j.boardHiddenReason;
+            return o;
+        };
+
+        if (incomingPinned && !prevPinned) {
+            visibility = pickVis(incoming);
+        } else if (!incomingPinned && prevPinned) {
+            visibility = incomingWins ? {} : pickVis(prev);
+        } else if (incomingPinned && prevPinned) {
+            if (incomingWins) {
+                visibility = pickVis(incoming);
+            } else {
+                const inMs = Date.parse(incoming.managementCardPinnedAt || '') || 0;
+                const prMs = Date.parse(prev.managementCardPinnedAt || '') || 0;
+                visibility = pickVis(inMs >= prMs ? incoming : prev);
+            }
+        } else if (incomingWins) {
+            visibility = pickVis(incoming);
+        } else {
+            visibility = pickVis(prev);
+        }
+
+        const out = { ...base };
+        for (const key of CLEAR_FIELDS) delete out[key];
+        return { ...out, ...visibility };
+    }
+
+    isIncomingJobNewer(incoming, prev) {
+        const ri = typeof incoming?.rev === 'number' ? incoming.rev : -1;
+        const rp = typeof prev?.rev === 'number' ? prev.rev : -1;
+        if (ri >= 0 || rp >= 0) {
+            if (ri !== rp) return ri > rp;
+        }
+        const ti = Date.parse(incoming?.updatedAt || incoming?.createdAt || '') || 0;
+        const tp = Date.parse(prev?.updatedAt || prev?.createdAt || '') || 0;
+        return ti >= tp;
+    }
+
     mergeJobs(existing, incoming) {
+        const CLEAR_FIELDS = [
+            'managementCardPinnedAt',
+            'boardHiddenAt',
+            'boardHiddenBy',
+            'boardHiddenReason',
+        ];
         const map = new Map();
         for (const job of existing || []) {
             if (job?.id) map.set(job.id, job);
@@ -107,9 +169,19 @@ class LocalGateway {
                 map.set(job.id, job);
                 continue;
             }
-            const prevTs = Date.parse(prev.updatedAt || prev.createdAt || '') || 0;
-            const nextTs = Date.parse(job.updatedAt || job.createdAt || '') || 0;
-            map.set(job.id, nextTs >= prevTs ? { ...prev, ...job } : prev);
+            const incomingWins = this.isIncomingJobNewer(job, prev);
+            let merged;
+            if (incomingWins) {
+                merged = { ...prev, ...job };
+                for (const key of CLEAR_FIELDS) {
+                    if (!(key in job) || job[key] == null) {
+                        delete merged[key];
+                    }
+                }
+            } else {
+                merged = { ...prev };
+            }
+            map.set(job.id, this.mergeJobVisibilityFields(merged, prev, job));
         }
         return [...map.values()];
     }
@@ -460,6 +532,79 @@ class LocalGateway {
                         }
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                         res.end(JSON.stringify({ ok: true, updatedAt: now, count: mergedJobs.length }));
+                        return;
+                    } catch (error) {
+                        res.writeHead(400, CORS);
+                        res.end(error?.message || 'invalid body');
+                        return;
+                    }
+                }
+
+                if (url.pathname === '/api/v1/presence' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const tenantId = url.searchParams.get('tenantId') || this.tenantId;
+                    const presence = this.readJsonFile(PRESENCE_FILE) || {
+                        version: 1,
+                        tenantId,
+                        updatedAt: new Date().toISOString(),
+                        sessions: {},
+                    };
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        version: presence.version ?? 1,
+                        tenantId,
+                        updatedAt: presence.updatedAt || new Date().toISOString(),
+                        sessions: presence.sessions && typeof presence.sessions === 'object'
+                            ? presence.sessions
+                            : {},
+                    }));
+                    return;
+                }
+
+                if (url.pathname === '/api/v1/presence' && req.method === 'POST') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    if (!this.archiveRoot) {
+                        res.writeHead(503, CORS);
+                        res.end('NAS path not configured');
+                        return;
+                    }
+                    try {
+                        const raw = await readRequestBody(req);
+                        const body = JSON.parse(raw || '{}');
+                        const tenantId = body.tenantId || this.tenantId;
+                        const now = new Date().toISOString();
+                        const existing = this.readJsonFile(PRESENCE_FILE);
+                        const sessions = {
+                            ...(existing?.sessions && typeof existing.sessions === 'object'
+                                ? existing.sessions
+                                : {}),
+                            ...(body.sessions && typeof body.sessions === 'object' ? body.sessions : {}),
+                        };
+                        const payload = {
+                            version: body.version ?? existing?.version ?? 1,
+                            tenantId,
+                            updatedAt: now,
+                            sessions,
+                        };
+                        if (!this.writeJsonFile(PRESENCE_FILE, payload)) {
+                            res.writeHead(500, CORS);
+                            res.end('write failed');
+                            return;
+                        }
+                        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({
+                            ok: true,
+                            updatedAt: now,
+                            count: Object.keys(sessions).length,
+                        }));
                         return;
                     } catch (error) {
                         res.writeHead(400, CORS);

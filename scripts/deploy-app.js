@@ -275,9 +275,11 @@ async function main() {
   const releaseDir = path.join(currentDir, process.env.ELECTRON_BUILD_OUTPUT || 'release');
   const releaseDirName = path.basename(releaseDir);
   const deployExeDirect = process.env.DEPLOY_SETUP_ZIP !== '1';
-  // PC 자동업데이트: GitHub Release + latest.yml(sha512) 동기화 필수 (DEPLOY_FAST=1 일 때만 생략)
+  // PC 자동업데이트: GitHub Release + latest.yml(sha512) 동기화 필수 (DEPLOY_FAST=1 일 때만 대기 생략)
   const fastDeploy = process.env.DEPLOY_FAST === '1';
-  const waitForGithubReleaseEnabled = !fastDeploy && process.env.DEPLOY_WAIT_RELEASE !== '0';
+  // 수동 설치 테스트용 — Release/latest.yml 갱신 없이 웹 배포 + 로컬 exe만
+  const noAutoUpdate = process.env.DEPLOY_NO_AUTOUPDATE === '1';
+  const waitForGithubReleaseEnabled = !fastDeploy && !noAutoUpdate && process.env.DEPLOY_WAIT_RELEASE !== '0';
   const enableHostingCleanup = process.env.DEPLOY_CLEANUP_HOSTING === '1';
   const MIN_SETUP_BYTES = 15 * 1024 * 1024;
   const appVersion = require(path.join(currentDir, 'package.json')).version;
@@ -287,9 +289,15 @@ async function main() {
   log('===================================================', colors.bold + colors.green);
   log('   🚀 EzPrintWork 통합 배포 (웹 + 홈페이지 + 업데이트)', colors.bold + colors.green);
   log('===================================================', colors.bold + colors.green);
-  log('   배포 범위: 웹앱 + 홈페이지 + GitHub Release + latest.yml(sha512)', colors.cyan);
+  if (noAutoUpdate) {
+    log('   배포 범위: 웹앱 + 홈페이지 (자동업데이트 제외 · 로컬 exe 수동설치)', colors.yellow);
+  } else {
+    log('   배포 범위: 웹앱 + 홈페이지 + GitHub Release + latest.yml(sha512)', colors.cyan);
+  }
   if (process.env.DEPLOY_SKIP_ELECTRON === '1') {
     log('   (DEPLOY_SKIP_ELECTRON=1 → PC exe 빌드 생략, GitHub Release 메타 사용)', colors.yellow);
+  } else if (noAutoUpdate) {
+    log('   (DEPLOY_NO_AUTOUPDATE=1 → GitHub Release/latest.yml 미갱신)', colors.yellow);
   } else if (!ghToken) {
     log('   (GH_TOKEN 없음 → Actions Release 대기. 권장: scripts/setup-deploy-token.ps1)', colors.yellow);
   } else {
@@ -297,7 +305,7 @@ async function main() {
   }
   log(`* 홈페이지 경로: ${homepageDir}`, colors.cyan);
   log(
-    `* Release대기=${waitForGithubReleaseEnabled ? 'ON' : 'OFF'} / Hosting정리=${enableHostingCleanup ? 'ON' : 'OFF'}${fastDeploy ? ' (DEPLOY_FAST=1)' : ''}`,
+    `* Release대기=${waitForGithubReleaseEnabled ? 'ON' : 'OFF'} / Hosting정리=${enableHostingCleanup ? 'ON' : 'OFF'}${fastDeploy ? ' (DEPLOY_FAST=1)' : ''}${noAutoUpdate ? ' (NO_AUTOUPDATE)' : ''}`,
     colors.cyan
   );
   if (deployExeDirect) {
@@ -333,7 +341,10 @@ async function main() {
     log('\n[2/5] PC용 설치 프로그램 (.exe) 빌드 및 GitHub Release 업로드...', colors.yellow);
     const builderOutputFlag = `-c.directories.output=${releaseDirName}`;
     runCommand(`npx electron-builder --publish never "${builderOutputFlag}"`, currentDir);
-    if (ghToken) {
+    if (noAutoUpdate) {
+      log('* 자동업데이트 제외 — GitHub Release 업로드/태그 푸시 생략', colors.yellow);
+      log(`* 수동 설치 파일: ${path.join(releaseDir, 'EzPrintWork-Setup.exe')}`, colors.cyan);
+    } else if (ghToken) {
       log('* GitHub Release 업로드 중...', colors.green);
       log(`* Release: https://github.com/molnanle-prog/EzPrintWork/releases/tag/v${appVersion}`, colors.cyan);
       runCommand('node scripts/publish-github-release.js', currentDir, {
@@ -397,7 +408,10 @@ async function main() {
         log('* 빠른 배포 모드: GitHub Release 대기 생략', colors.yellow);
       }
 
-      if (githubRelease) {
+      if (noAutoUpdate) {
+        log('* 자동업데이트 제외 — 기존 latest.yml/download-manifest 유지 (PC 자동배포 안 함)', colors.yellow);
+        log(`* 테스트 설치: ${sourcePath}`, colors.cyan);
+      } else if (githubRelease) {
         await writeDownloadMetaFromRelease(githubRelease, downloadsDir);
         log(`✓ GitHub Release ${releaseTag} ↔ latest.yml(sha512) 동기화`, colors.green);
       } else {
@@ -408,7 +422,9 @@ async function main() {
         );
       }
 
-      if (ghToken && githubRelease) {
+      if (noAutoUpdate) {
+        log('* GitHub Release 미게시 — 현장 PC는 기존 버전 유지, 수동 exe로만 테스트', colors.yellow);
+      } else if (ghToken && githubRelease) {
         log('* GitHub Release 업로드·동기화 완료', colors.cyan);
       } else if (!ghToken) {
         log('* GitHub Release 수동 업로드: set GH_TOKEN=... && node scripts/publish-github-release.js', colors.yellow);
@@ -464,6 +480,9 @@ async function main() {
   }
 
   // 4.1 GitHub latest.yml(sha512) 재동기화 — exe보다 yml 자산이 늦게 올라오는 경우 dist 보정
+  if (noAutoUpdate) {
+    log('\n[4.1/5] 자동업데이트 제외 — latest.yml 재동기화 생략', colors.yellow);
+  } else {
   try {
     const { syncDownloadMeta } = await import('./github-download-meta.mjs');
     await syncDownloadMeta(`v${appVersion}`);
@@ -484,6 +503,7 @@ async function main() {
       log(`[에러] latest.yml 재동기화 실패: ${err.message}`, colors.red);
       process.exit(1);
     }
+  }
   }
 
   // 4.5. Hosting 저장 한도 방지
@@ -506,7 +526,12 @@ async function main() {
   log('   🎉 [성공] 통합 배포 완료', colors.bold + colors.green);
   log('   • 웹앱 /ezpw/ + version.json', colors.cyan);
   log('   • 홈페이지 (ez-hub.kr) Firebase Hosting', colors.cyan);
-  log('   • /downloads/latest.yml + download-manifest.json', colors.cyan);
+  if (noAutoUpdate) {
+    log('   • 자동업데이트 미게시 — 기존 PC는 구버전 유지', colors.yellow);
+    log(`   • 수동 설치: ${path.join(releaseDir, 'EzPrintWork-Setup.exe')}`, colors.cyan);
+  } else {
+    log('   • /downloads/latest.yml + download-manifest.json', colors.cyan);
+  }
   log('   확인: https://ez-hub.kr/ezpw/  |  Ctrl+Shift+R', colors.cyan);
   log('===================================================', colors.bold + colors.green);
 }
