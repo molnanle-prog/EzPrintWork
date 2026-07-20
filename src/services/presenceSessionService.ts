@@ -13,6 +13,12 @@ import {
 } from '../utils/archiveStorage';
 import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 import { deriveStoreGatewayToken } from '../utils/gatewayToken';
+import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
+import {
+  orderStoreGatewayUrls,
+  resolveStoreGatewayUrlList,
+  type StoreGatewayInput,
+} from '../utils/storeGatewayUrls';
 import type { StaffSessionRecord } from '../utils/staffSession';
 
 export const PRESENCE_SESSIONS_FILE = 'presence-sessions.json';
@@ -118,62 +124,84 @@ async function readLocalWithRetry(filePath: string): Promise<string | null> {
   return null;
 }
 
-function resolveGatewayBase(explicit?: string | null): string | null {
-  const fromArg = explicit?.trim().replace(/\/$/, '');
-  return fromArg || null;
+function resolveGatewayBases(explicit?: StoreGatewayInput): string[] {
+  return resolveStoreGatewayUrlList(explicit);
 }
 
 async function readViaGateway(
   tenantId: string,
-  gatewayBaseUrl?: string | null
+  gatewayBaseUrl?: StoreGatewayInput
 ): Promise<PresenceSessionsFile | null> {
-  const base = resolveGatewayBase(gatewayBaseUrl);
-  if (!base || !tenantId) return null;
-  try {
-    const token = deriveStoreGatewayToken(tenantId);
-    const res = await fetch(
-      `${base}/api/v1/presence?tenantId=${encodeURIComponent(tenantId)}`,
-      {
-        cache: 'no-store',
-        headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+  if (!tenantId) return null;
+  const urls = await orderStoreGatewayUrls(resolveGatewayBases(gatewayBaseUrl));
+  if (urls.length === 0) return null;
+
+  const token = deriveStoreGatewayToken(tenantId);
+  const results = await Promise.all(
+    urls.map(async (base) => {
+      try {
+        const res = await fetchWithTimeout(
+          `${base}/api/v1/presence?tenantId=${encodeURIComponent(tenantId)}`,
+          {
+            cache: 'no-store',
+            headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+          },
+          DEFAULT_LAN_FETCH_TIMEOUT_MS
+        );
+        if (!res.ok) return null;
+        const data = await res.json();
+        return normalizeFile(tenantId, data);
+      } catch {
+        return null;
       }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return normalizeFile(tenantId, data);
-  } catch (err) {
-    console.warn('[PresenceSession] gateway read failed:', err);
-    return null;
+    })
+  );
+
+  let best: PresenceSessionsFile | null = null;
+  for (const file of results) {
+    if (!file) continue;
+    if (!best || Date.parse(file.updatedAt) > Date.parse(best.updatedAt)) {
+      best = file;
+    }
   }
+  return best;
 }
 
 async function writeViaGateway(
   tenantId: string,
   file: PresenceSessionsFile,
-  gatewayBaseUrl?: string | null
+  gatewayBaseUrl?: StoreGatewayInput
 ): Promise<boolean> {
-  const base = resolveGatewayBase(gatewayBaseUrl);
-  if (!base || !tenantId) return false;
-  try {
-    const token = deriveStoreGatewayToken(tenantId);
-    const res = await fetch(`${base}/api/v1/presence`, {
-      method: 'POST',
-      cache: 'no-store',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
-      },
-      body: JSON.stringify(file),
-    });
-    return res.ok;
-  } catch (err) {
-    console.warn('[PresenceSession] gateway write failed:', err);
-    return false;
+  if (!tenantId) return false;
+  const urls = await orderStoreGatewayUrls(resolveGatewayBases(gatewayBaseUrl));
+  if (urls.length === 0) return false;
+
+  const token = deriveStoreGatewayToken(tenantId);
+  for (const base of urls) {
+    try {
+      const res = await fetchWithTimeout(
+        `${base}/api/v1/presence`,
+        {
+          method: 'POST',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
+          },
+          body: JSON.stringify(file),
+        },
+        DEFAULT_LAN_FETCH_TIMEOUT_MS
+      );
+      if (res.ok) return true;
+    } catch (err) {
+      console.warn('[PresenceSession] gateway write failed:', base, err);
+    }
   }
+  return false;
 }
 
 export class PresenceSessionService {
-  async read(tenantId: string, gatewayBaseUrl?: string | null): Promise<PresenceSessionsFile | null> {
+  async read(tenantId: string, gatewayBaseUrl?: StoreGatewayInput): Promise<PresenceSessionsFile | null> {
     if (!tenantId) return null;
 
     if (isElectron()) {
@@ -196,7 +224,7 @@ export class PresenceSessionService {
   async readEntry(
     tenantId: string,
     uid: string,
-    gatewayBaseUrl?: string | null
+    gatewayBaseUrl?: StoreGatewayInput
   ): Promise<PresenceSessionEntry | null> {
     const file = await this.read(tenantId, gatewayBaseUrl);
     return file?.sessions?.[uid] || null;
@@ -205,7 +233,7 @@ export class PresenceSessionService {
   private async persist(
     tenantId: string,
     file: PresenceSessionsFile,
-    gatewayBaseUrl?: string | null
+    gatewayBaseUrl?: StoreGatewayInput
   ): Promise<boolean> {
     const payload: PresenceSessionsFile = {
       ...file,
@@ -235,7 +263,7 @@ export class PresenceSessionService {
     name?: string | null;
     email?: string | null;
     sessionId?: string | null;
-    gatewayBaseUrl?: string | null;
+    gatewayBaseUrl?: StoreGatewayInput;
   }): Promise<boolean> {
     const { tenantId, uid } = opts;
     if (!tenantId || !uid) return false;
@@ -278,7 +306,7 @@ export class PresenceSessionService {
     staffDocId?: string | null;
     name?: string | null;
     email?: string | null;
-    gatewayBaseUrl?: string | null;
+    gatewayBaseUrl?: StoreGatewayInput;
   }): Promise<boolean> {
     return this.upsertPresence({
       ...opts,
@@ -292,7 +320,7 @@ export class PresenceSessionService {
     uid: string;
     loginId?: string | null;
     email?: string | null;
-    gatewayBaseUrl?: string | null;
+    gatewayBaseUrl?: StoreGatewayInput;
   }): Promise<boolean> {
     return this.upsertPresence({
       tenantId: opts.tenantId,

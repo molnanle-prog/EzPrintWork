@@ -2,6 +2,7 @@ import { Job, JobStatusDefinition, KanbanLayoutConfig, Staff, Client } from '../
 import { ref, uploadBytes, getBytes } from 'firebase/storage';
 import { storage } from './firebase';
 import { filterJobsForOperationalBoard } from '../utils/jobDisplayFilters';
+import { mergeTombstoneLists } from '../utils/jobTombstones';
 import { isJobPinnedToManagementCard } from '../utils/managementCard';
 import { isJobBoardHidden } from '../utils/jobBoardVisibility';
 import {
@@ -13,10 +14,19 @@ import {
     setCompanyArchiveRootOverride,
 } from '../utils/archiveStorage';
 import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
+import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
+import {
+    normalizeGatewayBase,
+    orderStoreGatewayUrls,
+    resolveStoreGatewayUrlList,
+    type StoreGatewayInput,
+} from '../utils/storeGatewayUrls';
 
 const MIRROR_VERSION = 1;
 const SITUATION_FILE_NAME = 'situation-mirror.json';
 const WRITE_RETRY_DELAYS_MS = [0, 1200, 3000];
+/** Storage 폴백 — LAN 성공 시 대기하지 않도록 별도 상한 */
+const STORAGE_FETCH_TIMEOUT_MS = 8000;
 
 export interface SituationStaffSnapshot {
     id: string;
@@ -213,6 +223,26 @@ export class SituationMirrorService {
         }
     }
 
+    async readFromStorageWithTimeout(
+        tenantId: string,
+        timeoutMs = STORAGE_FETCH_TIMEOUT_MS
+    ): Promise<SituationMirrorPayload | null> {
+        if (!tenantId) return null;
+        try {
+            return await Promise.race([
+                this.readFromStorage(tenantId),
+                new Promise<null>((_, reject) => {
+                    setTimeout(() => reject(new Error('storage-timeout')), timeoutMs);
+                }),
+            ]);
+        } catch (error) {
+            if (error instanceof Error && error.message !== 'storage-timeout') {
+                console.warn('[SituationMirror] storage read failed:', error);
+            }
+            return null;
+        }
+    }
+
     /** Electron — NAS/공유 폴더만 (PC 간 동기화 원본) */
     async readFromNas(tenantId: string): Promise<SituationMirrorPayload | null> {
         return this.readLocal(tenantId);
@@ -232,88 +262,11 @@ export class SituationMirrorService {
         }
     }
 
-    /**
-     * LAN 게이트웨이만 (Firebase Storage 혼용 금지 — 회사 일괄 상태 유지).
-     * Electron이 NAS 직접 접근 실패 시 허브 PC의 같은 NAS 파일을 읽는다.
-     */
-    async readViaGatewayOnly(
+    private normalizeGatewayPayload(
         tenantId: string,
-        gatewayBaseUrl?: string | null
-    ): Promise<SituationMirrorPayload | null> {
-        if (!tenantId) return null;
-        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
-        if (!base) return null;
-        try {
-            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-            const token = deriveStoreGatewayToken(tenantId);
-            const res = await fetch(
-                `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
-                {
-                    cache: 'no-store',
-                    headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
-                }
-            );
-            if (!res.ok) return null;
-            const data = (await res.json()) as Partial<SituationMirrorPayload> & {
-                jobs?: Job[];
-                updatedAt?: string;
-            };
-            return {
-                version: data.version ?? MIRROR_VERSION,
-                tenantId,
-                updatedAt: data.updatedAt || new Date().toISOString(),
-                companyName: data.companyName,
-                kanbanLayout: data.kanbanLayout,
-                statusDefinitions: data.statusDefinitions,
-                jobs: data.jobs || [],
-                deletedJobs: data.deletedJobs,
-                clients: data.clients,
-                settings: data.settings,
-                staff: data.staff,
-            };
-        } catch (error) {
-            console.warn('[SituationMirror] gateway-only read failed:', error);
-            return null;
-        }
-    }
-
-    /** Electron NAS 쓰기 실패 시 — 허브 게이트웨이로 같은 situation-mirror 병합 저장 */
-    async publishViaGateway(
-        tenantId: string,
-        payload: SituationMirrorPayload,
-        gatewayBaseUrl?: string | null
-    ): Promise<boolean> {
-        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
-        if (!base || !tenantId) return false;
-        try {
-            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-            const token = deriveStoreGatewayToken(tenantId);
-            const res = await fetch(`${base}/api/v1/mirror`, {
-                method: 'POST',
-                cache: 'no-store',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
-                },
-                body: JSON.stringify(payload),
-            });
-            return res.ok;
-        } catch (error) {
-            console.warn('[SituationMirror] gateway publish failed:', error);
-            return false;
-        }
-    }
-
-    /**
-     * 외부 웹 — 사내 게이트웨이(LAN) 우선, 없으면 Storage.
-     * gatewayBaseUrl 예: http://192.168.0.10:3847
-     */
-    async readRemoteMirror(tenantId: string, gatewayBaseUrl?: string | null): Promise<SituationMirrorPayload | null> {
-        if (!tenantId) return null;
-
-        const normalize = (
-            data: Partial<SituationMirrorPayload> & { jobs?: Job[]; updatedAt?: string }
-        ): SituationMirrorPayload => ({
+        data: Partial<SituationMirrorPayload> & { jobs?: Job[]; updatedAt?: string }
+    ): SituationMirrorPayload {
+        return {
             version: data.version ?? MIRROR_VERSION,
             tenantId,
             updatedAt: data.updatedAt || new Date().toISOString(),
@@ -325,37 +278,70 @@ export class SituationMirrorService {
             clients: data.clients,
             settings: data.settings,
             staff: data.staff,
-        });
+        };
+    }
 
-        let gatewayPayload: SituationMirrorPayload | null = null;
-        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
-        if (base) {
-            try {
-                const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-                const token = deriveStoreGatewayToken(tenantId);
-                const res = await fetch(
-                    `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
-                    {
-                        cache: 'no-store',
-                        headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
-                    }
-                );
-                if (res.ok) {
-                    const data = (await res.json()) as Partial<SituationMirrorPayload> & {
-                        jobs?: Job[];
-                        updatedAt?: string;
-                    };
-                    if (data.jobs?.length || data.updatedAt || data.deletedJobs?.length) {
-                        gatewayPayload = normalize(data);
-                    }
-                }
-            } catch (error) {
-                console.warn('[SituationMirror] gateway read failed:', error);
+    private isUsableGatewayPayload(data: Partial<SituationMirrorPayload> | null | undefined): boolean {
+        if (!data) return false;
+        return !!(data.jobs?.length || data.updatedAt || data.deletedJobs?.length);
+    }
+
+    private async fetchGatewayMirrorOne(
+        tenantId: string,
+        gatewayBaseUrl: string
+    ): Promise<SituationMirrorPayload | null> {
+        const base = normalizeGatewayBase(gatewayBaseUrl);
+        if (!base) return null;
+        try {
+            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+            const token = deriveStoreGatewayToken(tenantId);
+            const res = await fetchWithTimeout(
+                `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
+                {
+                    cache: 'no-store',
+                    headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+                },
+                DEFAULT_LAN_FETCH_TIMEOUT_MS
+            );
+            if (!res.ok) return null;
+            const data = (await res.json()) as Partial<SituationMirrorPayload> & {
+                jobs?: Job[];
+                updatedAt?: string;
+            };
+            if (!this.isUsableGatewayPayload(data)) return null;
+            return this.normalizeGatewayPayload(tenantId, data);
+        } catch (error) {
+            console.warn('[SituationMirror] gateway read failed:', base, error);
+            return null;
+        }
+    }
+
+    private async fetchGatewayMirrorBest(
+        tenantId: string,
+        gatewayBaseUrl: StoreGatewayInput
+    ): Promise<SituationMirrorPayload | null> {
+        const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
+        if (urls.length === 0) return null;
+
+        const results = await Promise.all(urls.map((url) => this.fetchGatewayMirrorOne(tenantId, url)));
+        let best: SituationMirrorPayload | null = null;
+        for (const payload of results) {
+            if (!payload) continue;
+            if (
+                !best ||
+                Date.parse(payload.updatedAt) > Date.parse(best.updatedAt) ||
+                (payload.jobs?.length || 0) > (best.jobs?.length || 0)
+            ) {
+                best = payload;
             }
         }
+        return best;
+    }
 
-        const storagePayload = await this.readFromStorage(tenantId);
-
+    private mergeGatewayAndStoragePayloads(
+        gatewayPayload: SituationMirrorPayload | null,
+        storagePayload: SituationMirrorPayload | null
+    ): SituationMirrorPayload | null {
         const ts = (p: SituationMirrorPayload | null) => Date.parse(p?.updatedAt || '') || 0;
         const jobCount = (p: SituationMirrorPayload | null) => p?.jobs?.length || 0;
 
@@ -370,7 +356,6 @@ export class SituationMirrorService {
                     : jobCount(older) > 0
                       ? older.jobs
                       : [];
-            const { mergeTombstoneLists } = await import('../utils/jobTombstones');
             return {
                 ...newer,
                 jobs,
@@ -380,6 +365,69 @@ export class SituationMirrorService {
         }
 
         return gatewayPayload || storagePayload;
+    }
+
+    /**
+     * LAN 게이트웨이만 (Firebase Storage 혼용 금지 — 회사 일괄 상태 유지).
+     * Electron이 NAS 직접 접근 실패 시 허브 PC의 같은 NAS 파일을 읽는다.
+     */
+    async readViaGatewayOnly(
+        tenantId: string,
+        gatewayBaseUrl?: StoreGatewayInput
+    ): Promise<SituationMirrorPayload | null> {
+        if (!tenantId) return null;
+        return this.fetchGatewayMirrorBest(tenantId, gatewayBaseUrl);
+    }
+    async publishViaGateway(
+        tenantId: string,
+        payload: SituationMirrorPayload,
+        gatewayBaseUrl?: StoreGatewayInput
+    ): Promise<boolean> {
+        if (!tenantId) return false;
+        const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
+        if (urls.length === 0) return false;
+
+        const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+        const token = deriveStoreGatewayToken(tenantId);
+        for (const base of urls) {
+            try {
+                const res = await fetchWithTimeout(
+                    `${base}/api/v1/mirror`,
+                    {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
+                        },
+                        body: JSON.stringify(payload),
+                    },
+                    DEFAULT_LAN_FETCH_TIMEOUT_MS
+                );
+                if (res.ok) return true;
+            } catch (error) {
+                console.warn('[SituationMirror] gateway publish failed:', base, error);
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 외부 웹 — LAN 게이트웨이 우선(성공 시 Storage 대기 안 함), 실패 시 Storage 폴백.
+     */
+    async readRemoteMirror(
+        tenantId: string,
+        gatewayBaseUrl?: StoreGatewayInput
+    ): Promise<SituationMirrorPayload | null> {
+        if (!tenantId) return null;
+
+        const gatewayPayload = await this.fetchGatewayMirrorBest(tenantId, gatewayBaseUrl);
+        if (gatewayPayload) {
+            return gatewayPayload;
+        }
+
+        const storagePayload = await this.readFromStorageWithTimeout(tenantId);
+        return storagePayload;
     }
 
     /** @deprecated PC 동기화는 readFromNas 사용. 웹은 readFromStorage / readRemoteMirror */

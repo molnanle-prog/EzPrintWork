@@ -1,5 +1,7 @@
 /** 직원 계정 단일 접속 — NAS presence-sessions.json 기준 (Firestore 폴백 없음) */
 
+import type { StoreGatewayInput } from './storeGatewayUrls';
+
 export const STAFF_SESSION_STORAGE_KEY = 'ezprint_staff_session_id';
 export const STAFF_SESSION_CLAIMED_AT_KEY = 'ezprint_staff_session_claimed_at';
 export const STAFF_SESSION_PERSIST_KEY = 'ezprint_staff_session_id_persist';
@@ -123,7 +125,7 @@ export async function claimStaffSessionOnNas(opts: {
   loginId?: string | null;
   name?: string | null;
   email?: string | null;
-  gatewayBaseUrl?: string | null;
+  gatewayBaseUrl?: StoreGatewayInput;
 }): Promise<boolean> {
   const { presenceSessionService } = await import('../services/presenceSessionService');
   return presenceSessionService.claimSession({
@@ -155,7 +157,7 @@ export async function releaseStaffSessionOnNas(opts: {
   tenantId: string;
   email?: string | null;
   loginId?: string | null;
-  gatewayBaseUrl?: string | null;
+  gatewayBaseUrl?: StoreGatewayInput;
 }): Promise<boolean> {
   const { presenceSessionService } = await import('../services/presenceSessionService');
   return presenceSessionService.releaseSession(opts);

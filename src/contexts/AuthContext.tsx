@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
-import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline, setPresenceGatewayUrl } from '../services/firebase';
+import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline, setPresenceGatewayUrls } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { presenceSessionService } from '../services/presenceSessionService';
@@ -329,10 +329,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         existingName !== '사용자' &&
         existingName !== '사원';
 
+      const storedAvatar = userDoc.exists()
+        ? String(
+            (userDoc.data() as Record<string, unknown>).photoURL ||
+              (userDoc.data() as Record<string, unknown>).avatarUrl ||
+              ''
+          ).trim()
+        : '';
+
       const socialProfileData: Record<string, string> = {
         email: user.email || '',
-        photoURL: user.photoURL || '',
-        avatarUrl: user.photoURL || '',
+        photoURL: storedAvatar || user.photoURL || '',
+        avatarUrl: storedAvatar || user.photoURL || '',
       };
       // placeholder 이름일 때만 채움 — Google 계정명으로 실명을 절대 덮지 않음
       if (!keepExistingName) {
@@ -1029,7 +1037,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const loginId = currentUser.loginId
       || (firebaseUser.email?.endsWith('@ez-hub.kr') ? firebaseUser.email.split('@')[0] : undefined);
 
-    setPresenceGatewayUrl(dataService.getStoreGatewayUrl());
+    setPresenceGatewayUrls(dataService.getStoreGatewayUrls());
     startPresenceSession({
       uid: firebaseUser.uid,
       tenantId: currentUser.tenantId,
@@ -1044,7 +1052,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         tenantId: currentUser.tenantId!,
         email: currentUser.email || firebaseUser.email,
         loginId,
-        gatewayBaseUrl: dataService.getStoreGatewayUrl(),
+        gatewayBaseUrl: dataService.getStoreGatewayUrls(),
       });
       stopPresenceSession();
     };
@@ -1155,7 +1163,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           tenantId,
           email,
           loginId: currentUser?.loginId,
-          gatewayBaseUrl: dataService.getStoreGatewayUrl(),
+          gatewayBaseUrl: dataService.getStoreGatewayUrls(),
         });
       } catch (err) {
         console.warn('[StaffSession] release on logout failed:', err);
@@ -1190,11 +1198,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const checkRemoteSession = async () => {
       try {
         if (sessionKickedRef.current) return;
-        setPresenceGatewayUrl(dataService.getStoreGatewayUrl());
+        setPresenceGatewayUrls(dataService.getStoreGatewayUrls());
         const data = await presenceSessionService.readEntry(
           tenantId,
           uid,
-          dataService.getStoreGatewayUrl()
+          dataService.getStoreGatewayUrls()
         );
         if (!data || !isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
 

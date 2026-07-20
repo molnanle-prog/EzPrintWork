@@ -8,9 +8,18 @@ import {
     getEffectiveArchiveRootPath,
     hasCompanyArchiveRootConfigured,
 } from '../utils/archiveStorage';
+import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
+import {
+    normalizeGatewayBase,
+    orderStoreGatewayUrls,
+    resolveStoreGatewayUrlList,
+    type StoreGatewayInput,
+} from '../utils/storeGatewayUrls';
 
 const CHAT_VERSION = 1;
 export const CHAT_FILE_NAME = 'chat-messages.json';
+/** Storage 폴백 상한 — LAN 성공 시 대기하지 않음 */
+const STORAGE_FETCH_TIMEOUT_MS = 8000;
 /** 오래된 메시지 자동 정리 — NAS 파일 비대화 방지 */
 const MAX_CHAT_MESSAGES = 5000;
 const WRITE_RETRY_DELAYS_MS = [0, 1200, 3000];
@@ -196,31 +205,71 @@ export class ChatMirrorService {
         }
     }
 
-    async readRemote(tenantId: string, gatewayBaseUrl?: string | null): Promise<ChatMirrorPayload | null> {
+    async readFromStorageWithTimeout(
+        tenantId: string,
+        timeoutMs = STORAGE_FETCH_TIMEOUT_MS
+    ): Promise<ChatMirrorPayload | null> {
         if (!tenantId) return null;
+        try {
+            return await Promise.race([
+                this.readFromStorage(tenantId),
+                new Promise<null>((_, reject) => {
+                    setTimeout(() => reject(new Error('storage-timeout')), timeoutMs);
+                }),
+            ]);
+        } catch {
+            return null;
+        }
+    }
 
-        let gatewayPayload: ChatMirrorPayload | null = null;
-        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
-        if (base) {
-            try {
-                const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-                const token = deriveStoreGatewayToken(tenantId);
-                const res = await fetch(
-                    `${base}/api/v1/chat?tenantId=${encodeURIComponent(tenantId)}`,
-                    {
-                        cache: 'no-store',
-                        headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
-                    }
-                );
-                if (res.ok) {
-                    gatewayPayload = (await res.json()) as ChatMirrorPayload;
-                }
-            } catch (error) {
-                console.warn('[ChatMirror] gateway read failed:', error);
+    private async fetchGatewayChatOne(
+        tenantId: string,
+        gatewayBaseUrl: string
+    ): Promise<ChatMirrorPayload | null> {
+        const base = normalizeGatewayBase(gatewayBaseUrl);
+        if (!base) return null;
+        try {
+            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+            const token = deriveStoreGatewayToken(tenantId);
+            const res = await fetchWithTimeout(
+                `${base}/api/v1/chat?tenantId=${encodeURIComponent(tenantId)}`,
+                {
+                    cache: 'no-store',
+                    headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+                },
+                DEFAULT_LAN_FETCH_TIMEOUT_MS
+            );
+            if (!res.ok) return null;
+            const data = (await res.json()) as ChatMirrorPayload;
+            if (!Array.isArray(data?.messages)) return null;
+            return data;
+        } catch (error) {
+            console.warn('[ChatMirror] gateway read failed:', base, error);
+            return null;
+        }
+    }
+
+    private async fetchGatewayChatBest(
+        tenantId: string,
+        gatewayBaseUrl: StoreGatewayInput
+    ): Promise<ChatMirrorPayload | null> {
+        const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
+        if (urls.length === 0) return null;
+        const results = await Promise.all(urls.map((url) => this.fetchGatewayChatOne(tenantId, url)));
+        let best: ChatMirrorPayload | null = null;
+        for (const payload of results) {
+            if (!payload) continue;
+            if (!best || Date.parse(payload.updatedAt) > Date.parse(best.updatedAt)) {
+                best = payload;
             }
         }
+        return best;
+    }
 
-        const storagePayload = await this.readFromStorage(tenantId);
+    private mergeGatewayAndStorageChat(
+        gatewayPayload: ChatMirrorPayload | null,
+        storagePayload: ChatMirrorPayload | null
+    ): ChatMirrorPayload | null {
         const ts = (p: ChatMirrorPayload | null) => Date.parse(p?.updatedAt || '') || 0;
         if (gatewayPayload && storagePayload) {
             const newer = ts(storagePayload) > ts(gatewayPayload) ? storagePayload : gatewayPayload;
@@ -233,60 +282,60 @@ export class ChatMirrorService {
         return gatewayPayload || storagePayload;
     }
 
+    async readRemote(tenantId: string, gatewayBaseUrl?: StoreGatewayInput): Promise<ChatMirrorPayload | null> {
+        if (!tenantId) return null;
+
+        const gatewayPayload = await this.fetchGatewayChatBest(tenantId, gatewayBaseUrl);
+        if (gatewayPayload) {
+            return gatewayPayload;
+        }
+
+        return this.readFromStorageWithTimeout(tenantId);
+    }
+
     /** Electron NAS 실패 시 — 허브 게이트웨이만 (Storage 혼용 안 함) */
     async readViaGatewayOnly(
         tenantId: string,
-        gatewayBaseUrl?: string | null
+        gatewayBaseUrl?: StoreGatewayInput
     ): Promise<ChatMirrorPayload | null> {
         if (!tenantId) return null;
-        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
-        if (!base) return null;
-        try {
-            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-            const token = deriveStoreGatewayToken(tenantId);
-            const res = await fetch(
-                `${base}/api/v1/chat?tenantId=${encodeURIComponent(tenantId)}`,
-                {
-                    cache: 'no-store',
-                    headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
-                }
-            );
-            if (!res.ok) return null;
-            const data = (await res.json()) as ChatMirrorPayload;
-            if (!Array.isArray(data?.messages)) return null;
-            return data;
-        } catch (error) {
-            console.warn('[ChatMirror] gateway-only read failed:', error);
-            return null;
-        }
+        return this.fetchGatewayChatBest(tenantId, gatewayBaseUrl);
     }
 
     /** 웹에서 매장 PC 게이트웨이로 채팅 저장 시도 (LAN) */
     async publishViaGateway(
         tenantId: string,
         messages: ChatMessage[],
-        gatewayBaseUrl?: string | null
+        gatewayBaseUrl?: StoreGatewayInput
     ): Promise<boolean> {
-        const base = gatewayBaseUrl?.trim().replace(/\/$/, '');
-        if (!base || !tenantId) return false;
-        try {
-            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-            const token = deriveStoreGatewayToken(tenantId);
-            const payload = this.buildPayload(tenantId, messages);
-            const res = await fetch(`${base}/api/v1/chat`, {
-                method: 'POST',
-                cache: 'no-store',
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
-                },
-                body: JSON.stringify(payload),
-            });
-            return res.ok;
-        } catch (error) {
-            console.warn('[ChatMirror] gateway publish failed:', error);
-            return false;
+        if (!tenantId) return false;
+        const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
+        if (urls.length === 0) return false;
+
+        const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
+        const token = deriveStoreGatewayToken(tenantId);
+        const payload = this.buildPayload(tenantId, messages);
+        for (const base of urls) {
+            try {
+                const res = await fetchWithTimeout(
+                    `${base}/api/v1/chat`,
+                    {
+                        method: 'POST',
+                        cache: 'no-store',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            ...(token ? { 'X-Ezpw-Gateway-Token': token } : {}),
+                        },
+                        body: JSON.stringify(payload),
+                    },
+                    DEFAULT_LAN_FETCH_TIMEOUT_MS
+                );
+                if (res.ok) return true;
+            } catch (error) {
+                console.warn('[ChatMirror] gateway publish failed:', base, error);
+            }
         }
+        return false;
     }
 }
 

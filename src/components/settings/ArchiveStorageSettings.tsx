@@ -81,9 +81,9 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
         await db.saveArchiveRootPath(resolved.path);
         setSelectedPath(resolved.path);
         await refreshGatewayInfo();
-        const lanUrl = (await getLocalGatewayInfo())?.lanUrls?.[0];
-        if (lanUrl) {
-            await db.saveStoreGatewayUrl(lanUrl);
+        const lanUrls = (await getLocalGatewayInfo())?.lanUrls || [];
+        if (lanUrls.length > 0) {
+            await db.saveStoreGatewayUrls(lanUrls);
         }
         return resolved;
     };
@@ -390,7 +390,9 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
 
             {gatewayLanUrls.length > 0 && (
                 <div className="rounded-lg border border-emerald-200 dark:border-emerald-900/40 bg-emerald-50/50 dark:bg-emerald-950/20 p-3 space-y-1">
-                    <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300">사내 웹/태블릿 접속 (LAN 게이트웨이)</p>
+                    <p className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                        사내 웹/태블릿 접속 (LAN 게이트웨이 · WiFi/유선 IP 모두 등록)
+                    </p>
                     {gatewayLanUrls.map((url) => (
                         <p key={url} className="text-[11px] font-mono text-emerald-700 dark:text-emerald-400 break-all">
                             {url}/api/v1/mirror

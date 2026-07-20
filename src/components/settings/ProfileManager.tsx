@@ -2,18 +2,27 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { Staff } from '../../types';
-import { User, Mail, Phone, Shield, Lock, Save, Building, PhoneCall, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
+import { User, Mail, Phone, Shield, Lock, Save, Building, PhoneCall, CheckCircle2, AlertCircle, RefreshCw, Camera } from 'lucide-react';
 import { APP_BUILD_ID, APP_VERSION } from '../../utils/autoUpdate';
 import { manualUpdateCheck as runManualUpdateCheck } from '../../hooks/useAutoUpdate';
 import { useUpdateNotice } from '../../contexts/UpdateNoticeContext';
 import { doc, setDoc } from 'firebase/firestore';
 import { updatePassword } from 'firebase/auth';
 import { db as firestore, auth } from '../../services/firebase';
-import { MIN_STAFF_PASSWORD_LENGTH } from '../../utils/staffAuthProvision';
+import { getStaffAvatarUrl, MIN_STAFF_PASSWORD_LENGTH } from '../../utils/staffAuthProvision';
 import { findStaffForUser, isPlaceholderStaffName } from '../../utils/staffMatch';
+import { isStaffKeepLoggedIn } from '../../utils/staffLoginPreferences';
+import { writePersistedStaffSession } from '../../utils/persistedStaffSession';
 
 export const ProfileManager: React.FC = () => {
-  const { currentUser, refreshUser } = useAuth();
+  const {
+    currentUser,
+    refreshUser,
+    loginCustomSession,
+    tenantPlan,
+    tenantPlanCode,
+    tenantPaymentStatus,
+  } = useAuth();
   const { setWebNotice, setDesktopNotice } = useUpdateNotice();
   const [staffData, setStaffData] = useState<Staff | null>(null);
   const [formData, setFormData] = useState({
@@ -23,8 +32,10 @@ export const ProfileManager: React.FC = () => {
     phoneOffice: '',
     phoneCompany: '',
     extensionNumber: '',
-    password: ''
+    password: '',
+    avatarUrl: '',
   });
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [status, setStatus] = useState<{ type: 'success' | 'error' | null; message: string }>({ type: null, message: '' });
   /** 사용자가 입력 중이면 subscribe로 폼을 덮어쓰지 않음 */
@@ -50,7 +61,8 @@ export const ProfileManager: React.FC = () => {
         phoneOffice: matchedStaff.phoneOffice || '',
         phoneCompany: matchedStaff.phoneCompany || '',
         extensionNumber: matchedStaff.extensionNumber || '',
-        password: ''
+        password: '',
+        avatarUrl: matchedStaff.avatarUrl || currentUser.avatarUrl || currentUser.photoURL || '',
       });
     } else {
       setStaffData(null);
@@ -61,7 +73,8 @@ export const ProfileManager: React.FC = () => {
         phoneOffice: '',
         phoneCompany: '',
         extensionNumber: '',
-        password: ''
+        password: '',
+        avatarUrl: currentUser.avatarUrl || currentUser.photoURL || '',
       });
     }
   }, [currentUser]);
@@ -98,6 +111,47 @@ export const ProfileManager: React.FC = () => {
       ...prev,
       [field]: formatPhoneNumber(value)
     }));
+  };
+
+  const handleAvatarFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 300;
+        const MAX_HEIGHT = 300;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else if (height > MAX_HEIGHT) {
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        markDirty();
+        setFormData((prev) => ({ ...prev, avatarUrl: dataUrl }));
+      };
+      if (event.target?.result) {
+        img.src = event.target.result as string;
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -146,7 +200,11 @@ export const ProfileManager: React.FC = () => {
           active: true,
           isDeleted: false,
           email: formData.email.trim() || currentUser.email || '',
-          avatarUrl: base?.avatarUrl || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(formData.name.trim())}`,
+          avatarUrl:
+            formData.avatarUrl.trim() ||
+            base?.avatarUrl ||
+            currentUser.photoURL ||
+            `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(formData.name.trim())}`,
           joinDate: base?.joinDate || new Date().toISOString(),
           loginId: base?.loginId || currentUser.loginId || currentUser.email || '',
         };
@@ -167,7 +225,9 @@ export const ProfileManager: React.FC = () => {
           displayName: formData.name.trim(),
           name: formData.name.trim(),
           contactInfo: formData.phone,
-          email: formData.email.trim()
+          email: formData.email.trim(),
+          photoURL: updatedStaff.avatarUrl,
+          avatarUrl: updatedStaff.avatarUrl,
         }, { merge: true });
 
         await refreshUser();
@@ -221,17 +281,34 @@ export const ProfileManager: React.FC = () => {
             <div className="absolute top-0 left-0 w-full h-24 bg-gradient-to-br from-indigo-500/20 to-purple-500/20" />
             
             <div className="relative mt-4 mb-4">
-              <div className="w-24 h-24 rounded-full border-4 border-white dark:border-slate-900 shadow-xl overflow-hidden bg-slate-100">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="relative group w-24 h-24 rounded-full border-4 border-white dark:border-slate-900 shadow-xl overflow-hidden bg-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500/40"
+                title="프로필 사진 변경"
+              >
                 <img 
-                  src={currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(currentUser.displayName || 'user')}`} 
+                  src={getStaffAvatarUrl(formData.avatarUrl, currentUser.uid || currentUser.loginId || 'me')} 
                   alt={currentUser.displayName}
-                  className="w-full h-full object-cover"
+                  className="w-full h-full object-cover transition-opacity group-hover:opacity-75"
                 />
-              </div>
-              <div className="absolute bottom-0 right-0 w-8 h-8 bg-indigo-500 text-white rounded-full border-4 border-white dark:border-slate-900 flex items-center justify-center shadow-lg">
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 text-white opacity-0 group-hover:opacity-100 transition-all duration-200">
+                  <Camera size={18} className="mb-0.5" />
+                  <span className="text-[10px] font-bold">사진 변경</span>
+                </div>
+              </button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleAvatarFileChange}
+                accept="image/*"
+                className="hidden"
+              />
+              <div className="absolute bottom-0 right-0 w-8 h-8 bg-indigo-500 text-white rounded-full border-4 border-white dark:border-slate-900 flex items-center justify-center shadow-lg pointer-events-none">
                 <Shield size={12} fill="currentColor" />
               </div>
             </div>
+            <p className="text-[11px] text-slate-400 mb-2">프로필 사진을 클릭해 변경할 수 있습니다.</p>
 
             <h3 className="text-lg font-bold text-slate-800 dark:text-white mb-1">
               {currentUser.displayName || currentUser.name}

@@ -41,8 +41,8 @@ export const RemoteSituationPage: React.FC = () => {
         setLoading(true);
         setError(null);
         try {
-            const gatewayUrl = db.getStoreGatewayUrl();
-            const data = await situationMirrorService.readRemoteMirror(tenantId, gatewayUrl);
+            const gatewayUrls = db.getStoreGatewayUrls();
+            const data = await situationMirrorService.readRemoteMirror(tenantId, gatewayUrls);
             if (!data) {
                 setError('매장 PC에서 아직 상황판 미러가 올라오지 않았습니다. 매장에서 작업을 한 번 저장한 뒤 새로고침 해 주세요.');
                 setPayload(null);

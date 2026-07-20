@@ -35,10 +35,25 @@ export type PresenceUser = {
 let presenceActiveUser: PresenceUser | null = null;
 let presenceLastPayload: PresenceUser | null = null;
 let presenceHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
-let presenceGatewayUrl: string | null = null;
+let presenceGatewayUrls: string[] = [];
+
+export function setPresenceGatewayUrls(urls: string[] | string | null | undefined): void {
+  if (urls == null) {
+    presenceGatewayUrls = [];
+    return;
+  }
+  if (typeof urls === 'string') {
+    const base = urls.trim().replace(/\/$/, '');
+    presenceGatewayUrls = base ? [base] : [];
+    return;
+  }
+  presenceGatewayUrls = urls
+    .map((url) => url?.trim().replace(/\/$/, '') || '')
+    .filter(Boolean);
+}
 
 export function setPresenceGatewayUrl(url: string | null | undefined): void {
-  presenceGatewayUrl = url?.trim().replace(/\/$/, '') || null;
+  setPresenceGatewayUrls(url);
 }
 
 async function writePresence(user: PresenceUser, online: boolean): Promise<void> {
@@ -52,7 +67,7 @@ async function writePresence(user: PresenceUser, online: boolean): Promise<void>
     email: user.email,
     // heartbeat는 lastActive만 — session claim은 로그인 시에만
     sessionId: null,
-    gatewayBaseUrl: presenceGatewayUrl,
+    gatewayBaseUrl: presenceGatewayUrls.length > 0 ? presenceGatewayUrls : null,
   });
   if (!ok) {
     console.warn('[Presence] NAS/gateway write skipped (path or gateway unavailable)');

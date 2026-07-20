@@ -28,6 +28,7 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
     const [status, setStatus] = useState(db.getSyncStatus());
     const [cloudDegraded, setCloudDegraded] = useState(db.isCloudDegraded());
     const [lastMirrorAt, setLastMirrorAt] = useState(db.getLastNasMirrorAt());
+    const [lastReceivedAt, setLastReceivedAt] = useState(db.getLastMirrorReceivedAt());
     const isWeb = typeof window !== 'undefined' && !window.electron;
 
     useEffect(() => {
@@ -35,6 +36,7 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
             setStatus(db.getSyncStatus());
             setCloudDegraded(db.isCloudDegraded());
             setLastMirrorAt(db.getLastNasMirrorAt());
+            setLastReceivedAt(db.getLastMirrorReceivedAt());
         });
         return () => unsubscribe();
     }, []);
@@ -81,6 +83,7 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
     }
 
     const mirrorLabel = formatMirrorTime(lastMirrorAt);
+    const receivedLabel = formatMirrorTime(lastReceivedAt);
     const webReadOnlyTitle = canAccessAdminSettings
         ? '웹 — 작업·칸반은 조회 전용. 관리자는 상품·설정 저장 가능'
         : '웹·태블릿 조회 전용 — 수정은 매장 PC 앱에서';
@@ -115,7 +118,10 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
                     </div>
                     {mirrorLabel && (
                         <span className="text-[11px] text-sky-300/80 font-medium pl-5">
-                            동기화 {mirrorLabel}
+                            매장 데이터 {mirrorLabel}
+                            {receivedLabel && receivedLabel !== mirrorLabel
+                                ? ` · 수신 ${receivedLabel}`
+                                : ''}
                         </span>
                     )}
                 </div>

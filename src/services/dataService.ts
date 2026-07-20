@@ -19,6 +19,11 @@ import { chatMirrorService, mergeChatMessages } from './chatMirrorService';
 import { presenceSessionService } from './presenceSessionService';
 import { localDbBridge } from './localDbBridge';
 import { refreshLocalGateway } from './gatewayBridge';
+import {
+    collectStoreGatewayUrlsFromSettings,
+    normalizeStoreGatewayUrls,
+    orderStoreGatewayUrls,
+} from '../utils/storeGatewayUrls';
 import type { SituationMirrorPayload } from './situationMirrorService';
 import {
     applyArchiveRootFromSettings,
@@ -543,7 +548,7 @@ export class DataService {
     private unsubscribeList: (() => void)[] = [];
     private syncPulseUnsub: (() => void) | null = null;
     private configPollTimer: ReturnType<typeof setInterval> | null = null;
-    private lastPublishedGatewayUrl: string | null = null;
+    private lastPublishedGatewayUrls: string[] = [];
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
@@ -576,6 +581,8 @@ export class DataService {
     private cloudDegraded = false;
     private localOperationalReady = false;
     private lastNasMirrorAt: string | null = null;
+    /** 웹·태블릿 — 이 기기가 미러를 실제로 받은 시각 */
+    private lastMirrorReceivedAt: string | null = null;
     private webMirrorReady = false;
     private lastNasArchiveAt: string | null = null;
     private nasPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -872,8 +879,8 @@ export class DataService {
         }
 
         // 2) 허브 PC 게이트웨이 — 회사 archiveRootPath 와 같은 폴더만 허용
-        const gw = this.getStoreGatewayUrl();
-        if (gw) {
+        const gw = this.getStoreGatewayUrls();
+        if (gw.length > 0) {
             try {
                 const { isStoreGatewayServingCompanyPath } = await import('./gatewayBridge');
                 const servesCompany = await isStoreGatewayServingCompanyPath(gw, path, this.tenantId);
@@ -894,7 +901,7 @@ export class DataService {
         }
 
         return this.markCompanyNasFail(
-            gw
+            gw.length > 0
                 ? 'NAS 직접 연결과 회사경로 게이트웨이 모두 실패했습니다.'
                 : 'NAS 폴더 접근 실패 (게이트웨이 URL 없음)',
             path
@@ -941,10 +948,19 @@ export class DataService {
         }
     }
 
-    /** Firestore settings.main.storeGatewayUrl — 웹·태블릿 NAS/LAN 조회 */
+    /** Firestore settings — 웹·태블릿 NAS/LAN 조회 (다중 NIC·WiFi URL) */
+    getStoreGatewayUrls(): string[] {
+        return collectStoreGatewayUrlsFromSettings(this.getSettingsObj());
+    }
+
+    /** 서브넷 매칭 우선 정렬된 LAN URL 목록 */
+    async getOrderedStoreGatewayUrls(): Promise<string[]> {
+        return orderStoreGatewayUrls(this.getStoreGatewayUrls());
+    }
+
+    /** Firestore settings.main.storeGatewayUrl — 대표 URL (구버전 호환) */
     getStoreGatewayUrl(): string | null {
-        const url = this.getSettingsObj()?.storeGatewayUrl;
-        return typeof url === 'string' && url.trim() ? url.trim() : null;
+        return this.getStoreGatewayUrls()[0] ?? null;
     }
 
     hasWebMirrorData() {
@@ -956,13 +972,18 @@ export class DataService {
         return this.lastNasMirrorAt;
     }
 
+    getLastMirrorReceivedAt(): string | null {
+        return this.lastMirrorReceivedAt;
+    }
+
     isWebViewOnly(): boolean {
         return !this.getIsElectron();
     }
 
     private async fetchWebMirrorPayload(): Promise<SituationMirrorPayload | null> {
         if (!this.tenantId || this.getIsElectron()) return null;
-        return situationMirrorService.readRemoteMirror(this.tenantId, this.getStoreGatewayUrl());
+        const gatewayUrls = await this.getOrderedStoreGatewayUrls();
+        return situationMirrorService.readRemoteMirror(this.tenantId, gatewayUrls);
     }
 
     private applyMirrorPayload(situation: SituationMirrorPayload): boolean {
@@ -997,11 +1018,26 @@ export class DataService {
             this.lastNasMirrorAt = situation.updatedAt;
             this.lastNasArchiveAt = situation.updatedAt;
         }
-        if (applied) this.notify();
+        if (applied) {
+            this.lastMirrorReceivedAt = new Date().toISOString();
+            this.notify();
+        }
         return applied;
     }
 
-    private async tryHydrateFromWebMirror(maxAttempts = 3): Promise<boolean> {
+    private async hydrateWebMirrorInBackground(): Promise<void> {
+        if (!this.tenantId || this.getIsElectron()) return;
+        const ok = await this.tryHydrateFromWebMirror(1);
+        if (ok) {
+            this.webMirrorReady = true;
+            this.isReady = true;
+            this.notify();
+            return;
+        }
+        void this.retryWebMirrorHydrateInBackground();
+    }
+
+    private async tryHydrateFromWebMirror(maxAttempts = 1): Promise<boolean> {
         if (!this.tenantId || this.getIsElectron()) return false;
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
@@ -1158,6 +1194,7 @@ export class DataService {
         this.localOperationalReady = false;
         this.webMirrorReady = false;
         this.lastNasMirrorAt = null;
+        this.lastMirrorReceivedAt = null;
         this.lastNasArchiveAt = null;
         this.companyNasHealthy = null;
         this.companyNasHealthError = null;
@@ -1212,6 +1249,7 @@ export class DataService {
         this.lazyCollectionsLoaded.clear();
         this.localPulseMarkers.clear();
         this.lastNasMirrorAt = null;
+        this.lastMirrorReceivedAt = null;
         this.lastNasArchiveAt = null;
         this.companyNasHealthy = null;
         this.companyNasHealthError = null;
@@ -1717,7 +1755,7 @@ export class DataService {
         }
 
         try {
-            const presenceFile = await presenceSessionService.read(tenantId, this.getStoreGatewayUrl());
+            const presenceFile = await presenceSessionService.read(tenantId, this.getStoreGatewayUrls());
             const presenceByUid = presenceFile?.sessions || {};
             const staffWithPresence = staff.map((s) => {
                 const row = s as Staff & { uid?: string; isOnline?: boolean; online?: boolean; lastActive?: string };
@@ -1787,34 +1825,41 @@ export class DataService {
             return;
         }
         const info = await refreshLocalGateway(root, this.tenantId);
-        const lanUrl = info?.lanUrls?.[0]?.trim().replace(/\/$/, '') || null;
-        if (!lanUrl) return;
+        const lanUrls = normalizeStoreGatewayUrls(info?.lanUrls || []);
+        if (lanUrls.length === 0) return;
         // 게이트웨이가 회사 경로를 서비스할 때만 Firestore에 허브 URL 게시
         if (info?.archiveRoot && !this.pathsEqualIgnoreSlash(info.archiveRoot, root)) {
             console.warn('[DataService] skip storeGatewayUrl publish — gateway root ≠ company path');
             return;
         }
 
-        if (lanUrl !== this.lastPublishedGatewayUrl && lanUrl !== this.getStoreGatewayUrl()) {
-            this.lastPublishedGatewayUrl = lanUrl;
-            await this.saveStoreGatewayUrl(lanUrl).catch((e) =>
+        const currentUrls = this.getStoreGatewayUrls();
+        const urlsChanged =
+            lanUrls.length !== currentUrls.length ||
+            lanUrls.some((url, index) => url !== currentUrls[index]);
+
+        if (urlsChanged) {
+            this.lastPublishedGatewayUrls = lanUrls;
+            await this.saveStoreGatewayUrls(lanUrls).catch((e) =>
                 console.warn('[DataService] auto storeGatewayUrl save failed:', e)
             );
-        } else if (lanUrl !== this.lastPublishedGatewayUrl) {
-            this.lastPublishedGatewayUrl = lanUrl;
+        } else if (
+            lanUrls.length !== this.lastPublishedGatewayUrls.length ||
+            lanUrls.some((url, index) => url !== this.lastPublishedGatewayUrls[index])
+        ) {
+            this.lastPublishedGatewayUrls = lanUrls;
         }
     }
 
     /** 회사 NAS 경로를 서비스하는 게이트웨이만 반환 (불일치면 null) */
     private async getTrustedStoreGatewayUrl(): Promise<string | null> {
-        const gw = this.getStoreGatewayUrl();
+        const gw = this.getStoreGatewayUrls();
         const companyPath =
             getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() ||
             getEffectiveArchiveRootPath();
-        if (!gw || !companyPath) return null;
-        const { isStoreGatewayServingCompanyPath } = await import('./gatewayBridge');
-        const ok = await isStoreGatewayServingCompanyPath(gw, companyPath, this.tenantId);
-        return ok ? gw : null;
+        if (gw.length === 0 || !companyPath) return null;
+        const { resolveTrustedStoreGatewayUrl } = await import('./gatewayBridge');
+        return resolveTrustedStoreGatewayUrl(gw, companyPath, this.tenantId);
     }
 
     private stopNasMirrorPolling() {
@@ -1942,6 +1987,16 @@ export class DataService {
         return Number.isFinite(ms) ? ms : 0;
     }
 
+    /** NAS situation-mirror로 덮어쓰면 안 되는 마스터 설정 — Firestore/로컬이 기준 */
+    private static readonly MIRROR_PROTECTED_SETTINGS = [
+        'processingDefinitions',
+        'productDefinitions',
+        'statusDefinitions',
+        'roles',
+        'pricing',
+        'kanbanLayout',
+    ] as const;
+
     private mergeSettingsFromMirror(
         incoming: Record<string, unknown>,
         mirrorCompanyName?: string
@@ -1952,7 +2007,16 @@ export class DataService {
         const current = this.getSettingsObj();
         const incomingCompany = (incoming.companyInfo as Record<string, unknown> | undefined) || {};
         const currentCompany = (current.companyInfo as Record<string, unknown> | undefined) || {};
-        const merged: Record<string, unknown> = { ...current, ...incoming };
+        const merged: Record<string, unknown> = { ...current };
+        for (const [key, value] of Object.entries(incoming)) {
+            if ((DataService.MIRROR_PROTECTED_SETTINGS as readonly string[]).includes(key)) {
+                if (current[key] === undefined || current[key] === null) {
+                    merged[key] = value;
+                }
+            } else {
+                merged[key] = value;
+            }
+        }
         merged.companyInfo = {
             ...this.extractLegacyCompanyFields(current),
             ...this.extractLegacyCompanyFields(incoming),
@@ -2245,6 +2309,9 @@ export class DataService {
             }
 
             if (changed) {
+                if (!this.getIsElectron()) {
+                    this.lastMirrorReceivedAt = new Date().toISOString();
+                }
                 if (this.isLocalPrimaryMode()) {
                     await this.persistAllToLocalDb().catch((e) =>
                         console.warn('[DataService] local db sync after NAS poll failed:', e)
@@ -2782,7 +2849,7 @@ export class DataService {
         try {
             const payload = this.getIsElectron()
                 ? await chatMirrorService.readFromNas()
-                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrl());
+                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrls());
 
             if (payload?.messages?.length) {
                 this.data['messages'] = mergeChatMessages(
@@ -2848,7 +2915,7 @@ export class DataService {
         const viaGw = await chatMirrorService.publishViaGateway(
             this.tenantId,
             list,
-            this.getStoreGatewayUrl()
+            this.getStoreGatewayUrls()
         );
         if (viaGw) {
             await this.bumpMirrorSyncPulse();
@@ -2864,7 +2931,7 @@ export class DataService {
         try {
             let payload = this.getIsElectron()
                 ? await chatMirrorService.readFromNas()
-                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrl());
+                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrls());
             if (!payload?.messages && this.getIsElectron()) {
                 const gw = await this.getTrustedStoreGatewayUrl();
                 if (gw) {
@@ -3246,7 +3313,12 @@ export class DataService {
             this.subscribeSyncPulse();
 
             if (!localPrimary) {
-                await this.pullOperationalCloudData();
+                // 웹·태블릿 — Firebase 설정만 받으면 연결됨 표시, 미러는 백그라운드
+                this.isReady = true;
+                this.syncStatus = 'synced';
+                this.notify();
+                this.startNasMirrorPolling();
+                void this.hydrateWebMirrorInBackground();
             } else if (!this.localOperationalReady) {
                 try {
                     await this.pullOperationalCloudData();
@@ -3264,7 +3336,9 @@ export class DataService {
                 }
             }
 
-            this.startNasMirrorPolling();
+            if (localPrimary) {
+                this.startNasMirrorPolling();
+            }
 
             // 사내 채팅 NAS 미러 초기 로드
             void this.hydrateMessagesFromMirror();
@@ -3283,23 +3357,22 @@ export class DataService {
             }
 
             if (!localPrimary && !this.webMirrorReady && this.getAllJobs().length === 0) {
-                void this.retryWebMirrorHydrateInBackground();
-                const gateway = this.getStoreGatewayUrl();
-                if (!gateway) {
+                // hydrateWebMirrorInBackground 가 처리 — 여기서는 게이트웨이 URL 없을 때만 안내
+                const gateway = this.getStoreGatewayUrls();
+                if (gateway.length === 0) {
                     toast.warning(
                         '웹/태블릿은 매장 PC NAS 연동이 필요합니다. 관리자 PC에서 NAS 경로 저장 후, 같은 Wi‑Fi에서 접속해 주세요.',
-                        { duration: 8000 }
-                    );
-                } else {
-                    toast.warning(
-                        '매장 PC 게이트웨이에 연결되지 않았습니다. 같은 사내망(Wi‑Fi)인지 확인해 주세요.',
                         { duration: 8000 }
                     );
                 }
             }
 
-            this.isReady = true;
-            this.syncStatus = 'synced';
+            if (localPrimary || !this.isReady) {
+                this.isReady = true;
+            }
+            if (localPrimary) {
+                this.syncStatus = 'synced';
+            }
             this.finishSessionPull();
         } catch (error: any) {
             console.error('[DataService] session sync failed:', error);
@@ -3993,6 +4066,7 @@ export class DataService {
         
         if (this.tenantId && this.isLocalPrimaryMode()) {
             await localDbBridge.saveSettings(this.tenantId, settings);
+            void this.flushLiveMirrorPushNow();
             return;
         }
 
@@ -4035,6 +4109,10 @@ export class DataService {
                 throw e;
             }
             await this.bumpSyncPulse({ settingsAt: new Date().toISOString() });
+        }
+
+        if (!this.isWebMirrorMode()) {
+            void this.flushLiveMirrorPushNow();
         }
         
         this.updateTenantActivity().catch(() => {});
@@ -4692,13 +4770,14 @@ export class DataService {
         }
     }
 
-    /** 사내 웹/태블릿 — LAN 게이트웨이 URL (Storage 폴백 전 우선) */
-    async saveStoreGatewayUrl(storeGatewayUrl: string): Promise<void> {
-        const url = storeGatewayUrl?.trim();
-        if (!url) return;
+    /** 사내 웹/태블릿 — LAN 게이트웨이 URL 목록 (Storage 폴백 전 우선) */
+    async saveStoreGatewayUrls(storeGatewayUrls: string[]): Promise<void> {
+        const urls = normalizeStoreGatewayUrls(storeGatewayUrls);
+        if (urls.length === 0) return;
 
         const settings = this.getSettingsObj();
-        settings.storeGatewayUrl = url;
+        settings.storeGatewayUrls = urls;
+        settings.storeGatewayUrl = urls[0];
         this.data['settings'] = [settings];
         this.notify();
 
@@ -4710,7 +4789,10 @@ export class DataService {
             try {
                 await setDoc(
                     doc(firestore, 'tenants', this.tenantId, 'settings', 'main'),
-                    stripUndefinedForFirestore({ storeGatewayUrl: url }),
+                    stripUndefinedForFirestore({
+                        storeGatewayUrl: urls[0],
+                        storeGatewayUrls: urls,
+                    }),
                     { merge: true }
                 );
                 await this.bumpSyncPulse({ settingsAt: new Date().toISOString() });
@@ -4718,6 +4800,14 @@ export class DataService {
                 console.warn('[DataService] store gateway url save failed:', e);
             }
         }
+    }
+
+    /** @deprecated saveStoreGatewayUrls 사용 */
+    async saveStoreGatewayUrl(storeGatewayUrl: string): Promise<void> {
+        const url = storeGatewayUrl?.trim();
+        if (!url) return;
+        const existing = this.getStoreGatewayUrls().filter((item) => item !== url);
+        await this.saveStoreGatewayUrls([url, ...existing]);
     }
 
     async uploadQuoteHeaderImage(file: File): Promise<string> {

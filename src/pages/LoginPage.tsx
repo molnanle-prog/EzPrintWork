@@ -436,7 +436,7 @@ export const LoginPage: React.FC = () => {
                     sessionRecord = await presenceSessionService.readEntry(
                         tenantId,
                         uidHint,
-                        db.getStoreGatewayUrl()
+                        db.getStoreGatewayUrls()
                     );
                 }
             } catch {
@@ -563,7 +563,7 @@ export const LoginPage: React.FC = () => {
                     loginId: rawLoginId,
                     name: staffDisplayName,
                     email: auth.currentUser?.email || authEmail,
-                    gatewayBaseUrl: db.getStoreGatewayUrl(),
+                    gatewayBaseUrl: db.getStoreGatewayUrls(),
                 });
 
                 try {
