@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2 } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -263,12 +263,18 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   });
   
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [isPinned, setIsPinned] = useState(() => {
     if (typeof window === 'undefined') return false;
     return localStorage.getItem('ezprint_widget_mode') === 'true';
   });
   const [opacity, setOpacity] = useState(1);
   const sidebarRef = useRef<HTMLElement>(null);
+
+  const handleMobileTabChange = (tab: string) => {
+    onTabChange(tab);
+    setMobileNavOpen(false);
+  };
 
 
 
@@ -587,15 +593,99 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
           </aside>
         )}
 
+        {/* 태블릿·휴대폰: 햄버거 드로어 (메뉴·설정·로그아웃) */}
+        {!isPinned && !isTvMode && mobileNavOpen && (
+          <div className="lg:hidden fixed inset-0 z-[80] flex">
+            <button
+              type="button"
+              className="absolute inset-0 bg-slate-950/60 backdrop-blur-[2px]"
+              aria-label="메뉴 닫기"
+              onClick={() => setMobileNavOpen(false)}
+            />
+            <aside className="relative z-10 flex flex-col w-[min(20rem,88vw)] max-w-full h-full bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-2xl border-r border-slate-800 animate-in slide-in-from-left duration-200">
+              <div className="h-16 flex-none flex items-center justify-between px-4 border-b border-slate-800">
+                <div className="min-w-0">
+                  <h1 className="text-lg font-black text-white tracking-tight truncate">{companyName}</h1>
+                  <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">메뉴</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setMobileNavOpen(false)}
+                  className="p-2 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800"
+                  aria-label="닫기"
+                >
+                  <X size={22} />
+                </button>
+              </div>
+              <nav className="flex-1 space-y-1.5 py-4 px-3 overflow-y-auto">
+                {menuItems.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleMobileTabChange(item.id)}
+                    className={`flex items-center gap-4 w-full px-3 py-3.5 rounded-xl transition-all ${
+                      activeTab === item.id
+                        ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20'
+                        : 'hover:bg-slate-800 hover:text-white text-slate-400'
+                    }`}
+                  >
+                    <item.icon size={22} />
+                    <span className="text-[15px] font-bold">{item.label}</span>
+                  </button>
+                ))}
+              </nav>
+              <div className="flex-none p-3 space-y-2 border-t border-slate-800 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+                <SyncStatusIndicator condensed={false} />
+                <UserProfile compact={false} />
+                {!isElectron && (
+                  <button
+                    type="button"
+                    onClick={() => triggerDesktopSetupDownload()}
+                    className="flex items-center gap-4 w-full px-3 py-2.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800"
+                  >
+                    <ArrowDownToLine size={22} className="text-blue-500" />
+                    <span className="text-[15px] font-bold text-slate-300">데스크톱 앱 (.exe)</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => handleMobileTabChange('settings')}
+                  className={`flex items-center gap-4 w-full px-3 py-3 rounded-xl transition-all ${
+                    activeTab === 'settings'
+                      ? 'bg-slate-700 text-white'
+                      : 'text-slate-500 hover:text-white hover:bg-slate-800'
+                  }`}
+                >
+                  <Settings size={22} />
+                  <span className="text-[15px] font-bold">설정</span>
+                </button>
+              </div>
+            </aside>
+          </div>
+        )}
+
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
             {!isPinned && !isTvMode && (
-                <header className={`border-b flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-4 md:px-5 lg:px-7 ${
+                <header className={`border-b flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-3 sm:px-4 md:px-5 lg:px-7 ${
                   theme === 'trello' 
                     ? 'bg-[#152238]/90 border-[#22334b]' 
                     : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
                 }`}>
-                    <div className="flex items-baseline gap-3">
-                        <h2 className={`font-bold text-lg md:text-xl ${
+                    <div className="flex items-center gap-2 min-w-0">
+                        <button
+                          type="button"
+                          onClick={() => setMobileNavOpen(true)}
+                          className={`lg:hidden shrink-0 p-2.5 rounded-xl transition-colors ${
+                            theme === 'trello'
+                              ? 'bg-slate-700 text-white hover:bg-slate-600'
+                              : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-100 hover:bg-slate-200 dark:hover:bg-slate-600'
+                          }`}
+                          aria-label="메뉴 열기"
+                          title="메뉴"
+                        >
+                          <Menu size={22} />
+                        </button>
+                        <h2 className={`font-bold text-lg md:text-xl truncate ${
                           theme === 'trello' 
                             ? 'text-white' 
                             : 'text-slate-800 dark:text-slate-100'
@@ -603,7 +693,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             {activeTab === 'settings' ? '설정' : menuItems.find(m => m.id === activeTab)?.label}
                         </h2>
                     </div>
-                    <div className="flex items-center gap-3 lg:gap-5">
+                    <div className="flex items-center gap-2 sm:gap-3 lg:gap-5 shrink-0">
                         {tenantPlan === 'free' && (
                             <button 
                                 onClick={() => setShowUpgradeModal(true)}
@@ -624,25 +714,25 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             onClick={() => {
                                 setShowSearchModal(true);
                             }}
-                            className={`rounded-full flex items-center gap-3 transition-colors px-6 h-12 shadow-sm ${
+                            className={`rounded-full flex items-center gap-2 sm:gap-3 transition-colors px-3 sm:px-6 h-11 sm:h-12 shadow-sm ${
                                 theme === 'trello' 
                                     ? 'bg-slate-700 hover:bg-slate-600 text-slate-300' 
                                     : 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'
                             }`}
                         >
                             <Search size={22} />
-                            <span className="text-base font-bold">등록 작업 검색</span>
+                            <span className="text-base font-bold hidden sm:inline">등록 작업 검색</span>
                         </button>
                         <button
                             onClick={() => setShowFinanceModal(true)}
-                            className={`rounded-full flex items-center gap-3 transition-colors px-5 h-12 shadow-sm ${
+                            className={`rounded-full flex items-center gap-2 sm:gap-3 transition-colors px-3 sm:px-5 h-11 sm:h-12 shadow-sm ${
                                 theme === 'trello'
                                     ? 'bg-violet-700 hover:bg-violet-600 text-white'
                                     : 'bg-violet-600 text-white hover:bg-violet-700'
                             }`}
                         >
                             <ArrowBigUp size={20} className="fill-white" strokeWidth={2} />
-                            <span className="text-sm font-bold">관리카드</span>
+                            <span className="text-sm font-bold hidden sm:inline">관리카드</span>
                         </button>
                     </div>
                 </header>

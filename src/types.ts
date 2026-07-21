@@ -24,7 +24,7 @@ export enum Priority {
   VERY_URGENT = '매우긴급'
 }
 
-export type PaymentStatus = '결제대기' | '일부결제' | '결제완료' | '취소';
+export type PaymentStatus = '결제대기' | '일부결제' | '후불결제' | '결제완료' | '취소';
 
 export interface InnerPageSpec {
   id: string;
@@ -447,6 +447,10 @@ export interface IElectronAPI {
     clients?: unknown[];
     settings?: Record<string, unknown> | null;
     jobCount?: number;
+    quotes?: unknown[];
+    papers?: unknown[];
+    leaves?: unknown[];
+    instructions?: unknown[];
     error?: string;
   }>;
   localDbSaveJobs?: (tenantId: string, jobs: unknown[]) => Promise<{ success: boolean }>;
@@ -455,13 +459,30 @@ export interface IElectronAPI {
   localDbSaveClients?: (tenantId: string, clients: unknown[]) => Promise<{ success: boolean }>;
   localDbUpsertClient?: (tenantId: string, client: unknown) => Promise<{ success: boolean }>;
   localDbDeleteClient?: (tenantId: string, clientId: string) => Promise<{ success: boolean }>;
-    localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
+  localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
+  localDbSaveAux?: (
+    tenantId: string,
+    collection: string,
+    items: unknown[]
+  ) => Promise<{ success: boolean }>;
+  localDbUpsertAux?: (
+    tenantId: string,
+    collection: string,
+    entity: unknown
+  ) => Promise<{ success: boolean }>;
+  localDbDeleteAux?: (
+    tenantId: string,
+    collection: string,
+    id: string
+  ) => Promise<{ success: boolean }>;
   gatewaySetConfig?: (config: {
     archiveRoot: string | null;
     tenantId: string | null;
     gatewayToken?: string | null;
   }) => Promise<{ ok: boolean }>;
   gatewayGetInfo?: () => Promise<{ port: number; baseUrl: string; lanUrls: string[] }>;
+  /** 문서 인쇄 (단면 simplex 강제) */
+  printDocument?: () => Promise<{ success: boolean; error?: string }>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;

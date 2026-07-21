@@ -1,11 +1,9 @@
 
 import React, { useEffect, useState, useCallback } from 'react';
 import { useParams } from 'react-router-dom';
-import { doc, getDoc } from 'firebase/firestore';
 import { Loader2 } from 'lucide-react';
 import { Quote } from '../types';
 import { db } from '../services/dataService';
-import { db as firestore } from '../services/firebase';
 import { QuotePreviewPanel } from '../components/quotes/QuotePreviewPanel';
 import { readCachedQuoteForPreview } from '../utils/quotePreviewStorage';
 import { useAuth } from '../contexts/AuthContext';
@@ -35,16 +33,16 @@ export const QuotePreviewPage: React.FC = () => {
       return;
     }
 
-    const tenantId = currentUser?.tenantId ?? db.getTenantId();
-    if (tenantId) {
-      try {
-        const snap = await getDoc(doc(firestore, 'tenants', tenantId, 'quotes', quoteId));
-        if (snap.exists()) {
-          setQuote({ ...snap.data(), id: snap.id } as Quote);
-        }
-      } catch (e) {
-        console.warn('[QuotePreviewPage] Firestore fetch failed:', e);
+    // NAS/게이트웨이에서 견적 목록 hydrate 후 재검색 (Firestore 미사용)
+    try {
+      db.ensureQuotesSync();
+      await new Promise((r) => setTimeout(r, 400));
+      const afterHydrate = db.getQuotes().find((q) => q.id === quoteId) ?? null;
+      if (afterHydrate) {
+        setQuote(afterHydrate);
       }
+    } catch (e) {
+      console.warn('[QuotePreviewPage] NAS hydrate failed:', e);
     }
     setFetchDone(true);
   }, [quoteId, currentUser?.tenantId]);
@@ -80,7 +78,7 @@ export const QuotePreviewPage: React.FC = () => {
           onClick={handleClose}
           className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm font-bold"
         >
-          창 닫기
+          닫기
         </button>
       </div>
     );

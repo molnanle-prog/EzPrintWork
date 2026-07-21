@@ -38,6 +38,14 @@ contextBridge.exposeInMainWorld('electron', {
     localDbUpsertClient: (tenantId, client) => ipcRenderer.invoke('local-db-upsert-client', { tenantId, client }),
     localDbDeleteClient: (tenantId, clientId) => ipcRenderer.invoke('local-db-delete-client', { tenantId, clientId }),
     localDbSaveSettings: (tenantId, settings) => ipcRenderer.invoke('local-db-save-settings', { tenantId, settings }),
+    localDbSaveAux: (tenantId, collection, items) =>
+        ipcRenderer.invoke('local-db-save-aux', { tenantId, collection, items }),
+    localDbUpsertAux: (tenantId, collection, entity) =>
+        ipcRenderer.invoke('local-db-upsert-aux', { tenantId, collection, entity }),
+    localDbDeleteAux: (tenantId, collection, id) =>
+        ipcRenderer.invoke('local-db-delete-aux', { tenantId, collection, id }),
     gatewaySetConfig: (config) => ipcRenderer.invoke('gateway-set-config', config),
     gatewayGetInfo: () => ipcRenderer.invoke('gateway-get-info'),
+    /** 단면(simplex) 인쇄 — 양면 방지 */
+    printDocument: () => ipcRenderer.invoke('print-document'),
 });

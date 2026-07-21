@@ -8,7 +8,7 @@ import { KanbanCard } from './KanbanCard';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useDialog } from '../../contexts/DialogContext';
-import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv } from 'lucide-react';
+import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 import { resolveClientSmsNumber } from '../../utils/clientSms';
 import {
@@ -534,6 +534,52 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     [allStatusDefinitions, kanbanLayout, hiddenStatusKeys]
   );
 
+  /** lg 미만: 세로 1칸 / 가로 2칸 페이지. lg+: 0 = 전체 표시 */
+  const [compactPageSize, setCompactPageSize] = useState(0);
+  const [columnPage, setColumnPage] = useState(0);
+  const swipeStartX = useRef<number | null>(null);
+
+  useEffect(() => {
+    const updateCompactLayout = () => {
+      const desktop = window.matchMedia('(min-width: 1024px)').matches;
+      if (desktop || isTvMode) {
+        setCompactPageSize(0);
+        return;
+      }
+      const landscape =
+        window.matchMedia('(orientation: landscape)').matches ||
+        window.innerWidth > window.innerHeight;
+      setCompactPageSize(landscape ? 2 : 1);
+    };
+    updateCompactLayout();
+    window.addEventListener('resize', updateCompactLayout);
+    window.addEventListener('orientationchange', updateCompactLayout);
+    return () => {
+      window.removeEventListener('resize', updateCompactLayout);
+      window.removeEventListener('orientationchange', updateCompactLayout);
+    };
+  }, [isTvMode]);
+
+  const compactPageCount =
+    compactPageSize > 0 ? Math.max(1, Math.ceil(kanbanSlots.length / compactPageSize)) : 1;
+
+  useEffect(() => {
+    setColumnPage((p) => Math.min(p, Math.max(0, compactPageCount - 1)));
+  }, [compactPageCount, compactPageSize, kanbanSlots.length]);
+
+  const visibleKanbanSlots =
+    compactPageSize > 0
+      ? kanbanSlots.slice(columnPage * compactPageSize, columnPage * compactPageSize + compactPageSize)
+      : kanbanSlots;
+
+  const goColumnPage = useCallback(
+    (delta: number) => {
+      if (compactPageSize <= 0) return;
+      setColumnPage((p) => Math.max(0, Math.min(compactPageCount - 1, p + delta)));
+    },
+    [compactPageSize, compactPageCount]
+  );
+
   const statusDefByKey = useMemo(() => {
     const map = new Map<string, JobStatusDefinition>();
     db.getStatusDefinitions().forEach((s) => map.set(s.key, s));
@@ -556,7 +602,12 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const renderKanbanColumn = (statusDef: JobStatusDefinition) => (
-    <div key={statusDef.key} className="h-full flex-1 min-w-[200px] transition-all duration-300">
+    <div
+      key={statusDef.key}
+      className={`h-full transition-all duration-300 ${
+        compactPageSize > 0 ? 'flex-1 min-w-0 w-full' : 'flex-1 min-w-[200px]'
+      }`}
+    >
       <KanbanColumn
         statusDef={statusDef}
         jobs={getJobsForStatus(statusDef.key)}
@@ -663,7 +714,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
               ${filterUnpaidOnly 
                 ? 'bg-rose-600 border-rose-600 text-white shadow-md shadow-rose-500/20 hover:bg-rose-700' 
                 : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-rose-400 dark:hover:border-slate-500'}`}
-            title="결제대기 또는 일부결제 상태인 작업만 표시합니다"
+            title="결제대기·일부결제·후불결제 상태인 작업만 표시합니다"
           >
             <span className="w-1.5 h-1.5 rounded-full bg-rose-500 border border-white"></span>
             <span>미결제</span>
@@ -826,9 +877,85 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         onDragStart={isWebReadOnly ? undefined : handleDragStart}
         onDragEnd={isWebReadOnly ? undefined : handleDragEnd}
       >
-      <div className="flex-1 overflow-x-auto pb-0 custom-scrollbar h-full min-h-0 touch-pan-x">
-        <div className="flex gap-1.5 h-full py-1.5 px-0 w-full min-w-0">
-          {kanbanSlots.map((slot) => {
+      <div
+        className={`flex-1 h-full min-h-0 flex flex-col ${
+          compactPageSize > 0 ? 'overflow-hidden' : 'overflow-x-auto custom-scrollbar touch-pan-x'
+        }`}
+        onTouchStart={
+          compactPageSize > 0
+            ? (e) => {
+                swipeStartX.current = e.touches[0]?.clientX ?? null;
+              }
+            : undefined
+        }
+        onTouchEnd={
+          compactPageSize > 0
+            ? (e) => {
+                if (swipeStartX.current == null) return;
+                const endX = e.changedTouches[0]?.clientX ?? swipeStartX.current;
+                const dx = endX - swipeStartX.current;
+                swipeStartX.current = null;
+                if (Math.abs(dx) < 56) return;
+                goColumnPage(dx < 0 ? 1 : -1);
+              }
+            : undefined
+        }
+      >
+        {compactPageSize > 0 && (
+          <div
+            className={`flex items-center justify-between gap-2 px-2 py-1.5 shrink-0 border-b ${
+              theme === 'trello'
+                ? 'border-[#22334b] bg-[#152238]/80 text-white'
+                : 'border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/80'
+            }`}
+          >
+            <button
+              type="button"
+              onClick={() => goColumnPage(-1)}
+              disabled={columnPage <= 0}
+              className="p-2 rounded-lg disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              aria-label="이전 단계"
+            >
+              <ChevronLeft size={22} />
+            </button>
+            <div className="text-center min-w-0 flex-1">
+              <p className="text-sm font-bold truncate">
+                {visibleKanbanSlots
+                  .map((slot) => {
+                    if (slot.type === 'single') {
+                      return statusDefByKey.get(slot.statusKey)?.label || slot.statusKey;
+                    }
+                    const top = statusDefByKey.get(slot.topKey)?.label || slot.topKey;
+                    const bottom = statusDefByKey.get(slot.bottomKey)?.label || slot.bottomKey;
+                    return `${top}/${bottom}`;
+                  })
+                  .join(' · ')}
+              </p>
+              <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
+                {columnPage + 1} / {compactPageCount}
+                <span className="mx-1.5">·</span>
+                {compactPageSize === 1 ? '세로 · 1칸' : '가로 · 2칸'}
+                <span className="mx-1.5">·</span>
+                좌우로 넘기기
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => goColumnPage(1)}
+              disabled={columnPage >= compactPageCount - 1}
+              className="p-2 rounded-lg disabled:opacity-30 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+              aria-label="다음 단계"
+            >
+              <ChevronRight size={22} />
+            </button>
+          </div>
+        )}
+        <div
+          className={`flex gap-1.5 h-full min-h-0 py-1.5 px-0 w-full min-w-0 ${
+            compactPageSize > 0 ? 'flex-1 overflow-hidden' : ''
+          }`}
+        >
+          {visibleKanbanSlots.map((slot) => {
             if (slot.type === 'single') {
               const def = statusDefByKey.get(slot.statusKey);
               if (!def) return null;
@@ -838,26 +965,30 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             const bottomDef = statusDefByKey.get(slot.bottomKey);
             if (!topDef || !bottomDef) return null;
             return (
-              <KanbanSplitColumn
+              <div
                 key={`split-${slot.topKey}-${slot.bottomKey}`}
-                topDef={topDef}
-                bottomDef={bottomDef}
-                topJobs={getJobsForStatus(slot.topKey)}
-                bottomJobs={getJobsForStatus(slot.bottomKey)}
-                splitTopPercent={slot.splitTopPercent}
-                bottomCompact={slot.bottomCompact}
-                onSplitTopPercentCommit={(percent) =>
-                  handleSplitTopPercentCommit(slot.topKey, slot.bottomKey, percent)
-                }
-                getStaffName={getStaffName}
-                onSelectJob={handleSelectJob}
-                onRightClickJob={handleRightClickJob}
-                onStatusChange={isWebReadOnly ? () => {} : updateJobStatus}
-                currentUserId={currentStaffId ?? currentUser?.id}
-                resolveIsMyJob={resolveIsMyJob}
-                isTvMode={isTvMode}
-                onHideFromBoard={handleHideFromBoard}
-              />
+                className={`h-full ${compactPageSize > 0 ? 'flex-1 min-w-0 w-full' : 'flex-1 min-w-[200px]'}`}
+              >
+                <KanbanSplitColumn
+                  topDef={topDef}
+                  bottomDef={bottomDef}
+                  topJobs={getJobsForStatus(slot.topKey)}
+                  bottomJobs={getJobsForStatus(slot.bottomKey)}
+                  splitTopPercent={slot.splitTopPercent}
+                  bottomCompact={slot.bottomCompact}
+                  onSplitTopPercentCommit={(percent) =>
+                    handleSplitTopPercentCommit(slot.topKey, slot.bottomKey, percent)
+                  }
+                  getStaffName={getStaffName}
+                  onSelectJob={handleSelectJob}
+                  onRightClickJob={handleRightClickJob}
+                  onStatusChange={isWebReadOnly ? () => {} : updateJobStatus}
+                  currentUserId={currentStaffId ?? currentUser?.id}
+                  resolveIsMyJob={resolveIsMyJob}
+                  isTvMode={isTvMode}
+                  onHideFromBoard={handleHideFromBoard}
+                />
+              </div>
             );
           })}
         </div>

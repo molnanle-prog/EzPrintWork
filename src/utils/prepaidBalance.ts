@@ -163,7 +163,7 @@ export function getManagementPrepaidBadge(
 
   if (
     usePrepaid &&
-    (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제')
+    (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제' || job.paymentStatus === '후불결제')
   ) {
     const pending = Math.min(slot.balanceBefore, job.price || 0);
     if (pending > 0) return { kind: 'pending', amount: pending };
@@ -228,7 +228,7 @@ export function getJobOutstandingAmount(job: Job): number {
   const price = job.price || 0;
   const applied = job.prepaidAppliedAmount || 0;
   if (job.paymentStatus === '결제완료' || job.paymentStatus === '취소') return 0;
-  if (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제') {
+  if (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제' || job.paymentStatus === '후불결제') {
     return Math.max(0, price - applied);
   }
   return price;
@@ -258,7 +258,7 @@ export function getJobPrepaidBreakdown(
   const balance = balanceBefore;
 
   let prepaidShortfall = 0;
-  if (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제') {
+  if (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제' || job.paymentStatus === '후불결제') {
     if (applied > 0) {
       prepaidShortfall = outstanding;
     } else if (shouldUsePrepaidForJob(job) && balance > 0 && balance < price) {

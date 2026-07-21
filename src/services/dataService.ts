@@ -18,6 +18,12 @@ import { situationMirrorService } from './situationMirrorService';
 import { chatMirrorService, mergeChatMessages } from './chatMirrorService';
 import { presenceSessionService } from './presenceSessionService';
 import { localDbBridge } from './localDbBridge';
+import {
+    auxCollectionMirrorService,
+    AUX_COLLECTION_NAMES,
+    mergeAuxItemsById,
+    type AuxCollectionName,
+} from './auxCollectionMirrorService';
 import { refreshLocalGateway } from './gatewayBridge';
 import {
     collectStoreGatewayUrlsFromSettings,
@@ -190,7 +196,7 @@ const CORE_STARTUP_COLLECTIONS = ['staff', 'clients', 'settings'] as const;
 /** 화면 진입 시에만 구독 — quotes 등 (messages는 NAS 채팅 미러) */
 const LAZY_SYNC_COLLECTIONS = ['quotes', 'leaves', 'papers', 'instructions'] as const;
 const ARCHIVED_JOB_STATUSES = ['COMPLETED', 'CANCELED'] as const;
-const OUTSTANDING_PAYMENT_STATUSES = ['결제대기', '일부결제'] as const;
+const OUTSTANDING_PAYMENT_STATUSES = ['결제대기', '일부결제', '후불결제'] as const;
 /** 칸반 완료 칸: 결제완료 건은 최근 N일만 실시간 구독 */
 const KANBAN_RECENT_PAID_COMPLETED_DAYS = 4;
 /** Firestore 운영 데이터는 최근 1년(365일)만 유지 */
@@ -632,8 +638,18 @@ export class DataService {
      */
     private canPersistToCloud(col?: string): boolean {
         if (!this.tenantId) return false;
-        // 업무 데이터(jobs/clients/messages) — Firestore 저장 금지 (NAS·로컬)
-        if (col === 'jobs' || col === 'clients' || col === 'messages') return false;
+        // 업무 데이터 — Firestore 저장 금지 (NAS·로컬)
+        if (
+            col === 'jobs' ||
+            col === 'clients' ||
+            col === 'messages' ||
+            col === 'quotes' ||
+            col === 'papers' ||
+            col === 'leaves' ||
+            col === 'instructions'
+        ) {
+            return false;
+        }
         if (!this.isWebMirrorMode()) return true;
         return this.isSyncAdmin();
     }
@@ -743,9 +759,17 @@ export class DataService {
         return false;
     }
 
-    /** 경로 재연결 전 — 작업·거래처·메신저·견적 자체를 막고 전원 동일 상태 유지 */
+    /** 경로 재연결 전 — 업무 데이터 쓰기 막고 전원 동일 상태 유지 */
     private isOperationalCollection(col: string): boolean {
-        return col === 'jobs' || col === 'clients' || col === 'messages' || col === 'quotes';
+        return (
+            col === 'jobs' ||
+            col === 'clients' ||
+            col === 'messages' ||
+            col === 'quotes' ||
+            col === 'papers' ||
+            col === 'leaves' ||
+            col === 'instructions'
+        );
     }
 
     private assertOperationalWriteAllowed(col: string): void {
@@ -1366,37 +1390,13 @@ export class DataService {
         }
 
         try {
-            if (this.isSyncAdmin()) {
-                const docRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
-                await setDoc(
-                    docRef,
-                    stripUndefinedForFirestore({
-                        productDefinitions: settingsObj.productDefinitions,
-                        processingDefinitions: settingsObj.processingDefinitions,
-                        statusDefinitions: settingsObj.statusDefinitions,
-                        roles: settingsObj.roles,
-                    }),
-                    { merge: true }
-                );
-            } else {
-                // 직원: admin 전용 필드(status/roles)는 Firestore에 쓰지 않음 — 메모리 병합만
-                for (const name of DataService.STAFF_SAFE_FRAGMENT_SETTINGS) {
-                    const payload = settingsObj[name];
-                    if (!payload) continue;
-                    const fragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', name);
-                    await setDoc(
-                        fragmentRef,
-                        stripUndefinedForFirestore(this.buildSettingFragmentPayload(name, payload)),
-                        { merge: true }
-                    );
-                }
+            // 업무 마스터 설정은 NAS SSOT — Firestore에 status/roles 재주입 금지
+            if (!this.isWebMirrorMode()) {
+                void this.flushLiveMirrorPushNow();
             }
             console.log('[DataService] Settings merged with app defaults (user data preserved).');
         } catch (err) {
             console.error('[DataService] Failed to persist merged settings:', err);
-            if (this.isSyncAdmin()) {
-                this.notifyFirestoreWriteError('설정 병합', err);
-            }
         } finally {
             this.settingsMergePersisting = false;
         }
@@ -1882,8 +1882,13 @@ export class DataService {
     private async loadLocalPrimaryData(): Promise<boolean> {
         if (!this.tenantId || !this.isLocalPrimaryMode()) return false;
         const bundle = await localDbBridge.loadTenant(this.tenantId);
+        const hasAux =
+            (bundle.quotes?.length || 0) > 0 ||
+            (bundle.papers?.length || 0) > 0 ||
+            (bundle.leaves?.length || 0) > 0 ||
+            (bundle.instructions?.length || 0) > 0;
         const hasData =
-            bundle.jobCount > 0 || bundle.clients.length > 0 || !!bundle.settings;
+            bundle.jobCount > 0 || bundle.clients.length > 0 || !!bundle.settings || hasAux;
         if (!hasData) return false;
 
         if (bundle.jobs.length > 0) {
@@ -1899,6 +1904,10 @@ export class DataService {
             this.data['settings'] = [bundle.settings];
             this.applySettingsDefaultsMerge(bundle.settings);
         }
+        if (bundle.quotes?.length) this.data['quotes'] = bundle.quotes;
+        if (bundle.papers?.length) this.data['papers'] = bundle.papers;
+        if (bundle.leaves?.length) this.data['leaves'] = bundle.leaves;
+        if (bundle.instructions?.length) this.data['instructions'] = bundle.instructions;
         this.notify();
         return true;
     }
@@ -1908,7 +1917,35 @@ export class DataService {
         const okJobs = await localDbBridge.saveJobs(this.tenantId, this.getAllJobs());
         const okClients = await localDbBridge.saveClients(this.tenantId, (this.data['clients'] || []) as Client[]);
         const okSettings = await localDbBridge.saveSettings(this.tenantId, this.getSettingsObj());
-        if (!okJobs || !okClients || !okSettings) {
+        const okQuotes = await localDbBridge.saveAuxCollection(
+            this.tenantId,
+            'quotes',
+            (this.data['quotes'] || []) as unknown[]
+        );
+        const okPapers = await localDbBridge.saveAuxCollection(
+            this.tenantId,
+            'papers',
+            (this.data['papers'] || []) as unknown[]
+        );
+        const okLeaves = await localDbBridge.saveAuxCollection(
+            this.tenantId,
+            'leaves',
+            (this.data['leaves'] || []) as unknown[]
+        );
+        const okInstructions = await localDbBridge.saveAuxCollection(
+            this.tenantId,
+            'instructions',
+            (this.data['instructions'] || []) as unknown[]
+        );
+        if (
+            !okJobs ||
+            !okClients ||
+            !okSettings ||
+            !okQuotes ||
+            !okPapers ||
+            !okLeaves ||
+            !okInstructions
+        ) {
             throw new Error('local-db-full-save-failed');
         }
     }
@@ -1987,15 +2024,30 @@ export class DataService {
         return Number.isFinite(ms) ? ms : 0;
     }
 
-    /** NAS situation-mirror로 덮어쓰면 안 되는 마스터 설정 — Firestore/로컬이 기준 */
-    private static readonly MIRROR_PROTECTED_SETTINGS = [
-        'processingDefinitions',
+    /** 업무 마스터 설정 — NAS situation-mirror SSOT (Firestore 저장·pull 덮어쓰기 금지) */
+    private static readonly NAS_MASTER_SETTINGS = [
         'productDefinitions',
+        'processingDefinitions',
         'statusDefinitions',
-        'roles',
-        'pricing',
         'kanbanLayout',
+        'pricing',
+        'roles',
+        'companyInfo',
+        'smsConfig',
+        'quoteTemplate',
     ] as const;
+
+    /** Firestore/클라우드 전용 — NAS 미러로 덮지 않음 (경로·게이트웨이 등) */
+    private static readonly MIRROR_PROTECTED_SETTINGS = [
+        'archiveRootPath',
+        'storeGatewayUrl',
+        'storeGatewayUrls',
+        'tenantArchiveRootPath',
+    ] as const;
+
+    private isNasMasterSetting(name: string): boolean {
+        return (DataService.NAS_MASTER_SETTINGS as readonly string[]).includes(name);
+    }
 
     private mergeSettingsFromMirror(
         incoming: Record<string, unknown>,
@@ -2010,7 +2062,13 @@ export class DataService {
         const merged: Record<string, unknown> = { ...current };
         for (const [key, value] of Object.entries(incoming)) {
             if ((DataService.MIRROR_PROTECTED_SETTINGS as readonly string[]).includes(key)) {
+                // 경로·게이트웨이 — 로컬/FS 값 유지, 비어 있을 때만 미러로 채움
                 if (current[key] === undefined || current[key] === null) {
+                    merged[key] = value;
+                }
+            } else if (this.isNasMasterSetting(key)) {
+                // 업무 마스터 — NAS가 최신본
+                if (value !== undefined && value !== null) {
                     merged[key] = value;
                 }
             } else {
@@ -2324,13 +2382,33 @@ export class DataService {
             if (await this.pollChatMirror()) {
                 this.notify();
             }
+
+            // 견적·용지·휴가·지시 — 별도 NAS JSON
+            let auxChanged = false;
+            for (const col of AUX_COLLECTION_NAMES) {
+                const before = JSON.stringify(this.data[col] || []);
+                await this.hydrateAuxCollectionFromNas(col);
+                if (JSON.stringify(this.data[col] || []) !== before) auxChanged = true;
+            }
+            if (auxChanged) this.notify();
         } catch (e) {
             console.warn('[DataService] NAS operational poll skipped:', e);
         }
     }
 
     private isLocalOperationalCollection(col: string): boolean {
-        return col === 'jobs' || col === 'clients';
+        return (
+            col === 'jobs' ||
+            col === 'clients' ||
+            col === 'quotes' ||
+            col === 'papers' ||
+            col === 'leaves' ||
+            col === 'instructions'
+        );
+    }
+
+    private isAuxCollection(col: string): col is AuxCollectionName {
+        return (AUX_COLLECTION_NAMES as readonly string[]).includes(col);
     }
 
     private async persistToLocalCollection(col: string, entity: any) {
@@ -2341,7 +2419,16 @@ export class DataService {
         } else if (col === 'clients') {
             const ok = await localDbBridge.upsertClient(this.tenantId, entity);
             if (!ok) throw new Error('local-db-client-upsert-failed');
+        } else if (this.isAuxCollection(col)) {
+            const ok = await localDbBridge.upsertAuxEntity(this.tenantId, col, entity);
+            if (!ok) throw new Error(`local-db-${col}-upsert-failed`);
         }
+    }
+
+    private async persistAuxCollectionToNas(col: AuxCollectionName): Promise<boolean> {
+        if (!this.tenantId) return false;
+        const items = ((this.data[col] || []) as Array<Record<string, unknown>>).filter((r) => !!r?.id);
+        return auxCollectionMirrorService.publish(this.tenantId, col, items);
     }
 
     private stopSyncPulse() {
@@ -2712,10 +2799,114 @@ export class DataService {
     private async pullLazyCollection(colName: string, force = false) {
         if (!this.tenantId) return;
         if (!force && this.lazyCollectionsLoaded.has(colName)) return;
+
+        if (this.isAuxCollection(colName)) {
+            await this.hydrateAuxCollectionFromNas(colName);
+            this.lazyCollectionsLoaded.add(colName);
+            this.activeLazyCollections.add(colName);
+            this.notify();
+            return;
+        }
+
         await this.pullCollectionDocs(colName);
         this.lazyCollectionsLoaded.add(colName);
         this.activeLazyCollections.add(colName);
         this.notify();
+    }
+
+    private async hydrateAuxCollectionFromNas(col: AuxCollectionName): Promise<void> {
+        if (!this.tenantId) return;
+        try {
+            const payload = await auxCollectionMirrorService.readBest(
+                this.tenantId,
+                col,
+                this.getStoreGatewayUrls()
+            );
+            if (!payload?.items) return;
+            const current = (this.data[col] || []) as Array<Record<string, unknown>>;
+            const merged = mergeAuxItemsById(current, payload.items as Array<Record<string, unknown>>);
+            this.data[col] = merged;
+            if (this.isLocalPrimaryMode()) {
+                await localDbBridge.saveAuxCollection(this.tenantId, col, merged).catch(() => false);
+            }
+        } catch (e) {
+            console.warn(`[DataService] aux hydrate ${col} failed:`, e);
+        }
+    }
+
+    /**
+     * 1회: Firestore quotes/papers/leaves/instructions → NAS+SQLite 이관 후 Firestore 비우기
+     * 플래그 settings.nasMigratedAuxAt (로컬+settings/main 메타만)
+     */
+    private async migrateAuxCollectionsFromFirestoreIfNeeded(): Promise<void> {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) return;
+        const settings = this.getSettingsObj();
+        if (settings.nasMigratedAuxAt) return;
+        if (this.shouldBlockOperationalNasWrite()) {
+            console.warn('[DataService] aux migration deferred — NAS not ready');
+            return;
+        }
+
+        try {
+            for (const col of AUX_COLLECTION_NAMES) {
+                const colRef = collection(firestore, 'tenants', this.tenantId, col);
+                const snap = await getDocs(colRef);
+                const incoming: Array<Record<string, unknown>> = [];
+                snap.forEach((docSnap) => {
+                    incoming.push({ ...docSnap.data(), id: docSnap.id });
+                });
+                if (incoming.length === 0) continue;
+
+                const current = (this.data[col] || []) as Array<Record<string, unknown>>;
+                const merged = mergeAuxItemsById(current, incoming);
+                this.data[col] = merged;
+                await localDbBridge.saveAuxCollection(this.tenantId, col, merged);
+                const ok = await auxCollectionMirrorService.publish(this.tenantId, col, merged);
+                if (!ok) {
+                    console.warn(`[DataService] aux migration NAS publish failed (${col}) — abort purge`);
+                    this.notify();
+                    return;
+                }
+            }
+
+            // NAS 반영 성공 후 Firestore 문서 삭제
+            for (const col of AUX_COLLECTION_NAMES) {
+                const colRef = collection(firestore, 'tenants', this.tenantId, col);
+                const snap = await getDocs(colRef);
+                const ids: string[] = [];
+                snap.forEach((d) => ids.push(d.id));
+                for (let i = 0; i < ids.length; i += 400) {
+                    const chunk = ids.slice(i, i + 400);
+                    const batch = writeBatch(firestore);
+                    for (const id of chunk) {
+                        batch.delete(doc(firestore, 'tenants', this.tenantId!, col, id));
+                    }
+                    await batch.commit();
+                }
+            }
+
+            const migratedAt = new Date().toISOString();
+            const nextSettings = { ...this.getSettingsObj(), nasMigratedAuxAt: migratedAt };
+            this.data['settings'] = [nextSettings];
+            await localDbBridge.saveSettings(this.tenantId, nextSettings);
+            void this.flushLiveMirrorPushNow();
+
+            // 다른 PC가 재이관하지 않도록 메타 플래그만 Firestore에 남김
+            try {
+                const mainRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
+                await setDoc(mainRef, { nasMigratedAuxAt: migratedAt }, { merge: true });
+            } catch (e) {
+                console.warn('[DataService] nasMigratedAuxAt cloud flag write skipped:', e);
+            }
+
+            this.notify();
+            console.log('[DataService] aux collections migrated to NAS and purged from Firestore');
+            toast.success('견적·용지·휴가·지시 데이터를 회사 NAS로 옮기고 클라우드에서 정리했습니다.', {
+                duration: 6000,
+            });
+        } catch (e) {
+            console.warn('[DataService] aux Firestore→NAS migration failed:', e);
+        }
     }
 
     private async pullPaymentJobs() {
@@ -2784,6 +2975,15 @@ export class DataService {
 
     private handleCollectionData(colName: string, list: any[]) {
         if (colName === 'settings') {
+            // Firestore settings pull이 상품·후가공(NAS SSOT)을 옛값으로 덮지 않도록 보존
+            const prev = this.getSettingsObj();
+            const preservedNasMaster: Record<string, unknown> = {};
+            for (const key of DataService.NAS_MASTER_SETTINGS) {
+                if (prev[key] !== undefined && prev[key] !== null) {
+                    preservedNasMaster[key] = prev[key];
+                }
+            }
+
             if (list.length === 0) {
                 this.data['settings'] = [this.getDefaultSettings('EzPrintWork')];
             } else {
@@ -2792,6 +2992,7 @@ export class DataService {
 
             const settingsObj = this.data['settings']?.[0];
             if (settingsObj) {
+                Object.assign(settingsObj, preservedNasMaster);
                 this.enforceCompanyArchiveRoot();
             }
             if (settingsObj && this.applySettingsDefaultsMerge(settingsObj)) {
@@ -3338,6 +3539,7 @@ export class DataService {
 
             if (localPrimary) {
                 this.startNasMirrorPolling();
+                void this.migrateAuxCollectionsFromFirestoreIfNeeded();
             }
 
             // 사내 채팅 NAS 미러 초기 로드
@@ -3699,6 +3901,13 @@ export class DataService {
                 if (col === 'clients') {
                     // 거래처 자동 등록은 NAS에 바로 반영해야 미러 폴링에 덮이지 않음
                     this.flushLiveMirrorPushNow();
+                } else if (this.isAuxCollection(col)) {
+                    const ok = await this.persistAuxCollectionToNas(col);
+                    if (!ok) {
+                        throw new Error(
+                            '회사 NAS에 저장하지 못했습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+                        );
+                    }
                 } else {
                     this.scheduleLiveMirrorPush();
                 }
@@ -3728,6 +3937,11 @@ export class DataService {
                 if (col === 'clients') {
                     throw new Error(
                         '거래처는 매장 PC의 NAS/로컬 저장소에만 저장됩니다. PC 앱에서 작업·거래처를 등록해 주세요.'
+                    );
+                }
+                if (this.isAuxCollection(col)) {
+                    throw new Error(
+                        '견적·용지·휴가·지시는 매장 PC 앱에서 회사 NAS에 저장됩니다. PC 앱에서 수정해 주세요.'
                     );
                 }
                 return;
@@ -3803,6 +4017,13 @@ export class DataService {
             await this.persistToLocalCollection(col, updated);
             if (col === 'clients') {
                 this.flushLiveMirrorPushNow();
+            } else if (this.isAuxCollection(col)) {
+                const ok = await this.persistAuxCollectionToNas(col);
+                if (!ok) {
+                    throw new Error(
+                        '회사 NAS에 저장하지 못했습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+                    );
+                }
             } else {
                 this.scheduleLiveMirrorPush();
             }
@@ -3816,6 +4037,11 @@ export class DataService {
             if (col === 'clients') {
                 throw new Error(
                     '거래처는 매장 PC의 NAS/로컬 저장소에만 저장됩니다. PC 앱에서 작업·거래처를 등록해 주세요.'
+                );
+            }
+            if (this.isAuxCollection(col)) {
+                throw new Error(
+                    '견적·용지·휴가·지시는 매장 PC 앱에서 회사 NAS에 저장됩니다. PC 앱에서 수정해 주세요.'
                 );
             }
             return;
@@ -3982,6 +4208,18 @@ export class DataService {
                 this.flushLiveMirrorPushNow();
                 return;
             }
+            if (this.isLocalPrimaryMode() && this.isAuxCollection(col)) {
+                const okLocal = await localDbBridge.deleteAuxEntity(this.tenantId, col, id);
+                if (!okLocal) throw new Error(`local-db-${col}-delete-failed`);
+                const okNas = await this.persistAuxCollectionToNas(col);
+                if (!okNas) {
+                    throw new Error(
+                        '회사 NAS에 삭제를 반영하지 못했습니다. NAS 경로·연결을 확인해 주세요.'
+                    );
+                }
+                this.updateTenantActivity().catch(() => {});
+                return;
+            }
             if (col === 'messages') {
                 const ok = await this.persistMessagesToNas((this.data['messages'] || []) as ChatMessage[]);
                 if (!ok) {
@@ -4043,11 +4281,9 @@ export class DataService {
         'kanbanLayout',
     ] as const;
 
-    /** 직원도 저장 가능 — settings/main 병합 시 rules 거부되므로 조각 문서만 씀 */
-    private static readonly STAFF_SAFE_FRAGMENT_SETTINGS = [
-        'productDefinitions',
-        'processingDefinitions',
-    ] as const;
+    /** 직원도 저장 가능 — settings/main 병합 시 rules 거부되므로 조각 문서만 씀
+     *  (상품·후가공은 NAS SSOT라 목록에서 제외) */
+    private static readonly STAFF_SAFE_FRAGMENT_SETTINGS = [] as const;
 
     /** mergeSettingsDocs가 settings/{name} 조각 문서를 우선하므로, 저장 시 조각에도 동기화 */
     private buildSettingFragmentPayload(name: string, data: any): Record<string, unknown> {
@@ -4063,6 +4299,26 @@ export class DataService {
         settings[name] = data;
         this.data['settings'] = [settings];
         this.notify();
+
+        // 상품·후가공: NAS(+로컬 SQLite)만 — Firestore 조각 저장 금지 (옛 클라우드값이 롤백하던 원인)
+        if (this.isNasMasterSetting(name)) {
+            if (this.isWebMirrorMode()) {
+                throw new Error(
+                    '상품/후가공은 매장 PC 앱에서 회사 NAS에 저장됩니다. PC 앱에서 수정해 주세요.'
+                );
+            }
+            if (this.tenantId && this.isLocalPrimaryMode()) {
+                await localDbBridge.saveSettings(this.tenantId, settings);
+            }
+            const ok = await this.flushLiveMirrorPushNow();
+            if (!ok) {
+                throw new Error(
+                    '회사 NAS에 저장하지 못했습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+                );
+            }
+            this.updateTenantActivity().catch(() => {});
+            return;
+        }
         
         if (this.tenantId && this.isLocalPrimaryMode()) {
             await localDbBridge.saveSettings(this.tenantId, settings);
@@ -4886,51 +5142,18 @@ export class DataService {
     async saveKanbanLayoutConfig(config: KanbanLayoutConfig) {
         await this.updateSetting('kanbanLayout', config);
     }
-    /** 단계 + 칸반 레이아웃을 한 번에 메모리·Firestore에 저장 (스냅샷 레이스로 레이아웃 유실 방지) */
+    /** 단계 + 칸반 레이아웃을 한 번에 저장 (NAS/로컬 SSOT — Firestore 우회 금지) */
     async saveStatusDefinitionsAndKanbanLayout(
         definitions: JobStatusDefinition[],
         layout: KanbanLayoutConfig,
         removedKeys?: string[]
     ) {
         const existing = this.getSettingsObj()['statusDefinitions'];
-        const settings = { ...(this.getSettingsObj() || {}) };
-        settings.statusDefinitions = {
+        await this.updateSetting('statusDefinitions', {
             definitions,
             removedKeys: removedKeys ?? existing?.removedKeys ?? [],
-        };
-        settings.kanbanLayout = layout;
-        this.data['settings'] = [settings];
-        this.notify();
-
-        if (!this.tenantId) return;
-
-        try {
-            const mainPayload = stripUndefinedForFirestore({
-                statusDefinitions: settings.statusDefinitions,
-                kanbanLayout: settings.kanbanLayout,
-            });
-            const mainRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'main');
-            await setDoc(mainRef, mainPayload, { merge: true });
-
-            const statusFragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'statusDefinitions');
-            await setDoc(
-                statusFragmentRef,
-                stripUndefinedForFirestore({
-                    definitions,
-                    removedKeys: settings.statusDefinitions.removedKeys,
-                }),
-                { merge: true }
-            );
-
-            const layoutFragmentRef = doc(firestore, 'tenants', this.tenantId, 'settings', 'kanbanLayout');
-            await setDoc(layoutFragmentRef, stripUndefinedForFirestore(layout), { merge: true });
-        } catch (e) {
-            console.error('[Firestore] saveStatusDefinitionsAndKanbanLayout failed:', e);
-            this.notifyFirestoreWriteError('작업 단계·칸반 레이아웃', e);
-            throw e;
-        }
-
-        this.updateTenantActivity().catch(() => {});
+        });
+        await this.updateSetting('kanbanLayout', layout);
     }
     async saveSmsConfig(config: any) { await this.updateSetting('smsConfig', config); }
     async saveRoles(roles: string[]) { await this.updateSetting('roles', { roles }); }
@@ -4985,10 +5208,17 @@ export class DataService {
                 }
             }
 
-            // 2. Firestore 업로드 (jobs/clients/messages 제외 — NAS·로컬 전용)
+            // 2. Firestore 업로드 (업무 데이터 제외 — NAS·로컬 전용)
             if (this.tenantId) {
                 const cloudCollections = collections.filter(
-                    (c) => c !== 'jobs' && c !== 'clients' && c !== 'messages'
+                    (c) =>
+                        c !== 'jobs' &&
+                        c !== 'clients' &&
+                        c !== 'messages' &&
+                        c !== 'quotes' &&
+                        c !== 'papers' &&
+                        c !== 'leaves' &&
+                        c !== 'instructions'
                 );
                 for (const col of cloudCollections) {
                     if (backup[col] && Array.isArray(backup[col])) {

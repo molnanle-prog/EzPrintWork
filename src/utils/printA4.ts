@@ -54,10 +54,11 @@ export const PRINT_A4_BASE_CSS = `
     #print-capture-area * {
       visibility: visible !important;
     }
+    /* fixed 금지 — 다페이지가 1장만 인쇄되는 원인 */
     #print-capture-area {
-      position: fixed !important;
-      left: 0 !important;
-      top: 0 !important;
+      position: static !important;
+      left: auto !important;
+      top: auto !important;
       width: ${A4_WIDTH_MM}mm !important;
       margin: 0 !important;
       padding: 0 !important;

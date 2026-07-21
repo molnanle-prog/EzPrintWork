@@ -494,6 +494,33 @@ ipcMain.handle('local-db-save-settings', async (_event, { tenantId, settings }) 
     }
 });
 
+ipcMain.handle('local-db-save-aux', async (_event, { tenantId, collection, items }) => {
+    try {
+        const count = localDb.saveAuxCollection(tenantId, collection, items || []);
+        return { success: true, count };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-upsert-aux', async (_event, { tenantId, collection, entity }) => {
+    try {
+        localDb.upsertAuxEntity(tenantId, collection, entity);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-delete-aux', async (_event, { tenantId, collection, id }) => {
+    try {
+        localDb.deleteAuxEntity(tenantId, collection, id);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
 // 8. 창 제어 (최소화, 최대화, 닫기)
 ipcMain.on('window-minimize', () => {
     const win = BrowserWindow.getFocusedWindow();
@@ -519,6 +546,35 @@ ipcMain.on('window-close', () => {
 ipcMain.on('window-lower', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.lower();
+});
+
+/** 문서 인쇄 — 단면(simplex) 강제, 배경 포함, 대화상자 표시 */
+ipcMain.handle('print-document', async (event) => {
+    const win = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
+    if (!win || win.isDestroyed()) {
+        return { success: false, error: 'no-window' };
+    }
+    return await new Promise((resolve) => {
+        try {
+            win.webContents.print(
+                {
+                    silent: false,
+                    printBackground: true,
+                    duplexMode: 'simplex',
+                    margins: { marginType: 'none' },
+                    pageSize: 'A4',
+                },
+                (success, failureReason) => {
+                    resolve({
+                        success: !!success,
+                        error: success ? undefined : (failureReason || 'print-failed'),
+                    });
+                }
+            );
+        } catch (e) {
+            resolve({ success: false, error: e?.message || String(e) });
+        }
+    });
 });
 
 function resolveShortcutIconPath() {

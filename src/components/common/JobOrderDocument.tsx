@@ -82,7 +82,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                 <div>
                   <h1 className={`font-bold tracking-tight text-black ${isCompact ? 'text-4xl' : 'text-5xl'}`}><span className="lift-text">작업 지시서</span></h1>
                   <p className={`font-bold text-slate-600 mt-1 tracking-widest ${styles.subTitleText}`}>
-                      <span className="lift-text">JOB ORDER SHEET {pages.length > 1 && `(${pageIndex + 1}/${pages.length})`}</span>
+                      <span className="lift-text">JOB ORDER SHEET{pages.length > 1 ? ` (${pageIndex + 1}/${pages.length})` : ''}</span>
                   </p>
                 </div>
                 <div className="text-right">
@@ -316,6 +316,9 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
               {/* Footer */}
               <div className="mt-2 flex justify-between items-end text-[10px] text-slate-500 flex-none">
                   <div><span className="lift-text">EzPrintWork v{APP_VERSION}</span></div>
+                  <div className="font-bold text-slate-700 text-xs tracking-wide">
+                    <span className="lift-text">{pageIndex + 1} / {pages.length}</span>
+                  </div>
                   <div className="font-bold text-slate-200 text-xl tracking-widest uppercase"><span className="lift-text">Original</span></div>
               </div>
             </div>

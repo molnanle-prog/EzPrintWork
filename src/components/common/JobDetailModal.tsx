@@ -242,11 +242,24 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
     return () => unsubscribe();
   }, []);
 
+  const prevCustomTabIdxRef = useRef(activeTabIdx);
+
   useEffect(() => {
-    if (currentSpecs && processingOptions.length > 0) {
-        const customVal = currentSpecs.processing.find(opt => !processingOptions.includes(opt)) || '';
-        setCustomInputVal(customVal);
-        setIsCustomChecked(customVal !== '');
+    if (!currentSpecs || processingOptions.length === 0) return;
+    const customVal =
+      (currentSpecs.processing || []).find((opt) => !processingOptions.includes(opt)) || '';
+    setCustomInputVal(customVal);
+
+    const tabChanged = prevCustomTabIdxRef.current !== activeTabIdx;
+    prevCustomTabIdxRef.current = activeTabIdx;
+
+    // 커스텀 텍스트가 있으면 체크 ON.
+    // 비어 있어도 사용자가 연 「기타」는 유지 — processingOptions 폴링으로 강제 OFF 하지 않음.
+    // 품목 탭 전환 시에만 해당 탭 스펙 기준으로 체크 상태를 맞춤.
+    if (customVal) {
+      setIsCustomChecked(true);
+    } else if (tabChanged) {
+      setIsCustomChecked(false);
     }
   }, [activeTabIdx, editedJob.subJobs, processingOptions]);
 
@@ -987,7 +1000,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                             <div className="flex items-center gap-3 mb-2">
                                 <h2 className="text-2xl font-bold text-slate-800">{editedJob.title}</h2>
                                 <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">{statusDefinitions.find(s => s.key === editedJob.status)?.label || editedJob.status}</span>
-                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}>{editedJob.paymentStatus}</span>
+                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : editedJob.paymentStatus === '후불결제' ? 'bg-amber-50 text-amber-800 border-amber-200' :'bg-red-50 text-red-700 border-red-200'}`}>{editedJob.paymentStatus}</span>
                             </div>
                             <div className="flex gap-6 items-center text-sm text-slate-600">
                                 <div className="flex items-center gap-1.5"><Building2 size={16} className="text-slate-400" /> <span className="font-bold">{editedJob.clientName}</span></div>
@@ -1528,7 +1541,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                               {editedJob.priceIncludesVat ? '부가세 포함' : '부가세 미포함'}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="결제완료">결제완료</option></select></div>
+                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : editedJob.paymentStatus === '후불결제' ? 'bg-amber-50 text-amber-800 border-amber-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="후불결제">후불결제</option><option value="결제완료">결제완료</option></select></div>
                           {(() => {
                             const clients = db.getClients();
                             const boardJobs = db.getManagementCardJobs();
@@ -1573,6 +1586,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                                   balanceBefore > 0 &&
                                   (editedJob.paymentStatus === '결제대기' ||
                                     editedJob.paymentStatus === '일부결제' ||
+                                    editedJob.paymentStatus === '후불결제' ||
                                     editedJob.paymentStatus === '결제완료') && (
                                     <p className="text-[9px] text-amber-600 dark:text-amber-400">
                                       선불 {Math.min(balanceBefore, breakdown.price).toLocaleString()}원 차감 예정

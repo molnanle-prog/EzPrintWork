@@ -6,8 +6,8 @@ import { Quote } from '../../types';
 import { QuoteDocument } from './QuoteDocument';
 import { db } from '../../services/dataService';
 import { getQuotePdfFileName } from '../../utils/quoteJobSync';
-import { renderElementToCanvas } from '../../utils/printA4';
-import { DocumentPreviewShell, prepareDocumentPrint } from '../common/DocumentPreviewShell';
+import { renderA4PageToCanvas } from '../../utils/printA4';
+import { DocumentPreviewShell, printDocumentSimplex } from '../common/DocumentPreviewShell';
 
 interface QuotePreviewPanelProps {
   quote: Quote;
@@ -22,20 +22,31 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
   const docLabel = documentType === 'statement' ? '거래명세서' : '견적서';
 
   const handleDirectPrint = () => {
-    prepareDocumentPrint();
-    window.print();
+    void printDocumentSimplex();
   };
 
   const handleOpenPDF = async () => {
     if (!quoteRef.current) return;
     setIsProcessing(true);
     try {
-      const canvas = await renderElementToCanvas(quoteRef.current);
-      const imgData = canvas.toDataURL('image/png');
+      const pageEls = Array.from(
+        quoteRef.current.querySelectorAll('.page-container')
+      ) as HTMLElement[];
+
+      if (pageEls.length === 0) {
+        throw new Error('no pages');
+      }
+
       const pdf = new jsPDF('p', 'mm', 'a4');
-      const pdfWidth = pdf.internal.pageSize.getWidth();
-      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      const pageW = pdf.internal.pageSize.getWidth();
+      const pageH = pdf.internal.pageSize.getHeight();
+
+      for (let i = 0; i < pageEls.length; i++) {
+        if (i > 0) pdf.addPage();
+        const canvas = await renderA4PageToCanvas(pageEls[i]);
+        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pageW, pageH);
+      }
+
       const fileName = getQuotePdfFileName(quote, db.getAllJobs(), documentType);
       pdf.save(fileName);
     } catch (err) {

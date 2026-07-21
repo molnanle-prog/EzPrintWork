@@ -88,7 +88,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
   const q = query.trim().toLowerCase();
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
-      if (filter === 'receivable' && !(job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제')) {
+      if (filter === 'receivable' && !(job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제' || job.paymentStatus === '후불결제')) {
         return false;
       }
       if (filter === 'prepaid') {
@@ -116,7 +116,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
       .sort(([a], [b]) => a.localeCompare(b, 'ko'))
       .map(([clientName, clientJobs]) => {
         const receivable = clientJobs.filter(
-          (j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제'
+          (j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제' || j.paymentStatus === '후불결제'
         );
         const receivableTotal = receivable.reduce((sum, job) => sum + getJobOutstandingAmount(job), 0);
         const jobMap = prepaidBoardRun.get(clientName);
@@ -138,7 +138,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
   }, [filteredJobs, clients, prepaidBoardRun]);
 
   const summary = useMemo(() => {
-    const receivable = jobs.filter((j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제');
+    const receivable = jobs.filter((j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제' || j.paymentStatus === '후불결제');
     const totalReceivable = receivable.reduce((sum, job) => sum + getJobOutstandingAmount(job), 0);
     const prepaidSummary = summarizePrepaidBoardRun(jobs, clients);
     return {

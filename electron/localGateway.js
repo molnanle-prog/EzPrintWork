@@ -7,6 +7,12 @@ const SITUATION_FILE = 'situation-mirror.json';
 const ARCHIVE_FILE = 'jobs-archive.json';
 const CHAT_FILE = 'chat-messages.json';
 const PRESENCE_FILE = 'presence-sessions.json';
+const AUX_FILES = {
+    quotes: 'quotes-live.json',
+    papers: 'papers-live.json',
+    leaves: 'leaves-live.json',
+    instructions: 'instructions-live.json',
+};
 const DEFAULT_GATEWAY_PORT = 3847;
 
 const CORS = {
@@ -561,6 +567,34 @@ class LocalGateway {
                         sessions: presence.sessions && typeof presence.sessions === 'object'
                             ? presence.sessions
                             : {},
+                    }));
+                    return;
+                }
+
+                const auxMatch = url.pathname.match(/^\/api\/v1\/aux\/(quotes|papers|leaves|instructions)$/);
+                if (auxMatch && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const collection = auxMatch[1];
+                    const fileName = AUX_FILES[collection];
+                    const tenantId = url.searchParams.get('tenantId') || this.tenantId;
+                    const payload = this.readJsonFile(fileName) || {
+                        version: 1,
+                        tenantId,
+                        collection,
+                        updatedAt: new Date().toISOString(),
+                        items: [],
+                    };
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        version: payload.version ?? 1,
+                        tenantId,
+                        collection,
+                        updatedAt: payload.updatedAt || new Date().toISOString(),
+                        items: Array.isArray(payload.items) ? payload.items : [],
                     }));
                     return;
                 }

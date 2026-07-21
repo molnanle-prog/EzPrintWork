@@ -255,7 +255,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       // 2. 'P' 키: 결제 상태 퀵 토글
       if (key === 'p') {
         e.preventDefault();
-        const cycle: PaymentStatus[] = ['결제대기', '일부결제', '결제완료'];
+        const cycle: PaymentStatus[] = ['결제대기', '일부결제', '후불결제', '결제완료'];
         const currentIdx = cycle.indexOf(job.paymentStatus || '결제대기');
         const nextIdx = (currentIdx + 1) % cycle.length;
         const nextStatus = cycle[nextIdx];
@@ -426,6 +426,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     switch (status) {
       case '결제대기': return 'kanban-badge kanban-badge-pay-wait bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800';
       case '일부결제': return 'kanban-badge kanban-badge-pay-partial bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
+      case '후불결제': return 'kanban-badge kanban-badge-pay-postpaid bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800';
       case '결제완료': return 'kanban-badge kanban-badge-pay-done bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800';
       default: return 'kanban-badge kanban-badge-pay-default bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600';
     }

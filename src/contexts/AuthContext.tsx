@@ -5,6 +5,7 @@ import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limi
 import { presenceSessionService } from '../services/presenceSessionService';
 import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
+import { getStaffIdForUser } from '../utils/staffMatch';
 import { getMaxStaffForPlan, isProPlan, shouldShowTenantAds } from '../utils/planLimits';
 import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
 import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
@@ -1027,7 +1028,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.tenantId]);
 
-  // 로그인 중 온라인 상태 — NAS presence-sessions.json (Firestore 미사용)
+  // 로그인 중 온라인 상태 — NAS presence + Firestore 미러(라이선스 매니저용)
   useEffect(() => {
     if (!currentUser?.tenantId || !firebaseUser?.uid) {
       stopPresenceSession();
@@ -1037,6 +1038,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const loginId = currentUser.loginId
       || (firebaseUser.email?.endsWith('@ez-hub.kr') ? firebaseUser.email.split('@')[0] : undefined);
 
+    const staffList = dataService.getStaff();
+    const staffDocId =
+      getStaffIdForUser(staffList, currentUser) ||
+      staffList.find((s) => s.uid === firebaseUser.uid)?.id ||
+      undefined;
+
     setPresenceGatewayUrls(dataService.getStoreGatewayUrls());
     startPresenceSession({
       uid: firebaseUser.uid,
@@ -1044,19 +1051,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       email: currentUser.email || firebaseUser.email,
       loginId,
       name: currentUser.name || currentUser.displayName,
+      staffDocId: staffDocId || null,
     });
 
+    // 의존성 변경 시 cleanup에서 offline 쓰지 않음 — 로그아웃에서만 release
     return () => {
-      void releaseStaffSessionOnNas({
-        uid: firebaseUser.uid,
-        tenantId: currentUser.tenantId!,
-        email: currentUser.email || firebaseUser.email,
-        loginId,
-        gatewayBaseUrl: dataService.getStoreGatewayUrls(),
-      });
       stopPresenceSession();
     };
-  }, [currentUser?.tenantId, currentUser?.email, currentUser?.loginId, currentUser?.name, currentUser?.displayName, firebaseUser?.uid, firebaseUser?.email]);
+  }, [currentUser?.tenantId, currentUser?.email, currentUser?.loginId, currentUser?.name, currentUser?.displayName, currentUser?.id, firebaseUser?.uid, firebaseUser?.email]);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
@@ -1158,6 +1160,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     stopPresenceSession();
     if (uid && tenantId) {
       try {
+        await setPresenceOffline({
+          uid,
+          tenantId,
+          email,
+          loginId: currentUser?.loginId,
+          name: currentUser?.name || currentUser?.displayName,
+          staffDocId:
+            getStaffIdForUser(dataService.getStaff(), currentUser!) ||
+            dataService.getStaff().find((s) => s.uid === uid)?.id ||
+            null,
+        });
         await releaseStaffSessionOnNas({
           uid,
           tenantId,

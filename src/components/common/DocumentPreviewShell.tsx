@@ -45,7 +45,7 @@ export const DocumentPreviewShell: React.FC<DocumentPreviewShellProps> = ({
             onClick={onPrint}
             disabled={isProcessing}
             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-sm font-bold transition-colors disabled:opacity-50"
-            title="화면과 동일하게 A4로 인쇄합니다. 프린터 여백 '없음', 배율 '실제 크기' 권장"
+            title="A4 단면 인쇄. 프린터 여백 '없음', 배율 '실제 크기' 권장"
           >
             <Printer size={16} />
             {printLabel}
@@ -77,8 +77,25 @@ export const DocumentPreviewShell: React.FC<DocumentPreviewShellProps> = ({
   );
 };
 
-export function prepareDocumentPrint(): void {
+export async function prepareDocumentPrint(): Promise<void> {
   window.scrollTo(0, 0);
   const scrollParent = document.querySelector('#print-capture-area')?.parentElement;
   if (scrollParent) scrollParent.scrollTop = 0;
 }
+
+/** Electron이면 단면(simplex) 강제, 아니면 window.print() */
+export async function printDocumentSimplex(): Promise<void> {
+  await prepareDocumentPrint();
+  const electronPrint = window.electron?.printDocument;
+  if (typeof electronPrint === 'function') {
+    try {
+      await electronPrint();
+    } catch (err) {
+      console.warn('[print] Electron print error, fallback to window.print:', err);
+      window.print();
+    }
+    return;
+  }
+  window.print();
+}
+

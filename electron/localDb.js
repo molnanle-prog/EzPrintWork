@@ -4,9 +4,26 @@ const Database = require('better-sqlite3');
 
 let db = null;
 
+const AUX_TABLES = ['quotes', 'papers', 'leaves', 'instructions'];
+
 function getDbPath() {
     const { app } = require('electron');
     return path.join(app.getPath('userData'), 'ezprintwork-local.db');
+}
+
+function ensureAuxTables(database) {
+    for (const table of AUX_TABLES) {
+        database.exec(`
+            CREATE TABLE IF NOT EXISTS ${table} (
+                tenant_id TEXT NOT NULL,
+                id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_${table}_tenant ON ${table}(tenant_id);
+        `);
+    }
 }
 
 function getDb() {
@@ -42,6 +59,7 @@ function getDb() {
             PRIMARY KEY (tenant_id, key)
         );
     `);
+    ensureAuxTables(db);
     return db;
 }
 
@@ -50,6 +68,13 @@ function closeDb() {
         db.close();
         db = null;
     }
+}
+
+function loadAuxCollection(database, tenantId, table) {
+    return database
+        .prepare(`SELECT data FROM ${table} WHERE tenant_id = ?`)
+        .all(tenantId)
+        .map((row) => JSON.parse(row.data));
 }
 
 function loadTenantBundle(tenantId) {
@@ -61,7 +86,20 @@ function loadTenantBundle(tenantId) {
     const settingsRow = database.prepare('SELECT data FROM settings WHERE tenant_id = ?').get(tenantId);
     const settings = settingsRow ? JSON.parse(settingsRow.data) : null;
     const countRow = database.prepare('SELECT COUNT(*) as c FROM jobs WHERE tenant_id = ?').get(tenantId);
-    return { jobs, clients, settings, jobCount: countRow?.c || 0 };
+    const quotes = loadAuxCollection(database, tenantId, 'quotes');
+    const papers = loadAuxCollection(database, tenantId, 'papers');
+    const leaves = loadAuxCollection(database, tenantId, 'leaves');
+    const instructions = loadAuxCollection(database, tenantId, 'instructions');
+    return {
+        jobs,
+        clients,
+        settings,
+        jobCount: countRow?.c || 0,
+        quotes,
+        papers,
+        leaves,
+        instructions,
+    };
 }
 
 function saveJobs(tenantId, jobs) {
@@ -120,6 +158,48 @@ function deleteClient(tenantId, clientId) {
     getDb().prepare('DELETE FROM clients WHERE tenant_id = ? AND id = ?').run(tenantId, clientId);
 }
 
+function assertAuxTable(table) {
+    if (!AUX_TABLES.includes(table)) {
+        throw new Error(`invalid-aux-table:${table}`);
+    }
+}
+
+function saveAuxCollection(tenantId, table, items) {
+    assertAuxTable(table);
+    const database = getDb();
+    const now = new Date().toISOString();
+    const del = database.prepare(`DELETE FROM ${table} WHERE tenant_id = ?`);
+    const ins = database.prepare(
+        `INSERT OR REPLACE INTO ${table} (tenant_id, id, data, updated_at) VALUES (?, ?, ?, ?)`
+    );
+    const tx = database.transaction((rows) => {
+        del.run(tenantId);
+        for (const row of rows) {
+            if (!row?.id) continue;
+            ins.run(tenantId, row.id, JSON.stringify(row), row.updatedAt || row.createdAt || now);
+        }
+    });
+    tx(items || []);
+    return (items || []).length;
+}
+
+function upsertAuxEntity(tenantId, table, entity) {
+    assertAuxTable(table);
+    if (!entity?.id) return false;
+    const now = new Date().toISOString();
+    getDb()
+        .prepare(
+            `INSERT OR REPLACE INTO ${table} (tenant_id, id, data, updated_at) VALUES (?, ?, ?, ?)`
+        )
+        .run(tenantId, entity.id, JSON.stringify(entity), entity.updatedAt || entity.createdAt || now);
+    return true;
+}
+
+function deleteAuxEntity(tenantId, table, id) {
+    assertAuxTable(table);
+    getDb().prepare(`DELETE FROM ${table} WHERE tenant_id = ? AND id = ?`).run(tenantId, id);
+}
+
 function saveSettings(tenantId, settingsObj) {
     const now = new Date().toISOString();
     getDb().prepare(
@@ -147,6 +227,9 @@ module.exports = {
     saveClients,
     upsertClient,
     deleteClient,
+    saveAuxCollection,
+    upsertAuxEntity,
+    deleteAuxEntity,
     saveSettings,
     getKv,
     setKv,

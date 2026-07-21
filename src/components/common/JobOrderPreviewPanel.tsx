@@ -4,7 +4,7 @@ import jsPDF from 'jspdf';
 import { Job } from '../../types';
 import { formatJobNumber } from '../../services/dataService';
 import { JobOrderDocument } from './JobOrderDocument';
-import { DocumentPreviewShell, prepareDocumentPrint } from './DocumentPreviewShell';
+import { DocumentPreviewShell, printDocumentSimplex } from './DocumentPreviewShell';
 import { renderA4PageToCanvas } from '../../utils/printA4';
 
 interface JobOrderPreviewPanelProps {
@@ -17,8 +17,7 @@ export const JobOrderPreviewPanel: React.FC<JobOrderPreviewPanelProps> = ({ job,
   const [isProcessing, setIsProcessing] = useState(false);
 
   const handleDirectPrint = () => {
-    prepareDocumentPrint();
-    window.print();
+    void printDocumentSimplex();
   };
 
   const handleOpenPDF = async () => {
