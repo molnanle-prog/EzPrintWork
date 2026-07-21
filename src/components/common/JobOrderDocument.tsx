@@ -94,24 +94,29 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
       >
         {pages.map((pageItems, pageIndex) => {
           const startIndex = pages.slice(0, pageIndex).reduce((n, p) => n + p.length, 0);
-          const itemCount = pageItems.length;
-          const isCompact = itemCount >= 3;
-          const isVeryCompact = itemCount >= 4;
 
+          // 페이지·품목 수와 무관 — 표/폰트/서명판 크기 고정 (넘치면 다음 페이지)
           const styles = {
-              sectionGap: isVeryCompact ? 'mb-1' : isCompact ? 'mb-1.5' : 'mb-3.5',
-              headerMb: isVeryCompact ? 'mb-1 pb-1' : isCompact ? 'mb-1.5 pb-1' : 'mb-4 pb-2.5',
+              sectionGap: 'mb-2',
+              headerMb: 'mb-2 pb-1.5',
               titleText: 'text-3xl',
               subTitleText: 'text-lg',
-              infoBoxPadding: isCompact ? 'p-2' : 'p-3',
+              infoBoxPadding: 'p-2.5',
               infoLabelText: 'text-lg',
               infoValueText: 'text-3xl',
               tableHeaderBg: 'bg-slate-100',
-              tableText: isVeryCompact ? 'text-base' : 'text-lg',
-              tableCellPadding: isVeryCompact ? 'py-0.5 px-1.5' : 'py-1 px-1.5',
-              itemHeaderPadding: isVeryCompact ? 'py-0.5 px-2 text-base' : 'py-0.5 px-2.5 text-lg',
-              itemMargin: isVeryCompact ? 'mb-1.5' : isCompact ? 'mb-2.5' : 'mb-4',
-              signatureHeight: isVeryCompact ? 'h-9' : isCompact ? 'h-10' : 'h-14',
+              tableText: 'text-lg',
+              tableCellPadding: 'py-1 px-1.5',
+              itemHeaderPadding: 'py-0.5 px-2.5 text-lg',
+              itemMargin: 'mb-2',
+              signatureHeight: 'h-14',
+              signatureHeadText: 'text-sm',
+              listTitleText: 'text-xl',
+              jobNoText: 'text-3xl',
+              dateText: 'text-[12px]',
+              iconLg: 20,
+              iconMd: 16,
+              iconSm: 14,
           };
 
           return (
@@ -122,7 +127,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                 width: `${A4_WIDTH_MM}mm`,
                 height: `${A4_HEIGHT_MM}mm`,
                 minHeight: `${A4_HEIGHT_MM}mm`,
-                padding: '10mm',
+                padding: '10mm 10mm 7mm 10mm',
                 boxSizing: 'border-box',
                 pageBreakAfter: pageIndex < pages.length - 1 ? 'always' : 'auto',
               }}
@@ -130,14 +135,14 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
               {/* 1. Header */}
               <div className={`flex justify-between items-center border-b-[3px] border-black flex-none ${styles.headerMb}`}>
                 <div>
-                  <h1 className={`font-bold tracking-tight text-black ${isCompact ? 'text-4xl' : 'text-5xl'}`}><span className="lift-text">작업 지시서</span></h1>
+                  <h1 className="font-bold tracking-tight text-black text-4xl"><span className="lift-text">작업 지시서</span></h1>
                   <p className={`font-bold text-slate-600 mt-1 tracking-widest ${styles.subTitleText}`}>
                       <span className="lift-text">JOB ORDER SHEET{pages.length > 1 ? ` (${pageIndex + 1}/${pages.length})` : ''}</span>
                   </p>
                 </div>
                 <div className="text-right">
-                  <div className={`font-mono font-bold text-black tracking-normal ${isCompact ? 'text-2xl' : 'text-4xl'}`}><span className="lift-text">{formatJobNumber(job)}</span></div>
-                  <div className={`text-slate-600 mt-1 font-bold flex flex-col gap-0.5 text-right leading-tight ${isCompact ? 'text-[11px]' : 'text-[13px]'}`}>
+                  <div className={`font-mono font-bold text-black tracking-normal ${styles.jobNoText}`}><span className="lift-text">{formatJobNumber(job)}</span></div>
+                  <div className={`text-slate-600 mt-1 font-bold flex flex-col gap-0.5 text-right leading-tight ${styles.dateText}`}>
                     <span className="lift-text">접수일: {new Date(job.createdAt).toLocaleDateString('ko-KR').replace(/\.$/, '')}</span>
                     <span className="lift-text">납품일: {new Date(job.dueDate).toLocaleDateString('ko-KR').replace(/\.$/, '')}</span>
                   </div>
@@ -154,12 +159,12 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                        </div>
                    )}
                    <div className={`font-bold text-slate-600 mb-1 flex items-center gap-2 ${styles.infoLabelText}`}>
-                       <Calendar size={isCompact ? 16 : 24}/> <span className="lift-text">납기일</span>
+                       <Calendar size={styles.iconLg}/> <span className="lift-text">납기일</span>
                    </div>
                    <div className={`font-bold tracking-tight leading-none ${isUrgent ? 'text-red-600' : 'text-black'} ${styles.infoValueText}`}>
                        <span className="lift-text">{dueDate}</span>
                    </div>
-                   <div className={`font-bold text-slate-700 mt-1 ${isCompact ? 'text-lg' : 'text-xl'}`}>
+                   <div className="font-bold text-slate-700 mt-1 text-lg">
                        <span className="lift-text">{new Date(job.dueDate).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })} 까지</span>
                    </div>
                 </div>
@@ -167,14 +172,14 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                 {/* Right: Client Info */}
                 <div className={`border-[3px] border-slate-300 rounded-xl ${styles.infoBoxPadding}`}>
                     <div className={`font-bold text-slate-500 mb-1 flex items-center gap-2 ${styles.infoLabelText}`}>
-                        <User size={isCompact ? 16 : 24}/> <span className="lift-text">고객 정보</span>
+                        <User size={styles.iconLg}/> <span className="lift-text">고객 정보</span>
                     </div>
                     <div className={`font-bold text-black mb-1 leading-tight tracking-tight truncate ${styles.infoValueText}`}>
                         <span className="lift-text">{job.clientName}</span>
                     </div>
-                    <div className={`flex flex-col text-slate-900 font-bold gap-0.5 ${isCompact ? 'text-base' : 'text-lg'}`}>
+                    <div className="flex flex-col text-slate-900 font-bold gap-0.5 text-base">
                         <span className="truncate"><span className="lift-text">담당: {job.contactPerson || '-'}</span></span>
-                        <span className="flex items-center gap-2"><Phone size={isCompact ? 14 : 20}/> <span className="lift-text">{job.clientPhone || '-'}</span></span>
+                        <span className="flex items-center gap-2"><Phone size={styles.iconSm}/> <span className="lift-text">{job.clientPhone || '-'}</span></span>
                     </div>
                 </div>
               </div>
@@ -185,16 +190,13 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   <div className={`font-bold text-black py-1 leading-tight truncate ${styles.titleText}`}><span className="lift-text">{job.title}</span></div>
               </div>
 
-              {/* 4. Specs Loop (Dynamic Content Area) */}
-              <div
-                className="flex-1 min-h-0 overflow-hidden flex flex-col"
-                style={{ paddingBottom: isVeryCompact ? 92 : isCompact ? 100 : 118 }}
-              >
-                  <h3 className={`font-bold text-black mb-2 flex items-center gap-2 border-l-[6px] border-blue-600 pl-2 flex-none ${isCompact ? 'text-lg' : 'text-xl'}`}>
+              {/* 4. Specs — 목록끼리 고정 간격으로 붙이고, 남는 공간은 서명판 위만 */}
+              <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                  <h3 className={`font-bold text-black mb-1.5 flex items-center gap-2 border-l-[6px] border-blue-600 pl-2 flex-none ${styles.listTitleText}`}>
                       <span className="lift-text">제작 사양 목록 (Page {pageIndex + 1})</span>
                   </h3>
                   
-                  <div className={`flex-1 min-h-0 flex flex-col ${isCompact ? 'justify-between' : 'justify-start'}`}>
+                  <div className="flex flex-col justify-start">
                       {pageItems.map((item, idx) => {
                           const globalIdx = startIndex + idx + 1;
                           const hasInner = !!item.specs.paperTypeInner;
@@ -335,7 +337,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                               <tr>
                                                   <th className={`bg-yellow-50 border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}>
                                                       <span className="flex items-center gap-1">
-                                                          <FileText size={isCompact ? 12 : 16}/> <span className="lift-text">메모</span>
+                                                          <FileText size={14}/> <span className="lift-text">메모</span>
                                                       </span>
                                                   </th>
                                                   <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-slate-800 bg-yellow-50 align-middle`} colSpan={3}>
@@ -351,29 +353,53 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   </div>
               </div>
 
-              {/* 서명표 + 푸터 — absolute 하단 고정 (미리보기·인쇄·PDF 동일) */}
+              {/* 서명표 + 푸터 — 목록과 동일 가로폭·고정 크기, 하단 여백만 축소 */}
               <div
-                className="absolute left-0 right-0 flex flex-col"
-                style={{ bottom: 0 }}
+                className="mt-auto flex-none w-full flex flex-col"
+                style={{ marginBottom: 0 }}
               >
-                  <div className="break-inside-avoid">
-                      <div className="grid grid-cols-4 border-[3px] border-black">
-                          {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
-                              <div key={step} className="border-r-[3px] border-black last:border-r-0">
-                                  <div className={`bg-slate-100 p-1 text-center font-bold border-b-[3px] border-black ${isVeryCompact ? 'text-xs' : isCompact ? 'text-sm' : 'text-lg'}`}><span className="lift-text">{step}</span></div>
-                                  <div className={`${styles.signatureHeight} flex items-end justify-center pb-2`}>
-                                      <span className="text-slate-300 font-bold text-sm"><span className="lift-text">(서명)</span></span>
-                                  </div>
-                              </div>
-                          ))}
-                      </div>
+                  <div className="w-full break-inside-avoid">
+                      <table className="w-full border-collapse border-[3px] border-black table-fixed">
+                          <colgroup>
+                              <col style={{ width: '25%' }} />
+                              <col style={{ width: '25%' }} />
+                              <col style={{ width: '25%' }} />
+                              <col style={{ width: '25%' }} />
+                          </colgroup>
+                          <thead>
+                              <tr>
+                                  {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
+                                      <th
+                                          key={step}
+                                          className={`bg-slate-100 border-[3px] border-black p-1 text-center font-bold ${styles.signatureHeadText}`}
+                                      >
+                                          <span className="lift-text">{step}</span>
+                                      </th>
+                                  ))}
+                              </tr>
+                          </thead>
+                          <tbody>
+                              <tr>
+                                  {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
+                                      <td
+                                          key={`sig-${step}`}
+                                          className={`border-[3px] border-black ${styles.signatureHeight} align-bottom text-center pb-2`}
+                                      >
+                                          <span className="text-slate-300 font-bold text-sm">
+                                              <span className="lift-text">(서명)</span>
+                                          </span>
+                                      </td>
+                                  ))}
+                              </tr>
+                          </tbody>
+                      </table>
                   </div>
-                  <div className="mt-2 flex justify-between items-end text-[10px] text-slate-500">
-                      <div><span className="lift-text">EzPrintWork v{APP_VERSION}</span></div>
-                      <div className="font-bold text-slate-700 text-xs tracking-wide">
+                  <div className="relative mt-0.5 w-full flex justify-between items-end text-[10px] text-slate-500">
+                      <div className="z-[1]"><span className="lift-text">EzPrintWork v{APP_VERSION}</span></div>
+                      <div className="absolute left-1/2 -translate-x-1/2 font-bold text-slate-700 text-xs tracking-wide whitespace-nowrap">
                         <span className="lift-text">{pageIndex + 1} / {pages.length}</span>
                       </div>
-                      <div className="font-bold text-slate-200 text-xl tracking-widest uppercase"><span className="lift-text">Original</span></div>
+                      <div className="z-[1] font-bold text-slate-200 text-xl tracking-widest uppercase"><span className="lift-text">Original</span></div>
                   </div>
               </div>
             </div>

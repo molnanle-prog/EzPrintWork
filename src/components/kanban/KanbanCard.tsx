@@ -79,8 +79,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   isDragOverlay = false,
   isQuoteTray = false,
   isCompactTray = false,
-  onHideFromBoard,
-  isManagementPanel = false,
+  onHideFromBoard: _onHideFromBoard,  isManagementPanel = false,
   managementPrepaidBadge,
   sortable,
 }) => {
@@ -186,7 +185,6 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   const diffTime = due.getTime() - now.getTime();
   const daysRemaining = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
   const isDone = status === 'COMPLETED';
-  const canHideFromBoard = !!onHideFromBoard;
   const urgencyTier = resolveEffectiveTier(daysRemaining, job.priority);
   const ddayLabel = formatDDayLabel(daysRemaining);
   const ddayBadgeClass = getDDayBadgeClasses(urgencyTier);
@@ -572,20 +570,6 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         >
           <ArrowRight size={14} />
         </button>
-        {canHideFromBoard && (
-          <button
-            type="button"
-            onPointerDown={stopDragPropagation}
-            onClick={(e) => {
-              e.stopPropagation();
-              onHideFromBoard(job);
-            }}
-            className="kanban-tray-icon shrink-0 text-slate-300 dark:text-slate-600 hover:text-rose-500 dark:hover:text-rose-400 transition-colors p-0.5"
-            title="보드에서 내리기"
-          >
-            <CheckCircle size={14} />
-          </button>
-        )}
       </div>
     );
   }
@@ -902,20 +886,6 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         {/* Grip Icon & More menu */}
         <div className="flex gap-1 kanban-card-icon-muted text-slate-300 dark:text-slate-600 pointer-events-auto shrink-0 items-center">
           {renderManagementMoveButton(15)}
-          {canHideFromBoard && (
-            <button
-              type="button"
-              onPointerDown={stopDragPropagation}
-              onClick={(e) => {
-                e.stopPropagation();
-                onHideFromBoard(job);
-              }}
-              className="hover:text-rose-500 transition-colors p-1 flex items-center justify-center rounded-md"
-              title="보드에서 내리기"
-            >
-              <CheckCircle size={16} />
-            </button>
-          )}
           {isManagementPanel && (
             <>
               <button
