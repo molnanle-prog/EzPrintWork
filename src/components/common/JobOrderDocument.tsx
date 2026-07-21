@@ -11,22 +11,72 @@ interface JobOrderDocumentProps {
   id?: string;
 }
 
+/** 짧은 사양 ≈ 1, 길수록 증가. 페이지 예산 4 → 짧은 품목 최대 4개 */
+function estimateJobItemCost(item: JobItem): number {
+  const s = item.specs;
+  let cost = 1;
+
+  const hasInner = !!(s.paperTypeInner || (s.innerPages && s.innerPages.length > 0));
+  if (hasInner) cost += 1.2;
+
+  if ((s.processingCover && s.processingCover.length > 0) || (s.processingInner && s.processingInner.length > 0)) {
+    cost += 0.7;
+  }
+
+  const procText = [
+    ...(s.processing || []),
+    ...(s.processingCover || []),
+    ...(s.processingInner || []),
+  ].join(', ');
+  if (procText.length > 48) cost += 0.55;
+  else if (procText.length > 16) cost += 0.25;
+
+  const memo = (s.memo || '').trim();
+  if (memo) {
+    cost += 0.4;
+    if (memo.length > 60) cost += 0.45;
+    if (memo.length > 120) cost += 0.45;
+  }
+
+  return Math.min(Math.max(cost, 1), 4);
+}
+
+function paginateJobItems(items: JobItem[]): JobItem[][] {
+  const PAGE_BUDGET = 4;
+  const MAX_PER_PAGE = 4;
+  const pages: JobItem[][] = [];
+  let current: JobItem[] = [];
+  let used = 0;
+
+  for (const item of items) {
+    const cost = estimateJobItemCost(item);
+    const exceeds =
+      current.length > 0 &&
+      (current.length >= MAX_PER_PAGE || used + cost > PAGE_BUDGET + 0.05);
+
+    if (exceeds) {
+      pages.push(current);
+      current = [];
+      used = 0;
+    }
+    current.push(item);
+    used += cost;
+  }
+
+  if (current.length > 0) pages.push(current);
+  if (pages.length === 0) pages.push([]);
+  return pages;
+}
+
 export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) => {
-  const today = new Date().toLocaleDateString('ko-KR');
   const dueDate = new Date(job.dueDate).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   const isUrgent = job.priority !== '일반';
-  
-  // Normalize items
-  const allJobItems = job.subJobs && job.subJobs.length > 0 
-      ? job.subJobs 
+
+  const allJobItems: JobItem[] = job.subJobs && job.subJobs.length > 0
+      ? job.subJobs
       : [{ id: '1', type: job.type, specs: job.specs }];
 
-  // Pagination Logic: Max 3 items per page for vertical safety
-  const ITEMS_PER_PAGE = 3;
-  const pages: JobItem[][] = [];
-  for (let i = 0; i < allJobItems.length; i += ITEMS_PER_PAGE) {
-      pages.push(allJobItems.slice(i, i + ITEMS_PER_PAGE));
-  }
+  const pages = paginateJobItems(allJobItems);
 
   return (
     <>
@@ -43,25 +93,25 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
         style={{ width: `${A4_WIDTH_MM}mm`, boxSizing: 'border-box' }}
       >
         {pages.map((pageItems, pageIndex) => {
-          // Dynamic Styling Logic based on item count in current page
+          const startIndex = pages.slice(0, pageIndex).reduce((n, p) => n + p.length, 0);
           const itemCount = pageItems.length;
           const isCompact = itemCount >= 3;
+          const isVeryCompact = itemCount >= 4;
 
-          // Dynamic Classes with tight vertical spacing but NO font size reduction
           const styles = {
-              sectionGap: isCompact ? 'mb-1.5' : 'mb-3.5',
-              headerMb: isCompact ? 'mb-1.5 pb-1' : 'mb-4 pb-2.5',
-              titleText: 'text-3xl',        // 폰트 크기 고정 (축소 안 함)
-              subTitleText: 'text-lg',      // 폰트 크기 고정
+              sectionGap: isVeryCompact ? 'mb-1' : isCompact ? 'mb-1.5' : 'mb-3.5',
+              headerMb: isVeryCompact ? 'mb-1 pb-1' : isCompact ? 'mb-1.5 pb-1' : 'mb-4 pb-2.5',
+              titleText: 'text-3xl',
+              subTitleText: 'text-lg',
               infoBoxPadding: isCompact ? 'p-2' : 'p-3',
-              infoLabelText: 'text-lg',     // 폰트 크기 고정
-              infoValueText: 'text-3xl',    // 폰트 크기 고정
+              infoLabelText: 'text-lg',
+              infoValueText: 'text-3xl',
               tableHeaderBg: 'bg-slate-100',
-              tableText: 'text-lg',         // 폰트 크기 고정
-              tableCellPadding: 'py-1 px-1.5', // 셀 내부 상하 패딩 대폭 압축
-              itemHeaderPadding: 'py-0.5 px-2.5 text-lg', // 헤더 상하 패딩 줄임
-              itemMargin: isCompact ? 'mb-2.5' : 'mb-4', 
-              signatureHeight: isCompact ? 'h-10' : 'h-14' // 서명란 높이 축소
+              tableText: isVeryCompact ? 'text-base' : 'text-lg',
+              tableCellPadding: isVeryCompact ? 'py-0.5 px-1.5' : 'py-1 px-1.5',
+              itemHeaderPadding: isVeryCompact ? 'py-0.5 px-2 text-base' : 'py-0.5 px-2.5 text-lg',
+              itemMargin: isVeryCompact ? 'mb-1.5' : isCompact ? 'mb-2.5' : 'mb-4',
+              signatureHeight: isVeryCompact ? 'h-9' : isCompact ? 'h-10' : 'h-14',
           };
 
           return (
@@ -136,15 +186,17 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
               </div>
 
               {/* 4. Specs Loop (Dynamic Content Area) */}
-              <div className="flex-1 overflow-hidden flex flex-col">
+              <div
+                className="flex-1 min-h-0 overflow-hidden flex flex-col"
+                style={{ paddingBottom: isVeryCompact ? 92 : isCompact ? 100 : 118 }}
+              >
                   <h3 className={`font-bold text-black mb-2 flex items-center gap-2 border-l-[6px] border-blue-600 pl-2 flex-none ${isCompact ? 'text-lg' : 'text-xl'}`}>
                       <span className="lift-text">제작 사양 목록 (Page {pageIndex + 1})</span>
                   </h3>
                   
-                  <div className={`flex-1 flex flex-col ${isCompact ? 'justify-between' : 'justify-start'}`}>
+                  <div className={`flex-1 min-h-0 flex flex-col ${isCompact ? 'justify-between' : 'justify-start'}`}>
                       {pageItems.map((item, idx) => {
-                          // Global index calculation
-                          const globalIdx = (pageIndex * ITEMS_PER_PAGE) + idx + 1;
+                          const globalIdx = startIndex + idx + 1;
                           const hasInner = !!item.specs.paperTypeInner;
 
                           return (
@@ -299,27 +351,30 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   </div>
               </div>
 
-              {/* 6. Process Check Grid - Fixed at Bottom */}
-              <div className="mt-auto break-inside-avoid flex-none pt-2">
-                  <div className="grid grid-cols-4 border-[3px] border-black">
-                      {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
-                          <div key={step} className="border-r-[3px] border-black last:border-r-0">
-                              <div className={`bg-slate-100 p-1 text-center font-bold border-b-[3px] border-black ${isCompact ? 'text-sm' : 'text-lg'}`}><span className="lift-text">{step}</span></div>
-                              <div className={`${styles.signatureHeight} flex items-end justify-center pb-2`}>
-                                  <span className="text-slate-300 font-bold text-sm"><span className="lift-text">(서명)</span></span>
+              {/* 서명표 + 푸터 — absolute 하단 고정 (미리보기·인쇄·PDF 동일) */}
+              <div
+                className="absolute left-0 right-0 flex flex-col"
+                style={{ bottom: 0 }}
+              >
+                  <div className="break-inside-avoid">
+                      <div className="grid grid-cols-4 border-[3px] border-black">
+                          {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
+                              <div key={step} className="border-r-[3px] border-black last:border-r-0">
+                                  <div className={`bg-slate-100 p-1 text-center font-bold border-b-[3px] border-black ${isVeryCompact ? 'text-xs' : isCompact ? 'text-sm' : 'text-lg'}`}><span className="lift-text">{step}</span></div>
+                                  <div className={`${styles.signatureHeight} flex items-end justify-center pb-2`}>
+                                      <span className="text-slate-300 font-bold text-sm"><span className="lift-text">(서명)</span></span>
+                                  </div>
                               </div>
-                          </div>
-                      ))}
+                          ))}
+                      </div>
                   </div>
-              </div>
-
-              {/* Footer */}
-              <div className="mt-2 flex justify-between items-end text-[10px] text-slate-500 flex-none">
-                  <div><span className="lift-text">EzPrintWork v{APP_VERSION}</span></div>
-                  <div className="font-bold text-slate-700 text-xs tracking-wide">
-                    <span className="lift-text">{pageIndex + 1} / {pages.length}</span>
+                  <div className="mt-2 flex justify-between items-end text-[10px] text-slate-500">
+                      <div><span className="lift-text">EzPrintWork v{APP_VERSION}</span></div>
+                      <div className="font-bold text-slate-700 text-xs tracking-wide">
+                        <span className="lift-text">{pageIndex + 1} / {pages.length}</span>
+                      </div>
+                      <div className="font-bold text-slate-200 text-xl tracking-widest uppercase"><span className="lift-text">Original</span></div>
                   </div>
-                  <div className="font-bold text-slate-200 text-xl tracking-widest uppercase"><span className="lift-text">Original</span></div>
               </div>
             </div>
           );

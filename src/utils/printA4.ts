@@ -66,7 +66,8 @@ const PRINT_ONLY_ROOT_CSS = `
       box-shadow: none !important;
     }
     #${EZPW_PRINT_ROOT_ID} .page-container {
-      display: block !important;
+      display: flex !important;
+      flex-direction: column !important;
       width: ${A4_WIDTH_MM}mm !important;
       height: ${A4_HEIGHT_MM}mm !important;
       min-height: ${A4_HEIGHT_MM}mm !important;
@@ -81,7 +82,6 @@ const PRINT_ONLY_ROOT_CSS = `
       break-inside: avoid !important;
       position: relative !important;
       float: none !important;
-      flex: none !important;
     }
     #${EZPW_PRINT_ROOT_ID} .page-container:last-child {
       page-break-after: auto !important;
@@ -142,13 +142,16 @@ export async function printDocumentSimplex(): Promise<void> {
     pages.forEach((page) => {
       const clone = page.cloneNode(true) as HTMLElement;
       clone.classList.add('page-container');
-      // 인라인 스타일이 인쇄 CSS와 충돌하지 않도록 크기만 맞춤
+      clone.style.display = 'flex';
+      clone.style.flexDirection = 'column';
+      clone.style.position = 'relative';
       clone.style.width = `${A4_WIDTH_MM}mm`;
       clone.style.height = `${A4_HEIGHT_MM}mm`;
       clone.style.minHeight = `${A4_HEIGHT_MM}mm`;
       clone.style.margin = '0';
       clone.style.boxSizing = 'border-box';
       clone.style.boxShadow = 'none';
+      clone.style.overflow = 'hidden';
       printRoot.appendChild(clone);
     });
   } else {
@@ -231,12 +234,16 @@ export async function renderA4PageToCanvas(pageEl: HTMLElement): Promise<HTMLCan
 
   const pageClone = pageEl.cloneNode(true) as HTMLElement;
   pageClone.classList.add('export-mode');
+  pageClone.style.display = 'flex';
+  pageClone.style.flexDirection = 'column';
+  pageClone.style.position = 'relative';
   pageClone.style.width = `${A4_WIDTH_PX}px`;
   pageClone.style.height = `${A4_HEIGHT_PX}px`;
   pageClone.style.minHeight = `${A4_HEIGHT_PX}px`;
   pageClone.style.margin = '0';
   pageClone.style.boxSizing = 'border-box';
   pageClone.style.background = 'white';
+  pageClone.style.overflow = 'hidden';
 
   wrapper.appendChild(pageClone);
   document.body.appendChild(wrapper);

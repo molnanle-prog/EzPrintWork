@@ -1032,7 +1032,11 @@ export class DataService {
             applied = true;
         }
         if (situation.settings && typeof situation.settings === 'object') {
-            this.mergeSettingsFromMirror(situation.settings as Record<string, unknown>, situation.companyName);
+            this.mergeSettingsFromMirror(
+                situation.settings as Record<string, unknown>,
+                situation.companyName,
+                situation.updatedAt
+            );
             applied = true;
         } else if (situation.companyName) {
             this.mirrorCompanyName = situation.companyName;
@@ -1732,7 +1736,21 @@ export class DataService {
         }
         const staff = (this.data['staff'] || []) as Staff[];
         const clients = (this.data['clients'] || []) as Client[];
-        const settings = this.getSettingsObj();
+        let settings = this.getSettingsObj();
+        // 다른 PC의 작업 저장이 옛 후가공/상품 설정으로 NAS를 덮지 않도록 LWW 병합
+        try {
+            const nasSituation = await situationMirrorService.read(tenantId, true);
+            if (nasSituation?.settings && typeof nasSituation.settings === 'object') {
+                const mergedSettings = this.mergeNasMasterSettingsForPush(
+                    settings,
+                    nasSituation.settings as Record<string, unknown>
+                );
+                settings = mergedSettings;
+                this.data['settings'] = [mergedSettings];
+            }
+        } catch (e) {
+            console.warn('[DataService] settings merge-before-push skipped:', e);
+        }
         let archiveOk = false;
         let situationOk = false;
         let mirrorUpdatedAt: string | null = null;
@@ -2049,9 +2067,61 @@ export class DataService {
         return (DataService.NAS_MASTER_SETTINGS as readonly string[]).includes(name);
     }
 
+    private getSettingsMetaMap(settings: Record<string, unknown>): Record<string, { updatedAt?: string }> {
+        const raw = settings.settingsMeta;
+        if (!raw || typeof raw !== 'object') return {};
+        return { ...(raw as Record<string, { updatedAt?: string }>) };
+    }
+
+    private settingsKeyUpdatedAtMs(settings: Record<string, unknown>, key: string): number {
+        const stamp = this.getSettingsMetaMap(settings)[key]?.updatedAt;
+        if (!stamp) return 0;
+        const ms = Date.parse(stamp);
+        return Number.isFinite(ms) ? ms : 0;
+    }
+
+    /**
+     * 작업 저장 push가 다른 PC의 옛 후가공/상품 설정으로 NAS를 덮지 않도록
+     * settingsMeta(키별 updatedAt) LWW 병합.
+     */
+    private mergeNasMasterSettingsForPush(
+        local: Record<string, unknown>,
+        nas: Record<string, unknown>
+    ): Record<string, unknown> {
+        const result: Record<string, unknown> = { ...local };
+        const localMeta = this.getSettingsMetaMap(local);
+        const nasMeta = this.getSettingsMetaMap(nas);
+        const outMeta: Record<string, { updatedAt?: string }> = { ...nasMeta, ...localMeta };
+
+        for (const key of DataService.NAS_MASTER_SETTINGS) {
+            const lTs = this.settingsKeyUpdatedAtMs(local, key);
+            const nTs = this.settingsKeyUpdatedAtMs(nas, key);
+            if (nTs > lTs && nas[key] !== undefined && nas[key] !== null) {
+                result[key] = nas[key];
+                if (nasMeta[key]) outMeta[key] = nasMeta[key];
+            } else if (lTs > nTs && local[key] !== undefined) {
+                result[key] = local[key];
+                if (localMeta[key]) outMeta[key] = localMeta[key];
+            } else if (lTs === 0 && nTs === 0) {
+                // 메타 없음(레거시): 로컬 값이 있으면 유지 — 빈 로컬만 NAS로 채움
+                if (local[key] === undefined || local[key] === null) {
+                    if (nas[key] !== undefined && nas[key] !== null) result[key] = nas[key];
+                } else {
+                    result[key] = local[key];
+                }
+            } else {
+                result[key] = local[key] !== undefined ? local[key] : nas[key];
+                if (localMeta[key]) outMeta[key] = localMeta[key];
+            }
+        }
+        result.settingsMeta = outMeta;
+        return result;
+    }
+
     private mergeSettingsFromMirror(
         incoming: Record<string, unknown>,
-        mirrorCompanyName?: string
+        mirrorCompanyName?: string,
+        mirrorUpdatedAt?: string
     ): void {
         if (mirrorCompanyName?.trim()) {
             this.mirrorCompanyName = mirrorCompanyName.trim();
@@ -2060,21 +2130,40 @@ export class DataService {
         const incomingCompany = (incoming.companyInfo as Record<string, unknown> | undefined) || {};
         const currentCompany = (current.companyInfo as Record<string, unknown> | undefined) || {};
         const merged: Record<string, unknown> = { ...current };
+        const curMeta = this.getSettingsMetaMap(current);
+        const inMeta = this.getSettingsMetaMap(incoming);
+        const outMeta: Record<string, { updatedAt?: string }> = { ...curMeta };
+        const mirrorFallbackTs = mirrorUpdatedAt && Date.parse(mirrorUpdatedAt) ? mirrorUpdatedAt : undefined;
+
         for (const [key, value] of Object.entries(incoming)) {
+            if (key === 'settingsMeta') continue;
             if ((DataService.MIRROR_PROTECTED_SETTINGS as readonly string[]).includes(key)) {
-                // 경로·게이트웨이 — 로컬/FS 값 유지, 비어 있을 때만 미러로 채움
                 if (current[key] === undefined || current[key] === null) {
                     merged[key] = value;
                 }
             } else if (this.isNasMasterSetting(key)) {
-                // 업무 마스터 — NAS가 최신본
-                if (value !== undefined && value !== null) {
-                    merged[key] = value;
+                if (value === undefined || value === null) continue;
+                const curTs = this.settingsKeyUpdatedAtMs(current, key);
+                let inTs = this.settingsKeyUpdatedAtMs(incoming, key);
+                // 미러에 키 메타가 없으면 situation.updatedAt으로 보조 (레거시 NAS)
+                if (inTs === 0 && mirrorFallbackTs) {
+                    inTs = Date.parse(mirrorFallbackTs) || 0;
                 }
+                if (inTs > curTs || curTs === 0) {
+                    merged[key] = value;
+                    outMeta[key] = inMeta[key] || (mirrorFallbackTs ? { updatedAt: mirrorFallbackTs } : { updatedAt: new Date().toISOString() });
+                }
+                // else: 로컬이 더 최신 — 유지
             } else {
                 merged[key] = value;
             }
         }
+        for (const [k, v] of Object.entries(inMeta)) {
+            const curTs = Date.parse(outMeta[k]?.updatedAt || '') || 0;
+            const inTs = Date.parse(v?.updatedAt || '') || 0;
+            if (inTs > curTs) outMeta[k] = v;
+        }
+        merged.settingsMeta = outMeta;
         merged.companyInfo = {
             ...this.extractLegacyCompanyFields(current),
             ...this.extractLegacyCompanyFields(incoming),
@@ -2193,7 +2282,11 @@ export class DataService {
             );
         }
         if (situation.settings && typeof situation.settings === 'object') {
-            this.mergeSettingsFromMirror(situation.settings as Record<string, unknown>, situation.companyName);
+            this.mergeSettingsFromMirror(
+                situation.settings as Record<string, unknown>,
+                situation.companyName,
+                situation.updatedAt
+            );
         } else if (situation.companyName?.trim()) {
             this.mirrorCompanyName = situation.companyName.trim();
         }
@@ -3385,7 +3478,8 @@ export class DataService {
                     if (mirror.settings && typeof mirror.settings === 'object') {
                         this.mergeSettingsFromMirror(
                             mirror.settings as Record<string, unknown>,
-                            mirror.companyName
+                            mirror.companyName,
+                            mirror.updatedAt
                         );
                     } else if (mirror.companyName) {
                         this.mirrorCompanyName = mirror.companyName;
@@ -4297,6 +4391,11 @@ export class DataService {
     private async updateSetting(name: string, data: any) {
         const settings = this.data['settings']?.[0] || {};
         settings[name] = data;
+        if (this.isNasMasterSetting(name)) {
+            const meta = this.getSettingsMetaMap(settings);
+            meta[name] = { updatedAt: new Date().toISOString() };
+            settings.settingsMeta = meta;
+        }
         this.data['settings'] = [settings];
         this.notify();
 

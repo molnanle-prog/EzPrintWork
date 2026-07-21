@@ -173,7 +173,7 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
   };
 
   const renderTotalsAndNotes = () => (
-    <div className="shrink-0 mt-auto">
+    <div className="shrink-0">
       <div className="border border-slate-300 bg-slate-50 text-sm mb-3">
         <div className="flex justify-between items-center px-4 py-2.5 border-b border-slate-200">
           <span className="font-bold text-slate-700 lift-text">공급가액</span>
@@ -316,12 +316,12 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
               )}
 
               <div
-                className="flex flex-col flex-1"
+                className="flex flex-col flex-1 min-h-0"
                 style={{
                   paddingTop: template.headerImageUrl && isFirst ? '3mm' : 0,
                   paddingLeft: template.headerImageUrl && isFirst ? '10mm' : 0,
                   paddingRight: template.headerImageUrl && isFirst ? '10mm' : 0,
-                  paddingBottom: template.headerImageUrl && isFirst ? '8mm' : 0,
+                  paddingBottom: isLast ? (template.headerImageUrl && isFirst ? '55mm' : '48mm') : '14mm',
                   minHeight: 0,
                 }}
               >
@@ -422,6 +422,16 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
                 )}
 
                 {renderTable(pageLines, pageIndex, isLast)}
+              </div>
+
+              <div
+                className="absolute flex flex-col"
+                style={{
+                  left: template.headerImageUrl && isFirst ? '10mm' : 0,
+                  right: template.headerImageUrl && isFirst ? '10mm' : 0,
+                  bottom: template.headerImageUrl && isFirst ? '8mm' : 0,
+                }}
+              >
                 {isLast && renderTotalsAndNotes()}
                 {renderPageFooter(pageIndex)}
               </div>
