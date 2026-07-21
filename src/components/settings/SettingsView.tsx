@@ -53,8 +53,8 @@ export const SettingsView: React.FC = () => {
         case 'plan': return canAccessRootSettings ? <PlanManager /> : null;
         case 'company': return isAdmin ? <CompanyInfoManager /> : null;
         case 'status': return isAdmin ? <StatusManager /> : null; 
-        case 'product': return <ProductManager />; 
-        case 'processing': return <ProcessingManager />;
+        case 'product': return isAdmin ? <ProductManager /> : null; 
+        case 'processing': return isAdmin ? <ProcessingManager /> : null;
         case 'paper': return isAdmin ? <PaperManager /> : null;
         case 'price': return isAdmin ? <PriceManager /> : null;
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
@@ -70,8 +70,8 @@ export const SettingsView: React.FC = () => {
     { id: 'plan', label: '요금제 / 인원', icon: Crown, adminOnly: true, staffAllowed: false, rootOnly: true, tooltip: '메인 관리자 전용: 요금제·좌석 수 설정' },
     { id: 'company', label: '회사 정보', icon: Building, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '사업자·연락처·주소 등 회사 기본 정보' },
     { id: 'status', label: '작업 단계 관리', icon: ListChecks, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '칸반 단계 이름·표시·순서 설정' }, 
-    { id: 'product', label: '상품 관리', icon: Package, adminOnly: false, staffAllowed: true, rootOnly: false, tooltip: '상품 규격/용지/가공 옵션 관리' }, 
-    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: false, staffAllowed: true, rootOnly: false, tooltip: '후가공 항목 추가·수정·정리' },
+    { id: 'product', label: '상품 관리', icon: Package, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '상품 규격/용지/가공 옵션 관리 (관리자 전용)' }, 
+    { id: 'processing', label: '후가공 관리', icon: Scissors, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '후가공 항목 추가·수정·정리 (관리자 전용)' },
     { id: 'paper', label: '용지 재고', icon: ScrollText, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '재고 용지 등록·재고량·단가 관리' },
     { id: 'price', label: '견적/단가', icon: Calculator, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '기본 단가·견적 계산 기준 설정' },
     { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '문자 발송 연동키·발신 정보 설정' },
@@ -127,7 +127,7 @@ export const SettingsView: React.FC = () => {
                          <div className="flex items-center gap-2 font-bold mb-1 text-slate-700 dark:text-slate-300">
                              <Lock size={12} /> 권한 안내
                          </div>
-                         직원 계정은 상품·후가공·거래처 등록·수정이 가능합니다. 직원 관리·단가·백업 등은 관리자(메인·사내)만 이용할 수 있습니다.
+                         직원 계정은 거래처 등록·수정과 일상 작업이 가능합니다. 상품·후가공·직원 관리·단가·백업 등은 관리자(메인·사내)만 이용할 수 있습니다.
                      </div>
                  </div>
              )}

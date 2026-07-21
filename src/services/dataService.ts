@@ -584,6 +584,9 @@ export class DataService {
     private lastLocalJobWriteAt = 0;
     private pulseHandling = false;
     private liveMirrorPushTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Auth에서 주입 — 상품/후가공 저장 권한 */
+    private sessionCanManageProductProcessing = false;
+    private lastProductProcessingFingerprint: string | null = null;
     private cloudDegraded = false;
     private localOperationalReady = false;
     private lastNasMirrorAt: string | null = null;
@@ -1695,14 +1698,17 @@ export class DataService {
         }, LIVE_MIRROR_PUSH_DEBOUNCE_MS);
     }
 
-    /** NAS + Storage 즉시 미러 — true면 회사 공유 저장 성공 */
-    async pushLiveMirrors(): Promise<boolean> {
+    /** NAS + Storage 즉시 미러 — true면 회사 공유 저장 성공
+     *  publishProductProcessing: 관리자가 상품/후가공을 저장할 때만 true
+     */
+    async pushLiveMirrors(options?: { publishProductProcessing?: boolean }): Promise<boolean> {
         if (!this.tenantId || this.isWebMirrorMode()) return false;
         if (this.shouldBlockOperationalNasWrite()) {
             console.warn('[DataService] live mirror push blocked — company NAS not ready/reconnect pending');
             return false;
         }
         const tenantId = this.tenantId;
+        const publishProductProcessing = !!options?.publishProductProcessing;
         // NAS에 통째 덮어쓰기 금지 — 다른 PC의 더 최신(관리카드 내리기 등)이 유실됨
         let jobs = this.getAllJobs();
         try {
@@ -1736,17 +1742,26 @@ export class DataService {
         }
         const staff = (this.data['staff'] || []) as Staff[];
         const clients = (this.data['clients'] || []) as Client[];
-        let settings = this.getSettingsObj();
-        // 다른 PC의 작업 저장이 옛 후가공/상품 설정으로 NAS를 덮지 않도록 LWW 병합
+        let settings = { ...this.getSettingsObj() };
+        // 다른 PC LWW + 상품/후가공은 관리자 게시가 아니면 NAS 값 강제 유지
         try {
             const nasSituation = await situationMirrorService.read(tenantId, true);
             if (nasSituation?.settings && typeof nasSituation.settings === 'object') {
-                const mergedSettings = this.mergeNasMasterSettingsForPush(
-                    settings,
-                    nasSituation.settings as Record<string, unknown>
-                );
-                settings = mergedSettings;
-                this.data['settings'] = [mergedSettings];
+                const nasSettings = nasSituation.settings as Record<string, unknown>;
+                settings = this.mergeNasMasterSettingsForPush(settings, nasSettings);
+                if (!publishProductProcessing) {
+                    for (const key of DataService.PRODUCT_PROCESSING_SETTINGS) {
+                        if (nasSettings[key] !== undefined && nasSettings[key] !== null) {
+                            settings[key] = nasSettings[key];
+                        }
+                    }
+                    const nasMeta = this.getSettingsMetaMap(nasSettings);
+                    const outMeta = this.getSettingsMetaMap(settings);
+                    for (const key of DataService.PRODUCT_PROCESSING_SETTINGS) {
+                        if (nasMeta[key]) outMeta[key] = nasMeta[key];
+                    }
+                    settings.settingsMeta = outMeta;
+                }
             }
         } catch (e) {
             console.warn('[DataService] settings merge-before-push skipped:', e);
@@ -2055,6 +2070,22 @@ export class DataService {
         'quoteTemplate',
     ] as const;
 
+    /** 상품·후가공만 — 작업 push로 절대 덮지 않음, 관리자 저장 시에만 게시 */
+    private static readonly PRODUCT_PROCESSING_SETTINGS = [
+        'productDefinitions',
+        'processingDefinitions',
+    ] as const;
+
+    setSessionCapabilities(caps: { canManageProductProcessing?: boolean }) {
+        if (typeof caps.canManageProductProcessing === 'boolean') {
+            this.sessionCanManageProductProcessing = caps.canManageProductProcessing;
+        }
+    }
+
+    private isProductProcessingSetting(name: string): boolean {
+        return (DataService.PRODUCT_PROCESSING_SETTINGS as readonly string[]).includes(name);
+    }
+
     /** Firestore/클라우드 전용 — NAS 미러로 덮지 않음 (경로·게이트웨이 등) */
     private static readonly MIRROR_PROTECTED_SETTINGS = [
         'archiveRootPath',
@@ -2141,6 +2172,15 @@ export class DataService {
                 if (current[key] === undefined || current[key] === null) {
                     merged[key] = value;
                 }
+            } else if (this.isProductProcessingSetting(key)) {
+                // 상품·후가공 — NAS SSOT (직원 로컬이 절대 이기지 않음)
+                if (value === undefined || value === null) continue;
+                merged[key] = value;
+                outMeta[key] =
+                    inMeta[key] ||
+                    (mirrorFallbackTs
+                        ? { updatedAt: mirrorFallbackTs }
+                        : { updatedAt: new Date().toISOString() });
             } else if (this.isNasMasterSetting(key)) {
                 if (value === undefined || value === null) continue;
                 const curTs = this.settingsKeyUpdatedAtMs(current, key);
@@ -2178,6 +2218,43 @@ export class DataService {
         };
         this.data['settings'] = [merged];
         this.applySettingsDefaultsMerge(merged);
+        this.emitProductProcessingSyncNotice(current, merged);
+    }
+
+    private productProcessingFingerprint(settings: Record<string, unknown>): string {
+        try {
+            return JSON.stringify({
+                product: settings.productDefinitions ?? null,
+                processing: settings.processingDefinitions ?? null,
+            });
+        } catch {
+            return '';
+        }
+    }
+
+    /** 다른 PC에서 상품/후가공이 바뀌면 안내 — 동일 데이터 유지 */
+    private emitProductProcessingSyncNotice(
+        before: Record<string, unknown>,
+        after: Record<string, unknown>
+    ): void {
+        const prev = this.productProcessingFingerprint(before);
+        const next = this.productProcessingFingerprint(after);
+        if (!next || prev === next) {
+            this.lastProductProcessingFingerprint = next || this.lastProductProcessingFingerprint;
+            return;
+        }
+        const isFirst = this.lastProductProcessingFingerprint === null;
+        this.lastProductProcessingFingerprint = next;
+        if (isFirst || !prev) return;
+        if (typeof window === 'undefined') return;
+        window.dispatchEvent(
+            new CustomEvent('ezpw-product-processing-updated', {
+                detail: {
+                    message:
+                        '회사 상품/후가공 설정이 갱신되었습니다. 화면이 자동 반영됩니다. 목록이 다르면 NAS 연결을 확인하거나 앱을 다시 시작해 주세요.',
+                },
+            })
+        );
     }
 
     private extractLegacyCompanyFields(settings: Record<string, unknown>): Partial<CompanyInfo> {
@@ -4206,12 +4283,12 @@ export class DataService {
         }
     }
 
-    private flushLiveMirrorPushNow(): Promise<boolean> {
+    private flushLiveMirrorPushNow(options?: { publishProductProcessing?: boolean }): Promise<boolean> {
         if (this.liveMirrorPushTimer) {
             clearTimeout(this.liveMirrorPushTimer);
             this.liveMirrorPushTimer = null;
         }
-        return this.pushLiveMirrors();
+        return this.pushLiveMirrors(options);
     }
 
     /** 칸반 → 관리카드로 올리기 (회사 공통 — 칸반에서 자동 숨김) */
@@ -4389,6 +4466,12 @@ export class DataService {
     }
 
     private async updateSetting(name: string, data: any) {
+        if (this.isProductProcessingSetting(name) && !this.sessionCanManageProductProcessing) {
+            throw new Error(
+                '상품·후가공 설정은 메인/사내 관리자만 변경할 수 있습니다.'
+            );
+        }
+
         const settings = this.data['settings']?.[0] || {};
         settings[name] = data;
         if (this.isNasMasterSetting(name)) {
@@ -4409,7 +4492,9 @@ export class DataService {
             if (this.tenantId && this.isLocalPrimaryMode()) {
                 await localDbBridge.saveSettings(this.tenantId, settings);
             }
-            const ok = await this.flushLiveMirrorPushNow();
+            const ok = await this.flushLiveMirrorPushNow({
+                publishProductProcessing: this.isProductProcessingSetting(name),
+            });
             if (!ok) {
                 throw new Error(
                     '회사 NAS에 저장하지 못했습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'

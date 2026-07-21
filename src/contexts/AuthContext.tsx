@@ -7,7 +7,7 @@ import { AppUser } from '../types';
 import { db as dataService } from '../services/dataService';
 import { getStaffIdForUser } from '../utils/staffMatch';
 import { getMaxStaffForPlan, isProPlan, shouldShowTenantAds } from '../utils/planLimits';
-import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, CompanyPermissionContext } from '../utils/adminAccess';
+import { isTenantOwnerUser, hasCompanyAdminAccess, canManageCompany, canManageTenantRoot, canDeletePermanently, canManageStaff, canManageClientMaster, canManageInstructions, canAccessStaffOperationsSettings, canManageProductProcessing, CompanyPermissionContext } from '../utils/adminAccess';
 import { isStaffKeepLoggedIn } from '../utils/staffLoginPreferences';
 import { readPendingStaffProfile } from '../utils/staffLoginSession';
 import { lookupStaffAuthSnapshot } from '../utils/resolveStaffTenantProfile';
@@ -76,8 +76,10 @@ interface AuthContextType {
   canManageStaff: boolean;
   canManageClientMaster: boolean;
   canManageInstructions: boolean;
-  /** 상품·후가공 설정 (일반 직원 포함) */
+  /** 상품·후가공 설정 — 관리자 전용(호환용, 항상 false) */
   canAccessStaffOperationsSettings: boolean;
+  /** 상품·후가공 마스터 추가/삭제/수정 */
+  canManageProductProcessing: boolean;
 }
 
 // [결제 만료 및 미결제 실시간 자동 판별 엔진]
@@ -244,6 +246,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canManageClientMasterFlag = canManageClientMaster(permissionCtx);
   const canManageInstructionsFlag = canManageInstructions(permissionCtx);
   const canAccessStaffOperationsSettingsFlag = canAccessStaffOperationsSettings(permissionCtx);
+  const canManageProductProcessingFlag = canManageProductProcessing(permissionCtx);
+
+  useEffect(() => {
+    dataService.setSessionCapabilities({
+      canManageProductProcessing: canManageProductProcessingFlag,
+    });
+  }, [canManageProductProcessingFlag]);
 
   const assertStaffNotDeleted = async (tenantId: string, user: User, loginId?: string | null) => {
     const staffCol = collection(db, `tenants/${tenantId}/staff`);
@@ -1261,6 +1270,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       canManageClientMaster: canManageClientMasterFlag,
       canManageInstructions: canManageInstructionsFlag,
       canAccessStaffOperationsSettings: canAccessStaffOperationsSettingsFlag,
+      canManageProductProcessing: canManageProductProcessingFlag,
     }}>
       {children}
     </AuthContext.Provider>

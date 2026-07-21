@@ -253,6 +253,21 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     window.addEventListener('ezprint-tv-mode-change', handleTvModeChange);
     return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
   }, []);
+
+  useEffect(() => {
+    const onMasterUpdated = (ev: Event) => {
+      const detail = (ev as CustomEvent<{ message?: string }>).detail;
+      toast.message(detail?.message || '회사 상품/후가공 설정이 갱신되었습니다.', {
+        duration: 8000,
+        action: {
+          label: '앱 다시 시작',
+          onClick: () => hardReloadApp(),
+        },
+      });
+    };
+    window.addEventListener('ezpw-product-processing-updated', onMasterUpdated);
+    return () => window.removeEventListener('ezpw-product-processing-updated', onMasterUpdated);
+  }, []);
   const [companyName, setCompanyName] = useState('EzPrintWork');
   const [isElectron, setIsElectron] = useState(false);
   const [showDownloadBanner, setShowDownloadBanner] = useState(() => {

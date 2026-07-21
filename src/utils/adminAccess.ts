@@ -3,13 +3,14 @@
  *
  * - 메인 관리자 (Tenant Owner): tenants.ownerId — 요금제·백업 포함 전체 회사 관리
  * - 사내 관리자 (Company Admin): staff.isCompanyAdmin + users.role admin — 직원 관리·마스터 데이터·삭제·정리
- * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·상품/후가공·거래처(사이드 메뉴) 등록·수정
+ * - 일반 직원 (Staff): users.role === 'staff' — 일상 작업·거래처(사이드 메뉴) 등록·수정
+ *   ※ 상품·후가공 마스터는 관리자 전용 (직원 push로 롤백되지 않음)
  */
 
 import type { Staff } from '../types';
 
-/** 설정 > 직원도 접근 가능한 운영 메뉴 */
-export const STAFF_OPERATIONS_SETTINGS_TAB_IDS = ['product', 'processing'] as const;
+/** @deprecated 상품·후가공은 관리자 전용 — 빈 목록 유지(호환) */
+export const STAFF_OPERATIONS_SETTINGS_TAB_IDS = [] as const;
 
 export type StaffOperationsSettingsTabId = (typeof STAFF_OPERATIONS_SETTINGS_TAB_IDS)[number];
 
@@ -25,12 +26,14 @@ export function filterJobTitleOptions(roles: string[]): string[] {
 }
 
 export function isStaffOperationsSettingsTab(tabId: string): tabId is StaffOperationsSettingsTabId {
-    return (STAFF_OPERATIONS_SETTINGS_TAB_IDS as readonly string[]).includes(tabId);
+    return (STAFF_OPERATIONS_SETTINGS_TAB_IDS as readonly string[]).includes(
+        tabId as StaffOperationsSettingsTabId
+    );
 }
 
-/** 상품·후가공 설정 — 로그인한 회사 구성원 (거래처는 사이드 메뉴) */
-export function canAccessStaffOperationsSettings(ctx: CompanyPermissionContext): boolean {
-    return !!ctx.userUid;
+/** 직원 전용 설정 탭 — 더 이상 없음(상품·후가공은 관리자만) */
+export function canAccessStaffOperationsSettings(_ctx: CompanyPermissionContext): boolean {
+    return false;
 }
 
 /** @deprecated 문자열만으로 권한 판별 — staff 문서는 isCompanyAdminStaff 사용 */
@@ -85,7 +88,7 @@ export const ROOT_SETTINGS_TAB_IDS = ['plan', 'archive', 'backup'] as const;
 export type RootSettingsTabId = (typeof ROOT_SETTINGS_TAB_IDS)[number];
 
 export function isRootSettingsTab(tabId: string): tabId is RootSettingsTabId {
-    return (ROOT_SETTINGS_TAB_IDS as readonly string[]).includes(tabId);
+    return (ROOT_SETTINGS_TAB_IDS as readonly string[]).includes(tabId as RootSettingsTabId);
 }
 
 export type CompanyPermissionContext = {
@@ -117,6 +120,11 @@ export function hasCompanyAdminAccess(ctx: CompanyPermissionContext): boolean {
 /** 메인 + 사내 관리자 — 설정·직원·마스터 데이터·영구 삭제 */
 export function canManageCompany(ctx: CompanyPermissionContext): boolean {
     return hasCompanyAdminAccess(ctx);
+}
+
+/** 상품·후가공 마스터 추가/삭제/수정 — 메인·사내 관리자만 */
+export function canManageProductProcessing(ctx: CompanyPermissionContext): boolean {
+    return canManageCompany(ctx);
 }
 
 /** 메인 관리자 전용 — 요금제·아카이브·백업 */
