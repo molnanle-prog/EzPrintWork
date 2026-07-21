@@ -4,6 +4,8 @@ export const A4_HEIGHT_MM = 297;
 export const A4_WIDTH_PX = Math.round((A4_WIDTH_MM / 25.4) * 96);
 export const A4_HEIGHT_PX = Math.round((A4_HEIGHT_MM / 25.4) * 96);
 
+export const EZPW_PRINT_ROOT_ID = 'ezpw-print-root';
+
 /** 화면 미리보기 — 견적서·작업지시서 동일 A4 실크기 */
 export const A4_SCREEN_PREVIEW_CSS = `
   #print-capture-area {
@@ -27,11 +29,13 @@ export const A4_SCREEN_PREVIEW_CSS = `
   #print-capture-area .page-container:last-child {
     margin-bottom: 0;
   }
+  #${EZPW_PRINT_ROOT_ID} {
+    display: none;
+  }
 `;
 
-/** @media print 공통 — 견적서·작업지시서 동일 */
-export const PRINT_A4_BASE_CSS = `
-  ${A4_SCREEN_PREVIEW_CSS}
+/** 인쇄 전용 — body에 복제한 루트만 출력 (overflow 잘림 방지) */
+const PRINT_ONLY_ROOT_CSS = `
   @media print {
     @page {
       size: ${A4_WIDTH_MM}mm ${A4_HEIGHT_MM}mm;
@@ -42,63 +46,149 @@ export const PRINT_A4_BASE_CSS = `
       padding: 0 !important;
       width: ${A4_WIDTH_MM}mm !important;
       height: auto !important;
-      background: white !important;
       overflow: visible !important;
+      background: white !important;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    body * {
-      visibility: hidden !important;
+    /* 미리보기 UI·스크롤 셸 전부 숨김 */
+    body > *:not(#${EZPW_PRINT_ROOT_ID}) {
+      display: none !important;
     }
-    #print-capture-area,
-    #print-capture-area * {
-      visibility: visible !important;
-    }
-    /* fixed 금지 — 다페이지가 1장만 인쇄되는 원인 */
-    #print-capture-area {
+    #${EZPW_PRINT_ROOT_ID} {
+      display: block !important;
       position: static !important;
-      left: auto !important;
-      top: auto !important;
       width: ${A4_WIDTH_MM}mm !important;
       margin: 0 !important;
       padding: 0 !important;
-      box-sizing: border-box !important;
       background: white !important;
-      box-shadow: none !important;
-      border-radius: 0 !important;
-      zoom: 1 !important;
-      transform: none !important;
       overflow: visible !important;
-    }
-    #print-capture-area .printable-document {
-      width: ${A4_WIDTH_MM}mm !important;
-      min-height: unset !important;
-      height: auto !important;
-      margin: 0 !important;
-      padding: 0 !important;
       box-shadow: none !important;
-      background: white !important;
     }
-    #print-capture-area .page-container {
+    #${EZPW_PRINT_ROOT_ID} .page-container {
+      display: block !important;
       width: ${A4_WIDTH_MM}mm !important;
       height: ${A4_HEIGHT_MM}mm !important;
       min-height: ${A4_HEIGHT_MM}mm !important;
-      max-width: ${A4_WIDTH_MM}mm !important;
+      max-height: ${A4_HEIGHT_MM}mm !important;
       margin: 0 !important;
-      padding: 10mm !important;
       box-sizing: border-box !important;
-      page-break-after: always;
-      break-after: page;
       overflow: hidden !important;
       box-shadow: none !important;
+      page-break-after: always !important;
+      break-after: page !important;
+      page-break-inside: avoid !important;
+      break-inside: avoid !important;
       position: relative !important;
+      float: none !important;
+      flex: none !important;
     }
-    #print-capture-area .page-container:last-child {
-      page-break-after: auto;
-      break-after: auto;
+    #${EZPW_PRINT_ROOT_ID} .page-container:last-child {
+      page-break-after: auto !important;
+      break-after: auto !important;
     }
   }
 `;
+
+/** @media print 공통 — 미리보기 셸 overflow 해제 + 복제 루트 */
+export const PRINT_A4_BASE_CSS = `
+  ${A4_SCREEN_PREVIEW_CSS}
+  ${PRINT_ONLY_ROOT_CSS}
+  @media print {
+    /* 복제 루트가 없을 때 대비: 캡처 영역 조상 잘림 해제 */
+    html, body {
+      height: auto !important;
+      overflow: visible !important;
+    }
+    body, body * {
+      max-height: none !important;
+    }
+    .document-preview-shell,
+    .document-preview-shell * {
+      overflow: visible !important;
+      height: auto !important;
+      max-height: none !important;
+    }
+  }
+`;
+
+function cleanupPrintRoot(): void {
+  document.getElementById(EZPW_PRINT_ROOT_ID)?.remove();
+  document.getElementById('ezpw-print-style')?.remove();
+}
+
+/**
+ * 화면의 .page-container를 body 직속으로 복제 후 인쇄.
+ * h-screen/overflow-hidden 때문에 2페이지가 잘리는 문제를 피한다.
+ */
+export async function printDocumentSimplex(): Promise<void> {
+  window.scrollTo(0, 0);
+  const scrollParent = document.querySelector('#print-capture-area')?.parentElement;
+  if (scrollParent) scrollParent.scrollTop = 0;
+
+  cleanupPrintRoot();
+
+  const source = document.querySelector('#print-capture-area');
+  if (!source) {
+    window.print();
+    return;
+  }
+
+  const pages = Array.from(source.querySelectorAll('.page-container')) as HTMLElement[];
+  const printRoot = document.createElement('div');
+  printRoot.id = EZPW_PRINT_ROOT_ID;
+
+  if (pages.length > 0) {
+    pages.forEach((page) => {
+      const clone = page.cloneNode(true) as HTMLElement;
+      clone.classList.add('page-container');
+      // 인라인 스타일이 인쇄 CSS와 충돌하지 않도록 크기만 맞춤
+      clone.style.width = `${A4_WIDTH_MM}mm`;
+      clone.style.height = `${A4_HEIGHT_MM}mm`;
+      clone.style.minHeight = `${A4_HEIGHT_MM}mm`;
+      clone.style.margin = '0';
+      clone.style.boxSizing = 'border-box';
+      clone.style.boxShadow = 'none';
+      printRoot.appendChild(clone);
+    });
+  } else {
+    const clone = source.cloneNode(true) as HTMLElement;
+    clone.removeAttribute('id');
+    printRoot.appendChild(clone);
+  }
+
+  const style = document.createElement('style');
+  style.id = 'ezpw-print-style';
+  style.textContent = PRINT_ONLY_ROOT_CSS;
+  document.head.appendChild(style);
+  document.body.appendChild(printRoot);
+
+  // 레이아웃 반영 대기
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  await new Promise((r) => setTimeout(r, 50));
+
+  const finish = () => {
+    cleanupPrintRoot();
+    window.removeEventListener('afterprint', finish);
+  };
+  window.addEventListener('afterprint', finish);
+
+  try {
+    const electronPrint = (window as Window & { electron?: { printDocument?: () => Promise<unknown> } })
+      .electron?.printDocument;
+    if (typeof electronPrint === 'function') {
+      await electronPrint();
+    } else {
+      window.print();
+    }
+  } catch (err) {
+    console.warn('[print] Electron print error, fallback to window.print:', err);
+    window.print();
+  } finally {
+    // Electron은 afterprint가 안 올 수 있어 지연 정리
+    setTimeout(finish, 1500);
+  }
+}
 
 export async function renderElementToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
   const html2canvas = (await import('html2canvas')).default;

@@ -1,6 +1,6 @@
 import React, { ReactNode, RefObject } from 'react';
 import { X, Printer, Download, Loader2 } from 'lucide-react';
-import { PRINT_A4_BASE_CSS } from '../../utils/printA4';
+import { PRINT_A4_BASE_CSS, printDocumentSimplex as printDocumentSimplexImpl } from '../../utils/printA4';
 
 interface DocumentPreviewShellProps {
   title: string;
@@ -31,7 +31,7 @@ export const DocumentPreviewShell: React.FC<DocumentPreviewShellProps> = ({
   pdfLabel = 'PDF로 보기',
 }) => {
   return (
-    <div className="h-screen w-screen bg-slate-100 flex flex-col overflow-hidden">
+    <div className="document-preview-shell h-screen w-screen bg-slate-100 flex flex-col overflow-hidden print:h-auto print:overflow-visible print:block">
       <style>{PRINT_A4_BASE_CSS}</style>
 
       <div className="p-4 bg-slate-800 text-white flex justify-between items-center shadow-md z-10 flex-none print:hidden">
@@ -68,7 +68,7 @@ export const DocumentPreviewShell: React.FC<DocumentPreviewShellProps> = ({
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto bg-slate-200 p-8 flex justify-center custom-scrollbar print:p-0 print:bg-white print:overflow-visible">
+      <div className="flex-1 overflow-auto bg-slate-200 p-8 flex justify-center custom-scrollbar print:p-0 print:bg-white print:overflow-visible print:h-auto print:block">
         <div id="print-capture-area" className="shadow-xl print:shadow-none">
           <div ref={contentRef}>{children}</div>
         </div>
@@ -83,19 +83,7 @@ export async function prepareDocumentPrint(): Promise<void> {
   if (scrollParent) scrollParent.scrollTop = 0;
 }
 
-/** Electron이면 단면(simplex) 강제, 아니면 window.print() */
+/** Electron 단면 인쇄 + 다페이지 body 복제 출력 */
 export async function printDocumentSimplex(): Promise<void> {
-  await prepareDocumentPrint();
-  const electronPrint = window.electron?.printDocument;
-  if (typeof electronPrint === 'function') {
-    try {
-      await electronPrint();
-    } catch (err) {
-      console.warn('[print] Electron print error, fallback to window.print:', err);
-      window.print();
-    }
-    return;
-  }
-  window.print();
+  return printDocumentSimplexImpl();
 }
-
