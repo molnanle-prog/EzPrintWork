@@ -1,12 +1,10 @@
-
 import React, { useRef, useState } from 'react';
 import { FileText } from 'lucide-react';
-import jsPDF from 'jspdf';
 import { Quote } from '../../types';
 import { QuoteDocument } from './QuoteDocument';
 import { db } from '../../services/dataService';
 import { getQuotePdfFileName } from '../../utils/quoteJobSync';
-import { renderA4PageToCanvas } from '../../utils/printA4';
+import { exportA4DocumentPdf } from '../../utils/printA4';
 import { DocumentPreviewShell, printDocumentSimplex } from '../common/DocumentPreviewShell';
 
 interface QuotePreviewPanelProps {
@@ -26,29 +24,10 @@ export const QuotePreviewPanel: React.FC<QuotePreviewPanelProps> = ({ quote, onC
   };
 
   const handleOpenPDF = async () => {
-    if (!quoteRef.current) return;
     setIsProcessing(true);
     try {
-      const pageEls = Array.from(
-        quoteRef.current.querySelectorAll('.page-container')
-      ) as HTMLElement[];
-
-      if (pageEls.length === 0) {
-        throw new Error('no pages');
-      }
-
-      const pdf = new jsPDF('p', 'mm', 'a4');
-      const pageW = pdf.internal.pageSize.getWidth();
-      const pageH = pdf.internal.pageSize.getHeight();
-
-      for (let i = 0; i < pageEls.length; i++) {
-        if (i > 0) pdf.addPage();
-        const canvas = await renderA4PageToCanvas(pageEls[i]);
-        pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, pageW, pageH);
-      }
-
       const fileName = getQuotePdfFileName(quote, db.getAllJobs(), documentType);
-      pdf.save(fileName);
+      await exportA4DocumentPdf(fileName);
     } catch (err) {
       console.error('PDF 생성 중 오류:', err);
       alert('PDF 생성 중 오류가 발생했습니다.');

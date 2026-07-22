@@ -52,7 +52,12 @@ export const ProcessingManager: React.FC = () => {
         await db.saveProcessingDefinitions(updated);
         setProcessingOptions(updated);
         setNewOptionName('');
-        await showAlert(`'${trimmed}' 후가공 항목이 추가되었습니다.`);
+        await showAlert(
+          `'${trimmed}' 후가공 항목이 추가되었습니다.\n\n` +
+            `※ 작업 등록 화면에 바로 나오지 않습니다.\n` +
+            `설정 → 상품 및 품목 관리에서 사용할 품목을 선택한 뒤\n` +
+            `해당 후가공을 체크하고 「후가공 저장」을 눌러 주세요.`
+        );
         focusRequiredInput(newOptionInputRef.current);
     } catch (error) {
         await showAlert('추가 실패: ' + getErrorMessage(error));
@@ -117,9 +122,15 @@ export const ProcessingManager: React.FC = () => {
         <Scissors className="text-blue-600 dark:text-blue-400" />
         마스터 후가공 관리
       </h3>
-      <p className="text-sm text-slate-500 dark:text-slate-400 mb-6">
-        주문 사양 등록창에 나타날 마스터 후가공 옵션 목록을 추가하거나 삭제합니다. 삭제 시 확인 후 즉시 저장됩니다.
+      <p className="text-sm text-slate-500 dark:text-slate-400 mb-3">
+        주문 사양에 쓸 수 있는 후가공 마스터 목록을 추가·삭제합니다. 삭제 시 확인 후 즉시 저장됩니다.
       </p>
+      <div className="mb-6 px-3 py-2.5 rounded-lg border border-sky-200 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-900 dark:text-sky-100 text-xs leading-relaxed">
+        <span className="font-bold">안내:</span> 여기에 추가한 항목은 마스터 목록에만 등록됩니다.
+        작업 등록 체크목록에 보이게 하려면{' '}
+        <span className="font-bold">상품 및 품목 관리</span>에서 품목을 선택한 뒤 후가공을 체크하고{' '}
+        <span className="font-bold">「후가공 저장」</span>을 눌러 주세요.
+      </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-8 max-h-[350px] overflow-y-auto custom-scrollbar pr-1">
         {processingOptions.map((option, index) => (

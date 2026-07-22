@@ -28,7 +28,7 @@ export const DocumentPreviewShell: React.FC<DocumentPreviewShellProps> = ({
   contentRef,
   children,
   printLabel = '프린트하기',
-  pdfLabel = 'PDF로 보기',
+  pdfLabel = 'PDF로 저장',
 }) => {
   return (
     <div className="document-preview-shell h-screen w-screen bg-slate-100 flex flex-col overflow-hidden print:h-auto print:overflow-visible print:block">

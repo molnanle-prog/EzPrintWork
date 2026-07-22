@@ -577,6 +577,48 @@ ipcMain.handle('print-document', async (event) => {
     });
 });
 
+/**
+ * 문서 PDF 저장 — printToPDF (미리보기·인쇄와 동일 Chromium 레이아웃)
+ * html2canvas/jspdf 미사용 → 폰트 겹침·줄간격 왜곡 없음
+ */
+ipcMain.handle('print-document-to-pdf', async (event, { defaultFileName } = {}) => {
+    const win = BrowserWindow.fromWebContents(event.sender) || BrowserWindow.getFocusedWindow();
+    if (!win || win.isDestroyed()) {
+        return { success: false, error: 'no-window' };
+    }
+
+    try {
+        const pdfBuffer = await win.webContents.printToPDF({
+            printBackground: true,
+            landscape: false,
+            pageSize: 'A4',
+            margins: { marginType: 'none' },
+            preferCSSPageSize: true,
+        });
+
+        const safeName =
+            typeof defaultFileName === 'string' && defaultFileName.trim()
+                ? defaultFileName.trim().replace(/[<>:"/\\|?*]/g, '_')
+                : 'document.pdf';
+        const withExt = /\.pdf$/i.test(safeName) ? safeName : `${safeName}.pdf`;
+
+        const { filePath, canceled } = await dialog.showSaveDialog(win, {
+            title: 'PDF로 저장',
+            defaultPath: withExt,
+            filters: [{ name: 'PDF', extensions: ['pdf'] }],
+        });
+
+        if (canceled || !filePath) {
+            return { success: false, canceled: true };
+        }
+
+        fs.writeFileSync(filePath, pdfBuffer);
+        return { success: true, filePath };
+    } catch (e) {
+        return { success: false, error: e?.message || String(e) };
+    }
+});
+
 function resolveShortcutIconPath() {
     if (app.isPackaged) {
         return process.execPath;

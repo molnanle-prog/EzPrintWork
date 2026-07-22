@@ -117,11 +117,8 @@ function cleanupPrintRoot(): void {
   document.getElementById('ezpw-print-style')?.remove();
 }
 
-/**
- * 화면의 .page-container를 body 직속으로 복제 후 인쇄.
- * h-screen/overflow-hidden 때문에 2페이지가 잘리는 문제를 피한다.
- */
-export async function printDocumentSimplex(): Promise<void> {
+/** 미리보기 .page-container를 body 직속 인쇄 루트로 복제 (인쇄·PDF 공통) */
+async function mountPrintRoot(): Promise<boolean> {
   window.scrollTo(0, 0);
   const scrollParent = document.querySelector('#print-capture-area')?.parentElement;
   if (scrollParent) scrollParent.scrollTop = 0;
@@ -129,10 +126,7 @@ export async function printDocumentSimplex(): Promise<void> {
   cleanupPrintRoot();
 
   const source = document.querySelector('#print-capture-area');
-  if (!source) {
-    window.print();
-    return;
-  }
+  if (!source) return false;
 
   const pages = Array.from(source.querySelectorAll('.page-container')) as HTMLElement[];
   const printRoot = document.createElement('div');
@@ -166,9 +160,21 @@ export async function printDocumentSimplex(): Promise<void> {
   document.head.appendChild(style);
   document.body.appendChild(printRoot);
 
-  // 레이아웃 반영 대기
   await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
   await new Promise((r) => setTimeout(r, 50));
+  return true;
+}
+
+/**
+ * 화면의 .page-container를 body 직속으로 복제 후 인쇄.
+ * h-screen/overflow-hidden 때문에 2페이지가 잘리는 문제를 피한다.
+ */
+export async function printDocumentSimplex(): Promise<void> {
+  const mounted = await mountPrintRoot();
+  if (!mounted) {
+    window.print();
+    return;
+  }
 
   const finish = () => {
     cleanupPrintRoot();
@@ -177,8 +183,7 @@ export async function printDocumentSimplex(): Promise<void> {
   window.addEventListener('afterprint', finish);
 
   try {
-    const electronPrint = (window as Window & { electron?: { printDocument?: () => Promise<unknown> } })
-      .electron?.printDocument;
+    const electronPrint = window.electron?.printDocument;
     if (typeof electronPrint === 'function') {
       await electronPrint();
     } else {
@@ -188,81 +193,83 @@ export async function printDocumentSimplex(): Promise<void> {
     console.warn('[print] Electron print error, fallback to window.print:', err);
     window.print();
   } finally {
-    // Electron은 afterprint가 안 올 수 있어 지연 정리
     setTimeout(finish, 1500);
   }
 }
 
-export async function renderElementToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
-  const html2canvas = (await import('html2canvas')).default;
-  const clone = element.cloneNode(true) as HTMLElement;
-  clone.classList.add('export-mode');
-  clone.style.position = 'absolute';
-  clone.style.left = '-9999px';
-  clone.style.top = '0';
-  clone.style.width = `${element.offsetWidth || A4_WIDTH_PX}px`;
-  clone.style.height = 'auto';
-  clone.style.background = 'white';
-  document.body.appendChild(clone);
+/**
+ * PDF 저장 — 인쇄와 동일한 복제 DOM + Chromium printToPDF.
+ * html2canvas 미사용 → 미리보기·인쇄와 100% 동일 레이아웃.
+ */
+export async function exportA4DocumentPdf(fileName: string): Promise<void> {
+  const mounted = await mountPrintRoot();
+  if (!mounted) {
+    throw new Error('no-print-source');
+  }
 
   try {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    void clone.offsetHeight;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
+    const electronPdf = window.electron?.printDocumentToPdf;
+    if (typeof electronPdf === 'function') {
+      const result = await electronPdf(fileName);
+      if (result?.canceled) return;
+      if (!result?.success) {
+        throw new Error(result?.error || 'pdf-failed');
+      }
+      return;
+    }
 
-    return await html2canvas(clone, {
-      scale: 2,
-      useCORS: true,
-      backgroundColor: '#ffffff',
-      windowWidth: clone.scrollWidth,
-      windowHeight: clone.scrollHeight,
+    // 브라우저(Vite): 인쇄 대화상자에서 'PDF로 저장' — 동일 Chromium 렌더
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        window.removeEventListener('afterprint', finish);
+        resolve();
+      };
+      window.addEventListener('afterprint', finish);
+      window.print();
+      setTimeout(finish, 2000);
     });
   } finally {
-    document.body.removeChild(clone);
+    cleanupPrintRoot();
   }
 }
 
+/** @deprecated PDF는 exportA4DocumentPdf 사용. 호환용 유지 */
+export async function renderElementToCanvas(element: HTMLElement): Promise<HTMLCanvasElement> {
+  if (element.classList.contains('page-container')) {
+    return renderA4PageToCanvas(element);
+  }
+  const html2canvas = (await import('html2canvas')).default;
+  await document.fonts.ready;
+  return html2canvas(element, {
+    scale: 2,
+    useCORS: true,
+    backgroundColor: '#ffffff',
+    logging: false,
+  });
+}
+
+/** @deprecated PDF는 exportA4DocumentPdf 사용 */
 export async function renderA4PageToCanvas(pageEl: HTMLElement): Promise<HTMLCanvasElement> {
   const html2canvas = (await import('html2canvas')).default;
-  const wrapper = document.createElement('div');
-  wrapper.style.position = 'absolute';
-  wrapper.style.left = '-9999px';
-  wrapper.style.top = '0';
-  wrapper.style.width = `${A4_WIDTH_PX}px`;
-  wrapper.style.height = `${A4_HEIGHT_PX}px`;
-  wrapper.style.background = 'white';
+  await document.fonts.ready;
+  pageEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 
-  const pageClone = pageEl.cloneNode(true) as HTMLElement;
-  pageClone.classList.add('export-mode');
-  pageClone.style.display = 'flex';
-  pageClone.style.flexDirection = 'column';
-  pageClone.style.position = 'relative';
-  pageClone.style.width = `${A4_WIDTH_PX}px`;
-  pageClone.style.height = `${A4_HEIGHT_PX}px`;
-  pageClone.style.minHeight = `${A4_HEIGHT_PX}px`;
-  pageClone.style.margin = '0';
-  pageClone.style.boxSizing = 'border-box';
-  pageClone.style.background = 'white';
-  pageClone.style.overflow = 'hidden';
-
-  wrapper.appendChild(pageClone);
-  document.body.appendChild(wrapper);
-
+  const prevShadow = pageEl.style.boxShadow;
+  pageEl.style.boxShadow = 'none';
   try {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    void wrapper.offsetHeight;
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-
-    return await html2canvas(wrapper, {
+    const w = Math.max(1, Math.round(pageEl.offsetWidth || A4_WIDTH_PX));
+    const h = Math.max(1, Math.round(pageEl.offsetHeight || A4_HEIGHT_PX));
+    return await html2canvas(pageEl, {
       scale: 2,
       useCORS: true,
+      allowTaint: true,
       backgroundColor: '#ffffff',
-      width: A4_WIDTH_PX,
-      height: A4_HEIGHT_PX,
-      windowWidth: A4_WIDTH_PX,
-      windowHeight: A4_HEIGHT_PX,
+      logging: false,
+      width: w,
+      height: h,
     });
   } finally {
-    document.body.removeChild(wrapper);
+    pageEl.style.boxShadow = prevShadow;
   }
 }

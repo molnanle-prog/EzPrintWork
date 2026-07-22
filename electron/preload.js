@@ -48,4 +48,7 @@ contextBridge.exposeInMainWorld('electron', {
     gatewayGetInfo: () => ipcRenderer.invoke('gateway-get-info'),
     /** 단면(simplex) 인쇄 — 양면 방지 */
     printDocument: () => ipcRenderer.invoke('print-document'),
+    /** 인쇄와 동일 레이아웃으로 PDF 저장 */
+    printDocumentToPdf: (defaultFileName) =>
+        ipcRenderer.invoke('print-document-to-pdf', { defaultFileName }),
 });

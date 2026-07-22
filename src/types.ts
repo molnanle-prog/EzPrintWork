@@ -483,6 +483,10 @@ export interface IElectronAPI {
   gatewayGetInfo?: () => Promise<{ port: number; baseUrl: string; lanUrls: string[] }>;
   /** 문서 인쇄 (단면 simplex 강제) */
   printDocument?: () => Promise<{ success: boolean; error?: string }>;
+  /** 문서 PDF 저장 — 인쇄와 동일 Chromium 렌더 (printToPDF) */
+  printDocumentToPdf?: (
+    defaultFileName: string
+  ) => Promise<{ success: boolean; canceled?: boolean; filePath?: string; error?: string }>;
   minimize: () => void;
   maximize: () => void;
   close: () => void;

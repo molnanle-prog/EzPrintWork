@@ -3,6 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { db, isBookletProductType, getErrorMessage } from '../../services/dataService';
 import { JobTypeDefinition } from '../../types';
 import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors, X } from 'lucide-react';
+import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
 
 function focusRequiredInput(input: HTMLInputElement | null) {
@@ -12,6 +13,7 @@ function focusRequiredInput(input: HTMLInputElement | null) {
 }
 
 export const ProductManager: React.FC = () => {
+  const { canManageProductProcessing } = useAuth();
   const [definitions, setDefinitions] = useState<JobTypeDefinition[]>([]);
   const [selectedType, setSelectedType] = useState<JobTypeDefinition | null>(null);
   const [newTypeName, setNewTypeName] = useState('');
@@ -32,6 +34,14 @@ export const ProductManager: React.FC = () => {
   const newWeightInputRef = useRef<HTMLInputElement>(null);
 
   const { showConfirm, showAlert } = useDialog();
+
+  const ensureCanEdit = async () => {
+      if (canManageProductProcessing) return true;
+      await showAlert(
+          '상품 추가/수정 권한이 아직 준비되지 않았거나 없습니다.\n메인·사내 관리자로 다시 로그인한 뒤 시도해 주세요.'
+      );
+      return false;
+  };
 
   useEffect(() => {
     loadData();
@@ -157,6 +167,7 @@ export const ProductManager: React.FC = () => {
   // --- Type Management ---
 
   const handleAddType = async () => {
+      if (!(await ensureCanEdit())) return;
       const trimmed = newTypeName.trim();
       if (!trimmed) {
           await showAlert('필수 입력 항목입니다.\n새 품목명을 입력해 주세요.');
@@ -178,9 +189,10 @@ export const ProductManager: React.FC = () => {
       const newDefs = [...latestDefs, newDef];
       try {
           await db.saveProductDefinitions(newDefs);
-          setDefinitions(newDefs);
+          setDefinitions(db.getProductDefinitions());
           setNewTypeName('');
           setSelectedType(newDef);
+          await showAlert(`'${trimmed}' 품목이 추가되었습니다.`);
       } catch (error) {
           await showAlert('품목 추가 실패: ' + getErrorMessage(error));
           focusRequiredInput(newTypeInputRef.current);
@@ -220,6 +232,7 @@ export const ProductManager: React.FC = () => {
 
   const handleAddOption = async (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string, setter: (v: string) => void) => {
       if (!selectedType) return;
+      if (!(await ensureCanEdit())) return;
 
       const categoryName = category === 'sizes' ? '규격' : category === 'paperTypes' ? '용지' : '평량';
       const inputRef = getOptionInputRef(category);
@@ -263,8 +276,10 @@ export const ProductManager: React.FC = () => {
       const newDefs = latestDefs.map(d => d.name === selectedType.name ? updatedDef : d);
       try {
           await db.saveProductDefinitions(newDefs);
-          setDefinitions(newDefs);
-          setSelectedType(updatedDef);
+          const refreshed = db.getProductDefinitions();
+          setDefinitions(refreshed);
+          const nextSelected = refreshed.find((d) => d.name === selectedType.name) || updatedDef;
+          setSelectedType(nextSelected);
           setter('');
       } catch (error) {
           await showAlert('옵션 추가 실패: ' + getErrorMessage(error));
@@ -320,43 +335,49 @@ export const ProductManager: React.FC = () => {
          </div>
       </div>
 
+      {!canManageProductProcessing && (
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-200 text-xs font-bold flex-none">
+          상품 추가/수정 권한이 확인되지 않았습니다. 메인·사내 관리자로 다시 로그인하거나 잠시 후 다시 시도해 주세요.
+        </div>
+      )}
+
       <div className="flex flex-1 overflow-hidden">
           {/* Left: Job Types List */}
           <div className="w-1/3 border-r border-slate-200 dark:border-slate-700 flex flex-col bg-slate-50/50 dark:bg-slate-900/50">
-              <div className="p-3 border-b border-slate-200 dark:border-slate-700">
-                  <div className="flex gap-2">
+              <div className="px-2 py-1.5 border-b border-slate-200 dark:border-slate-700">
+                  <div className="flex gap-1.5">
                       <input 
                           ref={newTypeInputRef}
                           value={newTypeName}
                           onChange={(e) => setNewTypeName(e.target.value)}
                           placeholder="새 품목명 (예: 전단지)"
-                          className={inputClass}
+                          className="flex-1 py-1 px-2 text-xs border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-blue-500 text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-700 placeholder-slate-400"
                           onKeyDown={(e) => e.key === 'Enter' && handleAddType()}
                       />
-                      <button onClick={handleAddType} className="bg-blue-600 text-white p-2 rounded hover:bg-blue-700 transition-colors">
-                          <Plus size={18} />
+                      <button onClick={handleAddType} className="bg-blue-600 text-white p-1.5 rounded hover:bg-blue-700 transition-colors">
+                          <Plus size={16} />
                       </button>
                   </div>
               </div>
-              <div className="flex-1 overflow-y-auto p-2 space-y-1">
+              <div className="flex-1 overflow-y-auto p-1.5 space-y-0.5">
                   {definitions.map(def => (
                       <div 
                           key={def.name}
                           onClick={() => setSelectedType(def)}
-                          className={`flex justify-between items-center p-3 rounded-lg cursor-pointer transition-colors group ${
+                          className={`flex justify-between items-center px-2.5 py-1.5 rounded-md cursor-pointer transition-colors group ${
                               selectedType?.name === def.name 
-                              ? 'bg-white dark:bg-slate-700 shadow-md border-l-4 border-l-blue-600' 
+                              ? 'bg-white dark:bg-slate-700 shadow-sm border-l-4 border-l-blue-600' 
                               : 'hover:bg-white dark:hover:bg-slate-700 hover:shadow-sm'
                           }`}
                       >
-                          <span className={`font-bold ${selectedType?.name === def.name ? 'text-blue-700 dark:text-blue-300' : 'text-slate-600 dark:text-slate-300'}`}>
+                          <span className={`text-sm font-bold ${selectedType?.name === def.name ? 'text-blue-700 dark:text-blue-300' : 'text-slate-600 dark:text-slate-300'}`}>
                               {def.name}
                           </span>
                           <button 
                               onClick={(e) => { e.stopPropagation(); handleDeleteType(def.name); }}
-                              className="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                              className="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity p-0.5"
                           >
-                              <Trash2 size={16} />
+                              <Trash2 size={14} />
                           </button>
                       </div>
                   ))}
@@ -470,8 +491,8 @@ export const ProductManager: React.FC = () => {
                               </h4>
                               <p className="text-[10px] text-slate-400">
                                   {isBookletProductType(selectedType.name)
-                                      ? '제본·공통 / 표지 / 내지 후가공을 각각 선택한 뒤 하단 후가공 저장을 눌러 주세요.'
-                                      : '여러 개를 체크한 뒤 하단 후가공 저장을 눌러 주세요.'}
+                                      ? '제본·공통 / 표지 / 내지 후가공을 각각 선택한 뒤 하단 후가공 저장을 눌러 주세요. (목록에 없으면 「후가공 관리」에서 먼저 추가)'
+                                      : '여러 개를 체크한 뒤 하단 후가공 저장을 눌러 주세요. (목록에 없으면 「후가공 관리」에서 먼저 추가)'}
                               </p>
 
                               {isBookletProductType(selectedType.name) ? (
@@ -525,7 +546,7 @@ export const ProductManager: React.FC = () => {
                                                       </span>
                                                   </div>
                                               </div>
-                                              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-1.5 max-h-48 overflow-y-auto custom-scrollbar">
+                                              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-1.5 max-h-[22rem] overflow-y-auto custom-scrollbar">
                                                   {allProcessings.map((opt) => {
                                                       const isChecked = section.draft.includes(opt);
                                                       return (
@@ -568,7 +589,7 @@ export const ProductManager: React.FC = () => {
                                               선택 {draftProcessings.length} / {allProcessings.length}
                                           </span>
                                       </div>
-                                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-[28rem] overflow-y-auto custom-scrollbar space-y-1">
                                           {allProcessings.map(opt => {
                                               const isChecked = draftProcessings.includes(opt);
                                               return (

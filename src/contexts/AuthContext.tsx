@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline, setPresenceGatewayUrls } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
@@ -248,7 +248,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const canAccessStaffOperationsSettingsFlag = canAccessStaffOperationsSettings(permissionCtx);
   const canManageProductProcessingFlag = canManageProductProcessing(permissionCtx);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     dataService.setSessionCapabilities({
       canManageProductProcessing: canManageProductProcessingFlag,
     });

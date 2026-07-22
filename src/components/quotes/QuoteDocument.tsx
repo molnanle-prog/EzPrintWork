@@ -237,7 +237,6 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
 
   return (
     <>
-      <style>{`.export-mode .lift-text { position: relative; top: -8px; display: inline-block; }`}</style>
       <div
         id={id}
         className="printable-document bg-white text-slate-800 mx-auto flex flex-col"

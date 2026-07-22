@@ -11,7 +11,7 @@ interface JobOrderDocumentProps {
   id?: string;
 }
 
-/** 짧은 사양 ≈ 1, 길수록 증가. 페이지 예산 4 → 짧은 품목 최대 4개 */
+/** 짧은 사양 ≈ 1, 길수록 증가. 페이지 예산 4 → 짧은 품목 최대 4개, 넘치면 다음 페이지 */
 function estimateJobItemCost(item: JobItem): number {
   const s = item.specs;
   let cost = 1;
@@ -42,6 +42,7 @@ function estimateJobItemCost(item: JobItem): number {
 }
 
 function paginateJobItems(items: JobItem[]): JobItem[][] {
+  /** 짧은 명함형 ≈1 → 최대 4개. 긴 사양은 cost로 더 일찍 다음 페이지 */
   const PAGE_BUDGET = 4;
   const MAX_PER_PAGE = 4;
   const pages: JobItem[][] = [];
@@ -80,13 +81,6 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
 
   return (
     <>
-      <style>{`
-        .export-mode .lift-text {
-          position: relative;
-          top: -8px;
-          display: inline-block;
-        }
-      `}</style>
       <div
         id={id}
         className="printable-document bg-white text-black mx-auto"
@@ -97,7 +91,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
 
           // 페이지·품목 수와 무관 — 표/폰트/서명판 크기 고정 (넘치면 다음 페이지)
           const styles = {
-              sectionGap: 'mb-2',
+              sectionGap: 'mb-1.5',
               headerMb: 'mb-2 pb-1.5',
               titleText: 'text-3xl',
               subTitleText: 'text-lg',
@@ -190,13 +184,13 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   <div className={`font-bold text-black py-1 leading-tight truncate ${styles.titleText}`}><span className="lift-text">{job.title}</span></div>
               </div>
 
-              {/* 4. Specs — 목록끼리 고정 간격으로 붙이고, 남는 공간은 서명판 위만 */}
+              {/* 4. Specs — 목록은 위에서 붙이고, 남는 공간은 서명판 위. 넘치면 잘려 겹치지 않음 */}
               <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
                   <h3 className={`font-bold text-black mb-1.5 flex items-center gap-2 border-l-[6px] border-blue-600 pl-2 flex-none ${styles.listTitleText}`}>
                       <span className="lift-text">제작 사양 목록 (Page {pageIndex + 1})</span>
                   </h3>
                   
-                  <div className="flex flex-col justify-start">
+                  <div className="flex-1 min-h-0 overflow-hidden flex flex-col justify-start">
                       {pageItems.map((item, idx) => {
                           const globalIdx = startIndex + idx + 1;
                           const hasInner = !!item.specs.paperTypeInner;
@@ -353,13 +347,13 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   </div>
               </div>
 
-              {/* 서명표 + 푸터 — 목록과 동일 가로폭·고정 크기, 하단 여백만 축소 */}
+              {/* 서명표 + 푸터 — 사양표와 동일 선(2px), 남는 여백은 서명판 위만 */}
               <div
                 className="mt-auto flex-none w-full flex flex-col"
                 style={{ marginBottom: 0 }}
               >
                   <div className="w-full break-inside-avoid">
-                      <table className="w-full border-collapse border-[3px] border-black table-fixed">
+                      <table className="w-full border-collapse border-[2px] border-slate-400 table-fixed">
                           <colgroup>
                               <col style={{ width: '25%' }} />
                               <col style={{ width: '25%' }} />
@@ -371,7 +365,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                   {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
                                       <th
                                           key={step}
-                                          className={`bg-slate-100 border-[3px] border-black p-1 text-center font-bold ${styles.signatureHeadText}`}
+                                          className={`bg-slate-100 border-[2px] border-slate-400 p-1 text-center font-bold ${styles.signatureHeadText}`}
                                       >
                                           <span className="lift-text">{step}</span>
                                       </th>
@@ -383,7 +377,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                   {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
                                       <td
                                           key={`sig-${step}`}
-                                          className={`border-[3px] border-black ${styles.signatureHeight} align-bottom text-center pb-2`}
+                                          className={`border-[2px] border-slate-400 ${styles.signatureHeight} align-bottom text-center pb-2`}
                                       >
                                           <span className="text-slate-300 font-bold text-sm">
                                               <span className="lift-text">(서명)</span>

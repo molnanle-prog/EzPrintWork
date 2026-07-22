@@ -293,7 +293,8 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
 ];
 
 const LEGACY_CATALOG_TYPE_NAMES = ['카탈로그/브로셔', '카탈로그/책자', '카달로그/책자', '카달로그/브로셔'];
-const LEGACY_SIGNAGE_TYPE_NAMES = ['현수막/배너', '현수막'];
+/** 작업(jobs) type 레거시 보정용 — 해당 품목명이 마스터에 없을 때만 적용 */
+const LEGACY_JOB_SIGNAGE_TYPE_NAMES = ['현수막/배너', '현수막'];
 
 const DEFAULT_STAFF_ROLES = ['관리자', '디자이너', '인쇄기장', '후가공', '배송', '실장', '부장', '과장', '대리', '사원'];
 
@@ -446,72 +447,16 @@ function resolveBookletProcessingSets(def: JobTypeDefinition | undefined, typeNa
     return { common: [], cover: [], inner: [] };
 }
 
+/** 품목명 자동 변경/합치기 없음 — 사용자가 등록한 이름 그대로 유지. 책자·카탈로그 평량만 정리 */
 export function normalizeProductDefinitions(definitions: JobTypeDefinition[]): { definitions: JobTypeDefinition[]; changed: boolean } {
-    const catalogTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '카탈로그');
-    const bookTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '책자');
-    const signageTemplate = INITIAL_PRODUCT_DEFINITIONS.find(d => d.name === '실사');
-    if (!catalogTemplate || !bookTemplate) {
-        return { definitions, changed: false };
-    }
-
     let changed = false;
-    const result: JobTypeDefinition[] = [];
-    let catalogFromCombined: JobTypeDefinition | null = null;
-    let needBookFromSplit = false;
-
-    for (const def of definitions) {
-        if (def.name === '카탈로그/브로셔' || def.name === '카달로그/브로셔') {
-            changed = true;
-            result.push(mergeProductDefinition(catalogTemplate, def, '카탈로그'));
-            continue;
-        }
-        if (def.name === '카탈로그/책자' || def.name === '카달로그/책자') {
-            changed = true;
-            catalogFromCombined = mergeProductDefinition(catalogTemplate, def, '카탈로그');
-            needBookFromSplit = true;
-            continue;
-        }
-        if (signageTemplate && LEGACY_SIGNAGE_TYPE_NAMES.includes(def.name)) {
-            changed = true;
-            const idx = result.findIndex((d) => d.name === '실사');
-            const merged = mergeProductDefinition(signageTemplate, def, '실사');
-            if (idx >= 0) {
-                result[idx] = mergeProductDefinition(signageTemplate, { ...result[idx], ...merged }, '실사');
-            } else {
-                result.push(merged);
-            }
-            continue;
-        }
-        if (def.name === '실사') {
-            const idx = result.findIndex((d) => d.name === '실사');
-            const merged = signageTemplate ? mergeProductDefinition(signageTemplate, def, '실사') : def;
-            if (idx >= 0) {
-                result[idx] = mergeProductDefinition(signageTemplate!, { ...result[idx], ...merged }, '실사');
-            } else {
-                result.push(merged);
-            }
-            continue;
-        }
-        result.push(def);
-    }
-
-    if (catalogFromCombined && !result.some(d => d.name === '카탈로그')) {
-        result.push(catalogFromCombined);
-    }
-    if (needBookFromSplit && !result.some(d => d.name === '책자')) {
-        result.push({ ...bookTemplate });
-    }
-
-    const sanitized = result.map((def) => {
+    const sanitized = definitions.map((def) => {
         if (!isBookletProductType(def.name)) return def;
         const paperWeights = sanitizeBookletPaperWeights(def.paperWeights);
         if (stringArraysEqual(paperWeights, def.paperWeights)) return def;
+        changed = true;
         return { ...def, paperWeights };
     });
-    if (!sanitized.every((d, i) => productDefinitionFieldsEqual(d, result[i]))) {
-        changed = true;
-    }
-
     return { definitions: sanitized, changed };
 }
 
@@ -1742,14 +1687,27 @@ export class DataService {
         }
         const staff = (this.data['staff'] || []) as Staff[];
         const clients = (this.data['clients'] || []) as Client[];
-        let settings = { ...this.getSettingsObj() };
+        const localSettingsSnapshot = { ...this.getSettingsObj() };
+        let settings = { ...localSettingsSnapshot };
         // 다른 PC LWW + 상품/후가공은 관리자 게시가 아니면 NAS 값 강제 유지
         try {
             const nasSituation = await situationMirrorService.read(tenantId, true);
             if (nasSituation?.settings && typeof nasSituation.settings === 'object') {
                 const nasSettings = nasSituation.settings as Record<string, unknown>;
                 settings = this.mergeNasMasterSettingsForPush(settings, nasSettings);
-                if (!publishProductProcessing) {
+                if (publishProductProcessing) {
+                    // 관리자 상품/후가공 저장: 로컬 게시 의도를 NAS 병합 결과에 강제 반영
+                    const localMeta = this.getSettingsMetaMap(localSettingsSnapshot);
+                    const outMeta = this.getSettingsMetaMap(settings);
+                    const nowIso = new Date().toISOString();
+                    for (const key of DataService.PRODUCT_PROCESSING_SETTINGS) {
+                        if (localSettingsSnapshot[key] !== undefined && localSettingsSnapshot[key] !== null) {
+                            settings[key] = localSettingsSnapshot[key];
+                            outMeta[key] = localMeta[key] || { updatedAt: nowIso };
+                        }
+                    }
+                    settings.settingsMeta = outMeta;
+                } else {
                     for (const key of DataService.PRODUCT_PROCESSING_SETTINGS) {
                         if (nasSettings[key] !== undefined && nasSettings[key] !== null) {
                             settings[key] = nasSettings[key];
@@ -2173,14 +2131,23 @@ export class DataService {
                     merged[key] = value;
                 }
             } else if (this.isProductProcessingSetting(key)) {
-                // 상품·후가공 — NAS SSOT (직원 로컬이 절대 이기지 않음)
+                // 상품·후가공 — NAS SSOT이지만, 로컬이 더 최신이면 유지
+                // (저장 직후 폴이 옛 NAS로 덮어 ‘추가는 안 되고 삭제만 된다’ 현상 방지)
                 if (value === undefined || value === null) continue;
-                merged[key] = value;
-                outMeta[key] =
-                    inMeta[key] ||
-                    (mirrorFallbackTs
-                        ? { updatedAt: mirrorFallbackTs }
-                        : { updatedAt: new Date().toISOString() });
+                const curTs = this.settingsKeyUpdatedAtMs(current, key);
+                let inTs = this.settingsKeyUpdatedAtMs(incoming, key);
+                if (inTs === 0 && mirrorFallbackTs) {
+                    inTs = Date.parse(mirrorFallbackTs) || 0;
+                }
+                if (inTs > curTs || curTs === 0) {
+                    merged[key] = value;
+                    outMeta[key] =
+                        inMeta[key] ||
+                        (mirrorFallbackTs
+                            ? { updatedAt: mirrorFallbackTs }
+                            : { updatedAt: new Date().toISOString() });
+                }
+                // else: 로컬(방금 추가/수정)이 더 최신 — 유지
             } else if (this.isNasMasterSetting(key)) {
                 if (value === undefined || value === null) continue;
                 const curTs = this.settingsKeyUpdatedAtMs(current, key);
@@ -3178,10 +3145,12 @@ export class DataService {
 
     /** 메모리만 — 런타임 마이그레이션 쓰기는 읽기·쓰기 폭증 유발로 비활성화 */
     private handleJobsMigrationInMemory(currentJobs: any[]): any[] {
+        // 동일 품목명이 마스터에 있으면 그대로 두고, 없을 때만 옛 이름 → 기본명으로 표시 보정
+        const productNames = new Set(this.getProductDefinitions().map((d) => d.name));
         return currentJobs.map((job: any) => {
-            if (job.type === '무선제본책자') job.type = '책자';
-            if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type)) job.type = '카탈로그';
-            if (LEGACY_SIGNAGE_TYPE_NAMES.includes(job.type)) job.type = '실사';
+            if (job.type === '무선제본책자' && !productNames.has(job.type)) job.type = '책자';
+            if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type) && !productNames.has(job.type)) job.type = '카탈로그';
+            if (LEGACY_JOB_SIGNAGE_TYPE_NAMES.includes(job.type) && !productNames.has(job.type)) job.type = '실사';
             // specs/subJobs 레거시는 화면 표시용 메모리 정규화만 (Firestore 미쓰기)
             return job;
         });
