@@ -352,8 +352,14 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
                           </p>
                         )}
                         <p className="text-sm text-slate-600 leading-relaxed">
-                          <span className="lift-text">아래와 같이 견적합니다.</span><br />
-                          <span className="lift-text">견적 유효기간 : 발행일로부터 14일</span>
+                          {documentType === 'statement' ? (
+                            <span className="lift-text">아래와 같이 거래합니다.</span>
+                          ) : (
+                            <>
+                              <span className="lift-text">아래와 같이 견적합니다.</span><br />
+                              <span className="lift-text">견적 유효기간 : 발행일로부터 14일</span>
+                            </>
+                          )}
                         </p>
                       </div>
 
