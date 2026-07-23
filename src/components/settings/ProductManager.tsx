@@ -1,10 +1,11 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, isBookletProductType, getErrorMessage } from '../../services/dataService';
 import { JobTypeDefinition } from '../../types';
-import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors, X } from 'lucide-react';
+import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, Scissors, X, GitMerge } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
+import { getProductMergePreview, mergeProducts } from '../../utils/productMerge';
 
 function focusRequiredInput(input: HTMLInputElement | null) {
   if (!input) return;
@@ -27,6 +28,11 @@ export const ProductManager: React.FC = () => {
   const [draftProcessingsCover, setDraftProcessingsCover] = useState<string[]>([]);
   const [draftProcessingsInner, setDraftProcessingsInner] = useState<string[]>([]);
   const [processingsDirty, setProcessingsDirty] = useState(false);
+  const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
+  const [mergePickNames, setMergePickNames] = useState<string[]>([]);
+  const [mergePrimaryName, setMergePrimaryName] = useState<string | null>(null);
+  const [mergeSearchQuery, setMergeSearchQuery] = useState('');
+  const [isMerging, setIsMerging] = useState(false);
 
   const newTypeInputRef = useRef<HTMLInputElement>(null);
   const newSizeInputRef = useRef<HTMLInputElement>(null);
@@ -200,7 +206,15 @@ export const ProductManager: React.FC = () => {
   };
 
   const handleDeleteType = async (name: string) => {
-      if (await showConfirm(`'${name}' 작업 종류를 삭제하시겠습니까?\n\n해당 종류의 모든 하위 설정(규격, 용지 등)이 삭제됩니다.\n확인(삭제)을 누르면 즉시 저장됩니다.`)) {
+      if (
+          await showConfirm(
+              `'${name}' 작업 종류를 삭제하시겠습니까?\n\n` +
+                  `• 규격·용지 등 하위 설정이 삭제됩니다.\n` +
+                  `• 이미 등록된 작업의 품목명은 그대로 남습니다.\n` +
+                  `• 중복 품목을 하나로 모으려면 삭제가 아니라 「상품 합치기」를 사용하세요.\n\n` +
+                  `확인(삭제)을 누르면 즉시 저장됩니다.`
+          )
+      ) {
           try {
               await db.deleteJobType(name);
               if (selectedType?.name === name) setSelectedType(null);
@@ -219,6 +233,92 @@ export const ProductManager: React.FC = () => {
           } catch (error) {
               showAlert('복원 중 오류가 발생했습니다.');
           }
+      }
+  };
+
+  const openMergeModal = async () => {
+      if (!(await ensureCanEdit())) return;
+      if (definitions.length < 2) {
+          await showAlert('합치려면 품목이 2개 이상 있어야 합니다.');
+          return;
+      }
+      setMergePickNames([]);
+      setMergePrimaryName(null);
+      setMergeSearchQuery('');
+      setIsMergeModalOpen(true);
+  };
+
+  const toggleMergePick = (name: string) => {
+      setMergePickNames((prev) => {
+          if (prev.includes(name)) {
+              const next = prev.filter((n) => n !== name);
+              if (mergePrimaryName === name) setMergePrimaryName(next[0] || null);
+              return next;
+          }
+          if (prev.length >= 2) {
+              const next = [prev[1], name];
+              setMergePrimaryName((current) => (current && next.includes(current) ? current : next[0]));
+              return next;
+          }
+          const next = [...prev, name];
+          if (next.length === 1) setMergePrimaryName(name);
+          if (next.length === 2 && !mergePrimaryName) setMergePrimaryName(next[0]);
+          return next;
+      });
+  };
+
+  const mergeSelectedDefs = useMemo(
+      () => definitions.filter((d) => mergePickNames.includes(d.name)),
+      [definitions, mergePickNames]
+  );
+
+  const mergeFilteredDefs = useMemo(() => {
+      const q = mergeSearchQuery.trim().toLowerCase();
+      if (!q) return definitions;
+      return definitions.filter((d) => d.name.toLowerCase().includes(q));
+  }, [definitions, mergeSearchQuery]);
+
+  const handleMergeProducts = async () => {
+      if (!(await ensureCanEdit())) return;
+      if (mergePickNames.length !== 2 || !mergePrimaryName) {
+          await showAlert('합칠 품목 2개와 유지할 품목명을 선택해 주세요.');
+          return;
+      }
+      const secondaryName = mergePickNames.find((n) => n !== mergePrimaryName);
+      if (!secondaryName) return;
+
+      const preview = getProductMergePreview(mergePrimaryName, secondaryName);
+      const confirmed = await showConfirm(
+          `[상품 합치기]\n\n` +
+              `유지(최종명): '${mergePrimaryName}'\n` +
+              `합쳐질 쪽: '${secondaryName}' → 목록에서 제거\n\n` +
+              `• 작업 ${preview.jobsAffected}건의 품목명을 '${mergePrimaryName}'으로 변경\n` +
+              `• 규격·용지·평량·후가공 옵션은 합집합으로 유지 품목에 합침\n` +
+              `• 견적서 품목명은 변경하지 않음 (재출력 시 예전과 동일, ${preview.quoteLinesKept}라인 유지)\n\n` +
+              `※ 일반 추가/등록 시에는 절대 자동으로 합치지 않습니다.\n` +
+              `※ 이 작업은 되돌릴 수 없습니다. 진행하시겠습니까?`
+      );
+      if (!confirmed) return;
+
+      setIsMerging(true);
+      try {
+          const result = await mergeProducts(mergePrimaryName, secondaryName);
+          setDefinitions(db.getProductDefinitions());
+          setSelectedType(db.getProductDefinitions().find((d) => d.name === mergePrimaryName) || null);
+          setIsMergeModalOpen(false);
+          setMergePickNames([]);
+          setMergePrimaryName(null);
+          await showAlert(
+              `상품 합치기가 완료되었습니다.\n\n` +
+                  `• 유지 품목: ${result.primaryName}\n` +
+                  `• 작업 ${result.jobsAffected}건 품목명 통합\n` +
+                  `• 견적 ${result.quoteLinesKept}라인은 당시 이름 유지\n` +
+                  `• '${result.secondaryName}' 품목은 목록에서 제거됨`
+          );
+      } catch (error) {
+          await showAlert('합치기 실패: ' + getErrorMessage(error));
+      } finally {
+          setIsMerging(false);
       }
   };
 
@@ -321,6 +421,15 @@ export const ProductManager: React.FC = () => {
             <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100">상품 및 품목 관리</h3>
          </div>
          <div className="flex items-center gap-3">
+             <button
+                type="button"
+                onClick={openMergeModal}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:hover:bg-amber-900/40 text-amber-800 dark:text-amber-200 rounded-lg text-xs font-bold transition-all border border-amber-200 dark:border-amber-800"
+                title="중복 품목을 하나로 합칩니다 (자동 합치기 아님)"
+             >
+                <GitMerge size={14} />
+                상품 합치기
+             </button>
              <button 
                 onClick={handleRestoreDefaults}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-bold transition-all border border-slate-200 dark:border-slate-600"
@@ -330,7 +439,7 @@ export const ProductManager: React.FC = () => {
                 기본값 복원
              </button>
              <div className="text-xs text-slate-500 dark:text-slate-400">
-                 * 이곳에서 추가한 항목은 작업 등록 시 즉시 반영됩니다.
+                 * 추가한 품목명은 자동으로 합쳐지지 않습니다. 중복만 「상품 합치기」로 처리하세요.
              </div>
          </div>
       </div>
@@ -632,6 +741,138 @@ export const ProductManager: React.FC = () => {
               )}
           </div>
       </div>
+
+      {isMergeModalOpen && (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+          <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="p-5 border-b border-slate-200 dark:border-slate-700 flex justify-between items-start bg-slate-50 dark:bg-slate-900">
+              <div>
+                <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                  <GitMerge className="text-amber-600 dark:text-amber-400" />
+                  상품 합치기
+                </h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  중복 품목 2개를 고른 뒤 <strong className="text-amber-700 dark:text-amber-300">유지할 이름</strong>을 선택합니다.
+                  등록 시 자동으로 합쳐지지 않으며, 이 화면에서만 실행됩니다.
+                </p>
+              </div>
+              <button type="button" onClick={() => setIsMergeModalOpen(false)} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full">
+                <X size={22} className="text-slate-500" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto custom-scrollbar p-5 space-y-5">
+              <div className="rounded-xl border border-amber-200 dark:border-amber-800 bg-amber-50/70 dark:bg-amber-950/20 px-4 py-3 text-xs text-amber-900 dark:text-amber-100 space-y-1.5 leading-relaxed">
+                <p className="font-bold text-sm">합치기 안내 (어제 자동 합치기와 다름)</p>
+                <p>1) 합칠 품목 <strong>2개</strong>를 선택하고, 남길 이름을 <strong>「유지」</strong>로 고릅니다.</p>
+                <p>2) <strong>작업</strong> 품목명만 유지 이름으로 바뀝니다. 규격·용지 등 옵션은 합쳐집니다.</p>
+                <p>3) <strong>견적서</strong> 품목명은 바꾸지 않아, 예전에 준 견적을 다시 출력해도 같습니다.</p>
+                <p>4) 이후 같은 이름을 <strong>새로 추가</strong>해도 자동으로 다른 품목에 합쳐지지 않습니다.</p>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200">1. 합칠 품목 2개 선택</h4>
+                  <span className="text-xs font-bold text-slate-500">{mergePickNames.length}/2 선택</span>
+                </div>
+                {mergeSelectedDefs.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {mergeSelectedDefs.map((def) => (
+                      <span
+                        key={def.name}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 border border-amber-200 dark:border-amber-800"
+                      >
+                        {def.name}
+                        <button type="button" onClick={() => toggleMergePick(def.name)} className="p-0.5 hover:bg-amber-100 dark:hover:bg-amber-900/40 rounded-full" title="선택 해제">
+                          <X size={12} />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                <input
+                  type="search"
+                  value={mergeSearchQuery}
+                  onChange={(e) => setMergeSearchQuery(e.target.value)}
+                  placeholder="품목명 검색..."
+                  className="w-full mb-2 px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-sm outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <div className="max-h-48 overflow-y-auto custom-scrollbar border border-slate-200 dark:border-slate-700 rounded-xl divide-y divide-slate-100 dark:divide-slate-700">
+                  {mergeFilteredDefs.map((def) => {
+                    const isSelected = mergePickNames.includes(def.name);
+                    return (
+                      <button
+                        key={def.name}
+                        type="button"
+                        onClick={() => toggleMergePick(def.name)}
+                        className={`w-full text-left px-4 py-2.5 flex items-center justify-between gap-3 text-sm font-bold transition-colors ${
+                          isSelected
+                            ? 'bg-amber-50 dark:bg-amber-950/20 text-amber-800 dark:text-amber-200'
+                            : 'text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700/50'
+                        }`}
+                      >
+                        <span>{def.name}</span>
+                        {isSelected && <Check size={16} className="text-amber-600" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {mergePickNames.length === 2 && (
+                <div>
+                  <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 mb-2">2. 유지할 품목명 선택</h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {mergePickNames.map((name) => {
+                      const isPrimary = mergePrimaryName === name;
+                      return (
+                        <label
+                          key={name}
+                          className={`flex items-center gap-3 px-4 py-3 rounded-xl border cursor-pointer transition-colors ${
+                            isPrimary
+                              ? 'border-amber-500 bg-amber-50 dark:bg-amber-950/30'
+                              : 'border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700/40'
+                          }`}
+                        >
+                          <input
+                            type="radio"
+                            name="product-merge-primary"
+                            checked={isPrimary}
+                            onChange={() => setMergePrimaryName(name)}
+                            className="text-amber-600 focus:ring-amber-500"
+                          />
+                          <span className="text-sm font-bold text-slate-800 dark:text-slate-100">{name}</span>
+                          {isPrimary && <span className="ml-auto text-[10px] font-bold text-amber-700 dark:text-amber-300">유지</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="p-4 border-t border-slate-200 dark:border-slate-700 flex justify-end gap-2 bg-slate-50 dark:bg-slate-900">
+              <button
+                type="button"
+                onClick={() => setIsMergeModalOpen(false)}
+                className="px-4 py-2 text-sm font-bold rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300"
+                disabled={isMerging}
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={handleMergeProducts}
+                disabled={isMerging || mergePickNames.length !== 2 || !mergePrimaryName}
+                className="px-5 py-2 text-sm font-bold rounded-lg bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+              >
+                <GitMerge size={16} />
+                {isMerging ? '합치는 중...' : '상품 합치기 실행'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

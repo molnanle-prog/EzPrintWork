@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, ClientContact, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
 import { findClientByName, normalizePrepaidBalance, getJobPrepaidBreakdown, getPrepaidSlotForJob } from '../../utils/prepaidBalance';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown } from 'lucide-react';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, CheckCircle2, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
@@ -36,6 +36,7 @@ function getIconForAction(action: string): React.ReactNode {
         case '작업 생성': return <PlusCircle size={14} className="text-sky-500" />;
         case '작업 취소': return <FileX size={14} className="text-rose-500" />;
         case '작업 복구': return <RotateCcw size={14} className="text-emerald-500" />;
+        case '하위 작업 상태 변경': return <CheckCircle2 size={14} className="text-emerald-500" />;
         default: return <FileEdit size={14} className="text-orange-500" />;
     }
 }
@@ -304,6 +305,26 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
       setEditedJob({ ...editedJob, subJobs: newSubJobs });
   };
 
+  /** 칸반 배지와 동일 — 하위 품목 완료/진행중 토글 + 진행률 반영 */
+  const toggleSubJobCompleted = (index: number = activeTabIdx) => {
+      const list = editedJob.subJobs || [];
+      if (!list[index]) return;
+      const nextCompleted = !list[index].completed;
+      const newSubJobs = list.map((sj, i) =>
+          i === index ? { ...sj, completed: nextCompleted } : sj
+      );
+      const completedCount = newSubJobs.filter((sj) => sj.completed).length;
+      const progressPercent = Math.round((completedCount / newSubJobs.length) * 100);
+      setEditedJob({
+          ...editedJob,
+          subJobs: newSubJobs,
+          progress: progressPercent,
+      });
+      toast.success(
+          `[${list[index].type}] ${nextCompleted ? '작업 완료 처리됨' : '작업 대기 처리됨'} (저장 시 반영)`
+      );
+  };
+
   const updateCurrentSpecs = (specUpdates: Partial<JobSpecs>) => {
       const newSubJobs = [...(editedJob.subJobs || [])];
       newSubJobs[activeTabIdx] = { 
@@ -555,12 +576,29 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
             const newProc = (newSpecs.processing || []).sort().join(',');
             if (oldProc !== newProc) pushContentChange(`후가공: ${oldProc || '없음'} → ${newProc || '없음'}`);
         }
+
+        const oldSubs = originalJob.subJobs || [];
+        const newSubs = updatedJob.subJobs || [];
+        const maxLen = Math.max(oldSubs.length, newSubs.length);
+        for (let i = 0; i < maxLen; i++) {
+            const prev = !!oldSubs[i]?.completed;
+            const next = !!newSubs[i]?.completed;
+            if (prev !== next) {
+                const typeLabel = newSubs[i]?.type || oldSubs[i]?.type || `품목${i + 1}`;
+                pushChange(
+                    '하위 작업 상태 변경',
+                    `[${typeLabel}] 품목 상태 변경: ${next ? '완료' : '진행중'} (진행률: ${updatedJob.progress ?? 0}%)`
+                );
+            }
+        }
     }
 
     const subJobs = editedJob.subJobs!;
     const mainItem = subJobs[0];
     let summaryDesc = `[${mainItem.specs.paperType}] ${mainItem.specs.size} / ${mainItem.specs.quantity}`;
     if (subJobs.length > 1) summaryDesc += ` 외 ${subJobs.length - 1}건`;
+    const completedCount = subJobs.filter((sj) => sj.completed).length;
+    const progressPercent = Math.round((completedCount / Math.max(subJobs.length, 1)) * 100);
 
     let finalJob: Job = { 
         ...editedJob, 
@@ -570,6 +608,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
         specs: mainItem.specs,
         description: summaryDesc,
         subJobs: subJobs,
+        progress: progressPercent,
     };
     if (editedJob.assignedStaffIds && editedJob.assignedStaffIds.length > 0) {
         finalJob.assignedStaffId = editedJob.assignedStaffIds[0];
@@ -1065,12 +1104,17 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                             const isSubBooklet = isBookletProductType(subJob.type || '');
                             return (
                                 <div key={idx} className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-                                    <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 flex justify-between items-center">
-                                        <h4 className="font-bold text-slate-800 flex items-center gap-2">
-                                            <span className="bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs">{idx + 1}</span>
-                                            {subJob.type}
+                                    <div className="bg-slate-100 px-4 py-3 border-b border-slate-200 flex justify-between items-center gap-2">
+                                        <h4 className="font-bold text-slate-800 flex items-center gap-2 min-w-0">
+                                            <span className="bg-blue-600 text-white w-5 h-5 rounded-full flex items-center justify-center text-xs shrink-0">{idx + 1}</span>
+                                            <span className="truncate">{subJob.type}</span>
+                                            {subJob.completed ? (
+                                                <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 border border-emerald-200">완료</span>
+                                            ) : (
+                                                <span className="shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 border border-slate-300">진행중</span>
+                                            )}
                                         </h4>
-                                        <div className="text-sm font-bold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-100">
+                                        <div className="text-sm font-bold text-blue-700 bg-blue-50 px-3 py-1 rounded-full border border-blue-100 shrink-0">
                                             수량: {subJob.specs.quantity || '미입력'}
                                         </div>
                                     </div>
@@ -1691,7 +1735,10 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                 <div className={`flex items-end gap-1.5 px-2.5 pt-2 bg-slate-100 border-b border-slate-200 flex-none transition-all ${shouldWrapTabs ? 'flex-wrap h-auto' : 'overflow-x-auto overflow-y-hidden custom-scrollbar h-11'}`}>
                     {(editedJob.subJobs || []).map((subJob, idx) => (
                         <button key={idx} onClick={() => setActiveTabIdx(idx)} className={`flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-t-md text-xs sm:text-sm font-bold min-w-[90px] border-t border-x relative transition-all ${activeTabIdx === idx ? 'bg-white text-blue-700 border-slate-200 border-b-white -mb-[1px] z-10 shadow-[0_-2px_3px_rgba(0,0,0,0.02)]' : 'bg-slate-200 text-slate-500 border-transparent hover:bg-slate-300/50 mb-0.5'}`}>
-                            <span className="truncate max-w-[100px] flex items-center h-4">{idx + 1}. {subJob.type}</span>
+                            <span className="truncate max-w-[100px] flex items-center gap-1 h-4">
+                                {subJob.completed && <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />}
+                                {idx + 1}. {subJob.type}
+                            </span>
                             {(editedJob.subJobs || []).length > 1 && (<span onClick={(e) => { e.stopPropagation(); handleRemoveSubJob(idx); }} className="p-0.5 rounded-full hover:bg-red-100 hover:text-red-500 ml-1 transition-colors"><X size={10} /></span>)}
                         </button>
                     ))}
@@ -1699,11 +1746,27 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                 </div>
 
                 <div className="flex-1 flex flex-col p-3.5 border-t border-slate-100 overflow-y-auto custom-scrollbar min-h-0">
-                    <div className="flex justify-between items-center mb-2 border-b border-slate-100 pb-1.5">
+                    <div className="flex justify-between items-center mb-2 border-b border-slate-100 pb-1.5 gap-2 flex-wrap">
                         <div className="flex items-center gap-2"><h3 className="font-bold text-slate-700 flex items-center gap-1.5 text-sm sm:text-base"><Layers size={16} /> 제작 사양</h3></div>
-                        <div className="flex gap-0.5 bg-slate-100 p-0.5 rounded-md">
-                            <button onClick={() => setColorMode('color')} title="컬러 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isColor ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isColor ? 'fill-blue-600' : ''}/> 컬러</span></button>
-                            <button onClick={() => setColorMode('bw')} title="흑백 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isBW ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isBW ? 'fill-black' : ''}/> 흑백</span></button>
+                        <div className="flex items-center gap-2">
+                            <button
+                                type="button"
+                                onClick={() => toggleSubJobCompleted(activeTabIdx)}
+                                title="이 품목만 완료/진행중으로 표시 (칸반 배지와 동일, 저장 시 반영)"
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold border transition-colors ${
+                                    currentSubJob.completed
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                                }`}
+                            >
+                                <CheckCircle2 size={14} className={currentSubJob.completed ? 'text-emerald-600' : 'text-slate-400'} />
+                                {currentSubJob.completed ? '품목 완료됨' : '품목 진행중'}
+                                <span className="text-[10px] font-medium opacity-70">(클릭 토글)</span>
+                            </button>
+                            <div className="flex gap-0.5 bg-slate-100 p-0.5 rounded-md">
+                                <button onClick={() => setColorMode('color')} title="컬러 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isColor ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isColor ? 'fill-blue-600' : ''}/> 컬러</span></button>
+                                <button onClick={() => setColorMode('bw')} title="흑백 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isBW ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isBW ? 'fill-black' : ''}/> 흑백</span></button>
+                            </div>
                         </div>
                     </div>
                     
