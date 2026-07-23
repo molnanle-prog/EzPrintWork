@@ -327,6 +327,23 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                                   </td>
                                               </tr>
                                           )}
+                                          {(item.specs.notebook?.text?.trim() || (item.specs.notebook?.attachments || []).length > 0) && (
+                                              <tr>
+                                                  <th className={`bg-violet-50 border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}>
+                                                      <span className="lift-text">메모장</span>
+                                                  </th>
+                                                  <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-slate-800 bg-violet-50 align-middle`} colSpan={3}>
+                                                      {item.specs.notebook?.text?.trim() && (
+                                                          <div className="lift-text whitespace-pre-wrap mb-1">{item.specs.notebook.text}</div>
+                                                      )}
+                                                      {(item.specs.notebook?.attachments || []).length > 0 && (
+                                                          <div className="lift-text text-sm font-medium text-slate-700">
+                                                              첨부: {(item.specs.notebook?.attachments || []).map((a) => a.fileName).join(', ')}
+                                                          </div>
+                                                      )}
+                                                  </td>
+                                              </tr>
+                                          )}
                                           {item.specs.memo && (
                                               <tr>
                                                   <th className={`bg-yellow-50 border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}>
@@ -335,7 +352,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                                       </span>
                                                   </th>
                                                   <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-slate-800 bg-yellow-50 align-middle`} colSpan={3}>
-                                                      <span className="lift-text">{item.specs.memo}</span>
+                                                      <span className="lift-text whitespace-pre-wrap">{item.specs.memo}</span>
                                                   </td>
                                               </tr>
                                           )}

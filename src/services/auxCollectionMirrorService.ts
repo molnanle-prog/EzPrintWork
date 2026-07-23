@@ -18,6 +18,11 @@ import {
     resolveStoreGatewayUrlList,
     type StoreGatewayInput,
 } from '../utils/storeGatewayUrls';
+import {
+    filterAuxItemsByTombstones,
+    mergeAuxTombstoneLists,
+    type AuxTombstone,
+} from '../utils/auxTombstones';
 
 export type AuxCollectionName = 'quotes' | 'papers' | 'leaves' | 'instructions';
 
@@ -45,6 +50,8 @@ export interface AuxMirrorPayload {
     collection: AuxCollectionName;
     updatedAt: string;
     items: Array<{ id: string; [key: string]: unknown }>;
+    /** 삭제된 항목 — union merge로 되살아나는 것 방지 */
+    deletedItems?: AuxTombstone[];
 }
 
 function entityTime(row: Record<string, unknown>): number {
@@ -131,24 +138,37 @@ class AuxCollectionMirrorService {
     buildPayload(
         tenantId: string,
         collection: AuxCollectionName,
-        items: Array<Record<string, unknown>>
+        items: Array<Record<string, unknown>>,
+        deletedItems?: AuxTombstone[]
     ): AuxMirrorPayload {
+        const tombMap = new Map<string, number>();
+        for (const row of deletedItems || []) {
+            if (!row?.id || !row.deletedAt) continue;
+            const ms = Date.parse(row.deletedAt);
+            if (Number.isFinite(ms)) tombMap.set(row.id, ms);
+        }
+        const cleaned = filterAuxItemsByTombstones(
+            mergeAuxItemsById([], items).map((row) => ({
+                ...row,
+                id: String(row.id),
+            })),
+            tombMap
+        ) as Array<{ id: string; [key: string]: unknown }>;
         return {
             version: AUX_VERSION,
             tenantId,
             collection,
             updatedAt: new Date().toISOString(),
-            items: mergeAuxItemsById([], items).map((row) => ({
-                ...row,
-                id: String(row.id),
-            })),
+            items: cleaned,
+            deletedItems: deletedItems?.length ? deletedItems : undefined,
         };
     }
 
     async publish(
         tenantId: string,
         collection: AuxCollectionName,
-        items: Array<Record<string, unknown>>
+        items: Array<Record<string, unknown>>,
+        deletedItems?: AuxTombstone[]
     ): Promise<boolean> {
         if (!tenantId) return false;
         const fileName = AUX_COLLECTION_FILES[collection];
@@ -159,17 +179,35 @@ class AuxCollectionMirrorService {
             if (root) {
                 const filePath = this.joinPath(root, fileName);
                 let existing: Array<Record<string, unknown>> = [];
+                let existingDeleted: AuxTombstone[] = [];
                 try {
                     const raw = await this.readLocalWithRetry(filePath);
                     if (raw) {
                         const parsed = JSON.parse(raw) as AuxMirrorPayload;
                         if (Array.isArray(parsed?.items)) existing = parsed.items;
+                        if (Array.isArray(parsed?.deletedItems)) existingDeleted = parsed.deletedItems;
                     }
                 } catch {
                     existing = [];
                 }
-                const merged = mergeAuxItemsById(existing, items);
-                const payload = this.buildPayload(tenantId, collection, merged);
+                const mergedDeleted = mergeAuxTombstoneLists(existingDeleted, deletedItems);
+                const tombMap = new Map<string, number>();
+                for (const row of mergedDeleted) {
+                    const ms = Date.parse(row.deletedAt);
+                    if (Number.isFinite(ms)) tombMap.set(row.id, ms);
+                }
+                // 로컬 items가 권위 — existing union으로 삭제를 되돌리지 않음
+                // (NAS에만 남은 id는 로컬에 없을 때만 보강, 단 tombstone이면 제외)
+                const localIds = new Set(items.map((r) => String(r?.id || '')).filter(Boolean));
+                const extras = existing.filter((r) => {
+                    const id = r?.id != null ? String(r.id) : '';
+                    return id && !localIds.has(id);
+                });
+                const merged = filterAuxItemsByTombstones(
+                    mergeAuxItemsById(items, extras),
+                    tombMap
+                );
+                const payload = this.buildPayload(tenantId, collection, merged, mergedDeleted);
                 const content = JSON.stringify(payload, null, 2);
                 nasOk = await this.writeLocalWithRetry(filePath, content);
                 if (nasOk) void this.uploadStorageAsync(tenantId, collection, content);
@@ -177,7 +215,12 @@ class AuxCollectionMirrorService {
             return nasOk;
         }
 
-        const payload = this.buildPayload(tenantId, collection, items);
+        const payload = this.buildPayload(
+            tenantId,
+            collection,
+            items,
+            deletedItems?.length ? deletedItems : undefined
+        );
         const content = JSON.stringify(payload, null, 2);
         try {
             const blob = new Blob([content], { type: 'application/json' });

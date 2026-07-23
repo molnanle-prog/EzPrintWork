@@ -218,6 +218,47 @@ class LocalGateway {
         });
     }
 
+    clientTimestampMs(client) {
+        const raw = client?.updatedAt || client?.createdAt;
+        const ms = raw ? Date.parse(raw) : 0;
+        return Number.isFinite(ms) ? ms : 0;
+    }
+
+    isIncomingClientNewer(incoming, prev) {
+        const ri = typeof incoming?.rev === 'number' && Number.isFinite(incoming.rev) ? incoming.rev : -1;
+        const rp = typeof prev?.rev === 'number' && Number.isFinite(prev.rev) ? prev.rev : -1;
+        if (ri >= 0 || rp >= 0) {
+            if (ri !== rp) return ri > rp;
+        }
+        return this.clientTimestampMs(incoming) >= this.clientTimestampMs(prev);
+    }
+
+    mergeClients(existing, incoming) {
+        const map = new Map();
+        for (const c of existing || []) {
+            if (c?.id) map.set(c.id, c);
+        }
+        for (const c of incoming || []) {
+            if (!c?.id) continue;
+            const prev = map.get(c.id);
+            if (!prev) {
+                map.set(c.id, c);
+                continue;
+            }
+            map.set(c.id, this.isIncomingClientNewer(c, prev) ? { ...prev, ...c } : prev);
+        }
+        return [...map.values()];
+    }
+
+    filterClientsByTombstones(clients, tombstones) {
+        return (clients || []).filter((c) => {
+            if (!c?.id) return false;
+            const deletedMs = tombstones.get(c.id);
+            if (!deletedMs) return true;
+            return this.clientTimestampMs(c) > deletedMs;
+        });
+    }
+
     pickMirrorPayload(situation, archive) {
         const deletedJobs = [
             ...(situation?.deletedJobs || []),
@@ -494,13 +535,14 @@ class LocalGateway {
                             this.mergeJobs(existing?.jobs, incomingJobs),
                             tombstones
                         );
-                        const clientsMap = new Map();
-                        for (const c of existing?.clients || []) {
-                            if (c?.id) clientsMap.set(c.id, c);
-                        }
-                        for (const c of body.clients || []) {
-                            if (c?.id) clientsMap.set(c.id, c);
-                        }
+                        const clientTombs = this.buildTombstoneMap([
+                            ...(existing?.deletedClients || []),
+                            ...(body.deletedClients || []),
+                        ]);
+                        const mergedClients = this.filterClientsByTombstones(
+                            this.mergeClients(existing?.clients, body.clients),
+                            clientTombs
+                        );
                         const payload = {
                             version: body.version ?? existing?.version ?? 1,
                             tenantId,
@@ -513,7 +555,11 @@ class LocalGateway {
                                 id,
                                 deletedAt: new Date(ms).toISOString(),
                             })),
-                            clients: [...clientsMap.values()],
+                            deletedClients: [...clientTombs.entries()].map(([id, ms]) => ({
+                                id,
+                                deletedAt: new Date(ms).toISOString(),
+                            })),
+                            clients: mergedClients,
                             settings: body.settings || existing?.settings || {},
                             staff: body.staff || existing?.staff || [],
                         };

@@ -254,6 +254,59 @@ ipcMain.handle('select-file-or-folder', async () => {
     return canceled ? null : resolveUncPath(filePaths[0]);
 });
 
+/** 메모장 첨부 — 다중 파일. 기본 위치 내 PC(C:\), 선택 후 그 폴더 탐색기 열기 */
+ipcMain.handle('select-files', async (_event, options = {}) => {
+    const filters =
+        Array.isArray(options?.filters) && options.filters.length
+            ? options.filters
+            : [
+                { name: '첨부 파일', extensions: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'pdf', 'ai', 'psd', 'eps', 'zip', 'txt', 'doc', 'docx'] },
+                { name: '모든 파일', extensions: ['*'] },
+            ];
+    // Windows: C:\ ≈ 내 PC에서 드라이브 선택에 가까운 시작점
+    const defaultPath = options?.defaultPath || 'C:\\';
+    const openSelectedFolder = options?.openSelectedFolderAfter !== false;
+
+    const { canceled, filePaths } = await dialog.showOpenDialog({
+        title: '메모장 첨부 파일 선택',
+        defaultPath,
+        properties: ['openFile', 'multiSelections'],
+        filters,
+    });
+    if (canceled || !filePaths?.length) return [];
+
+    const resolved = filePaths.map((p) => resolveUncPath(p));
+    if (openSelectedFolder) {
+        try {
+            const folder = path.dirname(resolved[0]);
+            if (folder) await shell.openPath(folder);
+        } catch (_) { /* ignore */ }
+    }
+    return resolved;
+});
+
+ipcMain.handle('copy-file', async (_event, { source, dest }) => {
+    try {
+        if (!source || !dest) return { success: false, error: '경로가 비어 있습니다.' };
+        const dir = path.dirname(dest);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.copyFileSync(source, dest);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('ensure-dir', async (_event, dirPath) => {
+    try {
+        if (!dirPath) return { success: false, error: '경로가 비어 있습니다.' };
+        if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
 // 2.1. 새 데이터베이스 파일 생성
 ipcMain.handle('create-database-file', async (event, content) => {
     const { canceled, filePath } = await dialog.showSaveDialog({
@@ -284,15 +337,30 @@ ipcMain.handle('create-database-file', async (event, content) => {
     }
 });
 
-// 3. 경로 열기 (탐색기 실행)
+// 3. 경로 열기 (탐색기/기본 앱)
 ipcMain.handle('open-path', async (event, targetPath) => {
     if (!targetPath) return false;
     try {
-        // 파일이면 폴더를 열고 파일을 선택하게 하거나, 폴더면 폴더를 엶
         await shell.openPath(targetPath);
         return true;
     } catch (e) {
         console.error("경로 열기 오류:", e);
+        return false;
+    }
+});
+
+/** 파일이면 탐색기에서 해당 위치 선택 표시, 폴더면 폴더 열기 */
+ipcMain.handle('reveal-in-folder', async (_event, targetPath) => {
+    if (!targetPath) return false;
+    try {
+        if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+            shell.showItemInFolder(targetPath);
+            return true;
+        }
+        const result = await shell.openPath(targetPath);
+        return !result;
+    } catch (e) {
+        console.error('위치 열기 오류:', e);
         return false;
     }
 });

@@ -29,10 +29,10 @@ function prepaidLedgerTypeLabel(type: PrepaidLedgerEntry['type']): string {
   }
 }
 
-type ClientSortKey = 'name' | 'jobs' | 'receivable' | 'prepaid';
+type ClientSortKey = 'order' | 'name' | 'jobs' | 'receivable' | 'prepaid';
 
 function defaultSortDir(key: ClientSortKey): 'asc' | 'desc' {
-  return key === 'name' ? 'asc' : 'desc';
+  return key === 'name' || key === 'order' ? 'asc' : 'desc';
 }
 
 function prepaidLedgerSummary(row: PrepaidLedgerEntry): string {
@@ -54,7 +54,7 @@ export const ClientManager: React.FC = () => {
   const { canManageClientMaster, currentUser } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortKey, setSortKey] = useState<ClientSortKey>('name');
+  const [sortKey, setSortKey] = useState<ClientSortKey>('order');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
@@ -143,6 +143,12 @@ export const ClientManager: React.FC = () => {
     filtered.sort((a, b) => {
       const nameA = a.name.trim();
       const nameB = b.name.trim();
+      if (sortKey === 'order') {
+        const oa = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER;
+        const ob = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER;
+        if (oa !== ob) return (oa - ob) * dir;
+        return nameA.localeCompare(nameB, 'ko');
+      }
       if (sortKey === 'name') {
         return nameA.localeCompare(nameB, 'ko') * dir;
       }
@@ -570,6 +576,7 @@ export const ClientManager: React.FC = () => {
                   className="px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
                   title="정렬 기준"
               >
+                  <option value="order">등록순</option>
                   <option value="name">거래처명</option>
                   <option value="jobs">작업건별</option>
                   <option value="receivable">미수금별</option>

@@ -122,6 +122,7 @@ function buildMergedClient(primary: Client, secondary: Client): Client {
         customSmsNumber: primary.customSmsNumber?.trim() || secondary.customSmsNumber?.trim() || '',
         prepaidBalance,
         prepaidLedger,
+        order: primary.order ?? secondary.order,
     };
 
     if (!merged.customSmsNumber && merged.sendSmsOnComplete !== false) {
@@ -169,24 +170,15 @@ export async function mergeClients(primaryId: string, secondaryId: string): Prom
     const contactsBefore = getClientContacts(primary).length;
     const contactsMerged = mergedClient.contacts.length - contactsBefore;
 
-    for (const job of db.getAllJobs()) {
-        if (job.clientName === secondary.name) {
-            await db.updateJob({ ...job, clientName: primary.name });
-        }
-    }
-
-    for (const quote of db.getQuotes()) {
-        if (quote.clientName === secondary.name) {
-            await db.updateQuote({ ...quote, clientName: primary.name });
-        }
-    }
-
-    await db.updateClient(mergedClient);
-    await db.deleteClient(secondaryId);
+    await db.applyClientMerge({
+        mergedClient,
+        secondaryId,
+        secondaryName: secondary.name,
+        primaryName: primary.name,
+    });
 
     return {
         ...preview,
         contactsMerged: Math.max(contactsMerged, 0),
     };
 }
-

@@ -46,7 +46,9 @@ export interface JobSpecs {
   processing: string[]; // 코팅, 접지, 미싱, 귀도리 등 (배열)
   printColor: string;   // 단면 4도, 양면 8도 등 (책자일 경우: 표지)
   memo: string;         // 추가 텍스트 메모
-  
+  /** 품목별 메모장 — 긴 내용 + NAS 첨부(이미지/PDF/AI 등) */
+  notebook?: JobNotebook;
+
   // Booklet Specifics (내지)
   paperTypeInner?: string;
   paperWeightInner?: string;
@@ -55,6 +57,21 @@ export interface JobSpecs {
   hasCoverWing?: boolean;
   processingCover?: string[];
   processingInner?: string[];
+}
+
+/** 품목 메모장 첨부 — 원본 파일 위치(경로)만 저장 (복사하지 않음) */
+export interface JobNotebookAttachment {
+  id: string;
+  fileName: string;
+  /** 원본 절대/UNC 경로 */
+  filePath: string;
+  /** @deprecated 구버전 NAS 복사본 호환용 */
+  relativePath?: string;
+}
+
+export interface JobNotebook {
+  text?: string;
+  attachments?: JobNotebookAttachment[];
 }
 
 // Sub-item within a job (e.g., Business Card part of a larger order)
@@ -196,6 +213,8 @@ export interface Quote {
   discountAmount?: number;
   date: string;
   status: '대기' | '승인' | '거절';
+  updatedAt?: string;
+  createdAt?: string;
 }
 
 export interface AdminInstruction {
@@ -256,6 +275,12 @@ export interface Client {
   prepaidBalance?: number;
   /** 선불 입출금 이력 */
   prepaidLedger?: PrepaidLedgerEntry[];
+  /** PC 간 병합 리비전 (클럭 skew 완화) */
+  rev?: number;
+  updatedAt?: string;
+  createdAt?: string;
+  /** 목록 표시·저장 순서 (낮을수록 앞) */
+  order?: number;
 }
 
 export interface PaperStock {
@@ -393,6 +418,13 @@ export interface IElectronAPI {
   exists: (path: string) => Promise<boolean>;
   selectDirectory: () => Promise<string | null>; 
   selectFileOrFolder: () => Promise<string | null>;
+  selectFiles?: (options?: {
+    filters?: { name: string; extensions: string[] }[];
+    defaultPath?: string;
+    openSelectedFolderAfter?: boolean;
+  }) => Promise<string[]>;
+  copyFile?: (source: string, dest: string) => Promise<{ success: boolean; error?: string }>;
+  ensureDir?: (path: string) => Promise<{ success: boolean; error?: string }>;
   /** 드라이브 문자(Z:) → UNC(\\server\share) 변환 */
   resolveUncPath?: (path: string) => Promise<{
     ok: boolean;
@@ -407,6 +439,7 @@ export interface IElectronAPI {
   onFileChange: (callback: (path: string) => void) => void;
   openExternal: (url: string) => Promise<boolean>;
   openPath: (path: string) => Promise<boolean>;
+  revealInFolder?: (path: string) => Promise<boolean>;
   getDocumentsPath: () => Promise<string>;
   getUserDataPath?: () => Promise<string | null>;
   checkDirectoryStatus?: (path: string) => Promise<{ success: boolean; message?: string; error?: string }>;

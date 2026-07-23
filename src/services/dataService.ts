@@ -65,6 +65,23 @@ import {
     type JobTombstone,
 } from '../utils/jobTombstones';
 import {
+    clientTombstoneMapToPayload,
+    clientTimestampMs,
+    filterClientsByTombstones,
+    isClientTombstoned,
+    loadClientTombstoneMap,
+    saveClientTombstoneMap,
+    type ClientTombstone,
+} from '../utils/clientTombstones';
+import { isIncomingClientNewer, nextClientRev } from '../utils/clientRevision';
+import {
+    applyAuxTombstonesFromList,
+    auxTombstoneMapToPayload,
+    filterAuxItemsByTombstones,
+    loadAuxTombstoneMap,
+    saveAuxTombstoneMap,
+} from '../utils/auxTombstones';
+import {
     applyIncomingJobVisibilityClears,
     jobVisibilityClearPatch,
     stripClearedJobVisibilityFields,
@@ -582,6 +599,15 @@ export class DataService {
     private mirrorCompanyName: string | null = null;
     /** 삭제된 job ID — 미러·다른 PC·웹에 전파해 중복 복원 방지 */
     private jobTombstones = new Map<string, number>();
+    /** 삭제된 거래처 ID — 합치기/삭제 롤백 방지 */
+    private clientTombstones = new Map<string, number>();
+    /** 견적·용지·휴가·지시 삭제 tombstone */
+    private auxTombstones: Record<AuxCollectionName, Map<string, number>> = {
+        quotes: new Map(),
+        papers: new Map(),
+        leaves: new Map(),
+        instructions: new Map(),
+    };
     /** 회사 NAS 헬스 — 실패 시 전원 동일하게 쓰기 차단 */
     private companyNasHealthy: boolean | null = null;
     private companyNasHealthError: string | null = null;
@@ -1007,11 +1033,18 @@ export class DataService {
             this.purgeTombstonedJobsFromCaches();
             applied = true;
         }
-        if (Array.isArray(situation.clients) && situation.clients.length > 0) {
+        if (situation.deletedClients?.length) {
+            this.applyClientTombstonesFromMirror(situation.deletedClients);
+            applied = true;
+        }
+        if (Array.isArray(situation.clients)) {
             this.data['clients'] = this.mergeClientsById(
                 (this.data['clients'] || []) as Client[],
                 situation.clients as Client[]
             );
+            applied = true;
+        } else if (situation.deletedClients?.length) {
+            this.purgeTombstonedClientsFromCache();
             applied = true;
         }
         if (situation.settings && typeof situation.settings === 'object') {
@@ -1184,6 +1217,13 @@ export class DataService {
         if (this.tenantId === tenantId) return;
         this.tenantId = tenantId;
         this.jobTombstones = loadJobTombstoneMap(tenantId);
+        this.clientTombstones = loadClientTombstoneMap(tenantId);
+        this.auxTombstones = {
+            quotes: loadAuxTombstoneMap(tenantId, 'quotes'),
+            papers: loadAuxTombstoneMap(tenantId, 'papers'),
+            leaves: loadAuxTombstoneMap(tenantId, 'leaves'),
+            instructions: loadAuxTombstoneMap(tenantId, 'instructions'),
+        };
         this.mirrorCompanyName = null;
         this.lastSyncError = null;
         this.quotesBootstrappedForTenant = null;
@@ -1721,12 +1761,42 @@ export class DataService {
             console.warn('[DataService] NAS merge-before-push skipped:', e);
         }
         const staff = (this.data['staff'] || []) as Staff[];
-        const clients = (this.data['clients'] || []) as Client[];
+        let clients = (this.data['clients'] || []) as Client[];
         const localSettingsSnapshot = { ...this.getSettingsObj() };
         let settings = { ...localSettingsSnapshot };
         // 다른 PC LWW + 상품/후가공은 관리자 게시가 아니면 NAS 값 강제 유지
+        // 거래처: NAS와 merge-before-push + tombstone (stale PC가 삭제를 되돌리지 못하게)
         try {
             const nasSituation = await situationMirrorService.read(tenantId, true);
+            if (nasSituation?.deletedClients?.length) {
+                this.applyClientTombstonesFromMirror(nasSituation.deletedClients);
+            }
+            if (Array.isArray(nasSituation?.clients)) {
+                const mergedClients = this.mergeClientsById(
+                    nasSituation.clients as Client[],
+                    clients
+                );
+                const clientsChanged =
+                    mergedClients.length !== clients.length ||
+                    mergedClients.some((c) => {
+                        const local = clients.find((x) => x.id === c.id);
+                        if (!local) return true;
+                        return (
+                            (c.rev || 0) !== (local.rev || 0) ||
+                            (c.updatedAt || '') !== (local.updatedAt || '')
+                        );
+                    });
+                clients = mergedClients;
+                if (clientsChanged) {
+                    this.data['clients'] = clients;
+                    if (this.isLocalPrimaryMode()) {
+                        await this.persistAllToLocalDb().catch((err) =>
+                            console.warn('[DataService] local db after clients NAS merge failed:', err)
+                        );
+                    }
+                    this.notify();
+                }
+            }
             if (nasSituation?.settings && typeof nasSituation.settings === 'object') {
                 const nasSettings = nasSituation.settings as Record<string, unknown>;
                 settings = this.mergeNasMasterSettingsForPush(settings, nasSettings);
@@ -1757,7 +1827,7 @@ export class DataService {
                 }
             }
         } catch (e) {
-            console.warn('[DataService] settings merge-before-push skipped:', e);
+            console.warn('[DataService] settings/clients merge-before-push skipped:', e);
         }
         let archiveOk = false;
         let situationOk = false;
@@ -1797,13 +1867,14 @@ export class DataService {
             });
             const payload = situationMirrorService.buildPayload(tenantId, {
                 jobs,
-                clients,
+                clients: filterClientsByTombstones(clients, this.clientTombstones),
                 settings,
                 companyName: this.getCompanyInfo()?.name,
                 kanbanLayout: this.getSettingsObj()?.kanbanLayout,
                 statusDefinitions: this.getStatusDefinitions(),
                 staff: staffWithPresence,
                 deletedJobs: tombstoneMapToPayload(this.jobTombstones),
+                deletedClients: clientTombstoneMapToPayload(this.clientTombstones),
             });
             mirrorUpdatedAt = payload.updatedAt;
             situationOk = await situationMirrorService.publish(tenantId, payload);
@@ -2349,16 +2420,22 @@ export class DataService {
 
     private applySituationMirrorMeta(situation: {
         clients?: Client[];
+        deletedClients?: ClientTombstone[];
         settings?: Record<string, unknown>;
         updatedAt?: string;
         companyName?: string;
     }) {
-        if (Array.isArray(situation.clients) && situation.clients.length > 0) {
-            // 통째 교체 금지 — 방금 로컬에 자동 등록한 거래처가 NAS 옛 미러에 덮여 사라지는 문제 방지
+        if (situation.deletedClients?.length) {
+            this.applyClientTombstonesFromMirror(situation.deletedClients);
+        }
+        if (Array.isArray(situation.clients)) {
+            // 통째 교체 금지 — 로컬 신규 유지 + tombstone으로 삭제 유지
             this.data['clients'] = this.mergeClientsById(
                 (this.data['clients'] || []) as Client[],
                 situation.clients as Client[]
             );
+        } else if (situation.deletedClients?.length) {
+            this.purgeTombstonedClientsFromCache();
         }
         if (situation.settings && typeof situation.settings === 'object') {
             this.mergeSettingsFromMirror(
@@ -2371,48 +2448,113 @@ export class DataService {
         }
     }
 
-    /** 거래처 id 기준 병합 — 로컬 신규 건 유지, 동일 id는 비어 있지 않은 필드 보강 */
+    private recordClientTombstone(clientId: string): void {
+        if (!this.tenantId || !clientId) return;
+        this.clientTombstones.set(clientId, Date.now());
+        saveClientTombstoneMap(this.tenantId, this.clientTombstones);
+    }
+
+    private applyClientTombstonesFromMirror(list: ClientTombstone[]): void {
+        if (!list?.length) return;
+        let changed = false;
+        for (const row of list) {
+            if (!row?.id || !row.deletedAt) continue;
+            const ms = Date.parse(row.deletedAt);
+            if (!Number.isFinite(ms)) continue;
+            const prev = this.clientTombstones.get(row.id) || 0;
+            if (ms > prev) {
+                this.clientTombstones.set(row.id, ms);
+                changed = true;
+            }
+        }
+        if (changed) {
+            if (this.tenantId) saveClientTombstoneMap(this.tenantId, this.clientTombstones);
+            this.purgeTombstonedClientsFromCache();
+        }
+    }
+
+    private purgeTombstonedClientsFromCache(): void {
+        const current = (this.data['clients'] || []) as Client[];
+        this.data['clients'] = filterClientsByTombstones(current, this.clientTombstones);
+    }
+
+    private nextClientOrder(): number {
+        const clients = (this.data['clients'] || []) as Client[];
+        let max = -1;
+        for (const c of clients) {
+            if (typeof c.order === 'number' && Number.isFinite(c.order) && c.order > max) {
+                max = c.order;
+            }
+        }
+        return max + 1;
+    }
+
+    private enrichClientFields(base: Client, overlay: Client): Client {
+        return {
+            ...base,
+            ...overlay,
+            name: (overlay.name || base.name || '').trim() || base.name,
+            contactPerson: overlay.contactPerson?.trim() ? overlay.contactPerson : base.contactPerson,
+            phone: overlay.phone?.trim() ? overlay.phone : base.phone,
+            email: overlay.email?.trim() ? overlay.email : base.email,
+            address: overlay.address?.trim() ? overlay.address : base.address,
+            note: overlay.note?.trim() ? overlay.note : base.note,
+            businessRegistrationNumber:
+                overlay.businessRegistrationNumber?.trim()
+                    ? overlay.businessRegistrationNumber
+                    : base.businessRegistrationNumber,
+            contacts:
+                overlay.contacts?.length &&
+                overlay.contacts.some((x) => x.name?.trim() || x.phone?.trim())
+                    ? overlay.contacts
+                    : base.contacts || [],
+            sendSmsOnComplete:
+                overlay.sendSmsOnComplete !== undefined
+                    ? overlay.sendSmsOnComplete
+                    : base.sendSmsOnComplete,
+            customSmsNumber: overlay.customSmsNumber?.trim()
+                ? overlay.customSmsNumber
+                : base.customSmsNumber,
+            prepaidBalance: overlay.prepaidBalance ?? base.prepaidBalance,
+            prepaidLedger:
+                overlay.prepaidLedger && overlay.prepaidLedger.length > 0
+                    ? overlay.prepaidLedger
+                    : base.prepaidLedger,
+            rev: overlay.rev ?? base.rev,
+            updatedAt: overlay.updatedAt || base.updatedAt,
+            createdAt: overlay.createdAt || base.createdAt,
+            order: overlay.order ?? base.order,
+        };
+    }
+
+    /** 거래처 id 병합 — tombstone 제외 + rev/시각 LWW + 빈 필드 보강 */
     private mergeClientsById(current: Client[], incoming: Client[]): Client[] {
+        const tombstones = this.clientTombstones;
         const map = new Map<string, Client>();
 
         const put = (c: Client) => {
             if (!c?.id) return;
+            if (isClientTombstoned(c.id, tombstones, clientTimestampMs(c))) return;
             const prev = map.get(c.id);
             if (!prev) {
                 map.set(c.id, { ...c });
                 return;
             }
-            map.set(c.id, {
-                ...prev,
-                ...c,
-                name: (c.name || prev.name || '').trim() || prev.name,
-                contactPerson: c.contactPerson?.trim() ? c.contactPerson : prev.contactPerson,
-                phone: c.phone?.trim() ? c.phone : prev.phone,
-                email: c.email?.trim() ? c.email : prev.email,
-                address: c.address?.trim() ? c.address : prev.address,
-                note: c.note?.trim() ? c.note : prev.note,
-                businessRegistrationNumber:
-                    c.businessRegistrationNumber?.trim()
-                        ? c.businessRegistrationNumber
-                        : prev.businessRegistrationNumber,
-                contacts:
-                    c.contacts?.length && c.contacts.some((x) => x.name?.trim() || x.phone?.trim())
-                        ? c.contacts
-                        : prev.contacts || [],
-                sendSmsOnComplete:
-                    c.sendSmsOnComplete !== undefined ? c.sendSmsOnComplete : prev.sendSmsOnComplete,
-                customSmsNumber: c.customSmsNumber?.trim() ? c.customSmsNumber : prev.customSmsNumber,
-                prepaidBalance: c.prepaidBalance ?? prev.prepaidBalance,
-                prepaidLedger:
-                    c.prepaidLedger && c.prepaidLedger.length > 0
-                        ? c.prepaidLedger
-                        : prev.prepaidLedger,
-            });
+            if (isIncomingClientNewer(c, prev)) {
+                map.set(c.id, this.enrichClientFields(prev, c));
+            } else {
+                map.set(c.id, this.enrichClientFields(c, prev));
+            }
         };
 
         for (const c of current) put(c);
         for (const c of incoming) put(c);
-        return Array.from(map.values());
+        return Array.from(map.values()).sort((a, b) => {
+            const oa = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER;
+            const ob = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER;
+            if (oa !== ob) return oa - ob;
+            return (a.name || '').localeCompare(b.name || '', 'ko');
+        });
     }
 
     private applySituationMirrorJobsPartial(jobs: Job[]) {
@@ -2515,7 +2657,8 @@ export class DataService {
                 }
 
                 if (
-                    (situation.clients?.length || 0) > 0 ||
+                    Array.isArray(situation.clients) ||
+                    (situation.deletedClients?.length || 0) > 0 ||
                     (situation.settings && Object.keys(situation.settings).length > 0)
                 ) {
                     this.applySituationMirrorMeta(situation);
@@ -2600,7 +2743,14 @@ export class DataService {
     private async persistAuxCollectionToNas(col: AuxCollectionName): Promise<boolean> {
         if (!this.tenantId) return false;
         const items = ((this.data[col] || []) as Array<Record<string, unknown>>).filter((r) => !!r?.id);
-        return auxCollectionMirrorService.publish(this.tenantId, col, items);
+        const deletedItems = auxTombstoneMapToPayload(this.auxTombstones[col]);
+        return auxCollectionMirrorService.publish(this.tenantId, col, items, deletedItems);
+    }
+
+    private recordAuxTombstone(col: AuxCollectionName, id: string): void {
+        if (!this.tenantId || !id) return;
+        this.auxTombstones[col].set(id, Date.now());
+        saveAuxTombstoneMap(this.tenantId, col, this.auxTombstones[col]);
     }
 
     private stopSyncPulse() {
@@ -2994,9 +3144,18 @@ export class DataService {
                 col,
                 this.getStoreGatewayUrls()
             );
-            if (!payload?.items) return;
+            if (!payload) return;
+            if (payload.deletedItems?.length) {
+                if (applyAuxTombstonesFromList(this.auxTombstones[col], payload.deletedItems)) {
+                    saveAuxTombstoneMap(this.tenantId, col, this.auxTombstones[col]);
+                }
+            }
+            if (!payload.items) return;
             const current = (this.data[col] || []) as Array<Record<string, unknown>>;
-            const merged = mergeAuxItemsById(current, payload.items as Array<Record<string, unknown>>);
+            const merged = filterAuxItemsByTombstones(
+                mergeAuxItemsById(current, payload.items as Array<Record<string, unknown>>),
+                this.auxTombstones[col]
+            );
             this.data[col] = merged;
             if (this.isLocalPrimaryMode()) {
                 await localDbBridge.saveAuxCollection(this.tenantId, col, merged).catch(() => false);
@@ -4060,6 +4219,16 @@ export class DataService {
             id,
             createdAt: entity.createdAt || now,
             ...(col === 'jobs' ? { updatedAt: entity.updatedAt || now, rev: entity.rev ?? 1 } : {}),
+            ...(col === 'clients'
+                ? {
+                      updatedAt: entity.updatedAt || now,
+                      rev: entity.rev ?? 1,
+                      order:
+                          typeof entity.order === 'number' && Number.isFinite(entity.order)
+                              ? entity.order
+                              : this.nextClientOrder(),
+                  }
+                : {}),
         };
 
         if (col === 'jobs') {
@@ -4166,7 +4335,20 @@ export class DataService {
         const index = list.findIndex((e) => e.id === id);
         if (index === -1) return null;
 
-        const updated = { ...list[index], ...entity, updatedAt: new Date().toISOString() };
+        const existing = list[index];
+        const updated =
+            col === 'clients'
+                ? {
+                      ...existing,
+                      ...entity,
+                      updatedAt: new Date().toISOString(),
+                      rev: nextClientRev(existing),
+                      order:
+                          typeof entity.order === 'number' && Number.isFinite(entity.order)
+                              ? entity.order
+                              : existing.order,
+                  }
+                : { ...existing, ...entity, updatedAt: new Date().toISOString() };
         list[index] = updated;
         this.data[col] = [...list];
         return updated;
@@ -4337,6 +4519,12 @@ export class DataService {
         if (col === 'jobs') {
             this.recordJobTombstone(id);
             await this.purgeJobFromArchiveLayers(id);
+        }
+        if (col === 'clients') {
+            this.recordClientTombstone(id);
+        }
+        if (this.isAuxCollection(col)) {
+            this.recordAuxTombstone(col, id);
         }
 
         if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
@@ -4987,6 +5175,106 @@ export class DataService {
     async addClient(client: Client) { await this.addEntity('clients', client); }
     async updateClient(client: Client) { const { id, ...data } = client; await this.updateEntity('clients', id, data); }
 
+    /**
+     * 거래처 합치기 — job/quote 재매핑 + primary 저장 + secondary tombstone을
+     * 한 사이클에 끝내고 미러를 1회만 flush (중간 stale push로 secondary 부활 방지)
+     */
+    async applyClientMerge(params: {
+        mergedClient: Client;
+        secondaryId: string;
+        secondaryName: string;
+        primaryName: string;
+    }): Promise<void> {
+        this.assertOperationalWriteAllowed('clients');
+        if (this.isWebMirrorMode()) {
+            throw new Error('거래처 합치기는 매장 PC 앱에서만 가능합니다.');
+        }
+        const { mergedClient, secondaryId, secondaryName, primaryName } = params;
+        if (!mergedClient?.id || !secondaryId) {
+            throw new Error('합칠 거래처 정보가 올바르지 않습니다.');
+        }
+
+        this.recordClientTombstone(secondaryId);
+
+        const now = new Date().toISOString();
+        const jobUpdates: Job[] = [];
+        for (const job of this.getAllJobs()) {
+            if ((job.clientName || '').trim() !== secondaryName.trim()) continue;
+            const existing = job;
+            jobUpdates.push({
+                ...existing,
+                clientName: primaryName,
+                updatedAt: now,
+                rev: nextJobRev(existing),
+            });
+        }
+        for (const updated of jobUpdates) {
+            this.placeJobInLocalCache(updated);
+        }
+        if (jobUpdates.length) this.rebuildMergedJobs();
+
+        const quotes = (this.data['quotes'] || []) as Quote[];
+        let quotesChanged = false;
+        this.data['quotes'] = quotes.map((q) => {
+            if ((q.clientName || '').trim() !== secondaryName.trim()) return q;
+            quotesChanged = true;
+            return { ...q, clientName: primaryName, updatedAt: now };
+        });
+
+        const existingPrimary =
+            ((this.data['clients'] || []) as Client[]).find((c) => c.id === mergedClient.id) ||
+            mergedClient;
+        const primarySaved: Client = {
+            ...existingPrimary,
+            ...mergedClient,
+            updatedAt: now,
+            rev: nextClientRev(existingPrimary),
+            order:
+                typeof mergedClient.order === 'number'
+                    ? mergedClient.order
+                    : existingPrimary.order ?? this.nextClientOrder(),
+        };
+        this.data['clients'] = filterClientsByTombstones(
+            [
+                ...((this.data['clients'] || []) as Client[]).filter(
+                    (c) => c.id !== secondaryId && c.id !== primarySaved.id
+                ),
+                primarySaved,
+            ],
+            this.clientTombstones
+        );
+
+        this.notify();
+
+        if (this.tenantId && this.isLocalPrimaryMode()) {
+            for (const job of jobUpdates) {
+                await this.persistToLocalCollection('jobs', job);
+            }
+            await this.persistToLocalCollection('clients', primarySaved);
+            const okDel = await localDbBridge.deleteClient(this.tenantId, secondaryId);
+            if (!okDel) throw new Error('local-db-client-delete-failed');
+            if (quotesChanged) {
+                await localDbBridge
+                    .saveAuxCollection(this.tenantId, 'quotes', this.data['quotes'] || [])
+                    .catch(() => false);
+                const okQuotes = await this.persistAuxCollectionToNas('quotes');
+                if (!okQuotes) {
+                    throw new Error(
+                        '회사 NAS에 견적 거래처명 반영에 실패했습니다. NAS 연결을 확인해 주세요.'
+                    );
+                }
+            }
+        }
+
+        const ok = await this.flushLiveMirrorPushNow();
+        if (!ok) {
+            throw new Error(
+                '거래처 합치기가 회사 NAS에 반영되지 않았습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+            );
+        }
+        this.updateTenantActivity().catch(() => {});
+    }
+
     /** 거래처 선불(예치) 추가 입금 */
     async addClientPrepaidDeposit(
         clientId: string,
@@ -5464,7 +5752,15 @@ export class DataService {
     getStaff(): Staff[] {
         return ((this.data['staff'] || []) as Staff[]).map(normalizeStaffRecord);
     }
-    getClients(): Client[] { return (this.data['clients'] || []) as Client[]; }
+    getClients(): Client[] {
+        const list = (this.data['clients'] || []) as Client[];
+        return [...list].sort((a, b) => {
+            const oa = typeof a.order === 'number' ? a.order : Number.MAX_SAFE_INTEGER;
+            const ob = typeof b.order === 'number' ? b.order : Number.MAX_SAFE_INTEGER;
+            if (oa !== ob) return oa - ob;
+            return (a.name || '').localeCompare(b.name || '', 'ko');
+        });
+    }
     getTotalPrepaidBalance(): number {
         return sumClientPrepaidBalances(this.getClients());
     }

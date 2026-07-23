@@ -3,7 +3,9 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Job, Priority, Staff, PaymentStatus, Client, ClientContact, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
 import { findClientByName, normalizePrepaidBalance, getJobPrepaidBreakdown, getPrepaidSlotForJob } from '../../utils/prepaidBalance';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, CheckCircle2, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Droplets, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown } from 'lucide-react';
+import { JobNotebookModal } from './JobNotebookModal';
+import { notebookHasContent } from '../../utils/jobNotebook';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, CheckCircle2, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown, NotebookPen } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
@@ -193,6 +195,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
 
   const [editedJob, setEditedJob] = useState<Job>(initialJob);
   const [viewMode, setViewMode] = useState<'summary' | 'edit'>(initialViewMode || (isNew ? 'edit' : 'summary'));
+  const [isNotebookOpen, setIsNotebookOpen] = useState(false);
   const [activeTabIdx, setActiveTabIdx] = useState(0); 
   const [activeInnerTabIdx, setActiveInnerTabIdx] = useState(0);
   const [showInnerAddMenu, setShowInnerAddMenu] = useState(false);
@@ -241,6 +244,13 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
         setProcessingOptions(db.getProcessingDefinitions());
     });
     return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (isNew && (!editedJob.id || editedJob.id === 'new')) {
+      setEditedJob((prev) => ({ ...prev, id: Date.now().toString() }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const prevCustomTabIdxRef = useRef(activeTabIdx);
@@ -602,7 +612,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
 
     let finalJob: Job = { 
         ...editedJob, 
-        id: isNew ? Date.now().toString() : editedJob.id,
+        id: isNew ? (editedJob.id || Date.now().toString()) : editedJob.id,
         history: newHistory,
         type: mainItem.type,
         specs: mainItem.specs,
@@ -893,13 +903,6 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
           }
       }
   };
-
-  const setColorMode = (mode: 'color' | 'bw') => {
-      if (mode === 'color') updateCurrentSpecs({ printColor: '단면 4도(컬러)' });
-      else updateCurrentSpecs({ printColor: '단면 1도(흑백)' });
-  };
-  const isColor = currentSpecs.printColor.includes('4도') || currentSpecs.printColor.includes('8도') || currentSpecs.printColor.includes('컬러');
-  const isBW = currentSpecs.printColor.includes('1도') || currentSpecs.printColor.includes('2도') || currentSpecs.printColor.includes('흑백');
 
   const runClientSearch = (query: string, field: 'company' | 'person') => {
       const trimmed = query.trim();
@@ -1221,6 +1224,24 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                                                             <span key={p} className="bg-slate-100 text-slate-700 text-xs px-2.5 py-1 rounded border border-slate-200">{p}</span>
                                                         ))}
                                                     </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {notebookHasContent(subJob.specs.notebook) && (
+                                            <div>
+                                                <h5 className="text-xs font-bold text-violet-700 mb-2 flex items-center gap-1"><NotebookPen size={14}/> 메모장</h5>
+                                                {subJob.specs.notebook?.text?.trim() && (
+                                                    <div className="bg-violet-50 text-slate-800 text-sm p-3 rounded-lg border border-violet-200 whitespace-pre-wrap mb-2">
+                                                        {subJob.specs.notebook.text}
+                                                    </div>
+                                                )}
+                                                {(subJob.specs.notebook?.attachments || []).length > 0 && (
+                                                    <ul className="text-xs text-slate-600 space-y-1">
+                                                        {(subJob.specs.notebook?.attachments || []).map((a) => (
+                                                            <li key={a.id}>📎 {a.fileName}</li>
+                                                        ))}
+                                                    </ul>
                                                 )}
                                             </div>
                                         )}
@@ -1763,10 +1784,22 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                                 {currentSubJob.completed ? '품목 완료됨' : '품목 진행중'}
                                 <span className="text-[10px] font-medium opacity-70">(클릭 토글)</span>
                             </button>
-                            <div className="flex gap-0.5 bg-slate-100 p-0.5 rounded-md">
-                                <button onClick={() => setColorMode('color')} title="컬러 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isColor ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isColor ? 'fill-blue-600' : ''}/> 컬러</span></button>
-                                <button onClick={() => setColorMode('bw')} title="흑백 인쇄 모드로 설정" className={`px-2 py-0.5 rounded text-[11px] font-bold transition-all ${isBW ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}><span className="flex items-center gap-0.5"><Droplets size={10} className={isBW ? 'fill-black' : ''}/> 흑백</span></button>
-                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setIsNotebookOpen(true)}
+                                title="이 품목의 상세 내용·첨부(이미지/PDF/AI) — 회사 NAS에 저장"
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold border transition-colors ${
+                                    notebookHasContent(currentSpecs.notebook)
+                                        ? 'bg-violet-50 text-violet-700 border-violet-200 hover:bg-violet-100'
+                                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                                }`}
+                            >
+                                <NotebookPen size={14} className={notebookHasContent(currentSpecs.notebook) ? 'text-violet-600' : 'text-slate-400'} />
+                                메모장
+                                {notebookHasContent(currentSpecs.notebook) && (
+                                    <span className="text-[10px] font-bold text-violet-600">작성됨</span>
+                                )}
+                            </button>
                         </div>
                     </div>
                     
@@ -2213,6 +2246,19 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
             setEditedJob(updatedJob);
             onUpdate(updatedJob);
           }} 
+        />
+      )}
+      {isNotebookOpen && (
+        <JobNotebookModal
+          jobId={editedJob.id || `draft-${Date.now()}`}
+          subJobId={currentSubJob.id || String(activeTabIdx + 1)}
+          productLabel={`${activeTabIdx + 1}. ${currentSubJob.type}`}
+          initial={currentSpecs.notebook}
+          onClose={() => setIsNotebookOpen(false)}
+          onSave={(notebook) => {
+            updateCurrentSpecs({ notebook });
+            toast.success('메모장이 저장되었습니다. 작업 저장을 눌러 확정하세요.');
+          }}
         />
       )}
     </>

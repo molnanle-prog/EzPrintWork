@@ -46,6 +46,8 @@ export interface SituationMirrorPayload {
     jobs: Job[];
     /** 삭제된 job ID — 다른 PC·웹·태블릿에 삭제 전파 */
     deletedJobs?: { id: string; deletedAt: string }[];
+    /** 삭제된 거래처 ID — 합치기/삭제 롤백 방지 */
+    deletedClients?: { id: string; deletedAt: string }[];
     clients?: Client[];
     settings?: Record<string, unknown>;
     staff?: SituationStaffSnapshot[];
@@ -128,6 +130,7 @@ export class SituationMirrorService {
             statusDefinitions?: JobStatusDefinition[];
             staff?: Staff[];
             deletedJobs?: { id: string; deletedAt: string }[];
+            deletedClients?: { id: string; deletedAt: string }[];
         }
     ): SituationMirrorPayload {
         // 칸반 보드 작업 + 관리카드/보드숨김 작업(핀·내리기 동기화용)
@@ -154,6 +157,7 @@ export class SituationMirrorService {
             statusDefinitions: input.statusDefinitions,
             jobs: Array.from(byId.values()),
             deletedJobs: input.deletedJobs?.length ? input.deletedJobs : undefined,
+            deletedClients: input.deletedClients?.length ? input.deletedClients : undefined,
             clients: input.clients || [],
             settings: input.settings || {},
             staff: (input.staff || []).map((s) => {
@@ -275,6 +279,7 @@ export class SituationMirrorService {
             statusDefinitions: data.statusDefinitions,
             jobs: data.jobs || [],
             deletedJobs: data.deletedJobs,
+            deletedClients: data.deletedClients,
             clients: data.clients,
             settings: data.settings,
             staff: data.staff,
@@ -283,7 +288,13 @@ export class SituationMirrorService {
 
     private isUsableGatewayPayload(data: Partial<SituationMirrorPayload> | null | undefined): boolean {
         if (!data) return false;
-        return !!(data.jobs?.length || data.updatedAt || data.deletedJobs?.length);
+        return !!(
+            data.jobs?.length ||
+            data.updatedAt ||
+            data.deletedJobs?.length ||
+            data.deletedClients?.length ||
+            data.clients?.length
+        );
     }
 
     private async fetchGatewayMirrorOne(

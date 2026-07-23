@@ -4,12 +4,18 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('electron', {
     selectDirectory: () => ipcRenderer.invoke('select-directory'),
     selectFileOrFolder: () => ipcRenderer.invoke('select-file-or-folder'),
+    /** 메모장 등 다중 파일 선택 — options: { filters, defaultPath, openSelectedFolderAfter } */
+    selectFiles: (options) => ipcRenderer.invoke('select-files', options || {}),
+    /** 바이너리 파일 복사 (NAS 첨부용) */
+    copyFile: (source, dest) => ipcRenderer.invoke('copy-file', { source, dest }),
     resolveUncPath: (path) => ipcRenderer.invoke('resolve-unc-path', path),
     openPath: (path) => ipcRenderer.invoke('open-path', path),
+    revealInFolder: (path) => ipcRenderer.invoke('reveal-in-folder', path),
     createDatabaseFile: (defaultPath) => ipcRenderer.invoke('create-database-file', defaultPath),
     saveFile: (path, content) => ipcRenderer.invoke('save-file', { path, content }),
     readFile: (path) => ipcRenderer.invoke('read-file', path),
     exists: (path) => ipcRenderer.invoke('exists', path),
+    ensureDir: (path) => ipcRenderer.invoke('ensure-dir', path),
     checkDirectoryStatus: (path) => ipcRenderer.invoke('check-directory-status', path),
     getDocumentsPath: () => ipcRenderer.invoke('get-documents-path'),
     getUserDataPath: () => ipcRenderer.invoke('get-user-data-path'),
