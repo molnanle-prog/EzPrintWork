@@ -278,10 +278,16 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     },
     {
         name: '실사',
-        sizes: ['500x90cm(길거리용)', '90x180cm(실외배너)', '60x180cm(실내배너)', '사용자지정(규격외)'],
+        sizes: [
+            '배너(소) 450x1200mm',
+            '배너(중) 600x1800mm',
+            '배너(대) 900x1800mm',
+            '거리광고대 6000x700mm',
+            '규격외',
+        ],
         paperTypes: ['현수막천', 'PET지(배너)', '텐트천', '부직포', '유포지 실사'],
         paperWeights: ['기본 규격 무게', '실사 출력용'],
-        processings: ['타공', '미싱', '양면테이프']
+        processings: ['타공', '미싱', '양면테이프'],
     },
     {
         name: '쇼핑백/종이가방',
@@ -305,6 +311,21 @@ function mergeStringListField(user: string[] | undefined, defaults: string[] | u
     return [...defaults];
 }
 
+/** 기본값 + 사용자 값 합집합 (실사 등 기본 고정용). 기본을 앞에 두고 사용자 추가분만 이어 붙임 */
+function unionStringLists(...lists: Array<string[] | undefined>): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const list of lists) {
+        for (const raw of list || []) {
+            const value = String(raw || '').trim();
+            if (!value || seen.has(value)) continue;
+            seen.add(value);
+            out.push(value);
+        }
+    }
+    return out;
+}
+
 function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): boolean {
     const left = a || [];
     const right = b || [];
@@ -313,6 +334,20 @@ function stringArraysEqual(a: string[] | undefined, b: string[] | undefined): bo
 }
 
 function mergeProductDefinition(template: JobTypeDefinition, source: JobTypeDefinition, name: string): JobTypeDefinition {
+    // 실사: 비어 있거나 '규격외/기본'만 있어도 INITIAL 기본 옵션을 항상 다시 채움 (사용자 추가분 유지)
+    if (name === '실사') {
+        return {
+            ...template,
+            ...source,
+            name,
+            sizes: unionStringLists(template.sizes, source.sizes),
+            paperTypes: unionStringLists(template.paperTypes, source.paperTypes),
+            paperWeights: unionStringLists(template.paperWeights, source.paperWeights),
+            processings: unionStringLists(template.processings, source.processings),
+            processingsCover: mergeStringListField(source.processingsCover, template.processingsCover),
+            processingsInner: mergeStringListField(source.processingsInner, template.processingsInner),
+        };
+    }
     return {
         ...template,
         ...source,
