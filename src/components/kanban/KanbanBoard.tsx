@@ -47,8 +47,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [allStatusDefinitions, setAllStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [visibleStatusDefinitions, setVisibleStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [hiddenStatusKeys, setHiddenStatusKeys] = useState<string[]>(() => {
-    const saved = localStorage.getItem('ezprint_hidden_columns');
-    return saved ? JSON.parse(saved) : [];
+    try {
+      const saved = localStorage.getItem('ezprint_hidden_columns');
+      if (!saved) return [];
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed.filter((v) => typeof v === 'string') : [];
+    } catch {
+      return [];
+    }
   });
   const [showFilterPopover, setShowFilterPopover] = useState(false);
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {

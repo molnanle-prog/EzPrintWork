@@ -121,9 +121,9 @@ export class JobArchiveService {
             // rev(리비전) 우선 비교 — PC 간 시스템 시계가 달라도(clock skew) 정확한 선후 판단
             if (isIncomingJobNewer(job, prev)) {
                 const merged = applyIncomingJobVisibilityClears(
-                    { ...prev, ...job } as Record<string, unknown>,
+                    { ...prev, ...job } as unknown as Record<string, unknown>,
                     job as unknown as Record<string, unknown>
-                ) as Job;
+                ) as unknown as Job;
                 map.set(job.id, mergeJobVisibilityFields(merged, prev, job));
             } else {
                 map.set(job.id, mergeJobVisibilityFields({ ...prev }, prev, job));

@@ -78,7 +78,7 @@ interface JobDetailModalProps {
   job: Job;
   staff: Staff[];
   onClose: () => void;
-  onUpdate: (job: Job) => void;
+  onUpdate: (job: Job) => void | Promise<void>;
   onNavigateToQuote?: (quoteId?: string) => void;
   isNew?: boolean;
   initialViewMode?: 'summary' | 'edit';
@@ -685,7 +685,12 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
         toast.error('거래처 자동 등록에 실패했습니다. 상호명을 확인 후 다시 저장해 주세요.');
     }
 
-    onUpdate(finalJob);
+    try {
+      await onUpdate(finalJob);
+    } catch (error) {
+      await showAlert(getErrorMessage(error));
+      return;
+    }
   };
 
   const handleDelete = async () => {
@@ -725,8 +730,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
           };
 
           try {
-              await db.updateJob(finalJob);
-              onUpdate(finalJob);
+              // 부모 onUpdate가 db.updateJob을 수행 — 이중 저장/리비전 경합 방지
+              await onUpdate(finalJob);
               onClose();
           } catch (error) {
               showAlert(getErrorMessage(error));
@@ -763,8 +768,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
           };
 
           try {
-              await db.updateJob(finalJob);
-              onUpdate(finalJob);
+              await onUpdate(finalJob);
               onClose();
           } catch (error) {
               showAlert(getErrorMessage(error));

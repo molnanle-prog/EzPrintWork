@@ -66,15 +66,28 @@ class LocalGateway {
     setConfig({ archiveRoot, tenantId, gatewayToken }) {
         this.archiveRoot = archiveRoot ? String(archiveRoot).replace(/[\\/]$/, '') : null;
         this.tenantId = tenantId || null;
-        this.gatewayToken = gatewayToken || (tenantId ? deriveStoreGatewayToken(tenantId) : null);
+        // 매장 PC가 게시한 시크릿(우선). 없으면 레거시 derive만으로도 웹 호환 가능
+        const token = String(gatewayToken || '').trim();
+        this.gatewayToken = token.length >= 16 ? token : null;
     }
 
     isAuthorized(req, url) {
-        if (!this.gatewayToken) return true;
         const headerToken = req.headers['x-ezpw-gateway-token'];
         const queryToken = url.searchParams.get('token');
         const provided = (headerToken || queryToken || '').trim();
-        return provided === this.gatewayToken;
+        if (!provided) return false;
+
+        // 1) 저장된 시크릿 일치
+        if (this.gatewayToken && provided === this.gatewayToken) return true;
+
+        // 2) 동일 tenantId 레거시 derive 토큰 — 웹/구버전이 시크릿 전에 붙을 수 있게 호환
+        if (this.tenantId) {
+            const legacy = deriveStoreGatewayToken(this.tenantId);
+            if (legacy && provided === legacy) return true;
+        }
+
+        // 시크릿·레거시 모두 없으면 거부 (개방 금지)
+        return false;
     }
 
     readJsonFile(name) {
@@ -92,11 +105,14 @@ class LocalGateway {
     writeJsonFile(name, payload) {
         if (!this.archiveRoot) return false;
         const filePath = path.join(this.archiveRoot, name);
+        const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
         try {
             fs.mkdirSync(this.archiveRoot, { recursive: true });
-            fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf8');
+            fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
+            fs.renameSync(tmpPath, filePath);
             return true;
         } catch (error) {
+            try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
             console.warn('[LocalGateway] write failed:', filePath, error.message);
             return false;
         }
@@ -322,10 +338,14 @@ class LocalGateway {
                 }
 
                 if (url.pathname === '/health') {
+                    // NAS 경로·tenantId 등 민감 정보는 토큰 있을 때만 노출
+                    const info = this.isAuthorized(req, url)
+                        ? this.getInfo()
+                        : { port: this.port, okHint: true };
                     res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                     res.end(JSON.stringify({
                         ok: true,
-                        ...this.getInfo(),
+                        ...info,
                         authRequired: !!this.gatewayToken,
                     }));
                     return;

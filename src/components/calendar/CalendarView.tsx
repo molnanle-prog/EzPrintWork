@@ -11,6 +11,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { isLongProjectJob, isJobBoardHidden } from '../../utils/jobBoardVisibility';
 import { getStaffIdForUser, isJobAssignedToStaffId } from '../../utils/staffMatch';
+import { toast } from 'sonner';
 
 interface CalendarViewProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -313,15 +314,27 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const nextMonth = () => setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 1));
   const goToday = () => setCurrentDate(new Date());
 
-  const handleUpdateJob = (updated: Job) => {
-    db.updateJob(updated);
-    setSelectedJob(null);
+  const handleUpdateJob = async (updated: Job) => {
+    try {
+      await db.updateJob(updated);
+      setSelectedJob(null);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '작업 저장에 실패했습니다.';
+      toast.error(msg);
+      throw error;
+    }
   };
 
-  const handleCreateJob = (newJob: Job) => {
-    db.addJob(newJob);
-    setIsCreatingJob(false);
-    setSelectedJob(null); // Clear potential template job
+  const handleCreateJob = async (newJob: Job) => {
+    try {
+      await db.addJob(newJob);
+      setIsCreatingJob(false);
+      setSelectedJob(null);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : '작업 등록에 실패했습니다.';
+      toast.error(msg);
+      throw error;
+    }
   };
 
   const handleDeleteLeave = async (id: string, name: string) => {

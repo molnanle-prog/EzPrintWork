@@ -456,14 +456,8 @@ export const LoginPage: React.FC = () => {
             const newSessionId = createStaffSessionId();
             setLocalStaffSessionId(newSessionId, saveCredentials);
 
-            const tenantDocRef = doc(firestoreDb, 'tenants', tenantId);
-            const tenantDocSnap = await getDoc(tenantDocRef);
-            let tenantName = '';
-            if (tenantDocSnap.exists()) {
-                tenantName = tenantDocSnap.data().name || '';
-            }
-
             // Firebase Auth 로그인 (Firestore rules isMember 통과에 필수)
+            // ※ tenants get은 프로필 upsert 이후(멤버)에만 가능 — 비로그인 get 차단 규칙과 맞춤
             const rawLoginId = (userData.loginId || loginId.trim()).toLowerCase();
             const primaryAuthEmail = normalizeStaffLoginEmail(rawLoginId);
             const legacyAuthEmail = userData.email?.includes('@') && !userData.email.endsWith('@ez-hub.kr')
@@ -523,6 +517,7 @@ export const LoginPage: React.FC = () => {
                 return;
             }
 
+            let tenantName = companyName.trim();
             try {
                 let latestStaffRole = staffRoleForAuth;
                 let latestIsCompanyAdmin = userData.isCompanyAdmin === true;
@@ -575,7 +570,16 @@ export const LoginPage: React.FC = () => {
                     console.warn('Staff uid link skipped (non-blocking):', staffLinkErr);
                 }
 
-                const tenantData = tenantDocSnap.exists() ? tenantDocSnap.data() : {};
+                let tenantData: Record<string, any> = {};
+                try {
+                    const tenantDocSnap = await getDoc(doc(firestoreDb, 'tenants', tenantId));
+                    if (tenantDocSnap.exists()) {
+                        tenantData = tenantDocSnap.data() || {};
+                        tenantName = tenantData.name || tenantName;
+                    }
+                } catch (tenantReadErr) {
+                    console.warn('Tenant plan read after login skipped:', tenantReadErr);
+                }
                 const tenantPlan = determineTenantPlan(tenantData);
                 const tenantPlanCode = String(tenantData?.plan || 'free');
                 const tenantPaymentStatus = String(tenantData?.paymentStatus || 'UNPAID').toUpperCase();

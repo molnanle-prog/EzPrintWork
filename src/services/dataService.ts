@@ -6,7 +6,7 @@ import {
 import { normalizeKanbanLayoutConfig, normalizeStatusDefinition } from '../utils/kanbanLayout';
 import { toast } from 'sonner';
 import { 
-    collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch,
+    collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, runTransaction,
     query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer,
     deleteField
 } from 'firebase/firestore';
@@ -25,6 +25,9 @@ import {
     type AuxCollectionName,
 } from './auxCollectionMirrorService';
 import { refreshLocalGateway } from './gatewayBridge';
+import { setCachedGatewaySecret, getCachedGatewaySecret } from '../utils/gatewayToken';
+
+export type WebMirrorLinkStatus = 'idle' | 'connecting' | 'ready' | 'failed';
 import {
     collectStoreGatewayUrlsFromSettings,
     normalizeStoreGatewayUrls,
@@ -590,6 +593,12 @@ export class DataService {
     /** 웹·태블릿 — 이 기기가 미러를 실제로 받은 시각 */
     private lastMirrorReceivedAt: string | null = null;
     private webMirrorReady = false;
+    /** 웹/탭 — 미러 연결 상태 (Firestore jobs 폴백 없음) */
+    private webMirrorLinkStatus: WebMirrorLinkStatus = 'idle';
+    private webMirrorFailReason: string | null = null;
+    private nasPollInFlight = false;
+    private webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+    private webMirrorNextPollAt = 0;
     private lastNasArchiveAt: string | null = null;
     private nasPollTimer: ReturnType<typeof setInterval> | null = null;
     private archivedJobs: Job[] = [];
@@ -1000,6 +1009,19 @@ export class DataService {
         return this.webMirrorReady;
     }
 
+    /** 웹/탭 — 미러 연결 실패 여부 (빈 보드와 구분) */
+    isWebMirrorFailed(): boolean {
+        return this.isWebMirrorMode() && this.webMirrorLinkStatus === 'failed';
+    }
+
+    getWebMirrorLinkStatus(): WebMirrorLinkStatus {
+        return this.webMirrorLinkStatus;
+    }
+
+    getWebMirrorFailReason(): string | null {
+        return this.webMirrorFailReason;
+    }
+
     /** 웹 조회용 — 마지막 NAS/미러 동기화 시각(ISO) */
     getLastNasMirrorAt(): string | null {
         return this.lastNasMirrorAt;
@@ -1013,8 +1035,41 @@ export class DataService {
         return !this.getIsElectron();
     }
 
+    /** settings.main.storeGatewaySecret → 런타임 캐시 (미러 요청 전 필수) */
+    private syncGatewaySecretFromSettings(): void {
+        const settings = this.getSettingsObj() as Record<string, unknown>;
+        const secret = String(settings?.storeGatewaySecret || '').trim();
+        if (secret.length >= 16) {
+            setCachedGatewaySecret(secret);
+        }
+    }
+
+    private markWebMirrorReady(): void {
+        this.webMirrorReady = true;
+        this.webMirrorLinkStatus = 'ready';
+        this.webMirrorFailReason = null;
+        this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+        this.webMirrorNextPollAt = 0;
+    }
+
+    private markWebMirrorFailed(reason: string): void {
+        this.webMirrorLinkStatus = 'failed';
+        this.webMirrorFailReason = reason;
+        const gw = situationMirrorService.getLastGatewayStatus();
+        if (gw === 'unauthorized') {
+            this.webMirrorBackoffMs = Math.min(Math.max(this.webMirrorBackoffMs * 2, 5000), 15000);
+        } else {
+            this.webMirrorBackoffMs = Math.min(Math.max(this.webMirrorBackoffMs + 3000, 5000), 15000);
+        }
+        this.webMirrorNextPollAt = Date.now() + this.webMirrorBackoffMs;
+    }
+
     private async fetchWebMirrorPayload(): Promise<SituationMirrorPayload | null> {
         if (!this.tenantId || this.getIsElectron()) return null;
+        this.syncGatewaySecretFromSettings();
+        if (this.webMirrorLinkStatus === 'idle' || this.webMirrorLinkStatus === 'failed') {
+            this.webMirrorLinkStatus = 'connecting';
+        }
         const gatewayUrls = await this.getOrderedStoreGatewayUrls();
         return situationMirrorService.readRemoteMirror(this.tenantId, gatewayUrls);
     }
@@ -1061,6 +1116,8 @@ export class DataService {
         if (situation.updatedAt) {
             this.lastNasMirrorAt = situation.updatedAt;
             this.lastNasArchiveAt = situation.updatedAt;
+            // 작업 0건이어도 유효 미러 수신으로 처리 (빈 보드 vs 연결 실패 구분)
+            applied = true;
         }
         if (applied) {
             this.lastMirrorReceivedAt = new Date().toISOString();
@@ -1071,14 +1128,32 @@ export class DataService {
 
     private async hydrateWebMirrorInBackground(): Promise<void> {
         if (!this.tenantId || this.getIsElectron()) return;
+        this.syncGatewaySecretFromSettings();
         const ok = await this.tryHydrateFromWebMirror(1);
         if (ok) {
-            this.webMirrorReady = true;
+            this.markWebMirrorReady();
             this.isReady = true;
             this.notify();
             return;
         }
+        this.markWebMirrorFailed(this.describeWebMirrorFailure());
+        this.notify();
         void this.retryWebMirrorHydrateInBackground();
+    }
+
+    private describeWebMirrorFailure(): string {
+        const gateway = this.getStoreGatewayUrls();
+        if (gateway.length === 0) {
+            return '매장 PC NAS 연동(게이트웨이 URL)이 없습니다. 관리자 PC에서 NAS 경로를 저장해 주세요.';
+        }
+        const gw = situationMirrorService.getLastGatewayStatus();
+        if (gw === 'unauthorized') {
+            return '매장 게이트웨이 인증 실패. 같은 Wi‑Fi인지, 매장 PC가 켜져 있는지 확인해 주세요.';
+        }
+        if (gw === 'unreachable') {
+            return '매장 게이트웨이에 연결하지 못했습니다. 같은 Wi‑Fi·PC 전원을 확인해 주세요.';
+        }
+        return '회사 작업판 미러를 불러오지 못했습니다. (Firestore 작업 목록은 사용하지 않습니다)';
     }
 
     private async tryHydrateFromWebMirror(maxAttempts = 1): Promise<boolean> {
@@ -1094,7 +1169,7 @@ export class DataService {
                 }
                 const ok = this.applyMirrorPayload(situation);
                 if (ok) {
-                    this.webMirrorReady = true;
+                    this.markWebMirrorReady();
                     return true;
                 }
                 if (attempt < maxAttempts - 1) {
@@ -1112,9 +1187,10 @@ export class DataService {
     private async retryWebMirrorHydrateInBackground(): Promise<void> {
         if (!this.tenantId || this.getIsElectron()) return;
         for (let i = 0; i < 5; i++) {
-            await new Promise((r) => setTimeout(r, 2000));
+            const wait = Math.min(2000 * (i + 1), this.webMirrorBackoffMs || 5000);
+            await new Promise((r) => setTimeout(r, wait));
             if (!this.tenantId || this.getIsElectron()) return;
-            if (this.getAllJobs().length > 0) return;
+            if (this.webMirrorReady) return;
             const ok = await this.tryHydrateFromWebMirror(1);
             if (ok) {
                 this.isReady = true;
@@ -1122,6 +1198,8 @@ export class DataService {
                 this.notify();
                 return;
             }
+            this.markWebMirrorFailed(this.describeWebMirrorFailure());
+            this.notify();
         }
     }
 
@@ -1244,6 +1322,11 @@ export class DataService {
         this.cloudDegraded = false;
         this.localOperationalReady = false;
         this.webMirrorReady = false;
+        this.webMirrorLinkStatus = 'idle';
+        this.webMirrorFailReason = null;
+        this.nasPollInFlight = false;
+        this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+        this.webMirrorNextPollAt = 0;
         this.lastNasMirrorAt = null;
         this.lastMirrorReceivedAt = null;
         this.lastNasArchiveAt = null;
@@ -1287,6 +1370,11 @@ export class DataService {
         this.cloudDegraded = false;
         this.localOperationalReady = false;
         this.webMirrorReady = false;
+        this.webMirrorLinkStatus = 'idle';
+        this.webMirrorFailReason = null;
+        this.nasPollInFlight = false;
+        this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+        this.webMirrorNextPollAt = 0;
         this.quotesBootstrappedForTenant = null;
         this.settingsMergePersisting = false;
         this.quotesBootstrapInProgress = false;
@@ -1917,11 +2005,30 @@ export class DataService {
             getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() ||
             getEffectiveArchiveRootPath() ||
             null;
+        const settings = this.getSettingsObj() as Record<string, unknown>;
+        const existingSecret = String(settings.storeGatewaySecret || '').trim();
+        if (existingSecret.length >= 16) {
+            setCachedGatewaySecret(existingSecret);
+        }
+
         if (!root) {
-            await refreshLocalGateway(null, this.tenantId);
+            await refreshLocalGateway(null, this.tenantId, getCachedGatewaySecret() || existingSecret);
             return;
         }
-        const info = await refreshLocalGateway(root, this.tenantId);
+        const info = await refreshLocalGateway(
+            root,
+            this.tenantId,
+            getCachedGatewaySecret() || existingSecret
+        );
+        const activeSecret = getCachedGatewaySecret();
+        if (activeSecret.length >= 16 && activeSecret !== existingSecret) {
+            try {
+                await this.saveStoreGatewaySecret(activeSecret);
+            } catch (e) {
+                console.warn('[DataService] storeGatewaySecret save failed:', e);
+            }
+        }
+
         const lanUrls = normalizeStoreGatewayUrls(info?.lanUrls || []);
         if (lanUrls.length === 0) return;
         // 게이트웨이가 회사 경로를 서비스할 때만 Firestore에 허브 URL 게시
@@ -2106,6 +2213,12 @@ export class DataService {
     private startNasMirrorPolling() {
         if (!this.tenantId) return;
         this.stopNasMirrorPolling();
+        this.nasPollInFlight = false;
+        if (!this.getIsElectron()) {
+            this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+            this.webMirrorNextPollAt = 0;
+            this.syncGatewaySecretFromSettings();
+        }
         const pollMs = this.getIsElectron() ? APP_MIRROR_POLL_MS : WEB_MIRROR_POLL_MS;
         this.nasPollTimer = window.setInterval(() => {
             void this.pollNasOperationalSync();
@@ -2155,6 +2268,7 @@ export class DataService {
         'archiveRootPath',
         'storeGatewayUrl',
         'storeGatewayUrls',
+        'storeGatewaySecret',
         'tenantArchiveRootPath',
     ] as const;
 
@@ -2371,9 +2485,9 @@ export class DataService {
             let merged: Job;
             if (useIncoming) {
                 merged = applyIncomingJobVisibilityClears(
-                    { ...prev, ...job } as Record<string, unknown>,
+                    { ...prev, ...job } as unknown as Record<string, unknown>,
                     job as unknown as Record<string, unknown>
-                ) as Job;
+                ) as unknown as Job;
             } else {
                 merged = { ...prev };
             }
@@ -2577,9 +2691,9 @@ export class DataService {
             let merged: Job;
             if (useIncoming) {
                 merged = applyIncomingJobVisibilityClears(
-                    { ...local, ...mirrored } as Record<string, unknown>,
+                    { ...local, ...mirrored } as unknown as Record<string, unknown>,
                     mirrored as unknown as Record<string, unknown>
-                ) as Job;
+                ) as unknown as Job;
             } else {
                 merged = { ...local };
             }
@@ -2617,6 +2731,10 @@ export class DataService {
 
     private async pollNasOperationalSync() {
         if (!this.tenantId || document.visibilityState !== 'visible') return;
+        if (this.nasPollInFlight) return;
+        if (!this.getIsElectron() && Date.now() < this.webMirrorNextPollAt) return;
+
+        this.nasPollInFlight = true;
         try {
             let changed = false;
             let mergedJobs: Job[] | null = null;
@@ -2648,6 +2766,15 @@ export class DataService {
                   })())
                 : await this.fetchWebMirrorPayload();
 
+            if (!this.getIsElectron()) {
+                if (situation) {
+                    this.markWebMirrorReady();
+                } else if (!this.webMirrorReady) {
+                    this.markWebMirrorFailed(this.describeWebMirrorFailure());
+                    this.notify();
+                }
+            }
+
             if (situation?.updatedAt && situation.updatedAt !== this.lastNasMirrorAt) {
                 this.lastNasMirrorAt = situation.updatedAt;
 
@@ -2664,16 +2791,15 @@ export class DataService {
                     this.applySituationMirrorMeta(situation);
                     changed = true;
                 }
-
-                if (changed && !this.getIsElectron()) {
-                    this.webMirrorReady = true;
-                }
             }
 
             // 관리카드·보드숨김 — 미러 updatedAt이 같아도 매 폴링마다 병합
             // (직원 PC가 칸반만 옮겨 rev가 높으면 핀을 놓치는 문제 방지)
             if (situation?.jobs?.length) {
                 mergedJobs = this.mergeJobsByUpdatedAt(takeJobs(), situation.jobs);
+                changed = true;
+            } else if (situation?.updatedAt && !this.getIsElectron()) {
+                // 유효 미러·작업 0건 — 연결 성공으로 간주
                 changed = true;
             }
 
@@ -2708,6 +2834,12 @@ export class DataService {
             if (auxChanged) this.notify();
         } catch (e) {
             console.warn('[DataService] NAS operational poll skipped:', e);
+            if (!this.getIsElectron() && !this.webMirrorReady) {
+                this.markWebMirrorFailed(this.describeWebMirrorFailure());
+                this.notify();
+            }
+        } finally {
+            this.nasPollInFlight = false;
         }
     }
 
@@ -3325,6 +3457,15 @@ export class DataService {
             if (settingsObj) {
                 Object.assign(settingsObj, preservedNasMaster);
                 this.enforceCompanyArchiveRoot();
+                const gwSecret = String((settingsObj as Record<string, unknown>).storeGatewaySecret || '').trim();
+                if (gwSecret.length >= 16) {
+                    const prev = getCachedGatewaySecret();
+                    setCachedGatewaySecret(gwSecret);
+                    if (prev !== gwSecret) {
+                        this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+                        this.webMirrorNextPollAt = 0;
+                    }
+                }
             }
             if (settingsObj && this.applySettingsDefaultsMerge(settingsObj)) {
                 this.persistSettingsDefaultsMerge(settingsObj).catch((err) =>
@@ -3788,6 +3929,11 @@ export class DataService {
         this.cloudDegraded = false;
         this.localOperationalReady = false;
         this.webMirrorReady = false;
+        this.webMirrorLinkStatus = 'idle';
+        this.webMirrorFailReason = null;
+        this.nasPollInFlight = false;
+        this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
+        this.webMirrorNextPollAt = 0;
         this.lastSyncError = null;
         this.syncStatus = 'connecting';
         this.operationalJobs = [];
@@ -3974,7 +4120,7 @@ export class DataService {
             statusDefinitions: { definitions: INITIAL_STATUS_DEFINITIONS },
             processingDefinitions: { definitions: INITIAL_PROCESSING_DEFINITIONS },
             pricing: { baseLaborCost: 10000, printColorCost: 50, marginRate: 1.6 },
-            companyInfo: { name: companyName, businessNumber: '' },
+            companyInfo: { name: companyName, businessNumber: '', phone: '' },
             roles: { roles: ["관리자", "디자이너", "인쇄기장", "후가공", "배송", "실장", "부장", "과장", "대리", "사원"] }
         };
     }
@@ -4137,11 +4283,8 @@ export class DataService {
             console.warn('[searchTenants] prefix query failed:', e);
         }
 
-        // 3) 폴백 — includes 부분 일치 (소규모 테넌트 목록)
-        const snap = await getDocs(query(tenantsCol, limit(50)));
-        return dedupeById(snap.docs.map(mapTenant)).filter((t) =>
-            (t.name || '').toLowerCase().includes(lower)
-        );
+        // 비필터 tenants dump는 보안상 금지 — 접두사/정확 일치만 사용
+        return [];
     }
 
     // --- CRUD Methods (Local JSON Based) ---
@@ -4761,8 +4904,133 @@ export class DataService {
         let jobToSave = job;
 
         if (oldJob) {
+            // 최신 잔액으로 재계산 후 CAS — 동시 결제 중복 차감 완화
             const prepaidResult = resolvePrepaidOnJobUpdate(oldJob, job, this.getClients());
             jobToSave = prepaidResult.job;
+
+            for (const clientUpdate of prepaidResult.clientUpdates) {
+                const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+                if (!client) continue;
+                if (
+                    clientUpdate.expectedBalanceBefore !== undefined &&
+                    normalizePrepaidBalance(client.prepaidBalance) !== clientUpdate.expectedBalanceBefore
+                ) {
+                    throw new Error(
+                        '선수금이 다른 작업에서 변경되었습니다. 화면을 새로고침한 뒤 다시 저장해 주세요.'
+                    );
+                }
+            }
+
+            const useCloudBatch =
+                !!this.tenantId &&
+                prepaidResult.clientUpdates.length > 0 &&
+                this.canPersistToCloud('jobs') &&
+                this.canPersistToCloud('clients') &&
+                !this.isLocalPrimaryMode();
+
+            if (useCloudBatch) {
+                const tenantId = this.tenantId!;
+                const clientPayloads: { id: string; data: Client }[] = [];
+                for (const clientUpdate of prepaidResult.clientUpdates) {
+                    const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+                    if (!client) continue;
+                    const ledger = clientUpdate.ledgerEntry
+                        ? appendPrepaidLedger(client, clientUpdate.ledgerEntry)
+                        : client.prepaidLedger;
+                    clientPayloads.push({
+                        id: client.id,
+                        data: {
+                            ...client,
+                            prepaidBalance: clientUpdate.prepaidBalance,
+                            prepaidLedger: ledger,
+                        },
+                    });
+                }
+
+                const prepaidDelta =
+                    (prepaidResult.job.prepaidAppliedAmount || 0) - (oldJob.prepaidAppliedAmount || 0);
+                if (prepaidDelta !== 0) {
+                    const history = [...(jobToSave.history || [])];
+                    history.push({
+                        timestamp: new Date().toISOString(),
+                        staffId: 'system',
+                        action: prepaidDelta > 0 ? '선불 차감' : '선불 복구',
+                        details:
+                            prepaidDelta > 0
+                                ? `선불 ${prepaidDelta.toLocaleString()}원 차감 (잔액 반영)`
+                                : `선불 ${Math.abs(prepaidDelta).toLocaleString()}원 복구`,
+                    });
+                    jobToSave = { ...jobToSave, history };
+                }
+
+                const jobId = jobToSave.id!;
+                const jobPayload = {
+                    ...jobToSave,
+                    updatedAt: new Date().toISOString(),
+                    rev: nextJobRev(oldJob),
+                };
+
+                await runTransaction(firestore, async (tx) => {
+                    for (const row of clientPayloads) {
+                        const ref = doc(firestore, 'tenants', tenantId, 'clients', row.id);
+                        const snap = await tx.get(ref);
+                        if (snap.exists()) {
+                            const remoteBal = normalizePrepaidBalance(snap.data()?.prepaidBalance);
+                            const expected = prepaidResult.clientUpdates.find(
+                                (u) => u.clientId === row.id
+                            )?.expectedBalanceBefore;
+                            if (expected !== undefined && remoteBal !== expected) {
+                                throw new Error(
+                                    '선수금이 다른 작업에서 변경되었습니다. 화면을 새로고침한 뒤 다시 저장해 주세요.'
+                                );
+                            }
+                        }
+                    }
+                    for (const row of clientPayloads) {
+                        const ref = doc(firestore, 'tenants', tenantId, 'clients', row.id);
+                        tx.set(ref, stripUndefinedForFirestore(row.data), { merge: true });
+                    }
+                    const jobRef = doc(firestore, 'tenants', tenantId, 'jobs', jobId);
+                    tx.set(jobRef, stripUndefinedForFirestore(jobPayload), { merge: true });
+                });
+
+                for (const row of clientPayloads) {
+                    this.patchLocalEntity('clients', row.id, row.data);
+                }
+                this.patchLocalEntity('jobs', jobId, jobPayload);
+                this.notify();
+                try {
+                    await this.bumpJobSyncPulse(jobId, 'upsert');
+                } catch {
+                    /* pulse optional */
+                }
+
+                if (prepaidResult.warning) {
+                    toast.warning(prepaidResult.warning, { duration: 6000 });
+                } else if (prepaidResult.notice) {
+                    toast.success(prepaidResult.notice, { duration: 5000 });
+                }
+
+                const savedJob = this.getAllJobs().find((j) => j.id === jobToSave.id) || jobToSave;
+                if (savedJob.status === 'CANCELED' && this.tenantId && savedJob.id) {
+                    try {
+                        await jobArchiveService.upsertArchivedJob(this.tenantId, savedJob);
+                        const idx = this.archivedJobs.findIndex((j) => j.id === savedJob.id);
+                        if (idx >= 0) this.archivedJobs[idx] = savedJob;
+                        else this.archivedJobs = [...this.archivedJobs, savedJob];
+                        this.rebuildArchiveMergedJobs();
+                        this.notify();
+                    } catch (e) {
+                        console.warn('[updateJob] canceled job archive upsert failed:', e);
+                    }
+                }
+                try {
+                    await this.syncQuoteFromJob(jobToSave);
+                } catch (e) {
+                    console.error('[updateJob] quote sync failed (job saved):', e);
+                }
+                return;
+            }
 
             for (const clientUpdate of prepaidResult.clientUpdates) {
                 const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
@@ -5502,6 +5770,35 @@ export class DataService {
         }
     }
 
+    /** 웹/태블릿이 LAN 게이트웨이에 붙을 때 쓰는 공유 시크릿 — Firestore settings.main에 게시 */
+    async saveStoreGatewaySecret(secret: string): Promise<void> {
+        const token = String(secret || '').trim();
+        if (token.length < 16) return;
+
+        const settings = this.getSettingsObj() as Record<string, unknown>;
+        settings.storeGatewaySecret = token;
+        this.data['settings'] = [settings];
+        setCachedGatewaySecret(token);
+        this.notify();
+
+        if (this.tenantId && this.isLocalPrimaryMode()) {
+            await localDbBridge.saveSettings(this.tenantId, settings);
+        }
+
+        if (this.tenantId) {
+            try {
+                await setDoc(
+                    doc(firestore, 'tenants', this.tenantId, 'settings', 'main'),
+                    stripUndefinedForFirestore({ storeGatewaySecret: token }),
+                    { merge: true }
+                );
+            } catch (e) {
+                console.warn('[DataService] storeGatewaySecret cloud publish failed:', e);
+                throw e;
+            }
+        }
+    }
+
     /** 사내 웹/태블릿 — LAN 게이트웨이 URL 목록 (Storage 폴백 전 우선) */
     async saveStoreGatewayUrls(storeGatewayUrls: string[]): Promise<void> {
         const urls = normalizeStoreGatewayUrls(storeGatewayUrls);
@@ -5563,7 +5860,11 @@ export class DataService {
         }
     }
 
-    /** 인원 수 + 플랜 유형을 Firestore tenants 문서에 반영 (gift는 개발자 관리 도구 전용) */
+    /**
+     * 인원 수 + 플랜 유형 변경.
+     * 카드결제 웹훅/Admin SDK 연동 전까지 클라이언트에서 plan·paymentStatus·maxStaff 쓰기를 차단합니다.
+     * (UpgradeModal UI는 유지 — 결제 연동 시 이 가드와 Firestore 규칙을 함께 교체)
+     */
     async updateTenantPlanSettings(
         tenantId: string,
         options: { staffCount: number; tier: PlanTier }
@@ -5571,22 +5872,10 @@ export class DataService {
         if (options.tier === 'gift') {
             throw new Error('무료(선물) 플랜은 개발자 관리 도구에서만 설정할 수 있습니다.');
         }
-        const tier = options.tier;
-        const staffCount = tier === 'ad'
-            ? Math.min(Math.max(1, options.staffCount), 3)
-            : Math.max(1, Math.min(999, options.staffCount));
-        const plan = staffCountToPlanCode(staffCount, tier);
-        const paymentStatus = tierToPaymentStatus(tier);
-
-        await setDoc(
-            doc(firestore, 'tenants', tenantId),
-            {
-                plan,
-                paymentStatus,
-                maxStaff: staffCount,
-                updatedAt: new Date().toISOString(),
-            },
-            { merge: true }
+        void tenantId;
+        void options;
+        throw new Error(
+            '요금제·결제 상태 변경은 카드 결제 연동 후 서버에서만 처리됩니다. 지금은 변경할 수 없습니다.'
         );
     }
 

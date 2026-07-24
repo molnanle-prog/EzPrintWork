@@ -1,7 +1,6 @@
 import {
   Auth,
   User,
-  createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signOut,
 } from 'firebase/auth';
@@ -54,48 +53,36 @@ export async function signInStaffWithFirebaseAuth(
   const linkedUid = staff.uid?.trim() || null;
   let lastError: unknown = null;
 
-  const attempt = async (allowCreate: boolean): Promise<{ user: User; authEmail: string } | null> => {
-    for (const emailCandidate of authEmailsToTry) {
-      for (const pwd of passwordsToTry) {
-        try {
-          if (allowCreate) {
-            try {
-              await createUserWithEmailAndPassword(auth, emailCandidate, pwd);
-            } catch (createErr: unknown) {
-              const code = (createErr as { code?: string })?.code;
-              if (code !== 'auth/email-already-in-use') throw createErr;
-              await signInWithEmailAndPassword(auth, emailCandidate, pwd);
-            }
-          } else {
-            await signInWithEmailAndPassword(auth, emailCandidate, pwd);
-          }
+  // 로그인 경로에서는 계정 자동 생성 금지 — 미연결 staff 탈취 방지.
+  // 계정 생성은 StaffManager / 직원 가입(provisionStaffAuthAccount)에서만 수행.
+  for (const emailCandidate of authEmailsToTry) {
+    for (const pwd of passwordsToTry) {
+      try {
+        await signInWithEmailAndPassword(auth, emailCandidate, pwd);
 
-          const user = auth.currentUser;
-          if (!user) continue;
+        const user = auth.currentUser;
+        if (!user) continue;
 
-          if (linkedUid && user.uid !== linkedUid) {
-            console.warn(
-              `[StaffAuth] uid mismatch for ${emailCandidate}: auth=${user.uid} staff=${linkedUid} — trying next email`
-            );
-            await signOut(auth);
-            continue;
-          }
+        if (linkedUid && user.uid !== linkedUid) {
+          console.warn(
+            `[StaffAuth] uid mismatch for ${emailCandidate}: auth=${user.uid} staff=${linkedUid} — trying next email`
+          );
+          await signOut(auth);
+          continue;
+        }
 
-          return { user, authEmail: emailCandidate };
-        } catch (err) {
-          lastError = err;
-          if (auth.currentUser) {
-            await signOut(auth).catch(() => {});
-          }
+        return { user, authEmail: emailCandidate };
+      } catch (err) {
+        lastError = err;
+        if (auth.currentUser) {
+          await signOut(auth).catch(() => {});
         }
       }
     }
-    return null;
-  };
+  }
 
-  const signedIn = (await attempt(false)) ?? (await attempt(true));
-  if (!signedIn && lastError) {
+  if (lastError) {
     console.error('[StaffAuth] all sign-in attempts failed:', lastError);
   }
-  return signedIn;
+  return null;
 }

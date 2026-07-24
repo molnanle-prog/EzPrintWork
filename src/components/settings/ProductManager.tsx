@@ -143,6 +143,7 @@ export const ProductManager: React.FC = () => {
 
   const handleSaveProcessings = async () => {
       if (!selectedType) return;
+      if (!(await ensureCanEdit())) return;
 
       const latestDefs = db.getProductDefinitions();
       const isBooklet = isBookletProductType(selectedType.name);
@@ -206,6 +207,7 @@ export const ProductManager: React.FC = () => {
   };
 
   const handleDeleteType = async (name: string) => {
+      if (!(await ensureCanEdit())) return;
       if (
           await showConfirm(
               `'${name}' 작업 종류를 삭제하시겠습니까?\n\n` +
@@ -226,6 +228,7 @@ export const ProductManager: React.FC = () => {
   };
 
   const handleRestoreDefaults = async () => {
+      if (!(await ensureCanEdit())) return;
       if (await showConfirm('기본 작업 종류(명함, 전단, 스티커 등)를 모두 복원하시겠습니까?\n현재 설정된 내용이 덮어씌워질 수 있습니다.')) {
           try {
               await db.restoreProductDefaults();

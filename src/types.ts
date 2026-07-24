@@ -126,6 +126,8 @@ export interface Job {
   boardHiddenReason?: 'management_card' | 'manual' | 'canceled' | null;
   /** 이 작업에 선불로 차감된 금액 */
   prepaidAppliedAmount?: number;
+  /** 선수금 외 실제 수납액(현금·카드 등). 미수 = price - prepaidAppliedAmount - paidAmount */
+  paidAmount?: number;
   /** 결제 시 선불 차감 사용 (기본 true — false면 별도 수금) */
   usePrepaidForPayment?: boolean;
   /** 관리카드로 올린 시각 — 회사 공통(작업 문서), 개인별 아님 */

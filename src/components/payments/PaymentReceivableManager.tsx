@@ -220,17 +220,23 @@ export const PaymentReceivableManager: React.FC = () => {
 
   const stats = useMemo(() => {
     const active = jobs.filter((j) => j.paymentStatus !== '취소');
-    const outstandingJobs = active.filter((j) => isOutstanding(j.paymentStatus));
-    const paidJobs = active.filter((j) => j.paymentStatus === '결제완료');
+    // 상태뿐 아니라 실제 잔여 미수금액 기준으로 집계
+    const outstandingJobs = active.filter((j) => getJobOutstandingAmount(j) > 0);
+    const settledJobs = active.filter((j) => getJobOutstandingAmount(j) === 0 && j.paymentStatus === '결제완료');
     const totalPrepaid = db.getTotalPrepaidBalance();
     const outstandingAmount = outstandingJobs.reduce((s, j) => s + getJobOutstandingAmount(j), 0);
+    const collectedAmount = settledJobs.reduce(
+      (s, j) => s + (j.prepaidAppliedAmount || 0) + (j.paidAmount || 0),
+      0
+    );
     return {
       outstandingCount: outstandingJobs.length,
       outstandingAmount,
       partialCount: active.filter((j) => j.paymentStatus === '일부결제').length,
-      paidCount: paidJobs.length,
-      paidAmount: paidJobs.reduce((s, j) => s + (j.price || 0), 0),
+      paidCount: settledJobs.length,
+      paidAmount: collectedAmount,
       totalPrepaid,
+      // 거래처 간 상계가 아님 — 표시용 참고치
       netPosition: totalPrepaid - outstandingAmount,
     };
   }, [jobs]);
@@ -240,7 +246,7 @@ export const PaymentReceivableManager: React.FC = () => {
     return jobs
       .filter((j) => {
         if (filter === 'byClient' || filter === 'prepaidClients') return false;
-        if (filter === 'outstanding') return isOutstanding(j.paymentStatus);
+        if (filter === 'outstanding') return getJobOutstandingAmount(j) > 0;
         if (filter !== 'all') return j.paymentStatus === filter;
         return true;
       })
@@ -272,7 +278,7 @@ export const PaymentReceivableManager: React.FC = () => {
     const map = new Map<string, ClientSummaryRow>();
 
     jobs
-      .filter((j) => j.paymentStatus !== '취소' && isOutstanding(j.paymentStatus))
+      .filter((j) => j.paymentStatus !== '취소' && getJobOutstandingAmount(j) > 0)
       .forEach((job) => {
         const name = job.clientName?.trim() || '(미지정)';
         const row = map.get(name) || {
@@ -703,7 +709,7 @@ export const PaymentReceivableManager: React.FC = () => {
 
         <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1">
           <span>
-            순 포지션(선불 − 미수):{' '}
+            참고(전체 선불 합 − 전체 미수 합, 거래처 간 상계 아님):{' '}
             <strong
               className={
                 stats.netPosition >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'

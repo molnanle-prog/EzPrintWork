@@ -51,7 +51,7 @@ export function installSelectAllOnFocus(): () => void {
     if (!isSelectableField(el)) return;
 
     if (pendingMouseFocus) {
-      const onMouseUp = (mouseEvent: MouseEvent) => {
+      const onMouseUp = (mouseEvent: Event) => {
         mouseEvent.preventDefault();
         el.removeEventListener('mouseup', onMouseUp);
       };

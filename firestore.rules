@@ -94,20 +94,16 @@ service cloud.firestore {
         && request.query.filters[1].op == '<=';
     }
 
-    // tenants 목록/단건 — 로그인 전·후 누구나 회사 찾기용
+    // tenants 목록 — 이름/입장코드 검색만 허용 (비필터 dump 금지)
     function isPublicTenantDiscovery() {
-      return isReasonableListQuery()
-        || isTenantNameSearchQuery()
+      return isTenantNameSearchQuery()
         || isTenantNamePrefixSearchQuery()
         || isTenantNameJoinCodeQuery();
     }
 
-    // tenants/{id} 단건 — 회사 검색 결과 읽기 (하위 jobs/clients 등은 isMember로 보호)
+    // tenants/{id} 단건 — 멤버·슈퍼어드민만 (비로그인 get으로 joinCode 등 탈취 방지)
     function isPublicTenantDiscoveryGet() {
-      return resource != null
-        && resource.data.name is string
-        && resource.data.name.size() >= 1
-        && resource.data.name.size() <= 100;
+      return false;
     }
 
     // 직원 로그인: loginId == 조회만 허용 (비로그인 전체 list dump 금지)
@@ -270,9 +266,12 @@ service cloud.firestore {
         || isAdminWritingStaffUser();
       allow delete: if isSuperAdmin();
 
-      /** EzPrintWork 로그인·heartbeat — 본인 users 문서에 isOnline/lastActive 기록 */
+      /** EzPrintWork 로그인·heartbeat — presence 관련 필드만 변경 허용 */
       function isPresenceSelfUpdate(data) {
-        return data.isOnline is bool
+        return resource != null
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['isOnline', 'lastActive', 'online', 'activeSessionId', 'activeSessionAt'])
+          && data.isOnline is bool
           && data.lastActive is string
           && data.lastActive.size() <= 40
           && (!('online' in data) || data.online is bool)
@@ -283,10 +282,16 @@ service cloud.firestore {
         return data.role == 'admin'
           && data.tenantId is string
           && isValidId(data.tenantId)
-          && (!('tenantId' in existing()) || existing().tenantId == null);
+          && (!('tenantId' in existing()) || existing().tenantId == null)
+          && exists(/databases/$(database)/documents/tenants/$(data.tenantId))
+          && get(/databases/$(database)/documents/tenants/$(data.tenantId)).data.ownerId == request.auth.uid;
       }
 
-      /** 직원 로그인 시 users/{uid}에 tenantId·role·loginId 연결 (본인 문서만) */
+      function staffDocForLogin(tenantId, staffDocId) {
+        return get(/databases/$(database)/documents/tenants/$(tenantId)/staff/$(staffDocId)).data;
+      }
+
+      /** 직원 로그인 — 실제 staff 문서와 loginId/권한 대조 필수 (임의 admin 부여 금지) */
       function isStaffLoginProfileUpsert(data) {
         return isSignedIn()
           && request.auth.uid == userId
@@ -295,10 +300,26 @@ service cloud.firestore {
           && isValidId(data.tenantId)
           && data.email is string
           && data.email.lower() == request.auth.token.email.lower()
-          && 'loginId' in data
           && data.loginId is string
           && data.loginId.size() >= 2
-          && data.loginId.size() <= 64;
+          && data.loginId.size() <= 64
+          && data.staffDocId is string
+          && isValidId(data.staffDocId)
+          && exists(/databases/$(database)/documents/tenants/$(data.tenantId)/staff/$(data.staffDocId))
+          && staffDocForLogin(data.tenantId, data.staffDocId).loginId is string
+          && staffDocForLogin(data.tenantId, data.staffDocId).loginId.lower() == data.loginId.lower()
+          && staffDocForLogin(data.tenantId, data.staffDocId).active != false
+          && staffDocForLogin(data.tenantId, data.staffDocId).isDeleted != true
+          && (
+            !('uid' in staffDocForLogin(data.tenantId, data.staffDocId))
+            || staffDocForLogin(data.tenantId, data.staffDocId).uid == null
+            || staffDocForLogin(data.tenantId, data.staffDocId).uid == ''
+            || staffDocForLogin(data.tenantId, data.staffDocId).uid == request.auth.uid
+          )
+          && (
+            data.role == 'staff'
+            || (data.role == 'admin' && staffDocForLogin(data.tenantId, data.staffDocId).isCompanyAdmin == true)
+          );
       }
 
       function isValidUser(data) {
@@ -315,12 +336,23 @@ service cloud.firestore {
       allow list: if isSuperAdmin() || isPublicTenantDiscovery();
       allow get: if isSuperAdmin() || isMember(tenantId) || isPublicTenantDiscoveryGet();
       allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
-      allow update: if (isSuperAdmin() || isAdmin(tenantId)) && isValidTenant(incoming());
+      // 요금/결제/소유자 필드는 슈퍼어드민만 (카드결제 웹훅·Admin SDK 연동 전까지 클라이언트 조작 차단)
+      allow update: if isValidTenant(incoming())
+        && (
+          isSuperAdmin()
+          || (isAdmin(tenantId) && tenantBillingFieldsUnchanged())
+        );
       allow delete: if isSuperAdmin();
 
       function isValidPlan(plan) {
         return plan in ['free', 'lite', 'pro', 'pro_plus', 'service']
           || plan.matches('^u[0-9]+$');
+      }
+
+      function tenantBillingFieldsUnchanged() {
+        // ownerId는 Google UID 마이그레이션 등 기존 복구 경로를 위해 관리자 갱신 허용
+        return !request.resource.data.diff(resource.data).affectedKeys()
+          .hasAny(['plan', 'paymentStatus', 'maxStaff', 'licenseExpiresAt']);
       }
 
       function isValidTenant(data) {
@@ -351,36 +383,43 @@ service cloud.firestore {
 
       function isStaffUidSelfLink(data) {
         return isStaffEmailAuth()
+          && resource != null
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['uid', 'active'])
           && 'uid' in data
           && data.uid == request.auth.uid
-          && (!('active' in data) || data.active == true);
+          && (!('active' in data) || data.active == true)
+          && (
+            !('uid' in resource.data)
+            || resource.data.uid == null
+            || resource.data.uid == ''
+            || resource.data.uid == request.auth.uid
+          );
       }
 
-      /** EzPrintWork 로그인·heartbeat — 본인 staff 문서에 isOnline/lastActive 기록 */
+      /** EzPrintWork 로그인·heartbeat — presence 필드만 변경 허용 */
       function isStaffPresenceSelfUpdate(staffId, data) {
         return isStaffEmailAuth()
           && isValidId(staffId)
+          && resource != null
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['isOnline', 'lastActive', 'online', 'activeSessionId', 'activeSessionAt', 'uid'])
           && data.isOnline is bool
           && data.lastActive is string
           && data.lastActive.size() <= 40
           && isPresenceSessionFields(data)
           && (
             staffId == request.auth.uid
-            || (resource != null && 'uid' in resource.data && resource.data.uid == request.auth.uid)
+            || ('uid' in resource.data && resource.data.uid == request.auth.uid)
             || ('uid' in data && data.uid == request.auth.uid)
           );
       }
 
-      // STAFF — 로그인/가입에 필요한 제한 조회
-      // 비로그인: loginId·active 쿼리 또는 limit≤50 목록(직원 로그인 호환)
-      // ※ query.filters.field.path 조건만으로는 Enterprise DB에서 거부되는 사례가 있어
-      //    isReasonableListQuery 폴백을 유지하되 limit≤50으로 전체 dump 범위를 제한
+      // STAFF — 비로그인: loginId·active 쿼리만 (전체 list dump 금지)
       match /staff/{staffId} {
         allow read: if isSuperAdmin()
           || isMember(tenantId)
           || isStaffPreAuthRead()
-          || isStaffEmailAuth()
-          || (!isSignedIn() && isReasonableListQuery());
+          || isStaffEmailAuth();
         allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
           || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()))
           || (isTenantOwner(tenantId) && request.auth.uid == staffId && isValidId(staffId) && isValidStaff(incoming()));
@@ -513,23 +552,11 @@ service cloud.firestore {
                data.keys().hasAll(['name']);
       }
 
-      // SETTINGS — 관리자: 전체, 직원: 상품·후가공·거래처(별도 clients 컬렉션)
-      function isStaffWritableSetting(settingId, data) {
-        return settingId == 'productDefinitions'
-          || settingId == 'processingDefinitions'
-          || (settingId == 'main'
-            && resource != null
-            && (
-              request.resource.data.diff(resource.data).affectedKeys().hasOnly(['productDefinitions'])
-              || request.resource.data.diff(resource.data).affectedKeys().hasOnly(['processingDefinitions'])
-            ));
-      }
-
+      // SETTINGS — 관리자/대표만 쓰기 (상품·후가공 마스터 포함)
       match /settings/{settingId} {
         allow read: if isMember(tenantId) || isSuperAdmin();
         allow write: if (isAdmin(tenantId) && isValidId(settingId))
-          || (isTenantOwner(tenantId) && isValidId(settingId))
-          || (isMember(tenantId) && isValidId(settingId) && isStaffWritableSetting(settingId, incoming()));
+          || (isTenantOwner(tenantId) && isValidId(settingId));
       }
 
       // SYNC PULSE — 테넌트 실시간 변경 신호 (문서 1개만 구독)

@@ -251,7 +251,7 @@ export async function upsertStaffUserProfile(
 ): Promise<boolean> {
   if (!user.uid) return false;
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     uid: user.uid,
     id: user.uid,
     email: user.email || `${profile.loginId}@ez-hub.kr`,
@@ -262,6 +262,10 @@ export async function upsertStaffUserProfile(
     loginId: profile.loginId,
     active: true,
   };
+  // Firestore 규칙이 staff 문서와 대조해 role 상승을 검증할 때 사용
+  if (profile.staffDocId) {
+    payload.staffDocId = profile.staffDocId;
+  }
 
   await setDoc(doc(db, 'users', user.uid), payload, { merge: true });
 

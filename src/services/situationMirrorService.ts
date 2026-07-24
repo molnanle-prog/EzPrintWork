@@ -53,7 +53,16 @@ export interface SituationMirrorPayload {
     staff?: SituationStaffSnapshot[];
 }
 
+export type GatewayMirrorStatus = 'ok' | 'unauthorized' | 'unreachable' | 'empty' | 'idle';
+
 export class SituationMirrorService {
+    /** 웹 LAN 게이트웨이 마지막 결과 — dataService 백오프/배너용 */
+    private lastGatewayStatus: GatewayMirrorStatus = 'idle';
+
+    getLastGatewayStatus(): GatewayMirrorStatus {
+        return this.lastGatewayStatus;
+    }
+
     private isElectron(): boolean {
         return typeof window !== 'undefined' && !!window.electron;
     }
@@ -304,8 +313,8 @@ export class SituationMirrorService {
         const base = normalizeGatewayBase(gatewayBaseUrl);
         if (!base) return null;
         try {
-            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-            const token = deriveStoreGatewayToken(tenantId);
+            const { getGatewayAuthToken } = await import('../utils/gatewayToken');
+            const token = getGatewayAuthToken(tenantId);
             const res = await fetchWithTimeout(
                 `${base}/api/v1/mirror?tenantId=${encodeURIComponent(tenantId)}`,
                 {
@@ -314,15 +323,33 @@ export class SituationMirrorService {
                 },
                 DEFAULT_LAN_FETCH_TIMEOUT_MS
             );
-            if (!res.ok) return null;
+            if (res.status === 401 || res.status === 403) {
+                this.lastGatewayStatus = 'unauthorized';
+                return null;
+            }
+            if (!res.ok) {
+                if (this.lastGatewayStatus !== 'unauthorized') {
+                    this.lastGatewayStatus = 'unreachable';
+                }
+                return null;
+            }
             const data = (await res.json()) as Partial<SituationMirrorPayload> & {
                 jobs?: Job[];
                 updatedAt?: string;
             };
-            if (!this.isUsableGatewayPayload(data)) return null;
+            if (!this.isUsableGatewayPayload(data)) {
+                if (this.lastGatewayStatus !== 'unauthorized') {
+                    this.lastGatewayStatus = 'empty';
+                }
+                return null;
+            }
+            this.lastGatewayStatus = 'ok';
             return this.normalizeGatewayPayload(tenantId, data);
         } catch (error) {
             console.warn('[SituationMirror] gateway read failed:', base, error);
+            if (this.lastGatewayStatus !== 'unauthorized') {
+                this.lastGatewayStatus = 'unreachable';
+            }
             return null;
         }
     }
@@ -332,8 +359,12 @@ export class SituationMirrorService {
         gatewayBaseUrl: StoreGatewayInput
     ): Promise<SituationMirrorPayload | null> {
         const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
-        if (urls.length === 0) return null;
+        if (urls.length === 0) {
+            this.lastGatewayStatus = 'empty';
+            return null;
+        }
 
+        this.lastGatewayStatus = 'idle';
         const results = await Promise.all(urls.map((url) => this.fetchGatewayMirrorOne(tenantId, url)));
         let best: SituationMirrorPayload | null = null;
         for (const payload of results) {
@@ -346,6 +377,7 @@ export class SituationMirrorService {
                 best = payload;
             }
         }
+        if (best) this.lastGatewayStatus = 'ok';
         return best;
     }
 
@@ -398,8 +430,8 @@ export class SituationMirrorService {
         const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
         if (urls.length === 0) return false;
 
-        const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-        const token = deriveStoreGatewayToken(tenantId);
+        const { getGatewayAuthToken } = await import('../utils/gatewayToken');
+        const token = getGatewayAuthToken(tenantId);
         for (const base of urls) {
             try {
                 const res = await fetchWithTimeout(

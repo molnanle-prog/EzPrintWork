@@ -93,7 +93,11 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     setStep('PROCESSING');
     setIsVerifying(true);
     
-    // Simulate Payment/Verification process (2.5 seconds)
+    // TODO[카드결제]: PG 호스티드 결제창 + 웹훅 검증으로 교체할 것.
+    // - 카드번호/CVC 직접 수집 UI 제거
+    // - 클라이언트 upgradeTenantPlan 호출 제거 → Cloud Function/Admin SDK만 plan 변경
+    // - 결제 성공 시에만 paymentStatus/PAID·licenseExpiresAt 기록
+    // Simulate Payment/Verification process (2.5 seconds) — 현재는 서버/규칙에서 차단됨
     await new Promise(resolve => setTimeout(resolve, 2500));
     
     try {

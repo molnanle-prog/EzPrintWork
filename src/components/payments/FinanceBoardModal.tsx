@@ -265,7 +265,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
               <p className="text-lg font-black text-violet-700 dark:text-violet-300 tabular-nums">{summary.total}건</p>
             </div>
             <div className="rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50/80 dark:bg-red-950/20 px-3 py-2">
-              <p className="font-bold text-red-600">미수 합계</p>
+              <p className="font-bold text-red-600">관리카드 미수</p>
               <p className="text-lg font-black text-red-700 dark:text-red-300 tabular-nums">
                 {summary.totalReceivable.toLocaleString()}원
               </p>

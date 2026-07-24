@@ -5,6 +5,7 @@ import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
 import { CompanyNasBanner } from './common/CompanyNasBanner';
 import { CloudDegradedBanner } from './common/CloudDegradedBanner';
+import { WebMirrorBanner } from './common/WebMirrorBanner';
 import { CompletedJobSearchModal } from './kanban/CompletedJobSearchModal';
 import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
@@ -327,9 +328,15 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     return () => unsubscribe();
   }, []);
 
-  const handleJobUpdate = (updatedJob: Job) => {
-      db.updateJob(updatedJob);
-      setSelectedSearchJob(null);
+  const handleJobUpdate = async (updatedJob: Job) => {
+      try {
+          await db.updateJob(updatedJob);
+          setSelectedSearchJob(null);
+      } catch (error) {
+          const msg = error instanceof Error ? error.message : '작업 저장에 실패했습니다.';
+          toast.error(msg);
+          throw error;
+      }
   };
 
   const menuItems = [
@@ -475,6 +482,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
       </div>
 
       <CloudDegradedBanner />
+      <WebMirrorBanner />
       <CompanyNasBanner />
 
       <div className="flex-1 flex overflow-hidden relative">

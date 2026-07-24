@@ -12,7 +12,7 @@ import {
   setCompanyArchiveRootOverride,
 } from '../utils/archiveStorage';
 import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
-import { deriveStoreGatewayToken } from '../utils/gatewayToken';
+import { getGatewayAuthToken } from '../utils/gatewayToken';
 import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
 import {
   orderStoreGatewayUrls,
@@ -136,7 +136,7 @@ async function readViaGateway(
   const urls = await orderStoreGatewayUrls(resolveGatewayBases(gatewayBaseUrl));
   if (urls.length === 0) return null;
 
-  const token = deriveStoreGatewayToken(tenantId);
+  const token = getGatewayAuthToken(tenantId);
   const results = await Promise.all(
     urls.map(async (base) => {
       try {
@@ -176,7 +176,7 @@ async function writeViaGateway(
   const urls = await orderStoreGatewayUrls(resolveGatewayBases(gatewayBaseUrl));
   if (urls.length === 0) return false;
 
-  const token = deriveStoreGatewayToken(tenantId);
+  const token = getGatewayAuthToken(tenantId);
   for (const base of urls) {
     try {
       const res = await fetchWithTimeout(

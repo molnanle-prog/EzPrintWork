@@ -229,8 +229,8 @@ export class ChatMirrorService {
         const base = normalizeGatewayBase(gatewayBaseUrl);
         if (!base) return null;
         try {
-            const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-            const token = deriveStoreGatewayToken(tenantId);
+            const { getGatewayAuthToken } = await import('../utils/gatewayToken');
+            const token = getGatewayAuthToken(tenantId);
             const res = await fetchWithTimeout(
                 `${base}/api/v1/chat?tenantId=${encodeURIComponent(tenantId)}`,
                 {
@@ -312,8 +312,8 @@ export class ChatMirrorService {
         const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
         if (urls.length === 0) return false;
 
-        const { deriveStoreGatewayToken } = await import('../utils/gatewayToken');
-        const token = deriveStoreGatewayToken(tenantId);
+        const { getGatewayAuthToken } = await import('../utils/gatewayToken');
+        const token = getGatewayAuthToken(tenantId);
         const payload = this.buildPayload(tenantId, messages);
         for (const base of urls) {
             try {

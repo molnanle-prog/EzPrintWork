@@ -40,6 +40,16 @@ async function test(name, fn) {
   }
 }
 
+async function expectPermissionDenied(fn) {
+  try {
+    await fn();
+    throw new Error('expected-permission-denied');
+  } catch (err) {
+    if (err?.message === 'expected-permission-denied') throw err;
+    if (err?.code !== 'permission-denied') throw err;
+  }
+}
+
 async function run() {
   console.log('=== EzPrintWork Firestore Rules 검증 ===');
   console.log(`Project: ${firebaseConfig.projectId}`);
@@ -50,27 +60,37 @@ async function run() {
   let sampleTenantName = null;
   let sampleJoinCode = null;
 
-  await test('1. tenants 목록 조회 (회사 검색)', async () => {
-    const snap = await getDocs(query(collection(db, 'tenants'), limit(5)));
-    if (snap.empty) {
-      console.log('   → 테넌트 없음 (규칙은 통과, 데이터 없음)');
-      return;
-    }
-    const first = snap.docs[0];
-    sampleTenantId = first.id;
-    sampleTenantName = first.data().name;
-    sampleJoinCode = first.data().joinCode;
-    console.log(`   → 샘플 테넌트: ${sampleTenantName} (${sampleTenantId})`);
+  await test('1. tenants 비필터 목록은 거부', async () => {
+    await expectPermissionDenied(() => getDocs(query(collection(db, 'tenants'), limit(5))));
   });
 
-  await test('2. tenant 단건 조회 (직원 로그인 후 plan 확인)', async () => {
+  await test('1b. tenants name 접두사 검색 허용', async () => {
+    // 실제 회사명이 없어도 규칙상 쿼리 자체는 허용되어야 함
+    const snap = await getDocs(
+      query(
+        collection(db, 'tenants'),
+        where('name', '>=', '가'),
+        where('name', '<=', '가\uf8ff'),
+        limit(5)
+      )
+    );
+    if (!snap.empty) {
+      const first = snap.docs[0];
+      sampleTenantId = first.id;
+      sampleTenantName = first.data().name;
+      sampleJoinCode = first.data().joinCode;
+      console.log(`   → 샘플 테넌트: ${sampleTenantName} (${sampleTenantId})`);
+    } else {
+      console.log('   → 결과 없음 (규칙은 통과)');
+    }
+  });
+
+  await test('2. tenant 비로그인 단건 get은 거부', async () => {
     if (!sampleTenantId) {
       console.log('   → 스킵 (테넌트 없음)');
       return;
     }
-    const snap = await getDoc(doc(db, 'tenants', sampleTenantId));
-    if (!snap.exists()) throw new Error('tenant not found');
-    console.log(`   → plan: ${snap.data().plan || 'free'}`);
+    await expectPermissionDenied(() => getDoc(doc(db, 'tenants', sampleTenantId)));
   });
 
   await test('3. name+joinCode 테넌트 쿼리 (직원 가입 1단계)', async () => {
@@ -90,7 +110,7 @@ async function run() {
     console.log(`   → 일치 테넌트: ${snap.docs[0].id}`);
   });
 
-  await test('4a. staff loginId 단일 쿼리 (직원 로그인 v1.2.5+)', async () => {
+  await test('4a. staff loginId 단일 쿼리 (직원 로그인)', async () => {
     if (!sampleTenantId) {
       console.log('   → 스킵 (테넌트 없음)');
       return;
@@ -105,7 +125,17 @@ async function run() {
     console.log(`   → 쿼리 허용됨 (결과 ${snap.size}건 — 권한 오류 없음)`);
   });
 
-  await test('5. staff loginId 중복 체크 쿼리 (직원 가입 — v1.3.1+)', async () => {
+  await test('4b. staff 비필터 목록은 거부', async () => {
+    if (!sampleTenantId) {
+      console.log('   → 스킵 (테넌트 없음)');
+      return;
+    }
+    await expectPermissionDenied(() =>
+      getDocs(query(collection(db, `tenants/${sampleTenantId}/staff`), limit(50)))
+    );
+  });
+
+  await test('5. staff loginId 중복 체크 쿼리 (직원 가입)', async () => {
     if (!sampleTenantId) {
       console.log('   → 스킵 (테넌트 없음)');
       return;

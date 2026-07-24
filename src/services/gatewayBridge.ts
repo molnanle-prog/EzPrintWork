@@ -1,4 +1,8 @@
-import { deriveStoreGatewayToken } from '../utils/gatewayToken';
+import {
+    createStoreGatewaySecret,
+    getGatewayAuthToken,
+    setCachedGatewaySecret,
+} from '../utils/gatewayToken';
 import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
 import {
     fetchFirstSuccessful,
@@ -53,14 +57,15 @@ export function archivePathsMatch(
 }
 
 function gatewayHeaders(tenantId?: string | null): HeadersInit {
-    const token = deriveStoreGatewayToken(tenantId);
+    const token = getGatewayAuthToken(tenantId);
     return token ? { 'X-Ezpw-Gateway-Token': token } : {};
 }
 
 /** Electron 매장 PC — 반드시 회사 archiveRoot 만 게이트웨이에 바인딩 (가능하면 UNC) */
 export async function refreshLocalGateway(
     archiveRoot: string | null,
-    tenantId: string | null
+    tenantId: string | null,
+    gatewaySecret?: string | null
 ): Promise<LocalGatewayInfo | null> {
     if (!isElectron() || !window.electron.gatewaySetConfig || !window.electron.gatewayGetInfo) {
         return null;
@@ -78,10 +83,15 @@ export async function refreshLocalGateway(
             }
         }
         const boundRoot = root;
+        let token = String(gatewaySecret || '').trim();
+        if (token.length < 16) {
+            token = createStoreGatewaySecret();
+        }
+        setCachedGatewaySecret(token);
         await window.electron.gatewaySetConfig({
             archiveRoot: boundRoot,
             tenantId,
-            gatewayToken: deriveStoreGatewayToken(tenantId),
+            gatewayToken: token,
         });
         const info = (await window.electron.gatewayGetInfo()) as LocalGatewayInfo;
         // 바인딩 불일치면 서비스하지 않음
@@ -90,7 +100,7 @@ export async function refreshLocalGateway(
             await window.electron.gatewaySetConfig({
                 archiveRoot: null,
                 tenantId,
-                gatewayToken: deriveStoreGatewayToken(tenantId),
+                gatewayToken: token,
             });
             return null;
         }

@@ -223,15 +223,23 @@ export function shouldUsePrepaidForJob(job: Job): boolean {
   return job.usePrepaidForPayment !== false;
 }
 
-/** 미수·일부결제 작업의 실제 미수 금액 (선불 차감분 제외) */
+/** 미수 금액 = 작업가 − 선불차감 − 별도수납. 취소만 0. 결제완료여도 잔여가 있으면 미수로 남김 */
 export function getJobOutstandingAmount(job: Job): number {
+  if (job.paymentStatus === '취소') return 0;
   const price = job.price || 0;
   const applied = job.prepaidAppliedAmount || 0;
-  if (job.paymentStatus === '결제완료' || job.paymentStatus === '취소') return 0;
-  if (job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제' || job.paymentStatus === '후불결제') {
-    return Math.max(0, price - applied);
-  }
-  return price;
+  const paid = Math.max(0, Math.round(job.paidAmount || 0));
+  return Math.max(0, price - applied - paid);
+}
+
+/** 결제완료로 표시할 때 잔여액을 별도 수납으로 확정할지 계산 */
+export function resolvePaidAmountOnComplete(job: Job): number {
+  const existing = Math.max(0, Math.round(job.paidAmount || 0));
+  if (existing > 0) return existing;
+  if (job.paymentStatus !== '결제완료') return existing;
+  const price = job.price || 0;
+  const applied = job.prepaidAppliedAmount || 0;
+  return Math.max(0, price - applied);
 }
 
 export interface JobPrepaidBreakdown {
@@ -321,6 +329,8 @@ export function canDeletePrepaidLedgerEntry(entry: PrepaidLedgerEntry): boolean 
 export interface PrepaidClientUpdate {
   clientId: string;
   prepaidBalance: number;
+  /** 차감/복구 직전 잔액 — 동시 수정 감지(CAS)용 */
+  expectedBalanceBefore?: number;
   ledgerEntry?: PrepaidLedgerEntry;
 }
 
@@ -335,14 +345,18 @@ function applyClientUpdate(
   clientUpdates: PrepaidClientUpdate[],
   clientId: string,
   prepaidBalance: number,
-  ledgerEntry?: PrepaidLedgerEntry
+  ledgerEntry?: PrepaidLedgerEntry,
+  expectedBalanceBefore?: number
 ): void {
   const idx = clientUpdates.findIndex((row) => row.clientId === clientId);
   if (idx >= 0) {
     clientUpdates[idx].prepaidBalance = prepaidBalance;
     if (ledgerEntry) clientUpdates[idx].ledgerEntry = ledgerEntry;
+    if (expectedBalanceBefore !== undefined) {
+      clientUpdates[idx].expectedBalanceBefore = expectedBalanceBefore;
+    }
   } else {
-    clientUpdates.push({ clientId, prepaidBalance, ledgerEntry });
+    clientUpdates.push({ clientId, prepaidBalance, ledgerEntry, expectedBalanceBefore });
   }
 }
 
@@ -395,20 +409,25 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
   }
 
   const clientUpdates: PrepaidClientUpdate[] = [];
-  let job: Job = { ...newJob, prepaidAppliedAmount: 0 };
+  let job: Job = {
+    ...newJob,
+    prepaidAppliedAmount: 0,
+    paidAmount: Math.max(0, Math.round(newJob.paidAmount || 0)),
+  };
   let notice: string | undefined;
   let warning: string | undefined;
 
   if (oldApplied > 0) {
     const oldClient = findClientByName(clients, oldJob.clientName);
     if (oldClient) {
-      const restored = getBalanceAfterUpdates(clients, clientUpdates, oldClient.id) + oldApplied;
+      const before = getBalanceAfterUpdates(clients, clientUpdates, oldClient.id);
+      const restored = before + oldApplied;
       const entry = buildLedgerEntry(oldClient, restored, oldApplied, 'restore', {
         jobId: newJob.id,
         jobTitle: newJob.title,
         note: '작업 변경·결제 취소 선불 복구',
       });
-      applyClientUpdate(clientUpdates, oldClient.id, restored, entry);
+      applyClientUpdate(clientUpdates, oldClient.id, restored, entry, before);
     }
   }
 
@@ -427,12 +446,14 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
         jobTitle: newJob.title,
         note: '작업 결제 선불 차감',
       });
-      applyClientUpdate(clientUpdates, targetClient.id, newBalance, entry);
+      applyClientUpdate(clientUpdates, targetClient.id, newBalance, entry, available);
       job.prepaidAppliedAmount = toApply;
 
       const remaining = price - toApply;
       if (newJob.paymentStatus === '결제완료' && remaining > 0) {
-        warning = `선불 ${toApply.toLocaleString()}원 차감. 잔여 ${remaining.toLocaleString()}원은 별도 수금으로 처리됩니다.`;
+        // 결제완료 = 잔여를 별도 수납으로 확정 기록 (미수 집계에서 누락되지 않게)
+        job.paidAmount = Math.max(job.paidAmount || 0, remaining);
+        warning = `선불 ${toApply.toLocaleString()}원 차감. 잔여 ${remaining.toLocaleString()}원은 별도 수금으로 기록됩니다.`;
       } else if (newJob.paymentStatus === '일부결제') {
         notice =
           remaining > 0
@@ -450,6 +471,15 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
     (paymentChanged || usePrepaidChanged)
   ) {
     notice = '별도 수금으로 처리됩니다. (선불 차감 안 함)';
+  }
+
+  if (newJob.paymentStatus === '결제완료') {
+    const remainingAfter = Math.max(0, price - (job.prepaidAppliedAmount || 0) - (job.paidAmount || 0));
+    if (remainingAfter > 0) {
+      job.paidAmount = (job.paidAmount || 0) + remainingAfter;
+    }
+  } else if (newJob.paymentStatus === '취소') {
+    job.paidAmount = 0;
   }
 
   return { job, clientUpdates, notice, warning };
