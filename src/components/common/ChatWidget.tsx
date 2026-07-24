@@ -12,6 +12,25 @@ import {
   staffIdsEqual,
 } from '../../utils/staffMatch';
 
+function notifyDesktopChat(msg: ChatMessage, senderName: string) {
+  if (typeof window === 'undefined' || !window.electron?.chatNotify) return;
+  // 이미 포커스된 전면 창이면 앱 내 팝업으로 충분 (OS 토스트 생략)
+  if (document.visibilityState === 'visible' && document.hasFocus()) return;
+  const preview = (msg.content || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+  void window.electron.chatNotify({
+    title: `${senderName || '새 메시지'}`,
+    body: preview || '(내용 없음)',
+    messageId: msg.id,
+    senderId: msg.senderId,
+    receiverId: msg.receiverId ?? null,
+  });
+}
+
+function clearDesktopChatAttention() {
+  if (typeof window === 'undefined' || !window.electron?.chatNotifyClear) return;
+  window.electron.chatNotifyClear();
+}
+
 export const ChatWidget: React.FC = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -30,7 +49,12 @@ export const ChatWidget: React.FC = () => {
   const { theme, toggleTheme } = useTheme();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const staffRef = useRef<Staff[]>([]);
   const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
+
+  useEffect(() => {
+    staffRef.current = staff;
+  }, [staff]);
 
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -54,11 +78,30 @@ export const ChatWidget: React.FC = () => {
     setIsOpen(false);
     setNotificationPopup(null);
     setHasUnread(false);
+    clearDesktopChatAttention();
   }, [isTvMode]);
 
   useEffect(() => {
     // Create Audio Element
     audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+  }, []);
+
+  // OS 토스트 클릭 → 창 복원 후 해당 채팅 열기
+  useEffect(() => {
+    if (!window.electron?.onChatNotificationClicked) return;
+    return window.electron.onChatNotificationClicked((payload) => {
+      const staffNow = staffRef.current;
+      if (payload?.receiverId && payload.senderId) {
+        const senderStaff = findStaffByAnyId(staffNow, payload.senderId);
+        setActiveChannel(senderStaff?.id || payload.senderId);
+      } else {
+        setActiveChannel(null);
+      }
+      setIsOpen(true);
+      setNotificationPopup(null);
+      setHasUnread(false);
+      clearDesktopChatAttention();
+    });
   }, []);
 
 
@@ -93,6 +136,8 @@ export const ChatWidget: React.FC = () => {
           // 아직 읽음 확인을 하지 않은 과거 메시지가 오프라인일 때 유입된 것이므로 로그인 즉시 팝업과 띵동 작동!
           setHasUnread(true);
           setNotificationPopup(lastMsg);
+          const sender = findStaffByAnyId(staffNow, lastMsg.senderId);
+          notifyDesktopChat(lastMsg, sender?.name || lastMsg.senderName || '새 메시지');
           
           setTimeout(() => {
             audioRef.current?.play().catch(e => console.log('Initial audio play bypassed by browser policy', e));
@@ -148,10 +193,16 @@ export const ChatWidget: React.FC = () => {
                      setHasUnread(true);
                      // 확인하지 않은 신규 메시지이므로 긴급 팝업 노출!
                      setNotificationPopup(lastMsg);
+                     const senderStaff = lastMsg.senderId
+                       ? findStaffByAnyId(staffNow, lastMsg.senderId)
+                       : undefined;
+                     notifyDesktopChat(
+                       lastMsg,
+                       senderStaff?.name || lastMsg.senderName || '새 메시지'
+                     );
                      
                      // Add to Unread Senders Set to blink the list item (staff 문서 id로 통일)
                      if (lastMsg.senderId) {
-                          const senderStaff = findStaffByAnyId(staffNow, lastMsg.senderId);
                           setUnreadSenders(prevSet => new Set(prevSet).add(senderStaff?.id || lastMsg.senderId));
                      }
                 }
@@ -204,6 +255,7 @@ export const ChatWidget: React.FC = () => {
       }
       setHasUnread(false);
       setNotificationPopup(null);
+      clearDesktopChatAttention();
     }
   }, [isOpen, messages, currentUser, staff]);
 
@@ -356,6 +408,7 @@ export const ChatWidget: React.FC = () => {
           }
           setNotificationPopup(null);
           setHasUnread(false);
+          clearDesktopChatAttention();
       }
   };
 

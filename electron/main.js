@@ -1,5 +1,5 @@
 
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
@@ -7,6 +7,44 @@ const localDb = require('./localDb');
 const { LocalGateway } = require('./localGateway');
 
 const localGateway = new LocalGateway();
+
+// Windows 토스트가 앱 이름으로 표시되도록 (electron-builder appId와 동일)
+if (process.platform === 'win32') {
+    app.setAppUserModelId('com.ezprintwork.app');
+}
+
+/** 메인 창 헬퍼 — 채팅 OS 알림 / 작업표시줄 깜빡임 */
+function getMainWindow() {
+    return BrowserWindow.getAllWindows().find((w) => w && !w.isDestroyed()) || null;
+}
+
+function stopChatTaskbarFlash() {
+    const win = getMainWindow();
+    if (win) win.flashFrame(false);
+}
+
+function startChatTaskbarFlash() {
+    const win = getMainWindow();
+    if (!win) return;
+    // 이미 포커스된 전면 창이면 깜빡임 불필요
+    if (win.isFocused() && !win.isMinimized()) return;
+    win.flashFrame(true);
+}
+
+function restoreMainWindow() {
+    const win = getMainWindow();
+    if (!win) return;
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+    stopChatTaskbarFlash();
+}
+
+/** 토스트 클릭 여부 — close 이벤트에서 깜빡임 여부 판단 */
+let chatNotifyClicked = false;
+/** 새 토스트로 교체할 때 이전 close로 깜빡이지 않도록 */
+let suppressNextChatNotifyCloseFlash = false;
+let activeChatNotification = null;
 
 // 프로토콜 등록 (ezpw://)
 if (process.defaultApp) {
@@ -614,6 +652,92 @@ ipcMain.on('window-close', () => {
 ipcMain.on('window-lower', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.lower();
+});
+
+/**
+ * 사내 메신저 OS 토스트.
+ * 토스트가 닫히면(클릭 없이) 작업표시줄 깜빡임 시작.
+ * 클릭 시 창 복원 + 렌더러에 chat-notification-clicked 전달.
+ */
+ipcMain.handle('chat-notify', async (_event, payload = {}) => {
+    const title = String(payload.title || '새 메시지').slice(0, 120);
+    const body = String(payload.body || '').slice(0, 240);
+
+    chatNotifyClicked = false;
+
+    if (!Notification.isSupported()) {
+        startChatTaskbarFlash();
+        return { ok: false, reason: 'unsupported' };
+    }
+
+    try {
+        if (activeChatNotification) {
+            suppressNextChatNotifyCloseFlash = true;
+            try {
+                activeChatNotification.close();
+            } catch (_) {
+                /* ignore */
+            }
+            activeChatNotification = null;
+        }
+
+        const notification = new Notification({
+            title,
+            body,
+            silent: true, // 앱 내 띵동과 중복 방지
+        });
+        activeChatNotification = notification;
+
+        notification.on('click', () => {
+            chatNotifyClicked = true;
+            activeChatNotification = null;
+            restoreMainWindow();
+            const win = getMainWindow();
+            if (win) {
+                win.webContents.send('chat-notification-clicked', {
+                    messageId: payload.messageId || null,
+                    senderId: payload.senderId || null,
+                    receiverId: payload.receiverId || null,
+                });
+            }
+            stopChatTaskbarFlash();
+        });
+
+        notification.on('close', () => {
+            if (activeChatNotification === notification) {
+                activeChatNotification = null;
+            }
+            if (suppressNextChatNotifyCloseFlash) {
+                suppressNextChatNotifyCloseFlash = false;
+                return;
+            }
+            // 클릭으로 확인한 경우는 깜빡이지 않음
+            if (!chatNotifyClicked) {
+                startChatTaskbarFlash();
+            }
+        });
+
+        notification.show();
+        return { ok: true };
+    } catch (e) {
+        startChatTaskbarFlash();
+        return { ok: false, reason: e?.message || String(e) };
+    }
+});
+
+/** 채팅 확인 시 작업표시줄 깜빡임 중지 */
+ipcMain.on('chat-notify-clear', () => {
+    chatNotifyClicked = true;
+    if (activeChatNotification) {
+        suppressNextChatNotifyCloseFlash = true;
+        try {
+            activeChatNotification.close();
+        } catch (_) {
+            /* ignore */
+        }
+        activeChatNotification = null;
+    }
+    stopChatTaskbarFlash();
 });
 
 /** 문서 인쇄 — 단면(simplex) 강제, 배경 포함, 대화상자 표시 */

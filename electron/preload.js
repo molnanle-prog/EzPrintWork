@@ -57,4 +57,12 @@ contextBridge.exposeInMainWorld('electron', {
     /** 인쇄와 동일 레이아웃으로 PDF 저장 */
     printDocumentToPdf: (defaultFileName) =>
         ipcRenderer.invoke('print-document-to-pdf', { defaultFileName }),
+    /** 사내 메신저: OS 토스트 → 닫히면 작업표시줄 깜빡임 */
+    chatNotify: (payload) => ipcRenderer.invoke('chat-notify', payload || {}),
+    chatNotifyClear: () => ipcRenderer.send('chat-notify-clear'),
+    onChatNotificationClicked: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on('chat-notification-clicked', handler);
+        return () => ipcRenderer.removeListener('chat-notification-clicked', handler);
+    },
 });

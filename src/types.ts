@@ -527,7 +527,23 @@ export interface IElectronAPI {
   close: () => void;
   lower: () => void;
   toggleAlwaysOnTop: (flag: boolean) => void;
-  setSize: (width: number, height: number) => void; 
+  setSize: (width: number, height: number) => void;
+  /** 사내 메신저 OS 토스트 (닫히면 작업표시줄 깜빡임) */
+  chatNotify?: (payload: {
+    title: string;
+    body: string;
+    messageId?: string;
+    senderId?: string;
+    receiverId?: string | null;
+  }) => Promise<{ ok: boolean; reason?: string }>;
+  chatNotifyClear?: () => void;
+  onChatNotificationClicked?: (
+    callback: (payload: {
+      messageId?: string | null;
+      senderId?: string | null;
+      receiverId?: string | null;
+    }) => void
+  ) => () => void;
 }
 
 declare global {
