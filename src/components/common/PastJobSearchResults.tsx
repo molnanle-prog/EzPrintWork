@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Job } from '../../types';
+import { Job, PaymentStatus } from '../../types';
 import { db, formatJobNumber } from '../../services/dataService';
 import { Calendar, Loader2, Search, User } from 'lucide-react';
 
@@ -8,6 +8,20 @@ interface PastJobSearchResultsProps {
   onSelectJob: (job: Job) => void;
   limit?: number;
   className?: string;
+  /** 지정 시 지난 작업 검색도 동일 결제상태 조건으로 필터 */
+  paymentFilter?: 'outstanding' | PaymentStatus;
+}
+
+function matchesPaymentFilter(job: Job, paymentFilter?: 'outstanding' | PaymentStatus): boolean {
+  if (!paymentFilter) return true;
+  if (paymentFilter === 'outstanding') {
+    return (
+      job.paymentStatus === '결제대기' ||
+      job.paymentStatus === '일부결제' ||
+      job.paymentStatus === '후불결제'
+    );
+  }
+  return job.paymentStatus === paymentFilter;
 }
 
 export const PastJobSearchResults: React.FC<PastJobSearchResultsProps> = ({
@@ -15,6 +29,7 @@ export const PastJobSearchResults: React.FC<PastJobSearchResultsProps> = ({
   onSelectJob,
   limit = 30,
   className = '',
+  paymentFilter,
 }) => {
   const [hits, setHits] = useState<Job[]>([]);
   const [loading, setLoading] = useState(false);
@@ -34,7 +49,9 @@ export const PastJobSearchResults: React.FC<PastJobSearchResultsProps> = ({
       void db
         .searchJobsAsync(trimmed)
         .then((results) => {
-          if (!cancelled) setHits(results.slice(0, limit));
+          if (cancelled) return;
+          const filtered = results.filter((j) => matchesPaymentFilter(j, paymentFilter));
+          setHits(filtered.slice(0, limit));
         })
         .finally(() => {
           if (!cancelled) setLoading(false);
@@ -45,7 +62,7 @@ export const PastJobSearchResults: React.FC<PastJobSearchResultsProps> = ({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [trimmed, limit]);
+  }, [trimmed, limit, paymentFilter]);
 
   if (trimmed.length < 2) return null;
 
@@ -86,6 +103,9 @@ export const PastJobSearchResults: React.FC<PastJobSearchResultsProps> = ({
                   접수 {new Date(job.createdAt).toLocaleDateString('ko-KR')}
                   {job.dueDate ? ` · 납기 ${new Date(job.dueDate).toLocaleDateString('ko-KR')}` : ''}
                 </span>
+                {job.paymentStatus ? (
+                  <span className="font-semibold text-slate-500">{job.paymentStatus}</span>
+                ) : null}
                 {job.price ? (
                   <span className="font-bold tabular-nums">{job.price.toLocaleString()}원</span>
                 ) : null}

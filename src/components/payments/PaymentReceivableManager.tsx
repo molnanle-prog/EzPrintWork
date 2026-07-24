@@ -220,9 +220,9 @@ export const PaymentReceivableManager: React.FC = () => {
 
   const stats = useMemo(() => {
     const active = jobs.filter((j) => j.paymentStatus !== '취소');
-    // 상태뿐 아니라 실제 잔여 미수금액 기준으로 집계
-    const outstandingJobs = active.filter((j) => getJobOutstandingAmount(j) > 0);
-    const settledJobs = active.filter((j) => getJobOutstandingAmount(j) === 0 && j.paymentStatus === '결제완료');
+    // 미수·미결제 = 완불 전 상태 (결제대기·일부결제·후불결제)
+    const outstandingJobs = active.filter((j) => isOutstanding(j.paymentStatus));
+    const settledJobs = active.filter((j) => j.paymentStatus === '결제완료');
     const totalPrepaid = db.getTotalPrepaidBalance();
     const outstandingAmount = outstandingJobs.reduce((s, j) => s + getJobOutstandingAmount(j), 0);
     const collectedAmount = settledJobs.reduce(
@@ -246,7 +246,7 @@ export const PaymentReceivableManager: React.FC = () => {
     return jobs
       .filter((j) => {
         if (filter === 'byClient' || filter === 'prepaidClients') return false;
-        if (filter === 'outstanding') return getJobOutstandingAmount(j) > 0;
+        if (filter === 'outstanding') return isOutstanding(j.paymentStatus);
         if (filter !== 'all') return j.paymentStatus === filter;
         return true;
       })
@@ -278,7 +278,7 @@ export const PaymentReceivableManager: React.FC = () => {
     const map = new Map<string, ClientSummaryRow>();
 
     jobs
-      .filter((j) => j.paymentStatus !== '취소' && getJobOutstandingAmount(j) > 0)
+      .filter((j) => isOutstanding(j.paymentStatus))
       .forEach((job) => {
         const name = job.clientName?.trim() || '(미지정)';
         const row = map.get(name) || {
@@ -661,6 +661,14 @@ export const PaymentReceivableManager: React.FC = () => {
           query={search}
           onSelectJob={(job) => setSelectedJob(job)}
           className="mt-3"
+          paymentFilter={
+            filter === 'outstanding' ||
+            filter === '일부결제' ||
+            filter === '후불결제' ||
+            filter === '결제완료'
+              ? filter
+              : undefined
+          }
         />
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 mt-4">

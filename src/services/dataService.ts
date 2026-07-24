@@ -15,7 +15,7 @@ import { db as firestore, auth, storage } from './firebase';
 import { signOut } from 'firebase/auth';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
-import { chatMirrorService, mergeChatMessages } from './chatMirrorService';
+import { chatMirrorService, mergeChatMessages, HOT_CHAT_LIMIT } from './chatMirrorService';
 import { presenceSessionService } from './presenceSessionService';
 import { localDbBridge } from './localDbBridge';
 import {
@@ -224,8 +224,12 @@ const HOT_WINDOW_DAYS = 365;
 const LIVE_MIRROR_PUSH_DEBOUNCE_MS = 250;
 const APP_MIRROR_POLL_MS = 1000;
 const WEB_MIRROR_POLL_MS = 2000;
-/** 채팅 NAS 쓰기 디바운스 — 연속 전송 시 한 번에 flush */
-const CHAT_PERSIST_DEBOUNCE_MS = 120;
+/** 채팅 NAS 쓰기 디바운스 — 거의 즉시 flush */
+const CHAT_PERSIST_DEBOUNCE_MS = 40;
+/** 채팅 전용 폴링 (업무 NAS와 분리 — 메신저 체감 속도) */
+const CHAT_POLL_MS_IDLE = 700;
+const CHAT_POLL_MS_ACTIVE = 280;
+const CHAT_POLL_MS_WEB = 600;
 
 /** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
 const COMBINED_PAPER_WEIGHT_PATTERN = /\/|표지.*내지|내지.*표지/i;
@@ -640,6 +644,13 @@ export class DataService {
     private chatPersistTimer: ReturnType<typeof setTimeout> | null = null;
     private chatPersistInFlight: Promise<void> | null = null;
     private chatPersistDirty = false;
+    /** 채팅 전용 폴링 (상황판 폴링과 분리) */
+    private chatPollTimer: ReturnType<typeof setTimeout> | null = null;
+    private chatPollInFlight = false;
+    private chatPollBoost = false;
+    /** 시작 시 히스토리 1회 로드 완료 여부 */
+    private chatHistoryReady = false;
+    private chatHydratePromise: Promise<void> | null = null;
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
@@ -841,7 +852,9 @@ export class DataService {
         this.notify();
         if (wasLocked && !this.pendingArchiveReconnect) {
             void this.pollNasOperationalSync();
-            void this.hydrateMessagesFromMirror();
+            this.chatHistoryReady = false;
+            this.chatHydratePromise = null;
+            void this.hydrateMessagesFromMirrorOnce();
             toast.success(
                 channel === 'gateway'
                     ? '사내 게이트웨이로 NAS에 다시 연결되었습니다.'
@@ -983,7 +996,9 @@ export class DataService {
                 };
             }
             await this.pollNasOperationalSync();
-            await this.hydrateMessagesFromMirror();
+            this.chatHistoryReady = false;
+            this.chatHydratePromise = null;
+            await this.hydrateMessagesFromMirrorOnce();
             void this.refreshStoreGateway();
             this.pendingArchiveReconnect = false;
             this.pendingArchiveReconnectPath = null;
@@ -2077,6 +2092,53 @@ export class DataService {
             clearInterval(this.nasPollTimer);
             this.nasPollTimer = null;
         }
+        this.stopChatMirrorPolling();
+    }
+
+    private stopChatMirrorPolling() {
+        if (this.chatPollTimer) {
+            clearTimeout(this.chatPollTimer);
+            this.chatPollTimer = null;
+        }
+        this.chatPollInFlight = false;
+    }
+
+    /** 메신저 열림 — 채팅 폴링 가속 */
+    setChatRealtimeBoost(enabled: boolean) {
+        this.chatPollBoost = !!enabled;
+        if (enabled && this.tenantId) {
+            void this.pollChatMirrorOnly();
+        }
+    }
+
+    private chatPollIntervalMs(): number {
+        if (!this.getIsElectron()) return CHAT_POLL_MS_WEB;
+        return this.chatPollBoost ? CHAT_POLL_MS_ACTIVE : CHAT_POLL_MS_IDLE;
+    }
+
+    private startChatMirrorPolling() {
+        this.stopChatMirrorPolling();
+        const tick = () => {
+            void this.pollChatMirrorOnly().finally(() => {
+                if (!this.tenantId) return;
+                this.chatPollTimer = window.setTimeout(tick, this.chatPollIntervalMs());
+            });
+        };
+        tick();
+    }
+
+    private async pollChatMirrorOnly(): Promise<void> {
+        if (!this.tenantId || this.chatPollInFlight) return;
+        this.chatPollInFlight = true;
+        try {
+            if (await this.pollChatMirror()) {
+                this.notify();
+            }
+        } catch (e) {
+            console.warn('[DataService] chat poll skipped:', e);
+        } finally {
+            this.chatPollInFlight = false;
+        }
     }
 
     private applyImportedJobs(jobs: Job[]) {
@@ -2230,6 +2292,8 @@ export class DataService {
             void this.pollNasOperationalSync();
         }, pollMs);
         void this.pollNasOperationalSync();
+        // 채팅은 업무 미러와 분리해 빠르게 폴링
+        this.startChatMirrorPolling();
     }
 
     private jobTimestampMs(job: Job): number {
@@ -2825,10 +2889,7 @@ export class DataService {
                 this.notify();
             }
 
-            // 사내 채팅은 별도 NAS 파일
-            if (await this.pollChatMirror()) {
-                this.notify();
-            }
+            // 채팅은 startChatMirrorPolling 전용 — 여기서 기다리지 않음 (메신저 지연 원인)
 
             // 견적·용지·휴가·지시 — 별도 NAS JSON
             let auxChanged = false;
@@ -3516,40 +3577,101 @@ export class DataService {
         void this.pullLazyCollection('quotes');
     }
 
-    /** 채팅 위젯 마운트 시 호출 — NAS/게이트웨이/Storage */
-    ensureMessagesSync() {
-        void this.hydrateMessagesFromMirror();
+    /** 채팅 히스토리 준비됨 (시작 시 1회 로드 후 true) */
+    isChatHistoryReady(): boolean {
+        return this.chatHistoryReady;
+    }
+
+    /**
+     * 채팅 히스토리 — 앱/위젯에서 호출.
+     * 시작 시 핫 윈도우(최근 N개)만 불러오고, 이후 전송은 실시간 경로.
+     * 더 오래된 대화는 loadOlderChatMessages 로 따로 로드.
+     */
+    ensureMessagesSync(): Promise<void> {
+        return this.hydrateMessagesFromMirrorOnce();
     }
 
     private chatMigratedKey(): string {
         return `ezpw_chat_nas_migrated_${this.tenantId || 'x'}`;
     }
 
-    private async hydrateMessagesFromMirror(): Promise<void> {
+    private async hydrateMessagesFromMirrorOnce(): Promise<void> {
         if (!this.tenantId) return;
-        try {
-            const payload = this.getIsElectron()
-                ? await chatMirrorService.readFromNas()
-                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrls());
+        if (this.chatHistoryReady && this.chatHydratePromise) {
+            return this.chatHydratePromise;
+        }
+        if (this.chatHydratePromise) return this.chatHydratePromise;
 
-            if (payload?.messages?.length) {
-                this.data['messages'] = mergeChatMessages(
-                    (this.data['messages'] || []) as ChatMessage[],
-                    payload.messages
-                );
+        this.chatHydratePromise = (async () => {
+            try {
+                // 콜드 스타트: 캐시 무시하고 핫 파일 로드
+                chatMirrorService.invalidateCache();
+                const payload = this.getIsElectron()
+                    ? await chatMirrorService.readFromNas()
+                    : await chatMirrorService.readRemote(this.tenantId!, this.getStoreGatewayUrls());
+
+                if (payload?.messages?.length) {
+                    this.data['messages'] = mergeChatMessages(
+                        (this.data['messages'] || []) as ChatMessage[],
+                        payload.messages
+                    );
+                    // 거대 핫 파일이면 백그라운드에서 월별 아카이브로 분리
+                    if (
+                        this.getIsElectron() &&
+                        payload.messages.length > HOT_CHAT_LIMIT
+                    ) {
+                        void chatMirrorService
+                            .compactHotIfNeeded(this.tenantId!)
+                            .then((hot) => {
+                                if (!hot) return;
+                                this.data['messages'] = mergeChatMessages(
+                                    (this.data['messages'] || []) as ChatMessage[],
+                                    hot
+                                );
+                                this.notify();
+                            });
+                    }
+                }
+
+                if (
+                    ((this.data['messages'] || []) as ChatMessage[]).length === 0 &&
+                    localStorage.getItem(this.chatMigratedKey()) !== '1'
+                ) {
+                    await this.migrateMessagesFromFirestoreOnce();
+                }
+            } catch (e) {
+                console.warn('[DataService] chat history hydrate failed:', e);
+            } finally {
+                this.chatHistoryReady = true;
                 this.notify();
             }
+        })();
 
-            // 로컬/미러가 비어 있고 아직 이관 안 했으면 Firestore → NAS 1회
-            if (
-                ((this.data['messages'] || []) as ChatMessage[]).length === 0 &&
-                localStorage.getItem(this.chatMigratedKey()) !== '1'
-            ) {
-                await this.migrateMessagesFromFirestoreOnce();
-            }
-        } catch (e) {
-            console.warn('[DataService] chat mirror hydrate failed:', e);
-        }
+        return this.chatHydratePromise;
+    }
+
+    /**
+     * 이전 대화 페이지 — 핫 윈도우보다 오래된 아카이브에서 로드.
+     * UI에서 스크롤 상단 "이전 대화 불러오기" 용.
+     */
+    async loadOlderChatMessages(opts: {
+        beforeTimestamp: string;
+        excludeIds?: string[];
+        pageSize?: number;
+    }): Promise<{ messages: ChatMessage[]; hasMore: boolean }> {
+        if (!this.tenantId) return { messages: [], hasMore: false };
+        const hot = (this.data['messages'] || []) as ChatMessage[];
+        const exclude = new Set<string>([
+            ...hot.map((m) => m.id).filter(Boolean),
+            ...(opts.excludeIds || []),
+        ]);
+        return chatMirrorService.loadOlderMessages({
+            tenantId: this.tenantId,
+            beforeTimestamp: opts.beforeTimestamp,
+            excludeIds: exclude,
+            pageSize: opts.pageSize,
+            gatewayBaseUrl: this.getStoreGatewayUrls(),
+        });
     }
 
     private async migrateMessagesFromFirestoreOnce(): Promise<void> {
@@ -3588,7 +3710,7 @@ export class DataService {
             } else {
                 this.companyNasChannel = 'local';
             }
-            if (ok) await this.bumpMirrorSyncPulse();
+            // 채팅은 Firestore pulse 불필요 — LAN NAS가 SSOT
             return ok;
         }
 
@@ -3599,22 +3721,21 @@ export class DataService {
             this.getStoreGatewayUrls()
         );
         if (viaGw) {
-            await this.bumpMirrorSyncPulse();
             return true;
         }
-        const ok = await chatMirrorService.publish(this.tenantId, list);
-        if (ok) await this.bumpMirrorSyncPulse();
-        return ok;
+        return chatMirrorService.publish(this.tenantId, list);
     }
 
-    /** 메모리 반영은 즉시, NAS 쓰기는 백그라운드 디바운스 (전송 UI 멈춤 방지) */
+    /** 메모리 반영은 즉시, NAS 쓰기는 백그라운드 (전송 UI는 실시간) */
     private schedulePersistMessagesToNas(): void {
         this.chatPersistDirty = true;
         if (this.chatPersistTimer) clearTimeout(this.chatPersistTimer);
+        // 전송 중이면 바로 flush, 연속 전송만 짧게 묶음
+        const delay = this.chatPersistInFlight ? CHAT_PERSIST_DEBOUNCE_MS : 0;
         this.chatPersistTimer = setTimeout(() => {
             this.chatPersistTimer = null;
             void this.flushPersistMessagesToNas();
-        }, CHAT_PERSIST_DEBOUNCE_MS);
+        }, delay);
     }
 
     private async flushPersistMessagesToNas(): Promise<void> {
@@ -4066,8 +4187,10 @@ export class DataService {
                 void this.migrateAuxCollectionsFromFirestoreIfNeeded();
             }
 
-            // 사내 채팅 NAS 미러 초기 로드
-            void this.hydrateMessagesFromMirror();
+            // 사내 채팅 — 시작 시 히스토리 1회 로드 후, 전용 빠른 폴링으로 실시간 수신
+            this.chatHistoryReady = false;
+            this.chatHydratePromise = null;
+            void this.hydrateMessagesFromMirrorOnce();
 
             // 회사 NAS 헬스체크 — 실패 시 전원 동일하게 쓰기 차단 (유예 후 잠금, 게이트웨이 보조)
             if (this.getIsElectron()) {

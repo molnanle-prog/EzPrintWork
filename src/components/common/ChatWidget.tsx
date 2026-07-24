@@ -32,8 +32,13 @@ function clearDesktopChatAttention() {
 }
 
 export const ChatWidget: React.FC = () => {
+  const [historyReady, setHistoryReady] = useState(() => db.isChatHistoryReady());
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  /** 핫 윈도우보다 오래된 대화 (스크롤 상단 로드) — 폴링에 의해 잘리지 않음 */
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [hasMoreOlder, setHasMoreOlder] = useState(true);
   const [newMessage, setNewMessage] = useState('');
   const [staff, setStaff] = useState<Staff[]>([]);
   const [activeChannel, setActiveChannel] = useState<string | null>(null); // null = Global, 'id' = DM
@@ -56,6 +61,7 @@ export const ChatWidget: React.FC = () => {
   });
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesScrollRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const staffRef = useRef<Staff[]>([]);
   const isOpenRef = useRef(isOpen);
@@ -63,6 +69,7 @@ export const ChatWidget: React.FC = () => {
   const soundEnabledRef = useRef(soundEnabled);
   const isTvModeRef = useRef(isTvMode);
   const lastSyncedReadIdRef = useRef<string | null>(null);
+  const lastStaffPollAtRef = useRef(0);
   const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
 
   useEffect(() => {
@@ -125,15 +132,35 @@ export const ChatWidget: React.FC = () => {
 
 
   useEffect(() => {
+    db.setChatRealtimeBoost(isOpen);
+    return () => {
+      db.setChatRealtimeBoost(false);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
     if (!currentUser) return;
 
-    // 마운트/로그인 시에만 NAS hydrate — 직원(채널) 선택마다 전체 재로드하지 않음
-    db.ensureMessagesSync();
+    let cancelled = false;
+    // 시작 시 히스토리 1회 로드 (시간 걸려도 OK) → 이후 실시간
+    void db.ensureMessagesSync().then(() => {
+      if (cancelled) return;
+      setHistoryReady(true);
+      setStaff(db.getStaff());
+      setMessages(db.getMessages());
+    });
+
+    const unsub = db.subscribe(() => {
+      if (db.isChatHistoryReady()) setHistoryReady(true);
+    });
+
+    // 마운트/로그인 시에만 — 직원(채널) 선택마다 전체 재로드하지 않음
     setStaff(db.getStaff());
-    const initialMsgs = db.getMessages();
-    setMessages(initialMsgs);
+    setMessages(db.getMessages());
+    setHistoryReady(db.isChatHistoryReady());
 
     // Check if there are any unread messages from history upon mount
+    const initialMsgs = db.getMessages();
     if (initialMsgs.length > 0) {
       const staffNow = db.getStaff();
       const myReceivedMsgs = initialMsgs.filter(
@@ -164,14 +191,19 @@ export const ChatWidget: React.FC = () => {
       }
     }
 
-    // Polling — isOpen/activeChannel 은 ref로 읽어 채널 전환 시 effect 재실행 없음
+    // 메모리 반영은 빠르게 (NAS 폴링은 dataService 채팅 전용 타이머)
     const interval = setInterval(() => {
-      setStaff(db.getStaff());
       const latestMsgs = db.getMessages();
       const isOpenNow = isOpenRef.current;
       const activeChannelNow = activeChannelRef.current;
       const isTvModeNow = isTvModeRef.current;
       const soundEnabledNow = soundEnabledRef.current;
+
+      // staff는 2초에 한 번만 (매 tick setStaff → 리렌더 폭주 방지)
+      if (Date.now() - lastStaffPollAtRef.current > 2000) {
+        lastStaffPollAtRef.current = Date.now();
+        setStaff(db.getStaff());
+      }
 
       setMessages(prev => {
         const prevIds = new Set(prev.map(m => m.id));
@@ -224,7 +256,6 @@ export const ChatWidget: React.FC = () => {
             }
           }
         }
-        // 동일 길이·마지막 id면 리렌더 생략
         if (
           prev.length === latestMsgs.length &&
           (prev.length === 0 || prev[prev.length - 1]?.id === latestMsgs[latestMsgs.length - 1]?.id)
@@ -233,9 +264,13 @@ export const ChatWidget: React.FC = () => {
         }
         return latestMsgs;
       });
-    }, 1000);
+    }, 250);
 
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      unsub();
+      clearInterval(interval);
+    };
   }, [currentUser]);
 
   // When changing channel, remove that user from unread set
@@ -353,6 +388,7 @@ export const ChatWidget: React.FC = () => {
     if (!isSameLoggedInUser(currentUser, msg.senderId, staff)) return 0;
     
     const msgTime = new Date(msg.timestamp).getTime();
+    const allForRead = [...olderMessages, ...messages];
 
     if (msg.receiverId) {
       // 1:1 DM 방인 경우: 상대방 한 명이 읽었는지 판별
@@ -361,7 +397,7 @@ export const ChatWidget: React.FC = () => {
       
       if (!otherStaff.lastReadMsgId) return 1; // 한 번도 대화방을 켜지 않음 -> 안읽음(1)
       
-      const otherLastReadMsg = messages.find(m => m.id === otherStaff.lastReadMsgId);
+      const otherLastReadMsg = allForRead.find(m => m.id === otherStaff.lastReadMsgId);
       if (!otherLastReadMsg) return 1;
       
       const otherLastReadTime = new Date(otherLastReadMsg.timestamp).getTime();
@@ -378,7 +414,7 @@ export const ChatWidget: React.FC = () => {
           unreadCount++;
           return;
         }
-        const staffLastReadMsg = messages.find(m => m.id === s.lastReadMsgId);
+        const staffLastReadMsg = allForRead.find(m => m.id === s.lastReadMsgId);
         if (!staffLastReadMsg) {
           unreadCount++;
           return;
@@ -393,11 +429,21 @@ export const ChatWidget: React.FC = () => {
     }
   };
 
-  const currentMessages = messages.filter(msg => {
-    if (!activeChannel) {
-      return !msg.receiverId;
-    } else {
-      // DM: sender/receiver 가 staff.id 또는 Firebase uid 여도 매칭
+  const currentMessages = useMemo(() => {
+    const map = new Map<string, ChatMessage>();
+    for (const m of olderMessages) {
+      if (m?.id) map.set(m.id, m);
+    }
+    for (const m of messages) {
+      if (m?.id) map.set(m.id, m);
+    }
+    const merged = Array.from(map.values()).sort(
+      (a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || '')
+    );
+    return merged.filter((msg) => {
+      if (!activeChannel) {
+        return !msg.receiverId;
+      }
       const iSent =
         isSameLoggedInUser(currentUser, msg.senderId, staff) &&
         staffIdsEqual(msg.receiverId, activeChannel, staff);
@@ -405,8 +451,50 @@ export const ChatWidget: React.FC = () => {
         staffIdsEqual(msg.senderId, activeChannel, staff) &&
         isSameLoggedInUser(currentUser, msg.receiverId, staff);
       return iSent || theySent;
+    });
+  }, [olderMessages, messages, activeChannel, currentUser, staff]);
+
+  const handleLoadOlder = async () => {
+    if (loadingOlder || !hasMoreOlder) return;
+    const oldest = currentMessages[0] || messages[0] || olderMessages[0];
+    if (!oldest?.timestamp) {
+      setHasMoreOlder(false);
+      return;
     }
-  });
+    setLoadingOlder(true);
+    const scrollEl = messagesScrollRef.current;
+    const prevHeight = scrollEl?.scrollHeight ?? 0;
+    try {
+      const result = await db.loadOlderChatMessages({
+        beforeTimestamp: oldest.timestamp,
+        excludeIds: [...olderMessages, ...messages].map((m) => m.id).filter(Boolean),
+      });
+      setHasMoreOlder(result.hasMore);
+      if (result.messages.length > 0) {
+        setOlderMessages((prev) => {
+          const map = new Map<string, ChatMessage>();
+          for (const m of result.messages) {
+            if (m?.id) map.set(m.id, m);
+          }
+          for (const m of prev) {
+            if (m?.id) map.set(m.id, m);
+          }
+          return Array.from(map.values()).sort(
+            (a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || '')
+          );
+        });
+        requestAnimationFrame(() => {
+          if (scrollEl) {
+            scrollEl.scrollTop = scrollEl.scrollHeight - prevHeight;
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[ChatWidget] load older failed:', e);
+    } finally {
+      setLoadingOlder(false);
+    }
+  };
 
   const handlePopupClick = () => {
       if (notificationPopup) {
@@ -503,7 +591,13 @@ export const ChatWidget: React.FC = () => {
 
       {/* Chat Window */}
       {isOpen && !isTvMode && (
-        <div className="pointer-events-auto bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-[calc(100vw-2rem)] sm:w-[550px] h-[60vh] sm:h-[600px] flex overflow-hidden animate-in slide-in-from-bottom-5 duration-300 flex-col sm:flex-row text-slate-800 dark:text-slate-100">
+        <div className="pointer-events-auto bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 w-[calc(100vw-2rem)] sm:w-[550px] h-[60vh] sm:h-[600px] flex overflow-hidden animate-in slide-in-from-bottom-5 duration-300 flex-col text-slate-800 dark:text-slate-100">
+          {!historyReady && (
+            <div className="shrink-0 px-3 py-1.5 text-[11px] font-medium bg-amber-50 dark:bg-amber-950/40 text-amber-800 dark:text-amber-200 border-b border-amber-200/60 dark:border-amber-800/50">
+              최근 대화를 불러오는 중… 불러온 뒤부터 실시간으로 주고받습니다.
+            </div>
+          )}
+          <div className="flex-1 min-h-0 flex flex-col sm:flex-row overflow-hidden">
           
           {/* Sidebar (Staff List) */}
           <div className={`
@@ -623,7 +717,22 @@ export const ChatWidget: React.FC = () => {
             </div>
 
             {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 bg-slate-100 dark:bg-slate-800 space-y-4 custom-scrollbar">
+            <div
+              ref={messagesScrollRef}
+              className="flex-1 overflow-y-auto p-4 bg-slate-100 dark:bg-slate-800 space-y-4 custom-scrollbar"
+            >
+              {historyReady && hasMoreOlder && (
+                <div className="flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => void handleLoadOlder()}
+                    disabled={loadingOlder}
+                    className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-white/90 dark:bg-slate-700/90 border border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-white dark:hover:bg-slate-700 disabled:opacity-60 shadow-sm"
+                  >
+                    {loadingOlder ? '이전 대화 불러오는 중…' : '이전 대화 불러오기'}
+                  </button>
+                </div>
+              )}
               {currentMessages.length === 0 && (
                 <div className="text-center text-slate-400 text-sm mt-10">
                   대화 내용이 없습니다. <br/>메시지를 보내보세요!
@@ -731,6 +840,7 @@ export const ChatWidget: React.FC = () => {
                 <Send size={18} className="translate-x-0.5" />
               </button>
             </div>
+          </div>
           </div>
         </div>
       )}

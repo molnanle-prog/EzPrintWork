@@ -6,6 +6,8 @@ const os = require('os');
 const SITUATION_FILE = 'situation-mirror.json';
 const ARCHIVE_FILE = 'jobs-archive.json';
 const CHAT_FILE = 'chat-messages.json';
+const CHAT_ARCHIVE_FOLDER = 'chat-archive';
+const HOT_CHAT_LIMIT = 300;
 const PRESENCE_FILE = 'presence-sessions.json';
 const AUX_FILES = {
     quotes: 'quotes-live.json',
@@ -107,7 +109,7 @@ class LocalGateway {
         const filePath = path.join(this.archiveRoot, name);
         const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
         try {
-            fs.mkdirSync(this.archiveRoot, { recursive: true });
+            fs.mkdirSync(path.dirname(filePath), { recursive: true });
             fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
             fs.renameSync(tmpPath, filePath);
             return true;
@@ -116,6 +118,77 @@ class LocalGateway {
             console.warn('[LocalGateway] write failed:', filePath, error.message);
             return false;
         }
+    }
+
+    messageTime(m) {
+        const ms = Date.parse(m?.timestamp || m?.createdAt || '');
+        return Number.isFinite(ms) ? ms : 0;
+    }
+
+    monthKeyFromMessage(m) {
+        const t = this.messageTime(m);
+        const d = t > 0 ? new Date(t) : new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    /** 핫 윈도우에서 밀려난 메시지를 월별 아카이브에 보관 */
+    archiveChatOverflow(tenantId, overflow) {
+        if (!this.archiveRoot || !Array.isArray(overflow) || overflow.length === 0) return;
+        const byMonth = new Map();
+        for (const m of overflow) {
+            if (!m?.id) continue;
+            const key = this.monthKeyFromMessage(m);
+            const list = byMonth.get(key) || [];
+            list.push(m);
+            byMonth.set(key, list);
+        }
+        for (const [month, msgs] of byMonth) {
+            const rel = path.join(CHAT_ARCHIVE_FOLDER, `${month}.json`);
+            const existing = this.readJsonFile(rel);
+            const map = new Map();
+            for (const m of existing?.messages || []) {
+                if (m?.id) map.set(m.id, m);
+            }
+            for (const m of msgs) {
+                if (!m?.id) continue;
+                const prev = map.get(m.id);
+                if (!prev) {
+                    map.set(m.id, m);
+                    continue;
+                }
+                map.set(m.id, this.messageTime(m) >= this.messageTime(prev) ? { ...prev, ...m } : prev);
+            }
+            const merged = [...map.values()].sort((a, b) => this.messageTime(a) - this.messageTime(b));
+            this.writeJsonFile(rel, {
+                version: 1,
+                tenantId,
+                updatedAt: new Date().toISOString(),
+                messages: merged,
+            });
+        }
+    }
+
+    /** beforeMs 이전 메시지 중 최근 pageSize개 (아카이브 역순) */
+    loadOlderChatMessages(beforeMs, pageSize, excludeIds) {
+        const collected = [];
+        const exclude = excludeIds instanceof Set ? excludeIds : new Set(excludeIds || []);
+        const cursor = new Date(beforeMs);
+        for (let i = 0; i < 24 && collected.length < pageSize + 1; i++) {
+            const y = cursor.getFullYear();
+            const mo = String(cursor.getMonth() + 1).padStart(2, '0');
+            const rel = path.join(CHAT_ARCHIVE_FOLDER, `${y}-${mo}.json`);
+            const parsed = this.readJsonFile(rel);
+            for (const m of parsed?.messages || []) {
+                if (!m?.id || exclude.has(m.id)) continue;
+                const t = this.messageTime(m);
+                if (t > 0 && t < beforeMs) collected.push(m);
+            }
+            cursor.setMonth(cursor.getMonth() - 1);
+        }
+        collected.sort((a, b) => this.messageTime(a) - this.messageTime(b));
+        const hasMore = collected.length > pageSize;
+        const messages = hasMore ? collected.slice(collected.length - pageSize) : collected;
+        return { messages, hasMore };
     }
 
     mergeJobVisibilityFields(base, prev, incoming) {
@@ -505,8 +578,11 @@ class LocalGateway {
                             const tb = Date.parse(b.timestamp || b.createdAt || '') || 0;
                             return ta - tb;
                         });
-                        const MAX = 5000;
-                        if (messages.length > MAX) messages = messages.slice(messages.length - MAX);
+                        if (messages.length > HOT_CHAT_LIMIT) {
+                            const overflow = messages.slice(0, messages.length - HOT_CHAT_LIMIT);
+                            this.archiveChatOverflow(tenantId, overflow);
+                            messages = messages.slice(messages.length - HOT_CHAT_LIMIT);
+                        }
                         const now = new Date().toISOString();
                         const payload = {
                             version: 1,
@@ -527,6 +603,33 @@ class LocalGateway {
                         res.end(error?.message || 'invalid body');
                         return;
                     }
+                }
+
+                if (url.pathname === '/api/v1/chat/older' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const beforeRaw = url.searchParams.get('before') || '';
+                    const beforeMs = Date.parse(beforeRaw) || Date.now();
+                    const pageSize = Math.min(100, Math.max(1, parseInt(url.searchParams.get('limit') || '40', 10) || 40));
+                    const excludeRaw = url.searchParams.get('exclude') || '';
+                    const excludeIds = new Set(
+                        excludeRaw
+                            .split(',')
+                            .map((s) => s.trim())
+                            .filter(Boolean)
+                            .slice(0, 500)
+                    );
+                    const result = this.loadOlderChatMessages(beforeMs, pageSize, excludeIds);
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        ok: true,
+                        messages: result.messages,
+                        hasMore: result.hasMore,
+                    }));
+                    return;
                 }
 
                 if (url.pathname === '/api/v1/mirror' && req.method === 'POST') {
