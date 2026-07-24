@@ -403,14 +403,12 @@ ipcMain.handle('reveal-in-folder', async (_event, targetPath) => {
     }
 });
 
-// 4. 파일 저장
+// 4. 파일 저장 (비동기 — NAS 동기 I/O로 창 멈춤 방지)
 ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
     try {
         const dir = path.dirname(filePath);
-        if (!fs.existsSync(dir)) {
-            fs.mkdirSync(dir, { recursive: true });
-        }
-        fs.writeFileSync(filePath, content, 'utf8');
+        await fs.promises.mkdir(dir, { recursive: true });
+        await fs.promises.writeFile(filePath, content, 'utf8');
         return { success: true };
     } catch (e) {
         console.error("파일 저장 중 오류 발생:", e);
@@ -419,23 +417,30 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
     }
 });
 
-// 5. 파일 읽기
+// 5. 파일 읽기 (비동기)
 ipcMain.handle('read-file', async (event, filePath) => {
     try {
-        if (fs.existsSync(filePath)) {
-            const stats = fs.statSync(filePath);
-            const data = fs.readFileSync(filePath, 'utf8');
+        try {
+            const stats = await fs.promises.stat(filePath);
+            const data = await fs.promises.readFile(filePath, 'utf8');
             return { success: true, data, mtime: stats.mtimeMs };
+        } catch (err) {
+            const code = err && typeof err === 'object' && 'code' in err ? err.code : null;
+            if (code !== 'ENOENT') {
+                throw err;
+            }
         }
         // 자가 치유: 확장자 없는 레거시 파일 마이그레이션 (.json 파일 요청 시 확장자 없는 파일 자동 로드 및 복사)
         if (filePath.endsWith('.json')) {
             const noExtPath = filePath.slice(0, -5);
-            if (fs.existsSync(noExtPath)) {
+            try {
+                const stats = await fs.promises.stat(noExtPath);
                 console.log(`[Self-Healing] Migrating extensionless database file: ${noExtPath} -> ${filePath}`);
-                const stats = fs.statSync(noExtPath);
-                const data = fs.readFileSync(noExtPath, 'utf8');
-                fs.writeFileSync(filePath, data, 'utf8');
+                const data = await fs.promises.readFile(noExtPath, 'utf8');
+                await fs.promises.writeFile(filePath, data, 'utf8');
                 return { success: true, data, mtime: stats.mtimeMs };
+            } catch {
+                /* no legacy file */
             }
         }
         return { success: false, error: 'ENOENT' };

@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
-import { Client, ClientContact, PrepaidLedgerEntry } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History, ArrowUpDown } from 'lucide-react';
+import { Client, ClientContact, PrepaidLedgerEntry, JobNotebook } from '../../types';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History, ArrowUpDown, NotebookPen } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
 import {
@@ -15,6 +15,9 @@ import {
 import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
 import { normalizePrepaidBalance, canDeletePrepaidLedgerEntry, getJobOutstandingAmount } from '../../utils/prepaidBalance';
 import { useAuth } from '../../contexts/AuthContext';
+import { ClientNotebookModal } from '../common/ClientNotebookModal';
+import { notebookHasContent } from '../../utils/jobNotebook';
+import { toast } from 'sonner';
 
 function prepaidLedgerTypeLabel(type: PrepaidLedgerEntry['type']): string {
   switch (type) {
@@ -75,6 +78,7 @@ export const ClientManager: React.FC = () => {
   const [isAddingPrepaid, setIsAddingPrepaid] = useState(false);
   const [showPrepaidHistoryModal, setShowPrepaidHistoryModal] = useState(false);
   const [deletingPrepaidEntryId, setDeletingPrepaidEntryId] = useState<string | null>(null);
+  const [isNotebookOpen, setIsNotebookOpen] = useState(false);
   const [formData, setFormData] = useState<Partial<Client>>({
       name: '', 
       businessRegistrationNumber: '',
@@ -83,6 +87,7 @@ export const ClientManager: React.FC = () => {
       email: '',
       address: '',
       note: '',
+      notebook: undefined,
       contacts: [],
       sendSmsOnComplete: true,
       customSmsNumber: '',
@@ -300,6 +305,7 @@ export const ClientManager: React.FC = () => {
           email: '',
           address: '',
           note: '',
+          notebook: undefined,
           contacts: [{ name: '', phone: '', department: '담당자' }],
           sendSmsOnComplete: true,
           customSmsNumber: '',
@@ -328,6 +334,7 @@ export const ClientManager: React.FC = () => {
         email: primaryContact.email,        // Sync Primary
         address: formData.address || '',
         note: formData.note || '',
+        notebook: formData.notebook,
         contacts: formData.contacts || [],
         sendSmsOnComplete: formData.sendSmsOnComplete !== false,
         customSmsNumber: formData.sendSmsOnComplete !== false
@@ -926,14 +933,38 @@ export const ClientManager: React.FC = () => {
                                     잔액은 직접 수정하지 않습니다. 추가 입금은 옆 입력란을 사용하고, 이력은 「이력」 버튼에서 확인하세요.
                                 </p>
                             </div>
-                            <div className="md:col-span-2 space-y-1">
-                                <label className="text-xs font-bold text-slate-500 dark:text-slate-400">메모/특이사항</label>
+                            <div className="md:col-span-2 space-y-2">
+                                <div className="flex items-center justify-between gap-2">
+                                    <label className="text-xs font-bold text-slate-500 dark:text-slate-400">메모/특이사항 (한 줄)</label>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (!editingId) {
+                                                toast.message('거래처를 먼저 저장한 뒤 메모장을 열어 주세요.');
+                                                return;
+                                            }
+                                            setIsNotebookOpen(true);
+                                        }}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                                            notebookHasContent(formData.notebook)
+                                                ? 'bg-teal-600 text-white hover:bg-teal-700'
+                                                : 'bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800 hover:bg-teal-100 dark:hover:bg-teal-900/50'
+                                        }`}
+                                    >
+                                        <NotebookPen size={14} />
+                                        거래처 메모장
+                                        {notebookHasContent(formData.notebook) ? ' · 있음' : ''}
+                                    </button>
+                                </div>
                                 <input 
                                     value={formData.note || ''}
                                     onChange={e => setFormData({...formData, note: e.target.value})}
                                     className={inputClass}
-                                    placeholder="결제일, 배송 주의사항 등"
+                                    placeholder="결제일, 배송 주의사항 등 (간단 메모)"
                                 />
+                                <p className="text-[11px] text-slate-400 dark:text-slate-500">
+                                    긴 공지·첨부·작성일 구분은 「거래처 메모장」을 사용하세요. 저장 시 작성일과 점선이 자동으로 붙습니다.
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -1471,6 +1502,26 @@ export const ClientManager: React.FC = () => {
           </div>
         );
       })()}
+
+      {isNotebookOpen && editingId && (
+        <ClientNotebookModal
+          clientId={editingId}
+          clientName={formData.name || '거래처'}
+          initial={formData.notebook}
+          onClose={() => setIsNotebookOpen(false)}
+          onSave={async (notebook: JobNotebook) => {
+            setFormData((prev) => ({ ...prev, notebook }));
+            try {
+              const existing = clients.find((c) => c.id === editingId);
+              if (existing) {
+                await db.updateClient({ ...existing, notebook });
+              }
+            } catch (error) {
+              showAlert(getErrorMessage(error));
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

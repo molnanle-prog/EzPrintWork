@@ -22,7 +22,8 @@ export const CHAT_FILE_NAME = 'chat-messages.json';
 const STORAGE_FETCH_TIMEOUT_MS = 8000;
 /** 오래된 메시지 자동 정리 — NAS 파일 비대화 방지 */
 const MAX_CHAT_MESSAGES = 5000;
-const WRITE_RETRY_DELAYS_MS = [0, 1200, 3000];
+/** NAS 쓰기 재시도 — 짧게 (긴 대기는 전송 체감만 악화) */
+const WRITE_RETRY_DELAYS_MS = [0, 350, 900];
 
 export interface ChatMirrorPayload {
     version: number;
@@ -57,6 +58,8 @@ export function mergeChatMessages(current: ChatMessage[], incoming: ChatMessage[
 }
 
 export class ChatMirrorService {
+    private publishChain: Promise<boolean> = Promise.resolve(true);
+
     private isElectron(): boolean {
         return typeof window !== 'undefined' && !!window.electron;
     }
@@ -128,6 +131,16 @@ export class ChatMirrorService {
     async publish(tenantId: string, messages: ChatMessage[]): Promise<boolean> {
         if (!tenantId) return false;
 
+        // 연속 publish 직렬화 — 같은 파일 RMW 경합 방지
+        const run = this.publishChain.then(() => this.publishOnce(tenantId, messages));
+        this.publishChain = run.then(
+            () => true,
+            () => true
+        );
+        return run;
+    }
+
+    private async publishOnce(tenantId: string, messages: ChatMessage[]): Promise<boolean> {
         if (this.isElectron()) {
             let nasOk = false;
             const root = await this.resolveMirrorRoot();
@@ -145,7 +158,8 @@ export class ChatMirrorService {
                 }
                 const merged = mergeChatMessages(existing, messages);
                 const payload = this.buildPayload(tenantId, merged);
-                const content = JSON.stringify(payload, null, 2);
+                // compact JSON — pretty(null,2)는 NAS 쓰기 용량·시간만 늘림
+                const content = JSON.stringify(payload);
                 nasOk = await this.writeLocalWithRetry(filePath, content);
                 if (nasOk) {
                     void this.uploadStorageAsync(tenantId, content);
@@ -155,7 +169,7 @@ export class ChatMirrorService {
         }
 
         const payload = this.buildPayload(tenantId, messages);
-        const content = JSON.stringify(payload, null, 2);
+        const content = JSON.stringify(payload);
         try {
             const blob = new Blob([content], { type: 'application/json' });
             await uploadBytes(ref(storage, this.storageObjectPath(tenantId)), blob, {

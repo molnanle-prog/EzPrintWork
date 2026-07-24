@@ -151,12 +151,13 @@ export async function claimStaffSessionOnFirestore(
   }
 }
 
-/** NAS/게이트웨이 오프라인 표시 */
+/** NAS/게이트웨이 오프라인 표시 — onlyIfSessionId면 내 세션일 때만 */
 export async function releaseStaffSessionOnNas(opts: {
   uid: string;
   tenantId: string;
   email?: string | null;
   loginId?: string | null;
+  onlyIfSessionId?: string | null;
   gatewayBaseUrl?: StoreGatewayInput;
 }): Promise<boolean> {
   const { presenceSessionService } = await import('../services/presenceSessionService');

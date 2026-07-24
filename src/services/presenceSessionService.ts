@@ -263,6 +263,8 @@ export class PresenceSessionService {
     name?: string | null;
     email?: string | null;
     sessionId?: string | null;
+    /** offline 시 — 이 세션이 아니면 쓰지 않음 (다른 기기 로그인 보호) */
+    onlyIfSessionId?: string | null;
     gatewayBaseUrl?: StoreGatewayInput;
   }): Promise<boolean> {
     const { tenantId, uid } = opts;
@@ -271,6 +273,16 @@ export class PresenceSessionService {
     const now = new Date().toISOString();
     const current = (await this.read(tenantId, opts.gatewayBaseUrl)) || emptyFile(tenantId);
     const prev = current.sessions[uid] || { uid };
+
+    // 다른 기기가 이미 claim한 세션이면 패자 logout이 승자를 offline으로 만들지 않음
+    if (
+      !opts.online &&
+      opts.onlyIfSessionId &&
+      prev.activeSessionId &&
+      prev.activeSessionId !== opts.onlyIfSessionId
+    ) {
+      return true;
+    }
 
     const next: PresenceSessionEntry = {
       ...prev,
@@ -320,6 +332,7 @@ export class PresenceSessionService {
     uid: string;
     loginId?: string | null;
     email?: string | null;
+    onlyIfSessionId?: string | null;
     gatewayBaseUrl?: StoreGatewayInput;
   }): Promise<boolean> {
     return this.upsertPresence({
@@ -328,6 +341,7 @@ export class PresenceSessionService {
       online: false,
       loginId: opts.loginId,
       email: opts.email,
+      onlyIfSessionId: opts.onlyIfSessionId,
       gatewayBaseUrl: opts.gatewayBaseUrl,
     });
   }

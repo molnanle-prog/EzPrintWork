@@ -237,6 +237,52 @@ export const LoginPage: React.FC = () => {
             window.removeEventListener('focus', onFocus);
             if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
+
+            // 관리자(구글)도 단일 접속 — 다른 PC 로그인 중이면 확인 후 claim
+            try {
+                const { doc, getDoc } = await import('firebase/firestore');
+                const { db: firestoreDb } = await import('../services/firebase');
+                const userDocSnap = await getDoc(doc(firestoreDb, 'users', user.uid));
+                const tenantId = userDocSnap.exists() ? String(userDocSnap.data()?.tenantId || '') : '';
+                if (tenantId) {
+                    let sessionRecord = null as Awaited<ReturnType<typeof presenceSessionService.readEntry>>;
+                    try {
+                        sessionRecord = await presenceSessionService.readEntry(
+                            tenantId,
+                            user.uid,
+                            db.getStoreGatewayUrls()
+                        );
+                    } catch {
+                        /* optional */
+                    }
+                    if (isRemoteStaffSessionActive(sessionRecord, getLocalStaffSessionId())) {
+                        const proceed = await showConfirm(
+                            '현재 다른 곳에서 같은 계정으로 로그인되어 있습니다.\n기존 접속을 종료하고 여기에서 로그인하시겠습니까?'
+                        );
+                        if (!proceed) {
+                            await signOut(auth);
+                            setIsLoggingIn(false);
+                            toast.info('로그인을 취소했습니다.');
+                            return;
+                        }
+                    }
+                    const newSessionId = createStaffSessionId();
+                    setLocalStaffSessionId(newSessionId, false);
+                    await claimStaffSessionOnNas({
+                        uid: user.uid,
+                        tenantId,
+                        staffDocId: user.uid,
+                        sessionId: newSessionId,
+                        loginId: user.email || null,
+                        name: user.displayName || null,
+                        email: user.email || null,
+                        gatewayBaseUrl: db.getStoreGatewayUrls(),
+                    });
+                }
+            } catch (sessionErr) {
+                console.warn('[Login] Google session claim skipped:', sessionErr);
+            }
+
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
             navigate(consumePostLoginPath(), { replace: true });
 
@@ -913,8 +959,9 @@ export const LoginPage: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen w-full bg-slate-950 flex flex-col items-center justify-start overflow-y-auto p-6 font-sans pt-16">
-            {/* 데스크톱 앱 프레임리스 타이틀바 (로그인 화면 전용) */}
+        <div className={`h-full min-h-0 w-full bg-slate-950 flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden overscroll-y-contain p-4 sm:p-6 font-sans ${isElectron ? 'pt-14' : 'pt-4'} pb-10`}>
+            {/* 데스크톱 앱 프레임리스 타이틀바 (Electron 전용 — 모바일/웹에서는 숨김) */}
+            {isElectron && (
             <div 
                 className="fixed top-0 left-0 right-0 h-10 bg-slate-950 border-b border-slate-900 flex justify-between items-center select-none z-[100]"
                 style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
@@ -978,23 +1025,24 @@ export const LoginPage: React.FC = () => {
                     </button>
                 </div>
             </div>
+            )}
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
                 <div className="absolute -top-[25%] -left-[10%] w-[70%] h-[70%] bg-blue-600/10 rounded-full blur-[120px]"></div>
                 <div className="absolute -bottom-[25%] -right-[10%] w-[60%] h-[60%] bg-indigo-600/10 rounded-full blur-[100px]"></div>
             </div>
  
-            <div className="max-w-xl w-full z-10 space-y-6 animate-in fade-in zoom-in-95 duration-700">
-                <div className="flex flex-col items-center text-center space-y-3">
-                    <div className="w-20 h-20 bg-blue-600 rounded-[2rem] flex items-center justify-center shadow-2xl shadow-blue-600/20 rotate-3 hover:rotate-0 transition-transform duration-500">
-                        <Printer className="text-white" size={40} />
+            <div className="max-w-xl w-full z-10 space-y-4 sm:space-y-6 animate-in fade-in zoom-in-95 duration-700">
+                <div className="flex flex-col items-center text-center space-y-2 sm:space-y-3">
+                    <div className="w-14 h-14 sm:w-20 sm:h-20 bg-blue-600 rounded-[1.5rem] sm:rounded-[2rem] flex items-center justify-center shadow-2xl shadow-blue-600/20 rotate-3 hover:rotate-0 transition-transform duration-500">
+                        <Printer className="text-white" size={32} />
                     </div>
                     <div>
-                        <h1 className="text-4xl font-black text-white tracking-tighter mb-2">EzPrintWork</h1>
-                        <p className="text-slate-500 font-medium tracking-tight">인쇄소 업무 관리의 새로운 기준 (v{installedAppVersion})</p>
+                        <h1 className="text-3xl sm:text-4xl font-black text-white tracking-tighter mb-1 sm:mb-2">EzPrintWork</h1>
+                        <p className="text-slate-500 font-medium tracking-tight text-sm sm:text-base">인쇄소 업무 관리의 새로운 기준 (v{installedAppVersion})</p>
                     </div>
                 </div>
  
-                <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-8 rounded-[2.5rem] shadow-2xl space-y-6">
+                <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-5 sm:p-8 rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl space-y-4 sm:space-y-6">
                     <div className="space-y-1.5 text-center">
                         <h2 className="text-xl font-bold text-white">
                             {isStaffSignup ? '사내 직원 가입 신청' : '클라우드 시작하기'}

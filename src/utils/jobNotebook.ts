@@ -26,7 +26,7 @@ export function normalizeNotebook(nb?: JobNotebook | null): JobNotebook {
 
 export function notebookHasContent(nb?: JobNotebook | null): boolean {
     if (!nb) return false;
-    if ((nb.text || '').trim()) return true;
+    if (notebookTextHasBody(nb.text || '')) return true;
     return (nb.attachments || []).length > 0;
 }
 
@@ -131,6 +131,43 @@ export async function openNotebookFolder(jobId: string, subJobId: string): Promi
         await window.electron.ensureDir(abs);
     }
     return window.electron.openPath(abs);
+}
+
+/**
+ * 본문에 실제 메모가 있는지 (작성일·점선만 있으면 없음)
+ */
+export function notebookTextHasBody(text: string): boolean {
+    const lines = String(text ?? '')
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+    return lines.some((l) => !/^작성일:\s/.test(l) && !/^-{3,}$/.test(l));
+}
+
+/**
+ * 저장 시 본문 끝에 작성일 + 점선 구분선을 붙입니다.
+ * 내용이 비어 있으면(또는 작성일·점선만 있으면) 빈 문자열을 반환합니다.
+ */
+export function appendNotebookSaveStamp(text: string, now: Date = new Date()): string {
+    const trimmed = String(text ?? '').replace(/\s+$/g, '');
+    if (!trimmed || !notebookTextHasBody(trimmed)) {
+        return '';
+    }
+
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const dateLine = `작성일: ${y}-${m}-${d} ${hh}:${mm}`;
+    const sep = '--------------------';
+    const stampTail = `${dateLine}\n${sep}`;
+
+    if (trimmed.endsWith(stampTail) || trimmed.endsWith(`${stampTail}\n`)) {
+        return trimmed.endsWith('\n') ? trimmed : `${trimmed}\n`;
+    }
+
+    return `${trimmed}\n\n${stampTail}\n`;
 }
 
 export function isImageAttachment(fileName: string): boolean {

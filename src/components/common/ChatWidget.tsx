@@ -47,14 +47,6 @@ export const ChatWidget: React.FC = () => {
   const mountTime = useRef(Date.now());
   const { currentUser } = useAuth();
   const { theme, toggleTheme } = useTheme();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const staffRef = useRef<Staff[]>([]);
-  const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
-
-  useEffect(() => {
-    staffRef.current = staff;
-  }, [staff]);
 
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
@@ -62,6 +54,32 @@ export const ChatWidget: React.FC = () => {
     }
     return false;
   });
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const staffRef = useRef<Staff[]>([]);
+  const isOpenRef = useRef(isOpen);
+  const activeChannelRef = useRef(activeChannel);
+  const soundEnabledRef = useRef(soundEnabled);
+  const isTvModeRef = useRef(isTvMode);
+  const lastSyncedReadIdRef = useRef<string | null>(null);
+  const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
+
+  useEffect(() => {
+    staffRef.current = staff;
+  }, [staff]);
+  useEffect(() => {
+    isOpenRef.current = isOpen;
+  }, [isOpen]);
+  useEffect(() => {
+    activeChannelRef.current = activeChannel;
+  }, [activeChannel]);
+  useEffect(() => {
+    soundEnabledRef.current = soundEnabled;
+  }, [soundEnabled]);
+  useEffect(() => {
+    isTvModeRef.current = isTvMode;
+  }, [isTvMode]);
 
   useEffect(() => {
     const handleTvModeChange = (e: Event) => {
@@ -107,16 +125,17 @@ export const ChatWidget: React.FC = () => {
 
 
   useEffect(() => {
+    if (!currentUser) return;
+
+    // 마운트/로그인 시에만 NAS hydrate — 직원(채널) 선택마다 전체 재로드하지 않음
     db.ensureMessagesSync();
-    // Initial Load
     setStaff(db.getStaff());
     const initialMsgs = db.getMessages();
     setMessages(initialMsgs);
 
     // Check if there are any unread messages from history upon mount
-    if (initialMsgs.length > 0 && currentUser) {
+    if (initialMsgs.length > 0) {
       const staffNow = db.getStaff();
-      // 나에게 수신된 메시지 중 가장 최근 메시지 추출 (uid / staff.id 혼용 대응)
       const myReceivedMsgs = initialMsgs.filter(
         (m) =>
           !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
@@ -129,11 +148,9 @@ export const ChatWidget: React.FC = () => {
         const lastConfirmedId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
         
         if (lastMsg.id !== lastConfirmedId && lastMsg.id !== dbLastReadId) {
-          // 모니터링 모드에서는 초기 채팅 알림도 띄우지 않음
           if (localStorage.getItem('ezprint_tv_mode') === 'true') {
             // skip
           } else {
-          // 아직 읽음 확인을 하지 않은 과거 메시지가 오프라인일 때 유입된 것이므로 로그인 즉시 팝업과 띵동 작동!
           setHasUnread(true);
           setNotificationPopup(lastMsg);
           const sender = findStaffByAnyId(staffNow, lastMsg.senderId);
@@ -147,20 +164,21 @@ export const ChatWidget: React.FC = () => {
       }
     }
 
-    // Polling for new messages (simulate real-time)
+    // Polling — isOpen/activeChannel 은 ref로 읽어 채널 전환 시 effect 재실행 없음
     const interval = setInterval(() => {
-      setStaff(db.getStaff()); // 실시간 읽음 처리를 위해 직원 정보 폴링
+      setStaff(db.getStaff());
       const latestMsgs = db.getMessages();
+      const isOpenNow = isOpenRef.current;
+      const activeChannelNow = activeChannelRef.current;
+      const isTvModeNow = isTvModeRef.current;
+      const soundEnabledNow = soundEnabledRef.current;
+
       setMessages(prev => {
-        // 1. 이전 메시지 ID 목록을 Set으로 변환하여 매칭 속도 극대화
         const prevIds = new Set(prev.map(m => m.id));
-        
-        // 2. 이전에 보지 못했던 완전히 새로운 메시지들만 필터링 (비동기 청크 지연 로드 대응)
         const newMsgs = latestMsgs.filter(msg => !prevIds.has(msg.id));
         
         if (newMsgs.length > 0) {
           const staffNow = db.getStaff();
-          // 나에게 수신된 신규 메시지만 필터링 (uid / staff.id 혼용 대응)
           const myNewReceivedMsgs = newMsgs.filter(
             (m) =>
               !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
@@ -169,29 +187,22 @@ export const ChatWidget: React.FC = () => {
           
           if (myNewReceivedMsgs.length > 0) {
             const lastMsg = myNewReceivedMsgs[myNewReceivedMsgs.length - 1];
-
-            // 최초 로드 시 지연되어 들어온 기존 메시지인지 필터링 (DB 및 로컬 스토리지 읽음 기록 비교)
             const currentStaff = findStaffForUser(staffNow, currentUser);
             const dbLastReadId = currentStaff?.lastReadMsgId;
-            const localLastReadId = currentUser ? localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`) : null;
-            
+            const localLastReadId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
             const isAlreadyRead = (lastMsg.id === dbLastReadId) || (lastMsg.id === localLastReadId);
 
             if (!isAlreadyRead) {
-                // 모니터링 모드에서는 채팅 알림·소리 무시
-                if (isTvMode) {
+                if (isTvModeNow) {
                   // skip
                 } else {
-                // Determine if the relevant channel is currently open
-                // Global open & Global msg OR DM open & DM msg from sender
-                const isRelevantChannelOpen = isOpen && (
-                    (activeChannel === null && !lastMsg.receiverId) || 
-                    (activeChannel !== null && staffIdsEqual(activeChannel, lastMsg.senderId, staffNow))
+                const isRelevantChannelOpen = isOpenNow && (
+                    (activeChannelNow === null && !lastMsg.receiverId) || 
+                    (activeChannelNow !== null && staffIdsEqual(activeChannelNow, lastMsg.senderId, staffNow))
                 );
 
                 if (!isRelevantChannelOpen) {
                      setHasUnread(true);
-                     // 확인하지 않은 신규 메시지이므로 긴급 팝업 노출!
                      setNotificationPopup(lastMsg);
                      const senderStaff = lastMsg.senderId
                        ? findStaffByAnyId(staffNow, lastMsg.senderId)
@@ -201,26 +212,31 @@ export const ChatWidget: React.FC = () => {
                        senderStaff?.name || lastMsg.senderName || '새 메시지'
                      );
                      
-                     // Add to Unread Senders Set to blink the list item (staff 문서 id로 통일)
                      if (lastMsg.senderId) {
                           setUnreadSenders(prevSet => new Set(prevSet).add(senderStaff?.id || lastMsg.senderId));
                      }
                 }
                 
-                // 신규 실시간 메시지가 왔으므로 띵동 소리 재생!
-                if (soundEnabled) {
+                if (soundEnabledNow) {
                    audioRef.current?.play().catch(e => console.log('Audio play failed', e));
                 }
                 }
             }
           }
         }
+        // 동일 길이·마지막 id면 리렌더 생략
+        if (
+          prev.length === latestMsgs.length &&
+          (prev.length === 0 || prev[prev.length - 1]?.id === latestMsgs[latestMsgs.length - 1]?.id)
+        ) {
+          return prev;
+        }
         return latestMsgs;
       });
-    }, 2000);
+    }, 1000);
 
     return () => clearInterval(interval);
-  }, [isOpen, activeChannel, currentUser, soundEnabled, isTvMode]);
+  }, [currentUser]);
 
   // When changing channel, remove that user from unread set
   useEffect(() => {
@@ -235,7 +251,6 @@ export const ChatWidget: React.FC = () => {
 
   useEffect(() => {
     if (isOpen && currentUser && messages.length > 0) {
-      // 나에게 수신된 메시지 중 가장 최신의 메시지 ID를 확인 처리로 로컬스토리지에 저장
       const myReceivedMsgs = messages.filter(
         (m) =>
           !isSameLoggedInUser(currentUser, m.senderId, staff) &&
@@ -243,9 +258,16 @@ export const ChatWidget: React.FC = () => {
       );
       if (myReceivedMsgs.length > 0) {
         const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
+        // 같은 메시지에 대해 Firestore lastRead 반복 쓰기 방지
+        if (lastSyncedReadIdRef.current === lastMsg.id) {
+          setHasUnread(false);
+          setNotificationPopup(null);
+          clearDesktopChatAttention();
+          return;
+        }
+        lastSyncedReadIdRef.current = lastMsg.id;
         localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, lastMsg.id);
         
-        // 파이어베이스(Firestore)에도 실시간 동기화 업데이트! (staff 문서 id 사용)
         const staffDocId = findStaffForUser(staff, currentUser)?.id;
         if (staffDocId) {
           db.updateStaffLastReadMsgId(staffDocId, lastMsg.id).catch(e => {
@@ -424,54 +446,54 @@ export const ChatWidget: React.FC = () => {
     // Adjusted position for mobile (higher bottom to clear nav)
     <div className={`fixed bottom-20 lg:bottom-6 right-4 lg:right-6 ${containerZIndex} flex flex-col items-end gap-4 pointer-events-none`}>
       
-      {/* CRITICAL ALERT MODAL */}
+      {/* CRITICAL ALERT MODAL — 크게·눈에 띄게 */}
       {notificationPopup && !isOpen && (
-          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4 pointer-events-auto animate-in fade-in duration-300">
-              <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border-2 border-blue-500 animate-in zoom-in-95 duration-300 relative">
-                  <div className="absolute inset-0 border-4 border-blue-400/30 animate-pulse rounded-2xl pointer-events-none"></div>
+          <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 pointer-events-auto animate-in fade-in duration-300">
+              <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden border-4 border-blue-500 animate-in zoom-in-95 duration-300 relative ring-8 ring-blue-500/40">
+                  <div className="absolute inset-0 border-4 border-blue-300/40 animate-pulse rounded-3xl pointer-events-none"></div>
                   
-                  <div className="bg-blue-600 p-4 text-white flex items-center justify-center gap-2">
-                      <Bell size={24} className="animate-[bounce_1s_infinite]" />
-                      <h3 className="text-xl font-bold">새 메시지 도착!</h3>
+                  <div className="bg-blue-600 p-5 sm:p-6 text-white flex items-center justify-center gap-3">
+                      <Bell size={32} className="animate-[bounce_1s_infinite] shrink-0" />
+                      <h3 className="text-2xl sm:text-3xl font-black tracking-tight">새 메시지 도착!</h3>
                   </div>
 
-                  <div className="p-8 flex flex-col items-center text-center">
-                      <div className="relative mb-4">
+                  <div className="p-8 sm:p-10 flex flex-col items-center text-center">
+                      <div className="relative mb-5">
                           <img 
                             src={getSenderInfo(notificationPopup.senderId, notificationPopup.senderName).avatarUrl} 
-                            className="w-24 h-24 rounded-full border-4 border-slate-100 dark:border-slate-700 shadow-md object-cover" 
+                            className="w-28 h-28 sm:w-32 sm:h-32 rounded-full border-4 border-blue-200 dark:border-blue-800 shadow-lg object-cover" 
                             alt=""
                           />
-                          <div className="absolute bottom-0 right-0 bg-blue-600 text-white p-1.5 rounded-full border-2 border-white dark:border-slate-800">
-                              <MessageSquare size={16} />
+                          <div className="absolute bottom-0 right-0 bg-blue-600 text-white p-2 rounded-full border-2 border-white dark:border-slate-800 shadow">
+                              <MessageSquare size={20} />
                           </div>
                       </div>
                       
-                      <h4 className="text-2xl font-bold text-slate-800 dark:text-slate-100 mb-1">
+                      <h4 className="text-3xl font-black text-slate-800 dark:text-slate-100 mb-1">
                           {getSenderInfo(notificationPopup.senderId, notificationPopup.senderName).name}
                       </h4>
-                      <p className="text-sm text-blue-600 dark:text-blue-400 font-bold mb-4">
+                      <p className="text-base text-blue-600 dark:text-blue-400 font-bold mb-5">
                           {notificationPopup.receiverId ? '1:1 메시지' : '전체 공지 메시지'}
                       </p>
 
-                      <div className="bg-slate-100 dark:bg-slate-700/50 p-4 rounded-xl w-full mb-6 relative">
-                          <div className="absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-slate-100 dark:bg-slate-700/50 rotate-45"></div>
-                          <p className="text-slate-700 dark:text-slate-200 text-lg font-medium break-words leading-relaxed">
+                      <div className="bg-slate-100 dark:bg-slate-700/50 p-5 sm:p-6 rounded-2xl w-full mb-7 relative border border-slate-200 dark:border-slate-600">
+                          <div className="absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-slate-100 dark:bg-slate-700/50 rotate-45 border-l border-t border-slate-200 dark:border-slate-600"></div>
+                          <p className="text-slate-800 dark:text-slate-100 text-xl sm:text-2xl font-semibold break-words leading-relaxed">
                               "{notificationPopup.content}"
                           </p>
-                          <p className="text-xs text-slate-400 mt-2 text-right">
+                          <p className="text-sm text-slate-400 mt-3 text-right">
                               {formatTime(notificationPopup.timestamp)}
                           </p>
                       </div>
 
                       <button 
                           onClick={handlePopupClick}
-                          className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white text-lg font-bold rounded-xl shadow-lg transition-all hover:scale-[1.02] flex items-center justify-center gap-2"
+                          className="w-full py-5 bg-blue-600 hover:bg-blue-700 text-white text-xl font-black rounded-2xl shadow-xl transition-all hover:scale-[1.02] flex items-center justify-center gap-2"
                       >
-                          <MessageCircle size={20} />
+                          <MessageCircle size={24} />
                           확인하고 답장하기
                       </button>
-                      <p className="text-xs text-slate-400 mt-3 animate-pulse">
+                      <p className="text-sm text-slate-400 mt-4 animate-pulse font-medium">
                           * 메시지를 확인할 때까지 다른 작업이 제한됩니다.
                       </p>
                   </div>
@@ -718,7 +740,7 @@ export const ChatWidget: React.FC = () => {
         <div className="flex items-center gap-3 pointer-events-auto">
             <button 
               onClick={toggleTheme}
-              className={`w-10 h-10 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95 border
+              className={`w-12 h-12 rounded-full shadow-lg flex items-center justify-center transition-all hover:scale-110 active:scale-95 border
                 ${theme === 'dark' 
                   ? 'bg-slate-800 border-slate-700 text-yellow-400 hover:bg-slate-700' 
                   : theme === 'trello'
@@ -734,22 +756,24 @@ export const ChatWidget: React.FC = () => {
                     : "라이트 모드로 전환"
               }
             >
-              {theme === 'light' ? <Moon size={18} /> : theme === 'dark' ? <Trello size={18} /> : <Sun size={18} />}
+              {theme === 'light' ? <Moon size={20} /> : theme === 'dark' ? <Trello size={20} /> : <Sun size={20} />}
             </button>
 
             <button 
               onClick={() => setIsOpen(!isOpen)}
-              className={`w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 relative
+              className={`w-[4.5rem] h-[4.5rem] rounded-full shadow-2xl flex items-center justify-center transition-all hover:scale-110 active:scale-95 relative
                 ${isOpen ? 'bg-slate-700 text-slate-300' : 'bg-blue-600 text-white hover:bg-blue-700'}
-                ${!isOpen && hasUnread ? 'animate-[bounce_1s_infinite]' : ''}
+                ${!isOpen && hasUnread ? 'animate-[bounce_0.7s_infinite] ring-4 ring-red-400/80 ring-offset-2 ring-offset-transparent' : ''}
               `}
               title={isOpen ? "메신저 닫기" : "사내 메신저 열기"}
             >
-              {isOpen ? <X size={28} /> : <MessageCircle size={28} />}
+              {isOpen ? <X size={34} /> : <MessageCircle size={34} />}
               
               {/* Unread Badge */}
               {!isOpen && hasUnread && (
-                <span className="absolute top-0 right-0 w-4 h-4 bg-red-500 rounded-full border-2 border-white animate-pulse"></span>
+                <span className="absolute -top-1 -right-1 min-w-[1.5rem] h-6 px-1.5 bg-red-500 text-white text-xs font-black rounded-full border-2 border-white flex items-center justify-center animate-pulse shadow-lg">
+                  N
+                </span>
               )}
             </button>
         </div>

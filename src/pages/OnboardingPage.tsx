@@ -124,8 +124,8 @@ export const OnboardingPage: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen w-full bg-slate-950 text-white flex flex-col items-center justify-center p-6 font-sans">
-      <div className="absolute top-8 right-8">
+    <div className="h-full min-h-0 w-full bg-slate-950 text-white flex flex-col items-center justify-start sm:justify-center overflow-y-auto overflow-x-hidden overscroll-y-contain p-6 font-sans py-10">
+      <div className="absolute top-8 right-8 z-20">
         <button 
           onClick={logout}
           className="flex items-center gap-2 text-slate-400 hover:text-white transition-colors text-sm font-medium"

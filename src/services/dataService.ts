@@ -224,6 +224,8 @@ const HOT_WINDOW_DAYS = 365;
 const LIVE_MIRROR_PUSH_DEBOUNCE_MS = 250;
 const APP_MIRROR_POLL_MS = 1000;
 const WEB_MIRROR_POLL_MS = 2000;
+/** 채팅 NAS 쓰기 디바운스 — 연속 전송 시 한 번에 flush */
+const CHAT_PERSIST_DEBOUNCE_MS = 120;
 
 /** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
 const COMBINED_PAPER_WEIGHT_PATTERN = /\/|표지.*내지|내지.*표지/i;
@@ -634,6 +636,10 @@ export class DataService {
     private nasHealthMonitorTimer: ReturnType<typeof setInterval> | null = null;
     /** local = PC→NAS 직접, gateway = 허브 PC LAN(같은 NAS 파일) */
     private companyNasChannel: 'local' | 'gateway' | null = null;
+    /** 채팅 NAS 쓰기 — UI 블로킹 방지용 디바운스 큐 */
+    private chatPersistTimer: ReturnType<typeof setTimeout> | null = null;
+    private chatPersistInFlight: Promise<void> | null = null;
+    private chatPersistDirty = false;
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
@@ -3601,6 +3607,44 @@ export class DataService {
         return ok;
     }
 
+    /** 메모리 반영은 즉시, NAS 쓰기는 백그라운드 디바운스 (전송 UI 멈춤 방지) */
+    private schedulePersistMessagesToNas(): void {
+        this.chatPersistDirty = true;
+        if (this.chatPersistTimer) clearTimeout(this.chatPersistTimer);
+        this.chatPersistTimer = setTimeout(() => {
+            this.chatPersistTimer = null;
+            void this.flushPersistMessagesToNas();
+        }, CHAT_PERSIST_DEBOUNCE_MS);
+    }
+
+    private async flushPersistMessagesToNas(): Promise<void> {
+        if (this.chatPersistInFlight) {
+            this.chatPersistDirty = true;
+            return;
+        }
+        if (!this.chatPersistDirty) return;
+        this.chatPersistDirty = false;
+        const snapshot = (this.data['messages'] || []) as ChatMessage[];
+        this.chatPersistInFlight = (async () => {
+            try {
+                const ok = await this.persistMessagesToNas(snapshot);
+                if (!ok) {
+                    console.warn('[DataService] chat NAS persist failed — will retry on next send');
+                    this.chatPersistDirty = true;
+                }
+            } catch (e) {
+                console.warn('[DataService] chat NAS persist error:', e);
+                this.chatPersistDirty = true;
+            } finally {
+                this.chatPersistInFlight = null;
+                if (this.chatPersistDirty) {
+                    this.schedulePersistMessagesToNas();
+                }
+            }
+        })();
+        await this.chatPersistInFlight;
+    }
+
     private async pollChatMirror(): Promise<boolean> {
         if (!this.tenantId) return false;
         try {
@@ -4401,19 +4445,14 @@ export class DataService {
                 this.updateTenantActivity().catch(() => {});
                 return;
             }
-            // 사내 채팅 — Firestore 금지, NAS chat-messages.json
+            // 사내 채팅 — Firestore 금지, NAS chat-messages.json (쓰기는 백그라운드 큐)
             if (col === 'messages') {
                 if (!newEntity.senderId && auth.currentUser) {
                     newEntity.senderId = auth.currentUser.uid;
                     this.data[col] = [...(this.data[col] || []).filter((e: any) => e.id !== newEntity.id), newEntity];
                     this.notify();
                 }
-                const ok = await this.persistMessagesToNas((this.data['messages'] || []) as ChatMessage[]);
-                if (!ok) {
-                    throw new Error(
-                        '채팅 저장에 실패했습니다. 매장 PC NAS 경로·사내망 연결을 확인해 주세요.'
-                    );
-                }
+                this.schedulePersistMessagesToNas();
                 this.updateTenantActivity().catch(() => {});
                 return;
             }
@@ -4727,10 +4766,7 @@ export class DataService {
                 return;
             }
             if (col === 'messages') {
-                const ok = await this.persistMessagesToNas((this.data['messages'] || []) as ChatMessage[]);
-                if (!ok) {
-                    throw new Error('채팅 삭제 반영에 실패했습니다. NAS 연결을 확인해 주세요.');
-                }
+                this.schedulePersistMessagesToNas();
                 this.updateTenantActivity().catch(() => {});
                 return;
             }

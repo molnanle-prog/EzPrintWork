@@ -173,9 +173,11 @@ const getDisconnectDetail = (code: string | null) => {
 };
 
 const ReconnectOverlay: React.FC = () => {
+    const { logout } = useAuth();
     const [status, setStatus] = useState(db.getSyncStatus());
     const [syncError, setSyncError] = useState(db.getLastSyncError());
     const [isRetrying, setIsRetrying] = useState(false);
+    const [isLoggingOut, setIsLoggingOut] = useState(false);
 
     useEffect(() => {
         const unsubscribe = db.subscribe(() => {
@@ -188,6 +190,16 @@ const ReconnectOverlay: React.FC = () => {
     const handleRetry = async () => {
         setIsRetrying(true);
         await hardReloadApp();
+    };
+
+    const handleLogout = async () => {
+        if (isLoggingOut) return;
+        setIsLoggingOut(true);
+        try {
+            await logout();
+        } finally {
+            setIsLoggingOut(false);
+        }
     };
 
     if (status !== 'disconnected') return null;
@@ -217,14 +229,24 @@ const ReconnectOverlay: React.FC = () => {
                         {detail.body}
                     </p>
                 </div>
-                <button
-                    onClick={handleRetry}
-                    disabled={isRetrying}
-                    className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800/50 text-white py-2.5 rounded-xl font-bold shadow-md text-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
-                >
-                    {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                    새로고침하여 재연결
-                </button>
+                <div className="space-y-2">
+                    <button
+                        onClick={handleRetry}
+                        disabled={isRetrying || isLoggingOut}
+                        className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800/50 text-white py-2.5 rounded-xl font-bold shadow-md text-sm transition-all active:scale-95 flex items-center justify-center gap-1.5"
+                    >
+                        {isRetrying ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                        새로고침하여 재연결
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleLogout}
+                        disabled={isLoggingOut || isRetrying}
+                        className="w-full bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 py-2.5 rounded-xl font-bold text-sm transition-all disabled:opacity-50"
+                    >
+                        {isLoggingOut ? '로그아웃 중…' : '로그아웃'}
+                    </button>
+                </div>
             </div>
         </div>
     );

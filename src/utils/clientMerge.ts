@@ -95,6 +95,17 @@ function buildMergedClient(primary: Client, secondary: Client): Client {
     const mergeStamp = `[거래처 합침] ${new Date().toLocaleDateString('ko-KR')} '${secondary.name}' → '${primary.name}'`;
     const note = mergedNote ? `${mergedNote}\n${mergeStamp}` : mergeStamp;
 
+    const primaryNb = primary.notebook;
+    const secondaryNb = secondary.notebook;
+    let notebook = primaryNb;
+    if (secondaryNb && (secondaryNb.text?.trim() || (secondaryNb.attachments || []).length > 0)) {
+        const sep = `\n\n========== [${secondary.name} 메모 합침] ==========\n\n`;
+        notebook = {
+            text: [primaryNb?.text?.trim(), secondaryNb.text?.trim()].filter(Boolean).join(sep),
+            attachments: [...(primaryNb?.attachments || []), ...(secondaryNb.attachments || [])],
+        };
+    }
+
     const prepaidLedger = mergePrepaidLedgers(primary, secondary);
     const prepaidSum =
         (primary.prepaidBalance || 0) + (secondary.prepaidBalance || 0);
@@ -117,6 +128,7 @@ function buildMergedClient(primary: Client, secondary: Client): Client {
         email: primary.email?.trim() || secondary.email || primaryContact.email || '',
         address: primary.address?.trim() || secondary.address || '',
         note,
+        notebook,
         contacts,
         sendSmsOnComplete: primary.sendSmsOnComplete !== false || secondary.sendSmsOnComplete !== false,
         customSmsNumber: primary.customSmsNumber?.trim() || secondary.customSmsNumber?.trim() || '',

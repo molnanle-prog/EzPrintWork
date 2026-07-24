@@ -34,8 +34,11 @@ import {
   getLocalStaffSessionId,
   getLocalStaffSessionClaimedAt,
   clearLocalStaffSessionId,
+  createStaffSessionId,
+  setLocalStaffSessionId,
   isRemoteSessionNewerThanLocal,
   releaseStaffSessionOnNas,
+  claimStaffSessionOnNas,
 } from '../utils/staffSession';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
@@ -1037,7 +1040,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser?.tenantId]);
 
-  // 로그인 중 온라인 상태 — NAS presence + Firestore 미러(라이선스 매니저용)
+  // 로그인 중 온라인 상태 — NAS presence + 세션 claim (관리자·직원 공통 단일 접속)
   useEffect(() => {
     if (!currentUser?.tenantId || !firebaseUser?.uid) {
       stopPresenceSession();
@@ -1054,6 +1057,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       undefined;
 
     setPresenceGatewayUrls(dataService.getStoreGatewayUrls());
+
+    let sessionId = getLocalStaffSessionId();
+    if (!sessionId) {
+      sessionId = createStaffSessionId();
+      setLocalStaffSessionId(sessionId, isStaffKeepLoggedIn());
+    }
+
+    void claimStaffSessionOnNas({
+      uid: firebaseUser.uid,
+      tenantId: currentUser.tenantId,
+      staffDocId: staffDocId || firebaseUser.uid,
+      sessionId,
+      loginId,
+      name: currentUser.name || currentUser.displayName,
+      email: currentUser.email || firebaseUser.email,
+      gatewayBaseUrl: dataService.getStoreGatewayUrls(),
+    });
+
     startPresenceSession({
       uid: firebaseUser.uid,
       tenantId: currentUser.tenantId,
@@ -1161,54 +1182,65 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, []);
 
+  const logoutInFlightRef = useRef(false);
+
   const logout = useCallback(async () => {
+    if (logoutInFlightRef.current) return;
+    logoutInFlightRef.current = true;
+
     const uid = firebaseUser?.uid;
     const tenantId = currentUser?.tenantId;
     const email = currentUser?.email || firebaseUser?.email;
+    const loginId = currentUser?.loginId;
+    const localSid = getLocalStaffSessionId();
 
-    stopPresenceSession();
-    if (uid && tenantId) {
+    try {
+      stopPresenceSession();
+
+      // 1) 로컬 로그아웃 먼저 — NAS hang에 막히지 않음
+      clearPersistedStaffSession();
+      clearLocalStaffSessionId();
       try {
-        await setPresenceOffline({
-          uid,
-          tenantId,
-          email,
-          loginId: currentUser?.loginId,
-          name: currentUser?.name || currentUser?.displayName,
-          staffDocId:
-            getStaffIdForUser(dataService.getStaff(), currentUser!) ||
-            dataService.getStaff().find((s) => s.uid === uid)?.id ||
-            null,
-        });
-        await releaseStaffSessionOnNas({
-          uid,
-          tenantId,
-          email,
-          loginId: currentUser?.loginId,
-          gatewayBaseUrl: dataService.getStoreGatewayUrls(),
-        });
+        await signOut(auth);
       } catch (err) {
-        console.warn('[StaffSession] release on logout failed:', err);
-        await setPresenceOffline();
+        console.warn('[Auth] signOut failed:', err);
       }
-    } else {
-      await setPresenceOffline();
-    }
-    clearPersistedStaffSession();
-    clearLocalStaffSessionId();
-    dataService.clearSession();
-    await signOut(auth);
-    setCurrentUser(null);
-    setFirebaseUser(null);
-  }, [firebaseUser?.uid, firebaseUser?.email, currentUser?.tenantId, currentUser?.email]);
+      setCurrentUser(null);
+      setFirebaseUser(null);
+      dataService.clearSession();
 
-  // 다른 기기에서 동일 직원 아이디로 로그인 시 기존 접속 종료 (NAS 폴링)
+      // 2) presence 해제는 백그라운드 + 타임아웃 (내 세션만 — 다른 기기 로그인 보호)
+      if (uid && tenantId) {
+        void (async () => {
+          try {
+            await Promise.race([
+              releaseStaffSessionOnNas({
+                uid,
+                tenantId,
+                email,
+                loginId,
+                onlyIfSessionId: localSid,
+                gatewayBaseUrl: dataService.getStoreGatewayUrls(),
+              }),
+              new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2500)),
+            ]);
+          } catch (err) {
+            console.warn('[StaffSession] background release failed:', err);
+          }
+        })();
+      }
+    } finally {
+      logoutInFlightRef.current = false;
+    }
+  }, [firebaseUser?.uid, firebaseUser?.email, currentUser?.tenantId, currentUser?.email, currentUser?.loginId]);
+
+  // 다른 기기에서 동일 계정 로그인 시 기존 접속 종료 (관리자·직원, Electron)
   useEffect(() => {
     const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
     if (!isDesktopApp) return;
 
     sessionKickedRef.current = false;
-    if (!firebaseUser?.uid || !currentUser?.loginId || !currentUser?.tenantId) return;
+    if (!firebaseUser?.uid || !currentUser?.tenantId) return;
 
     const localSid = getLocalStaffSessionId();
     const localClaimedAt = getLocalStaffSessionClaimedAt();
@@ -1229,18 +1261,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         if (!data || !isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
 
         sessionKickedRef.current = true;
-        await showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
-        await logout();
+        // 알림에 막히지 않고 먼저 로그아웃
+        void logout();
+        void showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
       } catch (err) {
         console.warn('[StaffSession] session watch failed:', err);
       }
     };
 
     void checkRemoteSession();
-    const intervalId = window.setInterval(() => void checkRemoteSession(), 90_000);
+    // 90초 → 15초: 중복 로그인 감지 빠르게
+    const intervalId = window.setInterval(() => void checkRemoteSession(), 15_000);
 
     return () => window.clearInterval(intervalId);
-  }, [firebaseUser?.uid, currentUser?.loginId, currentUser?.tenantId, showAlert, logout]);
+  }, [firebaseUser?.uid, currentUser?.tenantId, showAlert, logout]);
 
   console.log('AuthProvider State:', { hasFirebaseUser: !!firebaseUser, hasCurrentUser: !!currentUser, loading });
 
