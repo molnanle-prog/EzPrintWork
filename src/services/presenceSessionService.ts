@@ -19,7 +19,7 @@ import {
   resolveStoreGatewayUrlList,
   type StoreGatewayInput,
 } from '../utils/storeGatewayUrls';
-import type { StaffSessionRecord } from '../utils/staffSession';
+import { resolveStaffOnline, type StaffSessionRecord } from '../utils/staffSession';
 
 export const PRESENCE_SESSIONS_FILE = 'presence-sessions.json';
 const WRITE_RETRY_DELAYS_MS = [0, 800, 2000];
@@ -274,9 +274,10 @@ export class PresenceSessionService {
     const current = (await this.read(tenantId, opts.gatewayBaseUrl)) || emptyFile(tenantId);
     const prev = current.sessions[uid] || { uid };
 
-    // 다른 기기가 이미 claim한 세션이면 패자 logout이 승자를 offline으로 만들지 않음
+    // 다른 기기가 이미 claim한 세션이면:
+    // - 패자 logout이 승자를 offline으로 만들지 않음
+    // - 패자 heartbeat가 승자 sessionId를 예전 값으로 덮어쓰지 않음 (인수 로그인 직후 역킥 방지)
     if (
-      !opts.online &&
       opts.onlyIfSessionId &&
       prev.activeSessionId &&
       prev.activeSessionId !== opts.onlyIfSessionId
@@ -302,6 +303,13 @@ export class PresenceSessionService {
     if (opts.sessionId) {
       next.activeSessionId = opts.sessionId;
       next.activeSessionAt = now;
+      next.clientType = isElectron() ? 'electron' : 'web';
+      try {
+        const { getOrCreateMachineId } = await import('../utils/staffSession');
+        next.machineId = getOrCreateMachineId();
+      } catch {
+        /* ignore */
+      }
     } else if (!opts.online) {
       // offline 시 세션 ID는 유지(킥 판정용)하되 lastActive만 갱신
     }
@@ -319,11 +327,38 @@ export class PresenceSessionService {
     name?: string | null;
     email?: string | null;
     gatewayBaseUrl?: StoreGatewayInput;
+    /** true면 기존 Electron 세션을 이 기기로 강제 이전(로그인 확인 후) */
+    force?: boolean;
   }): Promise<boolean> {
+    const { tenantId, uid, sessionId, force } = opts;
+    if (!tenantId || !uid || !sessionId) return false;
+
+    // 백그라운드 claim은 다른 Electron(다른 PC)이 이미 잡고 있으면 덮어쓰지 않음
+    // 같은 PC 유령 세션은 덮어씀
+    if (!force) {
+      const current = (await this.read(tenantId, opts.gatewayBaseUrl)) || emptyFile(tenantId);
+      const prev = current.sessions[uid];
+      if (
+        prev?.activeSessionId &&
+        prev.activeSessionId !== sessionId &&
+        prev.clientType === 'electron' &&
+        resolveStaffOnline(prev)
+      ) {
+        let sameMachine = false;
+        try {
+          const { getOrCreateMachineId } = await import('../utils/staffSession');
+          sameMachine = !!prev.machineId && prev.machineId === getOrCreateMachineId();
+        } catch {
+          sameMachine = false;
+        }
+        if (!sameMachine) return false;
+      }
+    }
+
     return this.upsertPresence({
       ...opts,
       online: true,
-      sessionId: opts.sessionId,
+      sessionId,
     });
   }
 

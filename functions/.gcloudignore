@@ -1,0 +1,9 @@
+node_modules/
+.git/
+.env
+.env.local
+*.local
+firebase-debug.log
+firebase-debug.*.log
+README.md
+src/

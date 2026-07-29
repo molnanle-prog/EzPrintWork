@@ -8,6 +8,10 @@ const { LocalGateway } = require('./localGateway');
 
 const localGateway = new LocalGateway();
 
+/** 결제 중 메인 창 외부 이동 차단 플래그 (createWindow 리스너에서 참조) */
+let paymentNavigationLocked = false;
+let korpayPayWin = null;
+
 // Windows 토스트가 앱 이름으로 표시되도록 (electron-builder appId와 동일)
 if (process.platform === 'win32') {
     app.setAppUserModelId('com.ezprintwork.app');
@@ -81,6 +85,73 @@ function createWindow() {
     win.webContents.session.clearStorageData({
         storages: ['serviceworkers', 'cachestorage'],
     }).catch(() => {});
+
+    // 팝업에 preload를 물려주면 앱 세션이 새로 claim되어 메인 창이 로그아웃될 수 있음.
+    // 코페이·구글/Firebase 로그인 팝업만 preload 없이 허용. 그 외는 외부 브라우저.
+    win.webContents.setWindowOpenHandler(({ url }) => {
+        const allowNoPreload = {
+            action: 'allow',
+            overrideBrowserWindowOptions: {
+                width: 520,
+                height: 740,
+                autoHideMenuBar: true,
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                },
+            },
+        };
+
+        if (!url || url === 'about:blank') {
+            return allowNoPreload;
+        }
+
+        try {
+            const host = new URL(url).hostname;
+            const inAppPopup =
+                host === 'payments.korpay.com' ||
+                host.endsWith('.korpay.com') ||
+                host === 'accounts.google.com' ||
+                host.endsWith('.google.com') ||
+                host.endsWith('.firebaseapp.com') ||
+                host.endsWith('.googleapis.com');
+            if (inAppPopup) {
+                return allowNoPreload;
+            }
+        } catch (_) {
+            return allowNoPreload;
+        }
+
+        shell.openExternal(url).catch(() => {});
+        return { action: 'deny' };
+    });
+
+    // 결제 중 메인 창이 코페이 returnUrl 등으로 날아가지 않게 잠금
+    const guardMainNavigation = (event, url) => {
+        if (!paymentNavigationLocked) return;
+        try {
+            const u = new URL(url);
+            const appHosts = new Set(['localhost', '127.0.0.1', 'ez-hub.kr']);
+            const ok =
+                appHosts.has(u.hostname) ||
+                u.hostname.endsWith('.korpay.com') ||
+                u.hostname.includes('google.com') ||
+                u.hostname.includes('firebaseapp.com') ||
+                u.hostname.includes('googleapis.com');
+            // localhost 이탈(클라우드 함수·프로덕션 로그인 등) 차단
+            if (u.hostname !== 'localhost' && u.hostname !== '127.0.0.1') {
+                if (u.hostname.includes('cloudfunctions.net') || u.hostname === 'ez-hub.kr') {
+                    console.warn('[PaymentLock] blocked main navigation:', url);
+                    event.preventDefault();
+                }
+            }
+            void ok;
+        } catch (_) {
+            /* ignore */
+        }
+    };
+    win.webContents.on('will-navigate', guardMainNavigation);
+    win.webContents.on('will-redirect', guardMainNavigation);
 
     if (process.env.ELECTRON_START_URL) {
         win.loadURL(process.env.ELECTRON_START_URL);
@@ -657,6 +728,210 @@ ipcMain.on('window-close', () => {
 ipcMain.on('window-lower', () => {
     const win = BrowserWindow.getFocusedWindow();
     if (win) win.lower();
+});
+
+/**
+ * 코페이 결제창 — 메인 BrowserWindow와 분리 (세션/로그인 킥·returnUrl 네비게이션 간섭 방지)
+ * payload: { action: string, fields: Array<[string, string]> }
+ */
+ipcMain.handle('set-payment-navigation-lock', async (_event, locked) => {
+    paymentNavigationLocked = !!locked;
+    return { ok: true, locked: paymentNavigationLocked };
+});
+
+function isAppResultUrl(url) {
+    try {
+        const u = new URL(url);
+        const blob = `${u.hash || ''}${u.pathname || ''}${u.search || ''}`;
+        if (u.hostname === 'ez-hub.kr') {
+            return /#\/payment\/(success|fail)/i.test(blob) || /\/payment\/(success|fail)/i.test(blob);
+        }
+        if (u.hostname === 'localhost' || u.hostname === '127.0.0.1') {
+            return /#\/payment\/(success|fail)/i.test(blob) || /\/payment\/(success|fail)/i.test(blob);
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    return false;
+}
+
+function extractPaymentReason(url) {
+    try {
+        const u = new URL(url);
+        const fromSearch = u.searchParams.get('reason');
+        if (fromSearch) return fromSearch;
+        const qi = u.hash.indexOf('?');
+        if (qi >= 0) {
+            return new URLSearchParams(u.hash.slice(qi + 1)).get('reason') || '';
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    return '';
+}
+
+function paymentResultHtml(kind, detail) {
+    const title = kind === 'success' ? '결제가 완료되었습니다' : kind === 'fail' ? '결제가 취소되거나 실패했습니다' : '결제 창';
+    const color = kind === 'success' ? '#059669' : kind === 'fail' ? '#e11d48' : '#334155';
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title></head>
+<body style="font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;margin:0;background:#0f172a;color:#e2e8f0;">
+<h1 style="color:${color};font-size:22px;margin-bottom:12px;">${title}</h1>
+<p style="opacity:.8;font-size:14px;max-width:420px;text-align:center;line-height:1.5;white-space:pre-wrap;">${detail || '이 창을 닫고 메인 화면에서 요금제를 확인해 주세요.'}</p>
+<button onclick="window.close()" style="margin-top:24px;padding:12px 28px;border:0;border-radius:12px;background:#2563eb;color:#fff;font-weight:700;cursor:pointer;">창 닫기</button>
+</body></html>`;
+}
+
+function resolveKorpayBridgeUrl() {
+    if (process.env.ELECTRON_START_URL) {
+        try {
+            return new URL('/korpay-bridge.html', process.env.ELECTRON_START_URL).href;
+        } catch (_) {
+            /* fall through */
+        }
+    }
+    if (process.defaultApp || !app.isPackaged) {
+        return 'http://localhost:5173/korpay-bridge.html';
+    }
+    return 'https://ez-hub.kr/ezpw/korpay-bridge.html';
+}
+
+ipcMain.handle('open-korpay-payment', async (_event, payload = {}) => {
+    const sdkBase = String(payload.sdkBase || '').trim().replace(/\/$/, '');
+    const payment = payload.payment && typeof payload.payment === 'object' ? payload.payment : null;
+    if (!sdkBase || !/^https?:\/\//i.test(sdkBase) || !payment) {
+        return { ok: false, error: '결제 파라미터가 올바르지 않습니다.' };
+    }
+
+    // 이전 실패 화면을 재사용하지 않음
+    try {
+        if (korpayPayWin && !korpayPayWin.isDestroyed()) {
+            korpayPayWin.removeAllListeners('closed');
+            korpayPayWin.destroy();
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    korpayPayWin = null;
+
+    const cfgJson = JSON.stringify({ sdkBase, payment }).replace(/</g, '\\u003c');
+    const bridgeUrl = resolveKorpayBridgeUrl();
+
+    // parent 없이 독립 창 — 팝업 차단/부모 제약과 무관하게 표시
+    korpayPayWin = new BrowserWindow({
+        width: 920,
+        height: 720,
+        modal: false,
+        autoHideMenuBar: true,
+        title: '카드 결제',
+        alwaysOnTop: true,
+        webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            partition: 'persist:korpay-payment',
+        },
+    });
+
+    const payWin = korpayPayWin;
+    payWin.setMenuBarVisibility(false);
+    let resultKind = 'closed';
+
+    const showResult = (kind, detail) => {
+        resultKind = kind;
+        payWin
+            .loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(paymentResultHtml(kind, detail)))
+            .catch(() => {});
+    };
+
+    const intercept = (event, url) => {
+        // 지연 없이 즉시 가로챔 — 늦추면 ez-hub 로그인 SPA가 결제창에 로드됨
+        if (!url || url.startsWith('data:') || url.startsWith('file:')) return;
+        try {
+            const host = new URL(url).hostname;
+            if (
+                host === 'payments.korpay.com' ||
+                host.endsWith('.korpay.com') ||
+                host.includes('cloudfunctions.net')
+            ) {
+                return;
+            }
+            // 브릿지 자신은 허용
+            if (
+                (host === 'localhost' || host === '127.0.0.1') &&
+                /korpay-bridge\.html/i.test(url)
+            ) {
+                return;
+            }
+        } catch (_) {
+            /* continue */
+        }
+        // ez-hub / 앱 로그인·결제결과 로의 이동은 전부 차단 후 요약 화면
+        if (
+            isAppResultUrl(url) ||
+            /ez-hub\.kr/i.test(url) ||
+            (/localhost|127\.0\.0\.1/i.test(url) && !/korpay-bridge\.html/i.test(url))
+        ) {
+            console.log('[Korpay] blocked navigation to app:', url);
+            event.preventDefault();
+            const fail = /payment\/fail|login/i.test(url) || !/payment\/success/i.test(url);
+            const reason = extractPaymentReason(url);
+            showResult(
+                fail ? 'fail' : 'success',
+                fail
+                    ? `결제가 완료되지 않았습니다.${reason ? `\n사유 코드: ${reason}` : ''}${
+                        reason === 'E013'
+                          ? '\n(요청 시간 만료 — 결제 준비 시각이 서버 UTC로 잡혀 만료된 경우가 많습니다. 수정 배포 후 다시 시도해 주세요.)'
+                          : ''
+                      }\n\n메인 창에서 다시 결제를 시도해 주세요.`
+                    : '결제가 승인되었습니다. 창을 닫은 뒤 메인 화면 요금제를 확인해 주세요.'
+            );
+        }
+    };
+
+    payWin.webContents.on('will-navigate', intercept);
+    payWin.webContents.on('will-redirect', intercept);
+
+    // DevTools는 기본 비활성 — 필요 시 Ctrl+Shift+I
+    // (열어두면 결제 iframe 영역이 줄어 타임아웃으로 보이기 쉬움)
+
+    try {
+        await new Promise((resolve, reject) => {
+            const finish = () => {
+                try {
+                    if (korpayPayWin === payWin) korpayPayWin = null;
+                } catch (_) {
+                    /* ignore */
+                }
+                resolve();
+            };
+            payWin.on('closed', finish);
+
+            payWin.webContents.once('did-finish-load', async () => {
+                try {
+                    await payWin.webContents.executeJavaScript(
+                        `window.__EZPW_START_KORPAY__ && window.__EZPW_START_KORPAY__(${cfgJson});`,
+                        true
+                    );
+                } catch (err) {
+                    console.warn('[Korpay] start failed:', err);
+                    showResult('fail', `결제창 시작 실패: ${err && err.message ? err.message : String(err)}`);
+                }
+            });
+
+            payWin.loadURL(bridgeUrl).catch((err) => {
+                console.warn('[Korpay] loadURL failed:', err);
+                try {
+                    payWin.close();
+                } catch (_) {
+                    /* ignore */
+                }
+                reject(err);
+            });
+        });
+    } catch (err) {
+        return { ok: false, error: err && err.message ? err.message : '결제창을 열 수 없습니다.' };
+    }
+
+    return { ok: true, closed: true, result: resultKind };
 });
 
 /**

@@ -60,6 +60,10 @@ contextBridge.exposeInMainWorld('electron', {
     /** 사내 메신저: OS 토스트 → 닫히면 작업표시줄 깜빡임 */
     chatNotify: (payload) => ipcRenderer.invoke('chat-notify', payload || {}),
     chatNotifyClear: () => ipcRenderer.send('chat-notify-clear'),
+    /** 코페이 결제 — 메인 창과 분리된 BrowserWindow */
+    openKorpayPayment: (payload) => ipcRenderer.invoke('open-korpay-payment', payload || {}),
+    /** 결제 중 메인 창이 외부 URL로 이동하지 못하게 잠금 */
+    setPaymentNavigationLock: (locked) => ipcRenderer.invoke('set-payment-navigation-lock', !!locked),
     onChatNotificationClicked: (callback) => {
         const handler = (_event, payload) => callback(payload);
         ipcRenderer.on('chat-notification-clicked', handler);

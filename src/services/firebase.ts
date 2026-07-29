@@ -15,7 +15,7 @@ export const firebaseConfig = {
   "measurementId": ""
 };
 
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 export const storage = getStorage(app);
@@ -94,20 +94,34 @@ async function mirrorPresenceToFirestore(user: PresenceUser, online: boolean): P
 }
 
 async function writePresence(user: PresenceUser, online: boolean): Promise<void> {
-  const ok = await presenceSessionService.upsertPresence({
-    tenantId: user.tenantId,
-    uid: user.uid,
-    online,
-    loginId: user.loginId,
-    staffDocId: user.staffDocId,
-    name: user.name,
-    email: user.email,
-    // heartbeat는 lastActive만 — session claim은 로그인 시에만
-    sessionId: null,
-    gatewayBaseUrl: presenceGatewayUrls.length > 0 ? presenceGatewayUrls : null,
-  });
-  if (!ok) {
-    console.warn('[Presence] NAS/gateway write skipped (path or gateway unavailable)');
+  // 하트비트/오프라인은 내 sessionId일 때만 — 다른 PC가 인수한 뒤 예전 내용으로 덮어쓰기 방지
+  let onlyIfSessionId: string | null = null;
+  try {
+    const { getLocalStaffSessionId } = await import('../utils/staffSession');
+    onlyIfSessionId = getLocalStaffSessionId();
+  } catch {
+    onlyIfSessionId = null;
+  }
+
+  // Electron에서 세션 claim 전에 online 쓰면 다른 PC 인수 결과를 덮을 수 있음 → NAS 생략
+  const isDesktop = typeof window !== 'undefined' && !!(window as { electron?: unknown }).electron;
+  if (!(isDesktop && online && !onlyIfSessionId)) {
+    const ok = await presenceSessionService.upsertPresence({
+      tenantId: user.tenantId,
+      uid: user.uid,
+      online,
+      loginId: user.loginId,
+      staffDocId: user.staffDocId,
+      name: user.name,
+      email: user.email,
+      // heartbeat는 lastActive만 — session claim은 로그인 시에만
+      sessionId: null,
+      onlyIfSessionId,
+      gatewayBaseUrl: presenceGatewayUrls.length > 0 ? presenceGatewayUrls : null,
+    });
+    if (!ok) {
+      console.warn('[Presence] NAS/gateway write skipped (path or gateway unavailable)');
+    }
   }
   // NAS 실패와 무관하게 매니저용 Firestore 미러는 시도
   await mirrorPresenceToFirestore(user, online);

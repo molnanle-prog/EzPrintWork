@@ -255,7 +255,7 @@ export const PlanManager: React.FC = () => {
                 {isOnGiftPlan
                   ? `최대 ${maxStaff}명 · 광고 없음 · 특별 적용`
                   : appliedTier === 'paid'
-                    ? `최대 ${maxStaff}명 · 월 ${PRO_MONTHLY_PRICE.toLocaleString()}원 정액 · 광고 없음`
+                    ? `최대 ${maxStaff}명 · 1인당 월 ${PRO_MONTHLY_PRICE.toLocaleString()}원 · 광고 없음`
                     : `최대 ${maxStaff}명 · 광고 표시`}
               </p>
             </div>
@@ -339,7 +339,7 @@ export const PlanManager: React.FC = () => {
                         </>
                       ) : (
                         <>
-                          월 {PRO_MONTHLY_PRICE.toLocaleString()}원 정액 · 광고 없음
+                          1인당 월 {PRO_MONTHLY_PRICE.toLocaleString()}원 · 광고 없음
                           {isPreview && (
                             <span className="ml-1 text-blue-600 font-bold">
                               (미리보기 {previewStaff}명)
@@ -391,8 +391,7 @@ export const PlanManager: React.FC = () => {
               <div className="mb-4 p-3 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-900/20 flex gap-2">
                 <CreditCard size={18} className="text-blue-600 shrink-0 mt-0.5" />
                 <div className="text-xs text-blue-800 dark:text-blue-200 leading-relaxed">
-                  <b>PRO 전환 시 결제가 필요합니다.</b> 아래 버튼을 누르면 결제 화면으로 이동합니다.
-                  (추후 실제 PG 결제 페이지 연동 예정)
+                  <b>PRO 전환 시 결제가 필요합니다.</b> 아래 버튼을 누르면 코페이 카드 결제 화면으로 이동합니다.
                 </div>
               </div>
             )}

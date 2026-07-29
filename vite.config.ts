@@ -64,7 +64,8 @@ export default defineConfig({
   server: {
     host: 'localhost',
     port: 5173,
-    open: true,
+    // Electron 미리보기와 동시 사용 시 브라우저 탭이 세션 claim → 중복 로그인 킥 유발
+    open: false,
   },
 });
 

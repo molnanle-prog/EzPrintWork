@@ -1,0 +1,17 @@
+{
+  "name": "ezprintwork-functions",
+  "description": "EzPrintWork Cloud Functions (Korpay payment)",
+  "engines": {
+    "node": "22"
+  },
+  "main": "index.js",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.2",
+    "firebase-functions": "^6.3.0"
+  },
+  "private": true
+}

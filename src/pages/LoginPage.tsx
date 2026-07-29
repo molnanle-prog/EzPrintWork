@@ -26,6 +26,8 @@ import {
     setLocalStaffSessionId,
     isRemoteStaffSessionActive,
     claimStaffSessionOnNas,
+    setSessionClaimPending,
+    touchSessionClaimGrace,
 } from '../utils/staffSession';
 import { presenceSessionService } from '../services/presenceSessionService';
 import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
@@ -184,9 +186,10 @@ export const LoginPage: React.FC = () => {
 
     const handleGoogleLogin = async () => {
         setIsLoggingIn(true);
+        setSessionClaimPending(true);
         const provider = new GoogleAuthProvider();
         provider.setCustomParameters({
-            prompt: 'select_account'
+            prompt: 'select_account',
         });
 
         // 25초 후 자동 타임아웃 해제 장치
@@ -222,9 +225,10 @@ export const LoginPage: React.FC = () => {
         }, 1000);
 
         try {
-            // 브라우저 닫을 시 로그인 리셋되도록 Session Persistence 적용
-            const { setPersistence, browserSessionPersistence } = await import('firebase/auth');
-            await setPersistence(auth, browserSessionPersistence);
+            // Electron은 session persistence면 외부 이동 시 로그아웃됨 → 데스크톱은 local 고정
+            const { setPersistence, browserSessionPersistence, browserLocalPersistence } = await import('firebase/auth');
+            const isDesktop = typeof window !== 'undefined' && !!(window as { electron?: unknown }).electron;
+            await setPersistence(auth, isDesktop ? browserLocalPersistence : browserSessionPersistence);
 
             const preferRedirect = !isElectron && ('ontouchstart' in window || /iPad|iPhone|iPod|Android/i.test(navigator.userAgent));
             if (preferRedirect) {
@@ -260,6 +264,7 @@ export const LoginPage: React.FC = () => {
                             '현재 다른 곳에서 같은 계정으로 로그인되어 있습니다.\n기존 접속을 종료하고 여기에서 로그인하시겠습니까?'
                         );
                         if (!proceed) {
+                            setSessionClaimPending(false);
                             await signOut(auth);
                             setIsLoggingIn(false);
                             toast.info('로그인을 취소했습니다.');
@@ -268,7 +273,7 @@ export const LoginPage: React.FC = () => {
                     }
                     const newSessionId = createStaffSessionId();
                     setLocalStaffSessionId(newSessionId, false);
-                    await claimStaffSessionOnNas({
+                    const claimed = await claimStaffSessionOnNas({
                         uid: user.uid,
                         tenantId,
                         staffDocId: user.uid,
@@ -277,10 +282,18 @@ export const LoginPage: React.FC = () => {
                         name: user.displayName || null,
                         email: user.email || null,
                         gatewayBaseUrl: db.getStoreGatewayUrls(),
+                        force: true, // 확인 후 이 PC가 승자 — 기존 접속 덮어씀
                     });
+                    // claimedAt을 claim 시각 이후로 맞춤 (하트비트 lastActive와 비교 오판 방지)
+                    if (claimed !== false) {
+                        setLocalStaffSessionId(newSessionId, false);
+                        touchSessionClaimGrace();
+                    }
                 }
             } catch (sessionErr) {
                 console.warn('[Login] Google session claim skipped:', sessionErr);
+            } finally {
+                setSessionClaimPending(false);
             }
 
             toast.success('환영합니다! 성공적으로 로그인되었습니다.');
@@ -331,6 +344,7 @@ export const LoginPage: React.FC = () => {
                 })();
             }
         } catch (error: any) {
+            setSessionClaimPending(false);
             window.removeEventListener('focus', onFocus);
             if (focusTimeoutId) clearTimeout(focusTimeoutId);
             clearTimeout(timeoutId);
@@ -436,7 +450,9 @@ export const LoginPage: React.FC = () => {
 
             await setPersistence(
                 auth,
-                saveCredentials ? browserLocalPersistence : browserSessionPersistence
+                (typeof window !== 'undefined' && !!(window as { electron?: unknown }).electron) || saveCredentials
+                    ? browserLocalPersistence
+                    : browserSessionPersistence
             );
 
             const staffCol = collection(firestoreDb, `tenants/${selectedTenantId}/staff`);
@@ -489,11 +505,13 @@ export const LoginPage: React.FC = () => {
                 /* NAS session lookup optional */
             }
 
+            setSessionClaimPending(true);
             if (isRemoteStaffSessionActive(sessionRecord, getLocalStaffSessionId())) {
                 const proceed = await showConfirm(
                     '현재 다른 곳에서 같은 아이디로 로그인되어 있습니다.\n기존 접속을 종료하고 여기에서 로그인하시겠습니까?'
                 );
                 if (!proceed) {
+                    setSessionClaimPending(false);
                     setIsStaffLoggingIn(false);
                     return;
                 }
@@ -596,7 +614,7 @@ export const LoginPage: React.FC = () => {
                     throw new Error('회사 소속 정보 저장에 실패했습니다.');
                 }
 
-                await claimStaffSessionOnNas({
+                const claimed = await claimStaffSessionOnNas({
                     uid: firebaseUid,
                     tenantId,
                     staffDocId: userDoc.id,
@@ -605,7 +623,12 @@ export const LoginPage: React.FC = () => {
                     name: staffDisplayName,
                     email: auth.currentUser?.email || authEmail,
                     gatewayBaseUrl: db.getStoreGatewayUrls(),
+                    force: true, // 확인 후 이 PC가 승자 — 기존 접속 덮어씀
                 });
+                if (claimed !== false) {
+                    setLocalStaffSessionId(newSessionId, saveCredentials);
+                    touchSessionClaimGrace();
+                }
 
                 try {
                     await setDoc(doc(firestoreDb, `tenants/${tenantId}/staff`, userDoc.id), {
@@ -745,6 +768,7 @@ export const LoginPage: React.FC = () => {
             console.error("Staff login error:", error);
             toast.error('로그인 중 오류가 발생했습니다: ' + error.message);
         } finally {
+            setSessionClaimPending(false);
             setIsStaffLoggingIn(false);
         }
     };

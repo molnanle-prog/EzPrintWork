@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>카드 결제</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: system-ui, sans-serif;
+    }
+    #status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      padding: 24px;
+      text-align: center;
+      line-height: 1.5;
+    }
+    #status.error { color: #fb7185; }
+  </style>
+</head>
+<body>
+  <div id="status">결제창을 여는 중…</div>
+  <script src="https://payments.korpay.com/js/korpay-sdk.js"></script>
+  <script>
+    (function () {
+      var statusEl = document.getElementById('status');
+
+      function showError(msg) {
+        statusEl.style.display = 'flex';
+        statusEl.className = 'error';
+        statusEl.innerHTML =
+          '<div><p style="font-size:16px;font-weight:700;margin-bottom:8px">결제창 오류</p><p>' +
+          (msg || '알 수 없는 오류') +
+          '</p><p style="margin-top:16px;opacity:.7;font-size:13px">이 창을 닫고 메인에서 다시 시도해 주세요.</p></div>';
+      }
+
+      /**
+       * 중요: returnUrl(confirm)을 fetch 하면 localhost → Cloud Functions CORS에 막힘.
+       * confirm POST는 브라우저 기본 submit(창 이동)으로 두고, Electron이 결과 URL을 가로챔.
+       * 결제 POST(/payment)만 iframe 타겟으로 그대로 통과.
+       */
+      (function patchSubmit() {
+        var proto = HTMLFormElement.prototype;
+        var nativeSubmit = proto.submit;
+        proto.submit = function () {
+          // 가로채지 않음 — Electron will-navigate가 ez-hub 결과만 처리
+          return nativeSubmit.call(this);
+        };
+      })();
+
+      window.__EZPW_START_KORPAY__ = function (cfg) {
+        if (!cfg || !cfg.sdkBase || !cfg.payment) {
+          return showError('결제 파라미터가 없습니다.');
+        }
+        var amount = Number(cfg.payment.amount) || 0;
+        if (amount > 0 && amount < 50000) {
+          cfg.payment.card = Object.assign({}, cfg.payment.card || {}, { installment: [0] });
+        }
+        if (!window.KorpaySdk || typeof window.KorpaySdk.payment !== 'function') {
+          return showError('코페이 SDK를 불러오지 못했습니다.');
+        }
+        try {
+          statusEl.style.display = 'none';
+          window.KorpaySdk.payment(cfg.sdkBase, cfg.payment, {
+            onStart: function () {},
+            onError: function (err) {
+              showError(err || '결제창 호출에 실패했습니다.');
+            },
+            onClose: function () {},
+          });
+        } catch (e) {
+          showError((e && e.message) || String(e));
+        }
+      };
+
+      if (!window.KorpaySdk) {
+        statusEl.textContent = '코페이 SDK 로드 실패 — 네트워크를 확인해 주세요.';
+        statusEl.className = 'error';
+      }
+    })();
+  </script>
+</body>
+</html>

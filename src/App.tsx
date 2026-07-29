@@ -13,6 +13,7 @@ import { isStandaloneDocumentPreviewRoute } from './utils/documentPreviewRoutes'
 import { isRemoteViewRoute } from './utils/remoteView';
 import { db } from './services/dataService';
 import { RemoteSituationPage } from './pages/RemoteSituationPage';
+import { PaymentFailPage, PaymentSuccessPage } from './pages/PaymentResultPage';
 
 const LoadingScreen = () => (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 gap-6">
@@ -107,6 +108,22 @@ function AppRoutes() {
                             element={
                                 <TenantGuard>
                                     <MainPage />
+                                </TenantGuard>
+                            }
+                        />
+                        <Route
+                            path="/payment/success"
+                            element={
+                                <TenantGuard>
+                                    <PaymentSuccessPage />
+                                </TenantGuard>
+                            }
+                        />
+                        <Route
+                            path="/payment/fail"
+                            element={
+                                <TenantGuard>
+                                    <PaymentFailPage />
                                 </TenantGuard>
                             }
                         />

@@ -30,6 +30,10 @@ yarn-error.log*
 .env.development.local
 .env.test.local
 .env.production.local
+functions/.env
+functions/.env.*
+!functions/.env.example
+functions/node_modules/
 
 # Editor Folders
 .vscode/*

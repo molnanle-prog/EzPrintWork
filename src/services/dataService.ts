@@ -4298,7 +4298,7 @@ export class DataService {
         ownerUid: string,
         businessNumber?: string,
         joinCode?: string,
-        initialStaffCount = 3,
+        initialStaffCount = AD_TIER_MAX,
         ownerPhone?: string
     ): Promise<string> {
         const user = auth.currentUser;
@@ -4321,7 +4321,7 @@ export class DataService {
         }
 
         const staffCount = Math.max(1, Math.min(999, initialStaffCount));
-        const plan = staffCountToPlanCode(Math.min(staffCount, 3), 'ad');
+        const plan = staffCountToPlanCode(Math.min(staffCount, AD_TIER_MAX), 'ad');
         const paymentStatus = tierToPaymentStatus('ad');
 
         const tenantData: Tenant = {
@@ -4346,7 +4346,7 @@ export class DataService {
         batch.set(tenantRef, {
             ...tenantData,
             paymentStatus,
-            maxStaff: Math.min(staffCount, 3),
+            maxStaff: Math.min(staffCount, AD_TIER_MAX),
             lastActiveAt: now,
             appVersion: APP_VERSION,
             lastAppVersion: APP_VERSION,
@@ -6021,8 +6021,7 @@ export class DataService {
 
     /**
      * 인원 수 + 플랜 유형 변경.
-     * 카드결제 웹훅/Admin SDK 연동 전까지 클라이언트에서 plan·paymentStatus·maxStaff 쓰기를 차단합니다.
-     * (UpgradeModal UI는 유지 — 결제 연동 시 이 가드와 Firestore 규칙을 함께 교체)
+     * 클라이언트 직접 변경은 차단 — PRO 결제는 Cloud Functions(korpayConfirm) Admin SDK만 반영합니다.
      */
     async updateTenantPlanSettings(
         tenantId: string,
@@ -6034,7 +6033,7 @@ export class DataService {
         void tenantId;
         void options;
         throw new Error(
-            '요금제·결제 상태 변경은 카드 결제 연동 후 서버에서만 처리됩니다. 지금은 변경할 수 없습니다.'
+            '요금제·결제 상태 변경은 카드 결제(코페이) 승인 후 서버에서만 처리됩니다.'
         );
     }
 

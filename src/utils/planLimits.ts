@@ -1,7 +1,7 @@
 const STATIC_PLAN_MAX: Record<string, number> = {
-  free: 3,
-  ad: 3,
-  lite: 3,
+  free: 2,
+  ad: 2,
+  lite: 2,
   pro: 10,
   pro_plus: 999,
   service: 999,
@@ -10,7 +10,7 @@ const STATIC_PLAN_MAX: Record<string, number> = {
 /** 앱 요금제 3종: gift=무료(선물·광고없음), ad=광고형, paid=PRO(유료·광고없음) */
 export type PlanTier = 'gift' | 'ad' | 'paid';
 
-const AD_TIER_MAX = 3;
+const AD_TIER_MAX = 2;
 
 import { Staff } from '../types';
 import { isHiddenStaffId, isTenantOwnerUser } from './adminAccess';
@@ -155,5 +155,18 @@ export const mapWebPlanToFirestore = (plan: string): string => {
 
 export { AD_TIER_MAX };
 
-/** PRO(유료) 모드 월 정액 — 인원 수와 무관 */
+/** PRO(유료) 1인당 월 요금 (원, 부가세 별도) */
 export const PRO_MONTHLY_PRICE = 1000;
+
+/** PRO 월 청구액 — 인원 × 단가 + VAT(10%) */
+export function proMonthlyCharge(staffCount: number): {
+  seats: number;
+  base: number;
+  vat: number;
+  total: number;
+} {
+  const seats = Math.max(1, Math.min(999, Math.floor(Number(staffCount) || 1)));
+  const base = seats * PRO_MONTHLY_PRICE;
+  const vat = Math.floor(base * 0.1);
+  return { seats, base, vat, total: base + vat };
+}

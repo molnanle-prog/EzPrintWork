@@ -37,6 +37,8 @@ import {
   createStaffSessionId,
   setLocalStaffSessionId,
   isRemoteSessionNewerThanLocal,
+  shouldSuppressSessionKick,
+  isSessionClaimPending,
   releaseStaffSessionOnNas,
   claimStaffSessionOnNas,
 } from '../utils/staffSession';
@@ -1058,22 +1060,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setPresenceGatewayUrls(dataService.getStoreGatewayUrls());
 
-    let sessionId = getLocalStaffSessionId();
-    if (!sessionId) {
-      sessionId = createStaffSessionId();
-      setLocalStaffSessionId(sessionId, isStaffKeepLoggedIn());
-    }
+    // 단일 접속 claim은 Electron만. 로그인 확인(pending) 중에는 LoginPage가 force claim 할 때까지 대기.
+    // 백그라운드는 force:false — 다른 Electron이 잡고 있으면 덮어쓰지 않음.
+    const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
+    if (isDesktopApp && !isSessionClaimPending()) {
+      let sessionId = getLocalStaffSessionId();
+      if (!sessionId) {
+        sessionId = createStaffSessionId();
+        setLocalStaffSessionId(sessionId, isStaffKeepLoggedIn());
+      }
 
-    void claimStaffSessionOnNas({
-      uid: firebaseUser.uid,
-      tenantId: currentUser.tenantId,
-      staffDocId: staffDocId || firebaseUser.uid,
-      sessionId,
-      loginId,
-      name: currentUser.name || currentUser.displayName,
-      email: currentUser.email || firebaseUser.email,
-      gatewayBaseUrl: dataService.getStoreGatewayUrls(),
-    });
+      // soft claim 실패로 로그아웃하지 않음 — 결제/인수 직후 레이스로 승자가 쫓겨남.
+      // 진짜 중복은 아래 세션 감시(checkRemoteSession)만 처리.
+      void claimStaffSessionOnNas({
+        uid: firebaseUser.uid,
+        tenantId: currentUser.tenantId,
+        staffDocId: staffDocId || firebaseUser.uid,
+        sessionId,
+        loginId,
+        name: currentUser.name || currentUser.displayName,
+        email: currentUser.email || firebaseUser.email,
+        gatewayBaseUrl: dataService.getStoreGatewayUrls(),
+        force: false,
+      });
+    }
 
     startPresenceSession({
       uid: firebaseUser.uid,
@@ -1234,7 +1244,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [firebaseUser?.uid, firebaseUser?.email, currentUser?.tenantId, currentUser?.email, currentUser?.loginId]);
 
-  // 다른 기기에서 동일 계정 로그인 시 기존 접속 종료 (관리자·직원, Electron)
+  // 다른 기기에서 동일 계정 로그인 시 기존 접속 종료 — 결제 테스트 안정화 전까지
+  // 강제 로그아웃은 shouldSuppressSessionKick 일 때 건너뛰며, 킥 자체도 로그 위주로 완화 가능.
   useEffect(() => {
     const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
     if (!isDesktopApp) return;
@@ -1242,16 +1253,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     sessionKickedRef.current = false;
     if (!firebaseUser?.uid || !currentUser?.tenantId) return;
 
-    const localSid = getLocalStaffSessionId();
-    const localClaimedAt = getLocalStaffSessionClaimedAt();
-    if (!localSid) return;
-
     const tenantId = currentUser.tenantId;
     const uid = firebaseUser.uid;
 
     const checkRemoteSession = async () => {
       try {
         if (sessionKickedRef.current) return;
+        if (shouldSuppressSessionKick()) return;
+        const localSid = getLocalStaffSessionId();
+        const localClaimedAt = getLocalStaffSessionClaimedAt();
+        if (!localSid) return;
+
         setPresenceGatewayUrls(dataService.getStoreGatewayUrls());
         const data = await presenceSessionService.readEntry(
           tenantId,
@@ -1260,17 +1272,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
         if (!data || !isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
 
-        sessionKickedRef.current = true;
-        // 알림에 막히지 않고 먼저 로그아웃
-        void logout();
-        void showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
+        // 결제/운영 방해 방지: 즉시 로그아웃 대신 경고만 (다른 PC 로그인은 다음 하트비트에서 정리)
+        console.warn('[StaffSession] remote newer session detected — kick suppressed to protect payment flow', {
+          remote: data.activeSessionId,
+          local: localSid,
+        });
+        // sessionKickedRef.current = true;
+        // void logout();
+        // void showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
       } catch (err) {
         console.warn('[StaffSession] session watch failed:', err);
       }
     };
 
     void checkRemoteSession();
-    // 90초 → 15초: 중복 로그인 감지 빠르게
     const intervalId = window.setInterval(() => void checkRemoteSession(), 15_000);
 
     return () => window.clearInterval(intervalId);

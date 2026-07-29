@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { db, formatBusinessNumber, formatPhoneNumber, getErrorMessage, isValidPhoneNumber } from '../services/dataService';
 import { Building2, UserPlus, ArrowRight, Loader2, LogOut, CheckCircle2, Phone } from 'lucide-react';
 import { toast } from 'sonner';
+import { AD_TIER_MAX } from '../utils/planLimits';
 
 export const OnboardingPage: React.FC = () => {
   const { firebaseUser, logout, refreshUser } = useAuth();
@@ -12,8 +13,8 @@ export const OnboardingPage: React.FC = () => {
   const [businessNumber, setBusinessNumber] = useState('');
   const [ownerPhone, setOwnerPhone] = useState('');
   const [joinCode, setJoinCode] = useState('');
-  const [initialStaffCount, setInitialStaffCount] = useState(3);
-  const AD_MAX = 3;
+  const [initialStaffCount, setInitialStaffCount] = useState(AD_TIER_MAX);
+  const AD_MAX = AD_TIER_MAX;
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -259,7 +260,7 @@ export const OnboardingPage: React.FC = () => {
                   </button>
                 </div>
                 <span className="text-[10px] text-slate-500 block pl-1 font-medium">
-                  신규 가입은 「광고형」으로 시작합니다 (최대 3인, 광고 표시). 지인 선물·유료 PRO는 가입 후 설정에서 변경할 수 있습니다.
+                  신규 가입은 「광고형」으로 시작합니다 (최대 {AD_MAX}인, 광고 표시). 지인 선물·유료 PRO는 가입 후 설정에서 변경할 수 있습니다.
                 </span>
               </div>
 
