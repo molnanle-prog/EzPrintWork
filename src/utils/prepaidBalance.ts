@@ -232,6 +232,33 @@ export function getJobOutstandingAmount(job: Job): number {
   return Math.max(0, price - applied - paid);
 }
 
+/** 같은 거래처의 다른 작업 미수 합계 (현재 작업 제외) */
+export function getPreviousClientOutstandingAmount(
+  clientJobs: Job[],
+  currentJobId: string
+): number {
+  return clientJobs
+    .filter((j) => j.id !== currentJobId)
+    .reduce((sum, j) => sum + getJobOutstandingAmount(j), 0);
+}
+
+export interface JobOrderPaymentSummary {
+  paymentStatus: string;
+  thisOutstanding: number;
+  previousOutstanding: number;
+}
+
+export function buildJobOrderPaymentSummary(
+  job: Job,
+  clientJobs: Job[] = []
+): JobOrderPaymentSummary {
+  return {
+    paymentStatus: job.paymentStatus || '결제대기',
+    thisOutstanding: getJobOutstandingAmount(job),
+    previousOutstanding: getPreviousClientOutstandingAmount(clientJobs, job.id),
+  };
+}
+
 /** 결제완료로 표시할 때 잔여액을 별도 수납으로 확정할지 계산 */
 export function resolvePaidAmountOnComplete(job: Job): number {
   const existing = Math.max(0, Math.round(job.paidAmount || 0));

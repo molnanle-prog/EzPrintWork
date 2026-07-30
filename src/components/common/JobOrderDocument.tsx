@@ -5,10 +5,13 @@ import { FileText, Calendar, User, Phone } from 'lucide-react';
 import { formatJobNumber } from '../../services/dataService';
 import { APP_VERSION } from '../../utils/autoUpdate';
 import { A4_WIDTH_MM, A4_HEIGHT_MM } from '../../utils/printA4';
+import type { JobOrderPaymentSummary } from '../../utils/prepaidBalance';
+import { getJobOutstandingAmount } from '../../utils/prepaidBalance';
 
 interface JobOrderDocumentProps {
   job: Job;
   id?: string;
+  paymentSummary?: JobOrderPaymentSummary;
 }
 
 /** 짧은 사양 ≈ 1, 길수록 증가. 페이지 예산 4 → 짧은 품목 최대 4개, 넘치면 다음 페이지 */
@@ -69,7 +72,7 @@ function paginateJobItems(items: JobItem[]): JobItem[][] {
   return pages;
 }
 
-export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) => {
+export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id, paymentSummary }) => {
   const dueDate = new Date(job.dueDate).toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' });
   const isUrgent = job.priority !== '일반';
 
@@ -78,6 +81,10 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
       : [{ id: '1', type: job.type, specs: job.specs }];
 
   const pages = paginateJobItems(allJobItems);
+  const payStatus = paymentSummary?.paymentStatus || job.paymentStatus || '결제대기';
+  const thisOutstanding = paymentSummary?.thisOutstanding ?? getJobOutstandingAmount(job);
+  const previousOutstanding = paymentSummary?.previousOutstanding ?? 0;
+  const hasUnpaid = thisOutstanding > 0 || previousOutstanding > 0;
 
   return (
     <>
@@ -201,12 +208,18 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                       <span className="lift-text">#{globalIdx}. {item.type}</span>
                                   </div>
                                   <table className={`w-full border-collapse border-[2px] border-slate-400 ${styles.tableText} table-fixed`}>
+                                      <colgroup>
+                                          <col style={{ width: '19%' }} />
+                                          <col style={{ width: '31%' }} />
+                                          <col style={{ width: '19%' }} />
+                                          <col style={{ width: '31%' }} />
+                                      </colgroup>
                                       <tbody>
                                           <tr>
-                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} w-[15%] text-left font-bold text-slate-900 align-middle`}><span className="lift-text">수량</span></th>
-                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} w-[35%] font-bold text-blue-700 align-middle`}><span className="lift-text">{item.specs.quantity}</span></td>
-                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} w-[15%] text-left font-bold text-slate-900 align-middle`}><span className="lift-text">규격</span></th>
-                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} w-[35%] font-bold align-middle`}><span className="lift-text">{item.specs.size}</span></td>
+                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle whitespace-nowrap`}><span className="lift-text">수량</span></th>
+                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-blue-700 align-middle`}><span className="lift-text">{item.specs.quantity}</span></td>
+                                              <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle whitespace-nowrap`}><span className="lift-text">규격</span></th>
+                                              <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold align-middle`}><span className="lift-text">{item.specs.size}</span></td>
                                           </tr>
                                           
                                           {/* Case A: Standard Job (Single Paper) */}
@@ -286,7 +299,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                               <>
                                                   {item.specs.processing && item.specs.processing.length > 0 && (
                                                       <tr>
-                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">제본/공통</span></th>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle whitespace-nowrap`}><span className="lift-text">제본/공통</span></th>
                                                           <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-slate-700 align-middle`} colSpan={3}>
                                                               <span className="lift-text">{item.specs.processing.join(', ')}</span>
                                                           </td>
@@ -294,7 +307,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                                   )}
                                                   {item.specs.processingCover && item.specs.processingCover.length > 0 && (
                                                       <tr>
-                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">표지 후가공</span></th>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle whitespace-nowrap`}><span className="lift-text">표지 후가공</span></th>
                                                           <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-blue-600 align-middle`} colSpan={3}>
                                                               <span className="lift-text">{item.specs.processingCover.join(', ')}</span>
                                                           </td>
@@ -302,7 +315,7 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                                   )}
                                                   {item.specs.processingInner && item.specs.processingInner.length > 0 && (
                                                       <tr>
-                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle`}><span className="lift-text">내지 후가공</span></th>
+                                                          <th className={`${styles.tableHeaderBg} border-[2px] border-slate-400 ${styles.tableCellPadding} text-left font-bold text-slate-900 align-middle whitespace-nowrap`}><span className="lift-text">내지 후가공</span></th>
                                                           <td className={`border-[2px] border-slate-400 ${styles.tableCellPadding} font-bold text-emerald-600 align-middle`} colSpan={3}>
                                                               <span className="lift-text">{item.specs.processingInner.join(', ')}</span>
                                                           </td>
@@ -372,14 +385,15 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                   <div className="w-full break-inside-avoid">
                       <table className="w-full border-collapse border-[2px] border-slate-400 table-fixed">
                           <colgroup>
-                              <col style={{ width: '25%' }} />
-                              <col style={{ width: '25%' }} />
-                              <col style={{ width: '25%' }} />
-                              <col style={{ width: '25%' }} />
+                              <col style={{ width: '21%' }} />
+                              <col style={{ width: '21%' }} />
+                              <col style={{ width: '21%' }} />
+                              <col style={{ width: '21%' }} />
+                              <col style={{ width: '16%' }} />
                           </colgroup>
                           <thead>
                               <tr>
-                                  {['디자인/판짜기', '인쇄', '후가공', '포장/납품'].map((step) => (
+                                  {['디자인/판짜기', '인쇄', '후가공', '포장/납품', '결제여부'].map((step) => (
                                       <th
                                           key={step}
                                           className={`bg-slate-100 border-[2px] border-slate-400 p-1 text-center font-bold ${styles.signatureHeadText}`}
@@ -401,6 +415,25 @@ export const JobOrderDocument: React.FC<JobOrderDocumentProps> = ({ job, id }) =
                                           </span>
                                       </td>
                                   ))}
+                                  <td
+                                      className={`border-[2px] border-slate-400 ${styles.signatureHeight} align-middle text-center px-0.5 py-0.5`}
+                                  >
+                                      <div
+                                          className={`flex flex-col items-center justify-center leading-tight gap-0.5 ${
+                                              hasUnpaid ? 'text-red-700' : 'text-slate-800'
+                                          }`}
+                                      >
+                                          <span className="lift-text font-bold text-[11px] tracking-tight">
+                                              {payStatus}
+                                          </span>
+                                          <span className="lift-text font-bold text-[10px] tabular-nums">
+                                              본건 {thisOutstanding.toLocaleString()}
+                                          </span>
+                                          <span className="lift-text font-bold text-[10px] tabular-nums">
+                                              이전 {previousOutstanding.toLocaleString()}
+                                          </span>
+                                      </div>
+                                  </td>
                               </tr>
                           </tbody>
                       </table>

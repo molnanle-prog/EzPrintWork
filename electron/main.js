@@ -87,27 +87,41 @@ function createWindow() {
     }).catch(() => {});
 
     // 팝업에 preload를 물려주면 앱 세션이 새로 claim되어 메인 창이 로그아웃될 수 있음.
-    // 코페이·구글/Firebase 로그인 팝업만 preload 없이 허용. 그 외는 외부 브라우저.
+    // preload 없이 허용: 문서 미리보기·코페이·구글/Firebase. 그 외는 외부 브라우저.
     win.webContents.setWindowOpenHandler(({ url }) => {
-        const allowNoPreload = {
+        const noPreloadPrefs = {
+            nodeIntegration: false,
+            contextIsolation: true,
+        };
+        const allowNoPreload = (width, height) => ({
             action: 'allow',
             overrideBrowserWindowOptions: {
-                width: 520,
-                height: 740,
+                width,
+                height,
                 autoHideMenuBar: true,
-                webPreferences: {
-                    nodeIntegration: false,
-                    contextIsolation: true,
-                },
+                webPreferences: noPreloadPrefs,
             },
-        };
+        });
 
         if (!url || url === 'about:blank') {
-            return allowNoPreload;
+            return allowNoPreload(520, 740);
         }
 
         try {
-            const host = new URL(url).hostname;
+            const u = new URL(url);
+            const host = u.hostname;
+            const hash = u.hash || '';
+            const isAppHost =
+                host === 'localhost' ||
+                host === '127.0.0.1' ||
+                host === 'ez-hub.kr';
+            const isDocPreview =
+                isAppHost &&
+                (hash.includes('/job-order-preview/') || hash.includes('/quote-preview/'));
+            if (isDocPreview) {
+                return allowNoPreload(1280, 900);
+            }
+
             const inAppPopup =
                 host === 'payments.korpay.com' ||
                 host.endsWith('.korpay.com') ||
@@ -116,10 +130,10 @@ function createWindow() {
                 host.endsWith('.firebaseapp.com') ||
                 host.endsWith('.googleapis.com');
             if (inAppPopup) {
-                return allowNoPreload;
+                return allowNoPreload(520, 740);
             }
         } catch (_) {
-            return allowNoPreload;
+            return allowNoPreload(520, 740);
         }
 
         shell.openExternal(url).catch(() => {});

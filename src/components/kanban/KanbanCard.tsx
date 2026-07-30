@@ -430,11 +430,23 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     }
   };
 
+  /** 납품완료 칸에 남는 미수 건 — 카드 면 색으로 구분 */
+  const isCompletedOutstanding =
+    isDone &&
+    (job.paymentStatus === '결제대기' ||
+      job.paymentStatus === '일부결제' ||
+      job.paymentStatus === '후불결제' ||
+      !job.paymentStatus);
+  const completedOutstandingClass = isCompletedOutstanding
+    ? 'bg-rose-50 dark:bg-rose-950/35 border-rose-300 dark:border-rose-700 border-l-[3px] border-l-rose-500 dark:border-l-rose-400'
+    : '';
+
   const cardStyleClass = getJobUrgencyStyles({
     theme,
     priority: job.priority,
     daysRemaining,
-    isDone,
+    // 미수 완료건은 회색 처리하지 않고 로즈 강조로 구분
+    isDone: isDone && !isCompletedOutstanding,
     isMyJob,
     isTvMode,
     surface: 'kanban',
@@ -584,12 +596,16 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`kanban-card bg-white dark:bg-slate-800 px-3 py-2.5 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 hover:shadow-md hover:border-blue-400 transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group ${cardSurfaceClass}`}
+        className={`kanban-card px-3 py-2.5 rounded-xl shadow-sm border hover:shadow-md transition-all cursor-grab active:cursor-grabbing flex items-center gap-3 group ${cardSurfaceClass} ${
+          isCompletedOutstanding
+            ? completedOutstandingClass
+            : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-blue-400'
+        }`}
         onClick={handleCardClick}
         onContextMenu={handleCardContextMenu}
       >
-         <div className="text-emerald-500 cursor-pointer shrink-0" title="완료">
-           <CheckCircle2 size={17} className="fill-emerald-100 dark:fill-none" />
+         <div className={`${isCompletedOutstanding ? 'text-rose-500' : 'text-emerald-500'} cursor-pointer shrink-0`} title={isCompletedOutstanding ? '완료·미수' : '완료'}>
+           <CheckCircle2 size={17} className={isCompletedOutstanding ? 'fill-rose-100 dark:fill-none' : 'fill-emerald-100 dark:fill-none'} />
          </div>
          <div className="flex-1 min-w-0 flex items-center gap-2">
             <span className="kanban-card-title font-semibold text-slate-800 dark:text-slate-200 text-sm truncate">{job.title}</span>
@@ -657,6 +673,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         className={`
           kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
           ${cardStyleClass}
+          ${completedOutstandingClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
         `}
         onClick={handleCardClick}
@@ -809,6 +826,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
         ${isManagementPanel ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
         ${cardStyleClass}
+        ${completedOutstandingClass}
         ${isManagementPanel ? 'hover:shadow-md' : 'active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50'}
       `}
       onClick={handleCardClick}

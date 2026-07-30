@@ -53,22 +53,8 @@ function AppRoutes() {
                             path="/login"
                             element={!isAuthenticated ? <LoginPage /> : <Navigate to={window.location.hash.slice(1) || '/'} replace />}
                         />
-                        <Route
-                            path="/quote-preview/:quoteId"
-                            element={
-                                <TenantGuard>
-                                    <QuotePreviewPage />
-                                </TenantGuard>
-                            }
-                        />
-                        <Route
-                            path="/job-order-preview/:jobId"
-                            element={
-                                <TenantGuard>
-                                    <JobOrderPreviewPage />
-                                </TenantGuard>
-                            }
-                        />
+                        <Route path="/quote-preview/:quoteId" element={<QuotePreviewPage />} />
+                        <Route path="/job-order-preview/:jobId" element={<JobOrderPreviewPage />} />
                         <Route path="*" element={<Navigate to="/login" replace />} />
                     </Routes>
                     <Toaster

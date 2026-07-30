@@ -1,10 +1,11 @@
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { ClipboardList } from 'lucide-react';
 import { Job } from '../../types';
 import { formatJobNumber } from '../../services/dataService';
 import { JobOrderDocument } from './JobOrderDocument';
 import { DocumentPreviewShell, printDocumentSimplex } from './DocumentPreviewShell';
 import { exportA4DocumentPdf } from '../../utils/printA4';
+import { resolveJobOrderPaymentSummary } from '../../utils/jobOrderPreviewStorage';
 
 interface JobOrderPreviewPanelProps {
   job: Job;
@@ -14,6 +15,7 @@ interface JobOrderPreviewPanelProps {
 export const JobOrderPreviewPanel: React.FC<JobOrderPreviewPanelProps> = ({ job, onClose }) => {
   const contentRef = useRef<HTMLDivElement>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const paymentSummary = useMemo(() => resolveJobOrderPaymentSummary(job), [job]);
 
   const handleDirectPrint = () => {
     void printDocumentSimplex();
@@ -42,7 +44,7 @@ export const JobOrderPreviewPanel: React.FC<JobOrderPreviewPanelProps> = ({ job,
       isProcessing={isProcessing}
       contentRef={contentRef}
     >
-      <JobOrderDocument job={job} />
+      <JobOrderDocument job={job} paymentSummary={paymentSummary} />
     </DocumentPreviewShell>
   );
 };
