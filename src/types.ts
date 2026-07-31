@@ -160,7 +160,8 @@ export interface Staff {
   password?: string; // UI 입력용만 — Firestore staff에는 저장하지 않음 (Firebase Auth)
   joinDate: string;
   isDeleted?: boolean; 
-  lastReadMsgId?: string; // Last confirmed message ID in chat widget
+  /** @deprecated 채팅 읽음은 NAS chat-messages.json reads 사용. 하위호환용 잔존 필드 */
+  lastReadMsgId?: string;
 }
 
 export interface JoinRequest {

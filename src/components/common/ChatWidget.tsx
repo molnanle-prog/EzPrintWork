@@ -31,6 +31,61 @@ function clearDesktopChatAttention() {
   window.electron.chatNotifyClear();
 }
 
+/** 부드러운 짧은 알림톤 (외부 CDN/날카로운 mp3 대신) */
+function playSoftChatTone() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.0001, now);
+    master.gain.exponentialRampToValueAtTime(0.07, now + 0.02);
+    master.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+    master.connect(ctx.destination);
+
+    const o1 = ctx.createOscillator();
+    o1.type = 'sine';
+    o1.frequency.setValueAtTime(660, now);
+    o1.frequency.exponentialRampToValueAtTime(880, now + 0.08);
+    o1.connect(master);
+    o1.start(now);
+    o1.stop(now + 0.4);
+
+    const o2 = ctx.createOscillator();
+    o2.type = 'sine';
+    o2.frequency.setValueAtTime(990, now + 0.06);
+    const g2 = ctx.createGain();
+    g2.gain.setValueAtTime(0.0001, now + 0.06);
+    g2.gain.exponentialRampToValueAtTime(0.04, now + 0.1);
+    g2.gain.exponentialRampToValueAtTime(0.0001, now + 0.42);
+    o2.connect(g2);
+    g2.connect(ctx.destination);
+    o2.start(now + 0.06);
+    o2.stop(now + 0.45);
+
+    window.setTimeout(() => {
+      void ctx.close().catch(() => undefined);
+    }, 600);
+  } catch {
+    /* ignore autoplay / unsupported */
+  }
+}
+
+function resolveLastReadId(staffId: string | undefined, legacyStaffLastRead?: string): string | undefined {
+  if (!staffId) return legacyStaffLastRead;
+  return db.getChatLastReadMsgId(staffId) || legacyStaffLastRead;
+}
+
+function isMessageUnreadByCursor(msgId: string, lastReadId: string | undefined | null): boolean {
+  if (!lastReadId) return true;
+  if (msgId === lastReadId) return false;
+  const msgN = Number(msgId);
+  const readN = Number(lastReadId);
+  if (Number.isFinite(msgN) && Number.isFinite(readN)) return msgN > readN;
+  return msgId !== lastReadId;
+}
+
 export const ChatWidget: React.FC = () => {
   const [historyReady, setHistoryReady] = useState(() => db.isChatHistoryReady());
   const [isOpen, setIsOpen] = useState(false);
@@ -62,7 +117,6 @@ export const ChatWidget: React.FC = () => {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesScrollRef = useRef<HTMLDivElement>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
   const staffRef = useRef<Staff[]>([]);
   const isOpenRef = useRef(isOpen);
   const activeChannelRef = useRef(activeChannel);
@@ -70,6 +124,7 @@ export const ChatWidget: React.FC = () => {
   const isTvModeRef = useRef(isTvMode);
   const lastSyncedReadIdRef = useRef<string | null>(null);
   const lastStaffPollAtRef = useRef(0);
+  const [chatReadsTick, setChatReadsTick] = useState(0);
   const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
 
   useEffect(() => {
@@ -105,11 +160,6 @@ export const ChatWidget: React.FC = () => {
     setHasUnread(false);
     clearDesktopChatAttention();
   }, [isTvMode]);
-
-  useEffect(() => {
-    // Create Audio Element
-    audioRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
-  }, []);
 
   // OS 토스트 클릭 → 창 복원 후 해당 채팅 열기
   useEffect(() => {
@@ -152,6 +202,7 @@ export const ChatWidget: React.FC = () => {
 
     const unsub = db.subscribe(() => {
       if (db.isChatHistoryReady()) setHistoryReady(true);
+      setChatReadsTick((n) => n + 1);
     });
 
     // 마운트/로그인 시에만 — 직원(채널) 선택마다 전체 재로드하지 않음
@@ -171,10 +222,13 @@ export const ChatWidget: React.FC = () => {
       if (myReceivedMsgs.length > 0) {
         const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
         const currentStaff = findStaffForUser(staffNow, currentUser);
-        const dbLastReadId = currentStaff?.lastReadMsgId;
+        const nasLastReadId = resolveLastReadId(currentStaff?.id, currentStaff?.lastReadMsgId);
         const lastConfirmedId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
         
-        if (lastMsg.id !== lastConfirmedId && lastMsg.id !== dbLastReadId) {
+        if (
+          isMessageUnreadByCursor(lastMsg.id, lastConfirmedId) &&
+          isMessageUnreadByCursor(lastMsg.id, nasLastReadId)
+        ) {
           if (localStorage.getItem('ezprint_tv_mode') === 'true') {
             // skip
           } else {
@@ -184,7 +238,7 @@ export const ChatWidget: React.FC = () => {
           notifyDesktopChat(lastMsg, sender?.name || lastMsg.senderName || '새 메시지');
           
           setTimeout(() => {
-            audioRef.current?.play().catch(e => console.log('Initial audio play bypassed by browser policy', e));
+            playSoftChatTone();
           }, 1000);
           }
         }
@@ -203,6 +257,7 @@ export const ChatWidget: React.FC = () => {
       if (Date.now() - lastStaffPollAtRef.current > 2000) {
         lastStaffPollAtRef.current = Date.now();
         setStaff(db.getStaff());
+        setChatReadsTick((n) => n + 1);
       }
 
       setMessages(prev => {
@@ -220,9 +275,11 @@ export const ChatWidget: React.FC = () => {
           if (myNewReceivedMsgs.length > 0) {
             const lastMsg = myNewReceivedMsgs[myNewReceivedMsgs.length - 1];
             const currentStaff = findStaffForUser(staffNow, currentUser);
-            const dbLastReadId = currentStaff?.lastReadMsgId;
+            const nasLastReadId = resolveLastReadId(currentStaff?.id, currentStaff?.lastReadMsgId);
             const localLastReadId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
-            const isAlreadyRead = (lastMsg.id === dbLastReadId) || (lastMsg.id === localLastReadId);
+            const isAlreadyRead =
+              !isMessageUnreadByCursor(lastMsg.id, nasLastReadId) ||
+              !isMessageUnreadByCursor(lastMsg.id, localLastReadId);
 
             if (!isAlreadyRead) {
                 if (isTvModeNow) {
@@ -247,10 +304,13 @@ export const ChatWidget: React.FC = () => {
                      if (lastMsg.senderId) {
                           setUnreadSenders(prevSet => new Set(prevSet).add(senderStaff?.id || lastMsg.senderId));
                      }
+                } else if (currentStaff?.id) {
+                  void db.updateStaffLastReadMsgId(currentStaff.id, lastMsg.id);
+                  localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, lastMsg.id);
                 }
                 
-                if (soundEnabledNow) {
-                   audioRef.current?.play().catch(e => console.log('Audio play failed', e));
+                if (soundEnabledNow && !isRelevantChannelOpen) {
+                   playSoftChatTone();
                 }
                 }
             }
@@ -305,9 +365,7 @@ export const ChatWidget: React.FC = () => {
         
         const staffDocId = findStaffForUser(staff, currentUser)?.id;
         if (staffDocId) {
-          db.updateStaffLastReadMsgId(staffDocId, lastMsg.id).catch(e => {
-              console.error("Failed to sync lastReadMsgId to Firestore:", e);
-          });
+          void db.updateStaffLastReadMsgId(staffDocId, lastMsg.id);
         }
       }
       setHasUnread(false);
@@ -343,6 +401,22 @@ export const ChatWidget: React.FC = () => {
 
     db.addMessage(msg);
     setMessages(prev => [...prev, msg]); // Optimistic update
+    // 답장 = 해당 대화 확인 — 읽음 커서도 같이 NAS 반영
+    if (myStaff?.id) {
+      const receivedInChannel = [...olderMessages, ...messages].filter(
+        (m) =>
+          !isSameLoggedInUser(currentUser, m.senderId, staff) &&
+          (activeChannel
+            ? staffIdsEqual(activeChannel, m.senderId, staff) &&
+              isSameLoggedInUser(currentUser, m.receiverId, staff)
+            : !m.receiverId)
+      );
+      const lastReceived = receivedInChannel[receivedInChannel.length - 1];
+      if (lastReceived) {
+        localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, lastReceived.id);
+        void db.updateStaffLastReadMsgId(myStaff.id, lastReceived.id);
+      }
+    }
     if (!isCall) setNewMessage('');
     scrollToBottom();
   };
@@ -383,50 +457,34 @@ export const ChatWidget: React.FC = () => {
     return date.toLocaleDateString('ko-KR', options);
   };
 
-  // 특정 메시지의 안 읽은 인원 수(unread count) 계산 함수
+  // 특정 메시지의 안 읽은 인원 수 — NAS reads 커서 기준 (Firestore staff 미사용)
   const getUnreadCount = (msg: ChatMessage) => {
+    void chatReadsTick; // 읽음 맵 폴링 시 재계산
     if (!isSameLoggedInUser(currentUser, msg.senderId, staff)) return 0;
-    
-    const msgTime = new Date(msg.timestamp).getTime();
+
     const allForRead = [...olderMessages, ...messages];
 
+    const unreadForStaff = (s: Staff): boolean => {
+      const lastReadId = resolveLastReadId(s.id, s.lastReadMsgId);
+      if (!lastReadId) return true;
+      const lastReadMsg = allForRead.find((m) => m.id === lastReadId);
+      if (lastReadMsg) {
+        return new Date(msg.timestamp).getTime() > new Date(lastReadMsg.timestamp).getTime();
+      }
+      // 핫 윈도우에 없어도 id(시간)로 비교 — 잘못된 영구 '1' 방지
+      return isMessageUnreadByCursor(msg.id, lastReadId);
+    };
+
     if (msg.receiverId) {
-      // 1:1 DM 방인 경우: 상대방 한 명이 읽었는지 판별
       const otherStaff = findStaffByAnyId(staff, msg.receiverId);
       if (!otherStaff) return 0;
-      
-      if (!otherStaff.lastReadMsgId) return 1; // 한 번도 대화방을 켜지 않음 -> 안읽음(1)
-      
-      const otherLastReadMsg = allForRead.find(m => m.id === otherStaff.lastReadMsgId);
-      if (!otherLastReadMsg) return 1;
-      
-      const otherLastReadTime = new Date(otherLastReadMsg.timestamp).getTime();
-      return msgTime > otherLastReadTime ? 1 : 0;
-    } else {
-      // 전체 공지방인 경우: 나를 제외한 전체 사원 중에서 안 읽은 인원수 카운트 (카톡 단톡방 숫자 스타일)
-      const activeStaffMembers = staff.filter(
-        (s) => s.active && !s.isDeleted && !isSameLoggedInUser(currentUser, s.id, staff)
-      );
-      let unreadCount = 0;
-      
-      activeStaffMembers.forEach(s => {
-        if (!s.lastReadMsgId) {
-          unreadCount++;
-          return;
-        }
-        const staffLastReadMsg = allForRead.find(m => m.id === s.lastReadMsgId);
-        if (!staffLastReadMsg) {
-          unreadCount++;
-          return;
-        }
-        const staffLastReadTime = new Date(staffLastReadMsg.timestamp).getTime();
-        if (msgTime > staffLastReadTime) {
-          unreadCount++;
-        }
-      });
-      
-      return unreadCount;
+      return unreadForStaff(otherStaff) ? 1 : 0;
     }
+
+    const activeStaffMembers = staff.filter(
+      (s) => s.active && !s.isDeleted && !isSameLoggedInUser(currentUser, s.id, staff)
+    );
+    return activeStaffMembers.reduce((n, s) => n + (unreadForStaff(s) ? 1 : 0), 0);
   };
 
   const currentMessages = useMemo(() => {
@@ -508,12 +566,9 @@ export const ChatWidget: React.FC = () => {
           setIsOpen(true);
           if (currentUser) {
               localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, notificationPopup.id);
-              // 파이어베이스에도 실시간 동기화 업데이트! (staff 문서 id)
               const staffDocId = findStaffForUser(staff, currentUser)?.id;
               if (staffDocId) {
-                db.updateStaffLastReadMsgId(staffDocId, notificationPopup.id).catch(e => {
-                    console.error("Failed to sync lastReadMsgId to Firestore on popup click:", e);
-                });
+                void db.updateStaffLastReadMsgId(staffDocId, notificationPopup.id);
               }
           }
           setNotificationPopup(null);

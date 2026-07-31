@@ -31,11 +31,42 @@ export const OLDER_CHAT_PAGE_SIZE = 40;
 /** NAS 쓰기 재시도 — 짧게 (긴 대기는 전송 체감만 악화) */
 const WRITE_RETRY_DELAYS_MS = [0, 350, 900];
 
+/** staffId → lastReadMsgId (Firestore 없이 NAS 채팅 파일로 동기화) */
+export type ChatReadMap = Record<string, string>;
+
 export interface ChatMirrorPayload {
     version: number;
     tenantId: string;
     updatedAt: string;
     messages: ChatMessage[];
+    /** 직원별 읽음 커서 — 채팅 폴링과 동일 경로 */
+    reads?: ChatReadMap;
+}
+
+/** 메시지 id가 Date.now() 기반이므로 숫자 비교로 최신 판별 */
+export function isChatReadIdNewer(a: string, b: string): boolean {
+    const na = Number(a);
+    const nb = Number(b);
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na >= nb;
+    return String(a) >= String(b);
+}
+
+export function mergeChatReads(a: ChatReadMap = {}, b: ChatReadMap = {}): ChatReadMap {
+    const out: ChatReadMap = { ...a };
+    for (const [staffId, msgId] of Object.entries(b)) {
+        if (!staffId || !msgId) continue;
+        const prev = out[staffId];
+        if (!prev || isChatReadIdNewer(msgId, prev)) out[staffId] = msgId;
+    }
+    return out;
+}
+
+export function chatReadsEqual(a: ChatReadMap = {}, b: ChatReadMap = {}): boolean {
+    const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+    for (const k of keys) {
+        if ((a[k] || '') !== (b[k] || '')) return false;
+    }
+    return true;
 }
 
 function messageTime(m: ChatMessage): number {
@@ -99,6 +130,7 @@ export class ChatMirrorService {
     /** write-through 캐시 — 연속 전송 시 NAS 전체 재읽기 생략 */
     private cachedTenantId: string | null = null;
     private cachedMessages: ChatMessage[] | null = null;
+    private cachedReads: ChatReadMap = {};
     private cachedMtime = 0;
     private cachedUpdatedAt: string | null = null;
 
@@ -106,6 +138,7 @@ export class ChatMirrorService {
     invalidateCache(): void {
         this.cachedTenantId = null;
         this.cachedMessages = null;
+        this.cachedReads = {};
         this.cachedMtime = 0;
         this.cachedUpdatedAt = null;
     }
@@ -181,28 +214,44 @@ export class ChatMirrorService {
         return meta?.data ?? null;
     }
 
-    private rememberCache(tenantId: string, messages: ChatMessage[], updatedAt: string, mtime = 0) {
+    private rememberCache(
+        tenantId: string,
+        messages: ChatMessage[],
+        updatedAt: string,
+        mtime = 0,
+        reads: ChatReadMap = {}
+    ) {
         this.cachedTenantId = tenantId;
         this.cachedMessages = messages;
+        this.cachedReads = { ...reads };
         this.cachedUpdatedAt = updatedAt;
         if (mtime) this.cachedMtime = mtime;
     }
 
-    buildPayload(tenantId: string, messages: ChatMessage[]): ChatMirrorPayload {
+    buildPayload(
+        tenantId: string,
+        messages: ChatMessage[],
+        reads: ChatReadMap = {}
+    ): ChatMirrorPayload {
         return {
             version: CHAT_VERSION,
             tenantId,
             updatedAt: new Date().toISOString(),
             messages: mergeChatMessages([], messages),
+            reads: { ...reads },
         };
     }
 
     /** Electron: NAS 원본 읽기→merge→쓰기. Storage는 비동기 보조(사내 Electron 일관성과 분리). */
-    async publish(tenantId: string, messages: ChatMessage[]): Promise<boolean> {
+    async publish(
+        tenantId: string,
+        messages: ChatMessage[],
+        reads: ChatReadMap = {}
+    ): Promise<boolean> {
         if (!tenantId) return false;
 
         // 연속 publish 직렬화 — 같은 파일 RMW 경합 방지
-        const run = this.publishChain.then(() => this.publishOnce(tenantId, messages));
+        const run = this.publishChain.then(() => this.publishOnce(tenantId, messages, reads));
         this.publishChain = run.then(
             () => true,
             () => true
@@ -210,21 +259,28 @@ export class ChatMirrorService {
         return run;
     }
 
-    private async publishOnce(tenantId: string, messages: ChatMessage[]): Promise<boolean> {
+    private async publishOnce(
+        tenantId: string,
+        messages: ChatMessage[],
+        reads: ChatReadMap = {}
+    ): Promise<boolean> {
         if (this.isElectron()) {
             let nasOk = false;
             const root = await this.resolveMirrorRoot();
             if (root) {
                 const filePath = this.joinPath(root, CHAT_FILE_NAME);
                 let existing: ChatMessage[] = [];
+                let existingReads: ChatReadMap = {};
                 if (this.cachedTenantId === tenantId && this.cachedMessages) {
                     existing = this.cachedMessages;
+                    existingReads = this.cachedReads || {};
                 } else {
                     try {
                         const meta = await this.readLocalWithMeta(filePath);
                         if (meta?.data) {
                             const parsed = JSON.parse(meta.data) as ChatMirrorPayload;
                             if (Array.isArray(parsed?.messages)) existing = parsed.messages;
+                            existingReads = parsed?.reads || {};
                             this.cachedMtime = meta.mtime;
                         }
                     } catch {
@@ -238,24 +294,25 @@ export class ChatMirrorService {
                     void this.archiveOverflow(root, tenantId, overflow);
                 }
                 const hot = takeHotMessages(full);
-                const payload = this.buildPayload(tenantId, hot);
+                const mergedReads = mergeChatReads(existingReads, reads);
+                const payload = this.buildPayload(tenantId, hot, mergedReads);
                 const content = JSON.stringify(payload);
                 nasOk = await this.writeLocalWithRetry(filePath, content);
                 if (nasOk) {
-                    this.rememberCache(tenantId, hot, payload.updatedAt, 0);
+                    this.rememberCache(tenantId, hot, payload.updatedAt, 0, mergedReads);
                 }
             }
             return nasOk;
         }
 
-        const payload = this.buildPayload(tenantId, takeHotMessages(messages));
+        const payload = this.buildPayload(tenantId, takeHotMessages(messages), reads);
         const content = JSON.stringify(payload);
         try {
             const blob = new Blob([content], { type: 'application/json' });
             await uploadBytes(ref(storage, this.storageObjectPath(tenantId)), blob, {
                 contentType: 'application/json',
             });
-            this.rememberCache(tenantId, payload.messages, payload.updatedAt);
+            this.rememberCache(tenantId, payload.messages, payload.updatedAt, 0, payload.reads || {});
             return true;
         } catch (error) {
             console.warn('[ChatMirror] storage upload failed:', error);
@@ -426,22 +483,24 @@ export class ChatMirrorService {
         const meta = await this.readLocalWithMeta(filePath);
         if (!meta?.data) return null;
         let messages: ChatMessage[] = [];
+        let existingReads: ChatReadMap = {};
         try {
             const parsed = JSON.parse(meta.data) as ChatMirrorPayload;
             messages = Array.isArray(parsed?.messages) ? parsed.messages : [];
+            existingReads = parsed?.reads || {};
         } catch {
             return null;
         }
         if (messages.length <= HOT_CHAT_LIMIT) {
-            this.rememberCache(tenantId, messages, new Date().toISOString(), meta.mtime);
+            this.rememberCache(tenantId, messages, new Date().toISOString(), meta.mtime, existingReads);
             return messages;
         }
         const overflow = messages.slice(0, messages.length - HOT_CHAT_LIMIT);
         const hot = takeHotMessages(messages);
         await this.archiveOverflow(root, tenantId, overflow);
-        const payload = this.buildPayload(tenantId, hot);
+        const payload = this.buildPayload(tenantId, hot, existingReads);
         const ok = await this.writeLocalWithRetry(filePath, JSON.stringify(payload));
-        if (ok) this.rememberCache(tenantId, hot, payload.updatedAt, 0);
+        if (ok) this.rememberCache(tenantId, hot, payload.updatedAt, 0, existingReads);
         return hot;
     }
 
@@ -478,6 +537,7 @@ export class ChatMirrorService {
                 tenantId: this.cachedTenantId,
                 updatedAt: this.cachedUpdatedAt || new Date().toISOString(),
                 messages: this.cachedMessages,
+                reads: { ...this.cachedReads },
             };
         }
 
@@ -488,7 +548,8 @@ export class ChatMirrorService {
                     parsed.tenantId || this.cachedTenantId || '',
                     parsed.messages,
                     parsed.updatedAt || new Date().toISOString(),
-                    meta.mtime
+                    meta.mtime,
+                    parsed.reads || {}
                 );
             }
             return parsed;
@@ -580,6 +641,7 @@ export class ChatMirrorService {
             return {
                 ...newer,
                 messages: mergeChatMessages(older.messages || [], newer.messages || []),
+                reads: mergeChatReads(older.reads || {}, newer.reads || {}),
             };
         }
         return gatewayPayload || storagePayload;
@@ -609,7 +671,8 @@ export class ChatMirrorService {
     async publishViaGateway(
         tenantId: string,
         messages: ChatMessage[],
-        gatewayBaseUrl?: StoreGatewayInput
+        gatewayBaseUrl?: StoreGatewayInput,
+        reads: ChatReadMap = {}
     ): Promise<boolean> {
         if (!tenantId) return false;
         const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
@@ -617,7 +680,7 @@ export class ChatMirrorService {
 
         const { getGatewayAuthToken } = await import('../utils/gatewayToken');
         const token = getGatewayAuthToken(tenantId);
-        const payload = this.buildPayload(tenantId, messages);
+        const payload = this.buildPayload(tenantId, messages, reads);
         for (const base of urls) {
             try {
                 const res = await fetchWithTimeout(

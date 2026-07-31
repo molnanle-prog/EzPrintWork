@@ -537,6 +537,7 @@ class LocalGateway {
                         tenantId,
                         updatedAt: chat.updatedAt || new Date().toISOString(),
                         messages: Array.isArray(chat.messages) ? chat.messages : [],
+                        reads: chat.reads && typeof chat.reads === 'object' ? chat.reads : {},
                     }));
                     return;
                 }
@@ -556,6 +557,8 @@ class LocalGateway {
                         const raw = await readRequestBody(req);
                         const body = JSON.parse(raw || '{}');
                         const incoming = Array.isArray(body.messages) ? body.messages : [];
+                        const incomingReads =
+                            body.reads && typeof body.reads === 'object' ? body.reads : {};
                         const tenantId = body.tenantId || this.tenantId;
                         const existing = this.readJsonFile(CHAT_FILE);
                         const map = new Map();
@@ -583,12 +586,25 @@ class LocalGateway {
                             this.archiveChatOverflow(tenantId, overflow);
                             messages = messages.slice(messages.length - HOT_CHAT_LIMIT);
                         }
+                        const reads = { ...(existing?.reads || {}) };
+                        for (const [staffId, msgId] of Object.entries(incomingReads)) {
+                            if (!staffId || !msgId) continue;
+                            const prev = reads[staffId];
+                            const prevN = Number(prev);
+                            const nextN = Number(msgId);
+                            const newer =
+                                Number.isFinite(prevN) && Number.isFinite(nextN)
+                                    ? nextN >= prevN
+                                    : String(msgId) >= String(prev || '');
+                            if (!prev || newer) reads[staffId] = msgId;
+                        }
                         const now = new Date().toISOString();
                         const payload = {
                             version: 1,
                             tenantId,
                             updatedAt: now,
                             messages,
+                            reads,
                         };
                         if (!this.writeJsonFile(CHAT_FILE, payload)) {
                             res.writeHead(500, CORS);

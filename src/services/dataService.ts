@@ -15,7 +15,15 @@ import { db as firestore, auth, storage } from './firebase';
 import { signOut } from 'firebase/auth';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
-import { chatMirrorService, mergeChatMessages, HOT_CHAT_LIMIT } from './chatMirrorService';
+import {
+    chatMirrorService,
+    mergeChatMessages,
+    mergeChatReads,
+    chatReadsEqual,
+    isChatReadIdNewer,
+    HOT_CHAT_LIMIT,
+    type ChatReadMap,
+} from './chatMirrorService';
 import { presenceSessionService } from './presenceSessionService';
 import { localDbBridge } from './localDbBridge';
 import {
@@ -651,6 +659,8 @@ export class DataService {
     /** 시작 시 히스토리 1회 로드 완료 여부 */
     private chatHistoryReady = false;
     private chatHydratePromise: Promise<void> | null = null;
+    /** 채팅 읽음 커서 — NAS chat-messages.json (Firestore staff 미사용) */
+    private chatReads: ChatReadMap = {};
 
     getSyncStatus() { return this.syncStatus; }
     getLastSyncError() { return this.lastSyncError; }
@@ -854,6 +864,7 @@ export class DataService {
             void this.pollNasOperationalSync();
             this.chatHistoryReady = false;
             this.chatHydratePromise = null;
+            this.chatReads = {};
             void this.hydrateMessagesFromMirrorOnce();
             toast.success(
                 channel === 'gateway'
@@ -998,6 +1009,7 @@ export class DataService {
             await this.pollNasOperationalSync();
             this.chatHistoryReady = false;
             this.chatHydratePromise = null;
+            this.chatReads = {};
             await this.hydrateMessagesFromMirrorOnce();
             void this.refreshStoreGateway();
             this.pendingArchiveReconnect = false;
@@ -3610,6 +3622,9 @@ export class DataService {
                     ? await chatMirrorService.readFromNas()
                     : await chatMirrorService.readRemote(this.tenantId!, this.getStoreGatewayUrls());
 
+                if (payload?.reads) {
+                    this.chatReads = mergeChatReads({}, payload.reads);
+                }
                 if (payload?.messages?.length) {
                     this.data['messages'] = mergeChatMessages(
                         (this.data['messages'] || []) as ChatMessage[],
@@ -3698,13 +3713,14 @@ export class DataService {
             return false;
         }
         const list = mergeChatMessages([], messages);
+        const reads = { ...this.chatReads };
 
         if (this.getIsElectron()) {
-            let ok = await chatMirrorService.publish(this.tenantId, list);
+            let ok = await chatMirrorService.publish(this.tenantId, list, reads);
             if (!ok) {
                 const gw = await this.getTrustedStoreGatewayUrl();
                 if (gw) {
-                    ok = await chatMirrorService.publishViaGateway(this.tenantId, list, gw);
+                    ok = await chatMirrorService.publishViaGateway(this.tenantId, list, gw, reads);
                     if (ok) this.companyNasChannel = 'gateway';
                 }
             } else {
@@ -3718,12 +3734,13 @@ export class DataService {
         const viaGw = await chatMirrorService.publishViaGateway(
             this.tenantId,
             list,
-            this.getStoreGatewayUrls()
+            this.getStoreGatewayUrls(),
+            reads
         );
         if (viaGw) {
             return true;
         }
-        return chatMirrorService.publish(this.tenantId, list);
+        return chatMirrorService.publish(this.tenantId, list, reads);
     }
 
     /** 메모리 반영은 즉시, NAS 쓰기는 백그라운드 (전송 UI는 실시간) */
@@ -3778,21 +3795,32 @@ export class DataService {
                     payload = await chatMirrorService.readViaGatewayOnly(this.tenantId, gw);
                 }
             }
-            if (!payload?.messages) return false;
+            if (!payload?.messages && !payload?.reads) return false;
 
-            const merged = mergeChatMessages(
-                (this.data['messages'] || []) as ChatMessage[],
-                payload.messages
-            );
-            const prevLen = ((this.data['messages'] || []) as ChatMessage[]).length;
-            const changed =
-                merged.length !== prevLen ||
-                merged[merged.length - 1]?.id !==
-                    ((this.data['messages'] || []) as ChatMessage[])[prevLen - 1]?.id;
-            if (changed) {
-                this.data['messages'] = merged;
-                return true;
+            let changed = false;
+            if (payload.messages) {
+                const merged = mergeChatMessages(
+                    (this.data['messages'] || []) as ChatMessage[],
+                    payload.messages
+                );
+                const prevLen = ((this.data['messages'] || []) as ChatMessage[]).length;
+                const messagesChanged =
+                    merged.length !== prevLen ||
+                    merged[merged.length - 1]?.id !==
+                        ((this.data['messages'] || []) as ChatMessage[])[prevLen - 1]?.id;
+                if (messagesChanged) {
+                    this.data['messages'] = merged;
+                    changed = true;
+                }
             }
+            if (payload.reads) {
+                const nextReads = mergeChatReads(this.chatReads, payload.reads);
+                if (!chatReadsEqual(this.chatReads, nextReads)) {
+                    this.chatReads = nextReads;
+                    changed = true;
+                }
+            }
+            return changed;
         } catch (e) {
             console.warn('[DataService] chat poll failed:', e);
         }
@@ -4190,6 +4218,7 @@ export class DataService {
             // 사내 채팅 — 시작 시 히스토리 1회 로드 후, 전용 빠른 폴링으로 실시간 수신
             this.chatHistoryReady = false;
             this.chatHydratePromise = null;
+            this.chatReads = {};
             void this.hydrateMessagesFromMirrorOnce();
 
             // 회사 NAS 헬스체크 — 실패 시 전원 동일하게 쓰기 차단 (유예 후 잠금, 게이트웨이 보조)
@@ -5399,7 +5428,27 @@ export class DataService {
             }
         }
     }
-    async updateStaffLastReadMsgId(staffId: string, lastReadMsgId: string) { await this.updateEntity('staff', staffId, { lastReadMsgId }); }
+    getChatReads(): ChatReadMap {
+        return { ...this.chatReads };
+    }
+
+    getChatLastReadMsgId(staffId: string): string | undefined {
+        if (!staffId) return undefined;
+        return this.chatReads[staffId];
+    }
+
+    /**
+     * 채팅 읽음 커서 — Firestore staff 금지, NAS chat-messages.json 으로만 동기화.
+     * (구 API 이름 유지: ChatWidget 호환)
+     */
+    async updateStaffLastReadMsgId(staffId: string, lastReadMsgId: string) {
+        if (!staffId || !lastReadMsgId) return;
+        const prev = this.chatReads[staffId];
+        if (prev && !isChatReadIdNewer(lastReadMsgId, prev)) return;
+        this.chatReads = { ...this.chatReads, [staffId]: lastReadMsgId };
+        this.schedulePersistMessagesToNas();
+        this.notify();
+    }
     async deleteStaff(id: string) {
         const staffList = (this.data['staff'] || []) as Staff[];
         const staff = staffList.find((s: Staff) => s.id === id);
