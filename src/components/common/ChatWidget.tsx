@@ -11,6 +11,8 @@ import {
   isSameLoggedInUser,
   staffIdsEqual,
 } from '../../utils/staffMatch';
+import { presenceSessionService, type PresenceSessionEntry } from '../../services/presenceSessionService';
+import { resolveStaffOnline } from '../../utils/staffSession';
 
 function notifyDesktopChat(msg: ChatMessage, senderName: string) {
   if (typeof window === 'undefined' || !window.electron?.chatNotify) return;
@@ -86,6 +88,24 @@ function isMessageUnreadByCursor(msgId: string, lastReadId: string | undefined |
   return msgId !== lastReadId;
 }
 
+/** NAS presence-sessions.json 기준 — 재직(active)과 별개 */
+function isStaffCurrentlyOnline(
+  s: Staff,
+  sessions: Record<string, PresenceSessionEntry>
+): boolean {
+  const keys = [s.uid, s.id].filter(Boolean) as string[];
+  for (const key of keys) {
+    const row = sessions[key];
+    if (row && resolveStaffOnline(row)) return true;
+  }
+  for (const row of Object.values(sessions)) {
+    if (row?.staffDocId && (row.staffDocId === s.id || row.staffDocId === s.uid) && resolveStaffOnline(row)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export const ChatWidget: React.FC = () => {
   const [historyReady, setHistoryReady] = useState(() => db.isChatHistoryReady());
   const [isOpen, setIsOpen] = useState(false);
@@ -125,7 +145,16 @@ export const ChatWidget: React.FC = () => {
   const lastSyncedReadIdRef = useRef<string | null>(null);
   const lastStaffPollAtRef = useRef(0);
   const [chatReadsTick, setChatReadsTick] = useState(0);
+  /** staffId/uid → 온라인 여부 (NAS presence) */
+  const [onlineByKey, setOnlineByKey] = useState<Record<string, boolean>>({});
   const myStaff = useMemo(() => findStaffForUser(staff, currentUser), [staff, currentUser]);
+
+  const isOnlineStaff = (s: Staff | undefined | null): boolean => {
+    if (!s) return false;
+    if (s.uid && onlineByKey[s.uid]) return true;
+    if (onlineByKey[s.id]) return true;
+    return false;
+  };
 
   useEffect(() => {
     staffRef.current = staff;
@@ -160,6 +189,41 @@ export const ChatWidget: React.FC = () => {
     setHasUnread(false);
     clearDesktopChatAttention();
   }, [isTvMode]);
+
+  // 온라인/오프라인 — NAS presence (Firestore 없음). 채팅 열리면 더 자주 갱신
+  useEffect(() => {
+    if (!currentUser?.tenantId || isTvMode) return;
+    let cancelled = false;
+
+    const refreshPresence = async () => {
+      try {
+        const file = await presenceSessionService.read(
+          currentUser.tenantId!,
+          db.getStoreGatewayUrls()
+        );
+        if (cancelled) return;
+        const sessions = file?.sessions || {};
+        const next: Record<string, boolean> = {};
+        for (const s of db.getStaff()) {
+          if (!s?.id) continue;
+          const on = isStaffCurrentlyOnline(s, sessions);
+          next[s.id] = on;
+          if (s.uid) next[s.uid] = on;
+        }
+        setOnlineByKey(next);
+      } catch (e) {
+        console.warn('[ChatWidget] presence refresh failed:', e);
+      }
+    };
+
+    void refreshPresence();
+    const ms = isOpen ? 8_000 : 20_000;
+    const timer = window.setInterval(() => void refreshPresence(), ms);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser?.tenantId, isOpen, isTvMode]);
 
   // OS 토스트 클릭 → 창 복원 후 해당 채팅 열기
   useEffect(() => {
@@ -688,6 +752,7 @@ export const ChatWidget: React.FC = () => {
               
               {staff.filter(s => !s.isDeleted && s.active && !isSameLoggedInUser(currentUser, s.id, staff)).map(s => {
                   const hasMessage = unreadSenders.has(s.id) || (s.uid ? unreadSenders.has(s.uid) : false);
+                  const online = isOnlineStaff(s);
                   return (
                       <button 
                         key={s.id}
@@ -696,16 +761,28 @@ export const ChatWidget: React.FC = () => {
                           ${activeChannel === s.id ? 'bg-white dark:bg-slate-700 shadow-sm ring-1 ring-blue-200 dark:ring-slate-600 text-blue-700 dark:text-blue-300' : 'hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300'}
                           ${hasMessage ? 'bg-blue-50 dark:bg-blue-900/30 animate-pulse ring-2 ring-red-400 dark:ring-red-500' : ''}
                         `}
-                        title={`${s.name}님과 1:1 대화하기`}
+                        title={`${s.name}님과 1:1 대화하기 (${online ? '온라인' : '오프라인'})`}
                       >
                         <div className="relative shrink-0">
-                          <img src={s.avatarUrl} alt={s.name} className={`w-8 h-8 rounded-full border ${s.active ? 'border-emerald-400' : 'border-slate-300 grayscale'}`} />
-                          {s.active && <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full border-2 border-white"></div>}
+                          <img
+                            src={s.avatarUrl}
+                            alt={s.name}
+                            className={`w-8 h-8 rounded-full border ${online ? 'border-emerald-400' : 'border-slate-300 dark:border-slate-600 opacity-90'}`}
+                          />
+                          <div
+                            className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${
+                              online ? 'bg-emerald-500' : 'bg-slate-400'
+                            }`}
+                            title={online ? '온라인' : '오프라인'}
+                          />
                           {hasMessage && <div className="absolute -top-1 -left-1 w-3 h-3 bg-red-500 rounded-full border-2 border-white animate-bounce"></div>}
                         </div>
                         <div className="flex-1 text-left min-w-0">
                           <div className={`font-medium truncate ${hasMessage ? 'text-blue-700 dark:text-blue-300 font-bold' : ''}`}>{s.name}</div>
-                          <div className="text-[10px] text-slate-400 truncate">{s.role}</div>
+                          <div className={`text-[10px] truncate ${online ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`}>
+                            {online ? '온라인' : '오프라인'}
+                            {s.role ? ` · ${s.role}` : ''}
+                          </div>
                         </div>
                       </button>
                   );
@@ -731,11 +808,28 @@ export const ChatWidget: React.FC = () => {
 
                 {activeChannel ? (
                    <>
-                     <img src={getSenderInfo(activeChannel).avatarUrl} className="w-8 h-8 rounded-full border-2 border-slate-600 shrink-0" />
+                     {(() => {
+                       const peer = findStaffByAnyId(staff, activeChannel);
+                       const online = isOnlineStaff(peer);
+                       return (
+                     <>
+                     <div className="relative shrink-0">
+                       <img src={getSenderInfo(activeChannel).avatarUrl} className="w-8 h-8 rounded-full border-2 border-slate-600" />
+                       <div
+                         className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-800 ${
+                           online ? 'bg-emerald-400' : 'bg-slate-500'
+                         }`}
+                       />
+                     </div>
                      <div className="min-w-0">
                        <div className="font-bold text-sm leading-tight truncate">{getSenderInfo(activeChannel).name}</div>
-                       <div className="text-[10px] text-slate-400 leading-tight truncate">1:1 메시지</div>
+                       <div className={`text-[10px] leading-tight truncate ${online ? 'text-emerald-300' : 'text-slate-400'}`}>
+                         {online ? '온라인 · 접속 중' : '오프라인 · 읽지 않을 수 있음'}
+                       </div>
                      </div>
+                     </>
+                       );
+                     })()}
                    </>
                 ) : (
                    <>
