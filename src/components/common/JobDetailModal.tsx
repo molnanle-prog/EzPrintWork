@@ -103,6 +103,17 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
     const isDirect = isCustomValue || forceDirect || options.length === 0;
     const inputClass = "w-full px-2.5 py-1.5 h-[34px] bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400";
 
+    // value="" 인데 옵션이 있으면 브라우저는 첫 항목처럼 보이지만 state는 비어 저장됨 → 첫 옵션으로 동기화
+    useEffect(() => {
+        if (forceDirect || options.length === 0) return;
+        if (value && !options.includes(value)) return; // 직접입력(커스텀) 값 유지
+        if (!value || !String(value).trim()) {
+            onChange(options[0]);
+        }
+        // onChange는 매 렌더 인라인일 수 있어 의존성에서 제외
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [value, options, forceDirect]);
+
     const processSuffix = (val: string) => {
         if (!val) return val;
         let newVal = val.trim();
@@ -252,6 +263,35 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // 신규 작업: 품목 정의 로드 후 비어 있는 규격/용지/평량에 기본값 채움 (화면만 보이고 state는 ''인 문제 방지)
+  const didApplyNewDefaultsRef = useRef(false);
+  useEffect(() => {
+    if (!isNew || didApplyNewDefaultsRef.current || productDefs.length === 0) return;
+    didApplyNewDefaultsRef.current = true;
+    setEditedJob((prev) => {
+      const subJobs = prev.subJobs || [];
+      let anyChanged = false;
+      const nextSubJobs = subJobs.map((sj) => {
+        const def = productDefs.find((d) => d.name === sj.type);
+        if (!def) return sj;
+        const specs = { ...sj.specs };
+        let changed = false;
+        if (!specs.size && def.sizes?.[0]) { specs.size = def.sizes[0]; changed = true; }
+        if (!specs.paperType && def.paperTypes?.[0]) { specs.paperType = def.paperTypes[0]; changed = true; }
+        if (!specs.paperWeight && def.paperWeights?.[0]) { specs.paperWeight = def.paperWeights[0]; changed = true; }
+        if (isBookletProductType(sj.type)) {
+          if (!specs.paperTypeInner && def.paperTypes?.[0]) { specs.paperTypeInner = def.paperTypes[0]; changed = true; }
+          if (!specs.paperWeightInner && def.paperWeights?.[0]) { specs.paperWeightInner = def.paperWeights[0]; changed = true; }
+          if (!specs.printColorInner) { specs.printColorInner = '단면 1도(흑백)'; changed = true; }
+        }
+        if (changed) anyChanged = true;
+        return changed ? { ...sj, specs } : sj;
+      });
+      if (!anyChanged) return prev;
+      return { ...prev, subJobs: nextSubJobs, specs: nextSubJobs[0]?.specs ?? prev.specs };
+    });
+  }, [isNew, productDefs]);
 
   const prevCustomTabIdxRef = useRef(activeTabIdx);
 
