@@ -141,9 +141,9 @@ export const QuoteManager: React.FC = () => {
 
   return (
 
-    <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full">
+    <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full min-h-0 overflow-hidden">
 
-      <div className="p-3 md:p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 flex-none">
+      <div className="p-3 md:p-4 border-b border-slate-200 flex justify-between items-center bg-slate-50 flex-none shrink-0">
 
         <div>
 
@@ -163,7 +163,7 @@ export const QuoteManager: React.FC = () => {
 
       {/* Desktop Table View */}
 
-      <div className="hidden md:block overflow-x-auto flex-1 custom-scrollbar">
+      <div className="hidden md:block overflow-auto flex-1 min-h-0 custom-scrollbar">
 
         <table className="w-full text-left border-collapse table-fixed">
 
@@ -335,7 +335,7 @@ export const QuoteManager: React.FC = () => {
 
       {/* Mobile Card View */}
 
-      <div className="md:hidden flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar">
+      <div className="md:hidden flex-1 min-h-0 overflow-y-auto p-4 space-y-3 custom-scrollbar">
 
         {sortedQuotes.length === 0 && (
 

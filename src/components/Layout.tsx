@@ -817,7 +817,9 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             )}
             
             <div className={`flex-1 flex flex-col min-h-0 relative ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} ${isPinned ? 'p-1' : isTvMode ? 'p-0.5' : 'p-2 md:p-3 lg:p-4'}`}>
-                {children}
+                <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+                    {children}
+                </div>
             </div>
             
             {isPinned && (

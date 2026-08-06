@@ -56,14 +56,14 @@ export const PaperManager: React.FC = () => {
   const inputClass = "p-2 border border-slate-300 dark:border-slate-600 rounded text-sm bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 placeholder-slate-400";
 
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 transition-colors">
-      <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2">
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 transition-colors h-full min-h-0 flex flex-col overflow-hidden">
+      <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 mb-6 flex items-center gap-2 shrink-0">
          <ScrollText className="text-blue-600 dark:text-blue-400" />
          용지 재고 및 단가 관리
       </h3>
 
       {/* Add New */}
-      <div className="flex flex-wrap gap-2 mb-6 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors">
+      <div className="flex flex-wrap gap-2 mb-6 p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-700 transition-colors shrink-0">
          <input 
             placeholder="용지명 (예: 스노우지)"
             value={newPaper.name}
@@ -96,7 +96,7 @@ export const PaperManager: React.FC = () => {
          </button>
       </div>
 
-      <div className="overflow-x-auto">
+      <div className="flex-1 min-h-0 overflow-auto custom-scrollbar">
         <table className="w-full text-left text-sm">
            <thead className="bg-slate-100 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400">
               <tr>

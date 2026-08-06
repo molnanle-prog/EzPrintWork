@@ -40,12 +40,12 @@ export const ActionLogPage = () => {
     }
 
     return (
-        <div className="p-6 bg-gray-50 min-h-full">
-            <h1 className="text-3xl font-bold mb-6 text-gray-800">작업 기록</h1>
-            <div className="bg-white shadow-md rounded-lg overflow-hidden">
-                <div className="overflow-x-auto">
+        <div className="p-6 bg-gray-50 h-full min-h-0 flex flex-col overflow-hidden">
+            <h1 className="text-3xl font-bold mb-6 text-gray-800 shrink-0">작업 기록</h1>
+            <div className="bg-white shadow-md rounded-lg flex-1 min-h-0 flex flex-col overflow-hidden">
+                <div className="flex-1 min-h-0 overflow-auto custom-scrollbar">
                     <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-100">
+                        <thead className="bg-gray-100 sticky top-0 z-10">
                             <tr>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">시간</th>
                                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">사용자</th>

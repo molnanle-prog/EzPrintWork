@@ -504,6 +504,7 @@ export const StaffManager: React.FC = () => {
 
   return (
     <>
+        <div className="h-full min-h-0 overflow-y-auto custom-scrollbar">
         {/* Join Requests Section */}
         {joinRequests.length > 0 && (
             <div className="mb-8 bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 rounded-2xl p-6">
@@ -732,6 +733,7 @@ export const StaffManager: React.FC = () => {
                 </div>
             )}
         </button>
+        </div>
         </div>
 
         {isModalOpen && (

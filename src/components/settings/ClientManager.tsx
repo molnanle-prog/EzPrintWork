@@ -523,8 +523,8 @@ export const ClientManager: React.FC = () => {
   const smallInputClass = "w-full p-2 border border-slate-300 dark:border-slate-600 rounded text-xs bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder-slate-400";
 
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 transition-colors">
-      <div className="flex justify-between items-center mb-6">
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 transition-colors h-full min-h-0 flex flex-col overflow-hidden">
+      <div className="flex justify-between items-center mb-6 shrink-0">
           <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
             <Building2 className="text-blue-600 dark:text-blue-400" />
             거래처 관리
@@ -550,7 +550,7 @@ export const ClientManager: React.FC = () => {
           </div>
       </div>
 
-      <div className="mb-5 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div className="mb-5 flex flex-col sm:flex-row sm:items-center gap-3 shrink-0">
           <div className="relative flex-1">
               <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <input
@@ -606,6 +606,7 @@ export const ClientManager: React.FC = () => {
           </div>
       </div>
 
+      <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar pr-1">
       {clients.length === 0 ? (
           <div className="text-center py-16 text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-600 rounded-xl">
               <Building2 size={40} className="mx-auto mb-3 opacity-40" />
@@ -757,6 +758,7 @@ export const ClientManager: React.FC = () => {
           ))}
       </div>
       )}
+      </div>
 
       {/* --- Add/Edit Modal --- */}
       {isModalOpen && (
