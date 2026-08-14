@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Job } from '../../types';
 import { db } from '../../services/dataService';
-import { X, MessageCircle, Copy, Send, Check, Mail, Save, Settings, RotateCcw, AlertCircle, Smartphone, Wifi, Battery, Smile, Paperclip, MessageSquare } from 'lucide-react';
+import { X, Copy, Send, Check, Mail, Save, Settings, RotateCcw, Wifi, Battery, Smile, Paperclip, MessageSquare } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { getStaffIdForUser } from '../../utils/staffMatch';
 
@@ -9,6 +9,8 @@ interface ClientContactModalProps {
   job: Job;
   onClose: () => void;
   onUpdate?: (job: Job) => void;
+  /** 납품/완료 직후 — 설정에 저장된 완료 문자 템플릿을 본문에 채움 */
+  preferCompleteTemplate?: boolean;
 }
 
 // 기본 메시지 템플릿 (90 바이트 이하 추천)
@@ -30,7 +32,12 @@ const getByteLength = (s: string) => {
     return b;
 };
 
-export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onClose, onUpdate }) => {
+export const ClientContactModal: React.FC<ClientContactModalProps> = ({
+  job,
+  onClose,
+  onUpdate,
+  preferCompleteTemplate = false,
+}) => {
   const [prefix, setPrefix] = useState('[EzPrintWork]');
   const [templates, setTemplates] = useState(DEFAULT_TEMPLATES);
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -45,7 +52,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
 
   // 이전 문자 발송 이력 필터링 및 가공
   const smsHistory = (job.history || [])
-      .filter(log => log.action.includes('문자 발송') || log.action.includes('문자 전송'))
+      .filter(log => log.action.includes('문자 발송') || log.action.includes('문자 전송') || log.action.includes('카카오') || log.action.includes('알림톡') || log.action.includes('카톡'))
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   
   // SMS Config
@@ -107,20 +114,41 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
     } else if (job.status === 'PRINTING' || job.status === 'POST_PROCESSING') {
         const idx = loadedTemplates.findIndex(t => t.label.includes('인쇄') || t.label.includes('진행'));
         if (idx !== -1) autoSelectedIdx = idx;
-    } else if (job.status === 'DELIVERY') {
+    } else if (job.status === 'DELIVERY' || preferCompleteTemplate) {
         const idx = loadedTemplates.findIndex(t => t.label.includes('완료') || t.label.includes('제작'));
         if (idx !== -1) autoSelectedIdx = idx;
     }
 
     setSelectedIdx(autoSelectedIdx);
-  }, [job.status, job.id]);
 
-  // 템플릿 선택 변경 시 본문 업데이트
+    // 완료 직후 문자창 — 설정 > 문자 설정의 완료 템플릿을 본문에 바로 채움
+    if (preferCompleteTemplate) {
+      const companyName = db.getCompanyInfo().name || 'EzPrintWork';
+      const raw =
+        savedSmsConfig?.completedMessageTemplate ||
+        `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 찾으러 내방해 주시기 바랍니다. 감사합니다.`;
+      let content = raw
+        .replace(/{고객명}/g, job.contactPerson || job.clientName || '고객')
+        .replace(/{거래처}/g, job.clientName || '')
+        .replace(/{작업명}/g, job.title || '작업')
+        .replace(/{주문명}/g, job.title || '작업')
+        .replace(/{금액}/g, (job.price || 0).toLocaleString())
+        .replace(/{회사명}/g, companyName)
+        .replace(/{연락처}/g, job.clientPhone || '')
+        .replace(/{계좌정보}/g, db.getCompanyInfo().bankAccount || '계좌번호 미등록')
+        .replace(/{계좌번호}/g, db.getCompanyInfo().bankAccount || '계좌번호 미등록');
+      setPrefix('');
+      setBody(content);
+    }
+  }, [job.status, job.id, preferCompleteTemplate]);
+
+  // 템플릿 선택 변경 시 본문 업데이트 (완료 템플릿 고정 로드 시에는 덮어쓰지 않음)
   useEffect(() => {
+    if (preferCompleteTemplate) return;
     if (!isEditingTemplates) {
         applyTemplate(selectedIdx);
     }
-  }, [selectedIdx, templates, job, isEditingTemplates]);
+  }, [selectedIdx, templates, job, isEditingTemplates, preferCompleteTemplate]);
 
   // 대화창 최하단 스크롤
   useEffect(() => {
@@ -182,65 +210,58 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
       setTemplates(newTemplates);
   };
 
+  const markSmsSent = async (phone: string, fullMsg: string, success: boolean, failMessage?: string) => {
+    const now = new Date().toISOString();
+    const updatedHistory = [
+      ...(job.history || []),
+      {
+        timestamp: now,
+        staffId: historyActorId,
+        action: success ? '문자 발송' : '문자 발송 실패',
+        details: success
+          ? `완료 문자 발송 성공 (수신: ${phone})\n내용: ${fullMsg}`
+          : `발송 실패: ${failMessage || '알 수 없음'} (수신: ${phone})`,
+      },
+    ];
+    const updatedJob: Job = {
+      ...job,
+      history: updatedHistory,
+      ...(success ? { completeSmsSentAt: now } : {}),
+    };
+    await db.updateJob(updatedJob);
+    if (onUpdate) onUpdate(updatedJob);
+    return updatedJob;
+  };
+
   const handleSendSMS = () => {
     if (!job.clientPhone) {
       alert('고객 연락처가 없습니다.');
       return;
     }
     const phone = job.clientPhone.replace(/[^0-9]/g, '');
-    const fullMsg = getFullMessage();
+    const fullMsg = getFullMessage().trim();
+    if (!fullMsg) {
+      alert('문자 내용을 입력해 주세요.');
+      return;
+    }
 
     if (smsConfig.mode === 'api') {
         if (!smsConfig.apiKey || !smsConfig.senderNumber) {
             alert("API 키 또는 발신번호가 설정되지 않았습니다. [설정 > 문자 설정]을 확인해주세요.");
             return;
         }
-        
+
         const type = isLMS ? 'LMS' : 'SMS';
-        if(confirm(`[API 발송] 아래 내용으로 전송하시겠습니까?\n\n수신: ${phone}\n타입: ${type} (${currentByteLength} Byte)\n내용: ${fullMsg}`)) {
-            console.log("Sending API Message:", {
-                to: phone,
-                from: smsConfig.senderNumber,
-                text: fullMsg,
-                type: type
-            });
-            
-            // 실제 솔라피/API 발송 연동
+        if(confirm(`[문자 발송]\n\n수신: ${phone}\n타입: ${type} (${currentByteLength} Byte)\n내용: ${fullMsg}`)) {
             import('../../services/smsService').then((smsServiceModule) => {
-                smsServiceModule.sendSmsViaSolapi(phone, fullMsg, smsConfig).then((res: any) => {
+                smsServiceModule.sendSmsViaSolapi(phone, fullMsg, smsConfig).then(async (res: any) => {
                     if (res.success) {
                         alert("문자가 성공적으로 전송되었습니다!");
-                        
-                        const updatedHistory = [
-                            ...(job.history || []),
-                            {
-                                timestamp: new Date().toISOString(),
-                                staffId: historyActorId,
-                                action: '문자 발송',
-                                details: `완료 문자 발송 성공 (수신: ${phone})\n내용: ${fullMsg}`
-                            }
-                        ];
-                        const updatedJob = { ...job, history: updatedHistory };
-                        db.updateJob(updatedJob).then(() => {
-                            if (onUpdate) onUpdate(updatedJob);
-                            onClose();
-                        });
+                        await markSmsSent(phone, fullMsg, true);
+                        onClose();
                     } else {
                         alert(`발송 실패: ${res.message}`);
-                        
-                        const updatedHistory = [
-                            ...(job.history || []),
-                            {
-                                timestamp: new Date().toISOString(),
-                                staffId: historyActorId,
-                                action: '문자 발송 실패',
-                                details: `발송 실패: ${res.message} (수신: ${phone})`
-                            }
-                        ];
-                        const updatedJob = { ...job, history: updatedHistory };
-                        db.updateJob(updatedJob).then(() => {
-                            if (onUpdate) onUpdate(updatedJob);
-                        });
+                        await markSmsSent(phone, fullMsg, false, res.message);
                     }
                 }).catch((err: any) => {
                     alert(`오류: ${err.message}`);
@@ -249,20 +270,10 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
         }
     } else {
         const encodedBody = encodeURIComponent(fullMsg);
-        
-        const updatedHistory = [
-            ...(job.history || []),
-            {
-                timestamp: new Date().toISOString(),
-                staffId: historyActorId,
-                action: '문자 발송',
-                details: `앱 연동(휴대폰과 연결) 문자 발송 시도 (수신: ${phone})\n내용: ${fullMsg}`
-            }
-        ];
-        const updatedJob = { ...job, history: updatedHistory };
-        db.updateJob(updatedJob).then(() => {
-            if (onUpdate) onUpdate(updatedJob);
-            window.location.href = `sms:${phone}?body=${encodedBody}`; 
+        // 앱 연동은 OS 문자 앱으로 넘긴 뒤 사용자가 전송 — 보내기 버튼 시점에 완료 표시
+        void markSmsSent(phone, fullMsg, true).then(() => {
+            window.location.href = `sms:${phone}?body=${encodedBody}`;
+            onClose();
         });
     }
   };
@@ -447,8 +458,8 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
                 <div className="flex flex-col items-start max-w-[70%]">
                   <span className="text-[9px] font-black text-slate-600 dark:text-slate-400 ml-1 mb-0.5">알림 서비스</span>
                   <div className="bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-200 p-2.5 rounded-2xl rounded-tl-none text-[11px] leading-relaxed shadow-sm font-medium">
-                    {job.clientName}님께 완료 알림톡/문자를 보낼 준비가 되었습니다.<br/>
-                    상단에서 메시지 양식을 선택하시거나 하단 창에서 자유롭게 편집 후 전송해 주세요!
+                    {job.clientName}님께 안내를 보낼 준비가 되었습니다.<br/>
+                    상단에서 메시지 양식을 고르거나 아래 창에서 자유롭게 편집한 뒤 보내 주세요.
                   </div>
                 </div>
               </div>
@@ -574,7 +585,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
                     <span className="text-[10px] font-black tracking-tight">이메일</span>
                 </button>
 
-                {/* 카톡 복사 (카톡 옐로우 포인트) */}
+                {/* 카톡 복사 */}
                 <button
                     onClick={handleCopyForKakao}
                     className="flex flex-col items-center justify-center gap-1 py-2.5 bg-[#FEE500] hover:bg-[#FADA0A] text-[#3c1e1e] rounded-xl shadow transition-all active:scale-95 border border-[#e2cc00]"
@@ -584,7 +595,7 @@ export const ClientContactModal: React.FC<ClientContactModalProps> = ({ job, onC
                 </button>
               </div>
               <p className="text-[9px] font-bold text-slate-400 text-center select-none mt-1">
-                * 카톡 전송: [카톡 복사] 후 PC 카톡 대화창에 붙여넣기(Ctrl+V) 하세요.
+                카톡으로 보내려면 [카톡 복사] 후 PC 카톡 대화창에 붙여넣기(Ctrl+V) 하세요.
               </p>
             </div>
 

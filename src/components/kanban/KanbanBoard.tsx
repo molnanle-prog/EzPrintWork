@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { db, getErrorMessage } from '../../services/dataService';
 import { Job, Staff, Priority, JobStatusDefinition, JobHistoryLog } from '../../types';
 import { JobDetailModal } from '../common/JobDetailModal';
+import { ClientContactModal } from '../common/ClientContactModal';
 import { KanbanColumn } from './KanbanColumn';
 import { KanbanCard } from './KanbanCard';
 import { useAuth } from '../../contexts/AuthContext';
@@ -63,6 +64,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [kanbanLayout, setKanbanLayout] = useState<KanbanLayoutConfig>(() => db.getKanbanLayoutConfig());
   
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  /** 납품/완료 이동 후 완료 문자창 */
+  const [smsContactJob, setSmsContactJob] = useState<Job | null>(null);
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [isCreatingJob, setIsCreatingJob] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
@@ -270,66 +273,40 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     let jobsToSave = collectChangedJobs(allJobs, columnJobs, draggedJobId, draggedJob.status, newStatusKey);
     db.applyLocalJobUpdates(jobsToSave);
 
+    let openSmsAfterSave: Job | null = null;
     if (newStatusKey === 'DELIVERY' && draggedJob.status !== 'DELIVERY') {
         const smsConfig = db.getSmsConfig();
         if (smsConfig && smsConfig.sendOnComplete) {
             const clientInfo = db.getClients().find(c => c.name === draggedJob.clientName);
             
             if (clientInfo && clientInfo.sendSmsOnComplete === false) {
-                toast.info(`'${draggedJob.clientName}' 거래처는 알림 문자 수신 거부 상태이므로 발송을 건너뜁니다.`);
+                toast.info(`'${draggedJob.clientName}' 거래처는 알림 문자 수신 거부 상태이므로 문자창을 건너뜁니다.`);
             } else {
                 const targetPhone = resolveClientSmsNumber(clientInfo || {}, draggedJob.clientPhone);
                 
                 if (targetPhone) {
-                    const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-                    const { replaceTemplateVariables, sendCompleteSms } = await import('../../services/smsService');
-                    
-                    const rawTemplate = smsConfig.completedMessageTemplate || 
-                      `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 찾으러 내방해 주시기 바랍니다. 감사합니다.`;
-                    
-                    const jobForSms = { ...draggedJob, clientPhone: targetPhone };
-                    const previewMsg = replaceTemplateVariables(rawTemplate, jobForSms, companyName);
-                    
-                    const isConfirmed = await showConfirm(
-                      `[완료 알림 문자 발송]\n\n거래처: ${draggedJob.clientName}\n수신 번호: ${targetPhone}\n\n고객님께 완료 안내 문자를 전송하시겠습니까?\n\n[문자 미리보기]\n${previewMsg}`
+                    const openSms = await showConfirm(
+                      `[완료 안내 문자]\n\n거래처: ${draggedJob.clientName}\n수신 번호: ${targetPhone}\n\n문자창을 띄울까요?\n(내용을 확인·수정한 뒤 보내기 버튼으로 전송합니다.)`
                     );
-                    
-                    if (isConfirmed) {
-                        const res = await sendCompleteSms(jobForSms, smsConfig, companyName);
-                        if (res.success) {
-                            newHistory.push({
-                                timestamp: new Date().toISOString(),
-                                staffId: getStaffIdForUser(staff, currentUser) || currentUser.id,
-                                action: '문자 발송',
-                                details: `완료 문자 발송 성공 (수신: ${targetPhone})\n내용: ${res.sentContent}`
-                            });
-                            await showAlert('완료 알림 문자가 정상적으로 발송되었습니다.');
-                        } else {
-                            newHistory.push({
-                                timestamp: new Date().toISOString(),
-                                staffId: getStaffIdForUser(staff, currentUser) || currentUser.id,
-                                action: '문자 발송 실패',
-                                details: `발송 실패: ${res.message} (수신: ${targetPhone})`
-                            });
-                            await showAlert(`문자 발송 실패: ${res.message}`);
-                        }
+                    if (openSms) {
+                        openSmsAfterSave = {
+                            ...updatedJob,
+                            clientPhone: targetPhone,
+                            history: newHistory,
+                        };
                     }
+                } else {
+                    toast.info('수신 번호가 없어 문자창을 열 수 없습니다.');
                 }
             }
-        }
-
-        if (newHistory.length !== updatedJob.history.length) {
-            updatedJob.history = newHistory;
-            const draggedIndex = columnJobs.findIndex(j => j.id === draggedJobId);
-            if (draggedIndex !== -1) {
-                columnJobs[draggedIndex] = { ...columnJobs[draggedIndex], history: newHistory };
-            }
-            jobsToSave = collectChangedJobs(allJobs, columnJobs, draggedJobId, draggedJob.status, newStatusKey);
         }
     }
 
     try {
         await db.saveJobsPartial(jobsToSave);
+        if (openSmsAfterSave) {
+            setSmsContactJob(openSmsAfterSave);
+        }
     } catch (error) {
         showAlert(getErrorMessage(error));
         loadBoardData();
@@ -1051,7 +1028,27 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 showAlert(getErrorMessage(error));
              }
           }}
+          onRequestCompleteSms={(jobForSms) => {
+            const clientInfo = db.getClients().find((c) => c.name === jobForSms.clientName);
+            const phone = resolveClientSmsNumber(clientInfo || {}, jobForSms.clientPhone);
+            if (!phone) {
+              toast.info('수신 번호가 없어 문자창을 열 수 없습니다.');
+              return;
+            }
+            setSmsContactJob({ ...jobForSms, clientPhone: phone });
+          }}
           onNavigateToQuote={onNavigateToQuote}
+        />
+      )}
+
+      {smsContactJob && (
+        <ClientContactModal
+          job={smsContactJob}
+          preferCompleteTemplate
+          onClose={() => setSmsContactJob(null)}
+          onUpdate={() => {
+            loadBoardData();
+          }}
         />
       )}
 

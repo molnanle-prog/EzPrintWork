@@ -3,7 +3,8 @@ import { Job, Priority, PaymentStatus, JobItem } from '../../types';
 import { 
   MoreVertical, User, AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, 
   GripHorizontal, Layers, Users, FileText, FileWarning, 
-  FolderOpen, Play, CheckCircle, ShieldAlert, ArrowBigUp, ArrowBigDown
+  FolderOpen, Play, CheckCircle, ShieldAlert, ArrowBigUp, ArrowBigDown, ClipboardList,
+  MessageSquare
 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -14,7 +15,9 @@ import {
   addUserToJobAssignees,
   removeUserFromJobAssignees,
   getStaffIdForUser,
+  getJobReceiverName,
 } from '../../utils/staffMatch';
+import { hasCompleteSmsSent } from '../../utils/jobSms';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import {
@@ -168,6 +171,21 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     );
   };
 
+  const smsSent = hasCompleteSmsSent(job);
+  const renderClientName = (className: string, fallback = '') => (
+    <span className={`inline-flex items-center gap-1 min-w-0 max-w-full ${className}`} title={job.clientName || fallback}>
+      <span className="truncate">{job.clientName || fallback}</span>
+      {smsSent && (
+        <span
+          className="shrink-0 inline-flex items-center text-emerald-600 dark:text-emerald-400"
+          title="완료 안내 문자 발송됨"
+        >
+          <MessageSquare size={11} className="fill-emerald-500/20" />
+        </span>
+      )}
+    </span>
+  );
+
   const sortableStyle: React.CSSProperties = isDragOverlay
     ? {}
     : {
@@ -194,6 +212,49 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   
   const assignedCount = (job.assignedStaffIds?.length || (job.assignedStaffId ? 1 : 0));
   const isMultiStaff = assignedCount > 1 || staffName.includes(',');
+  const receiverName = getJobReceiverName(job, db.getStaff());
+
+  const renderReceiverAssigneeFooter = (opts?: { iconSize?: number; textClass?: string }) => {
+    const iconSize = opts?.iconSize ?? 12;
+    const textClass = opts?.textClass ?? 'text-[10px]';
+    const receiverTip = receiverName ? `접수자: ${receiverName}` : '접수자: 없음';
+    const assigneeTip = `담당자: ${staffName}`;
+    return (
+      <div className={`flex items-center gap-1.5 min-w-0 pointer-events-auto ${textClass}`}>
+        <div
+          className="inline-flex items-center gap-1 min-w-0 shrink-0"
+          title={receiverTip}
+        >
+          <div className="w-5 h-5 rounded-full flex items-center justify-center shrink-0 bg-slate-100 dark:bg-slate-700 text-slate-400">
+            <ClipboardList size={iconSize} />
+          </div>
+          <span className="font-normal text-slate-500 dark:text-slate-400 truncate max-w-[72px]">
+            {receiverName || '-'}
+          </span>
+        </div>
+        <span className="text-slate-300 dark:text-slate-600 shrink-0" aria-hidden>·</span>
+        <div
+          className="inline-flex items-center gap-1 min-w-0"
+          title={assigneeTip}
+        >
+          <div
+            className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${
+              isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'
+            }`}
+          >
+            {isMultiStaff ? <Users size={iconSize} /> : <User size={iconSize} />}
+          </div>
+          <span
+            className={`kanban-card-meta font-normal truncate ${
+              isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'
+            }`}
+          >
+            {staffName}
+          </span>
+        </div>
+      </div>
+    );
+  };
 
   // --- Linear 스타일 단축키 (Keyboard Shortcuts) 구현 ---
   useEffect(() => {
@@ -479,8 +540,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         </div>
         {isHovered ? (
           <div className="mt-1 space-y-0.5">
-            <div className="kanban-card-subtitle text-[10px] text-slate-600 dark:text-slate-300 truncate" title={job.clientName}>
-              {job.clientName || '고객명 없음'}
+            <div className="kanban-card-subtitle text-[10px] text-slate-600 dark:text-slate-300 truncate">
+              {renderClientName('', '고객명 없음')}
             </div>
             <div className="kanban-tray-price text-[10px] font-mono font-bold">
               {job.price ? `${job.price.toLocaleString()}원` : '미정'}
@@ -550,8 +611,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           <div className="kanban-card-title text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate" title={job.title}>
             {job.title}
           </div>
-          <div className="kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate" title={job.clientName}>
-            {job.clientName}
+          <div className="kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate">
+            {renderClientName('')}
           </div>
         </div>
         <span className="kanban-tray-price text-[10px] font-mono font-bold shrink-0">
@@ -609,7 +670,9 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
          </div>
          <div className="flex-1 min-w-0 flex items-center gap-2">
             <span className="kanban-card-title font-semibold text-slate-800 dark:text-slate-200 text-sm truncate">{job.title}</span>
-            <span className="kanban-card-subtitle text-xs truncate hidden xl:inline">- {job.clientName}</span>
+            <span className="kanban-card-subtitle text-xs truncate hidden xl:inline">
+              - {renderClientName('')}
+            </span>
             {isMultiJob && (
                 <span className="text-[9px] bg-slate-600 dark:bg-slate-600 text-white px-1.5 py-0.5 rounded-md flex items-center gap-0.5 font-semibold shrink-0">
                     <Layers size={9} /> {subJobCount}
@@ -742,7 +805,9 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           <h4 className="kanban-card-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1 text-slate-800 dark:text-slate-100" title={job.title}>
             {job.title}
           </h4>
-          <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400">{job.clientName}</p>
+          <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400">
+            {renderClientName('')}
+          </p>
         </div>
 
         {/* 3. Specs & Giant Quantity Box */}
@@ -765,16 +830,9 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           </div>
         </div>
 
-        {/* 4. Footer: Assignee & Due Date (Enlarged) */}
+        {/* 4. Footer: 접수자(좌) · 담당자 · D-Day */}
         <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
-               {isMultiStaff ? <Users size={14} /> : <User size={14} />}
-            </div>
-            <span className={`text-[12px] font-normal truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-700 dark:text-slate-300'}`} title={staffName}>
-                {staffName}
-            </span>
-          </div>
+          {renderReceiverAssigneeFooter({ iconSize: 14, textClass: 'text-[12px]' })}
           {!isDone && (
             <span className={ddayBadgeClass} title="납기 D-Day">
               {ddayLabel}
@@ -828,6 +886,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         ${cardStyleClass}
         ${completedOutstandingClass}
         ${isManagementPanel ? 'hover:shadow-md' : 'active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50'}
+        ${showDetails ? 'shrink-0 z-20' : 'min-h-[2.75rem]'}
       `}
       onClick={handleCardClick}
       onContextMenu={handleCardContextMenu}
@@ -849,8 +908,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         }
       `}</style>
 
-      {/* 1. Header: Badges & Gripper */}
-      <div className="flex justify-between items-center pointer-events-none">
+      {/* 1. Header: Badges & Gripper — 카드가 줄어들 때 여기부터 잘림 (제목 우선) */}
+      <div className={`flex justify-between items-center pointer-events-none min-h-0 overflow-hidden ${showDetails ? 'shrink-0' : 'shrink'}`}>
         <div className="flex gap-1.5 flex-wrap items-center min-w-0 flex-1">
            {!isDone && (
              <span className={ddayBadgeClass} title="납기 D-Day">
@@ -950,8 +1009,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         </div>
       </div>
       
-      {/* 2. Main Title and Client */}
-      <div className="pointer-events-none flex flex-col gap-0.5">
+      {/* 2. Main Title — 카드가 줄어들어도 제목은 유지, 거래처명은 여유 있을 때만 */}
+      <div className="pointer-events-none flex flex-col gap-0.5 shrink-0 min-w-0">
         {isManagementPanel && managementPrepaidBadge && (
           <div className="flex justify-end -mb-0.5">
             {managementPrepaidBadge.kind === 'deducted' && (
@@ -979,8 +1038,14 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         <h4 className="kanban-card-title font-medium text-[15px] lg:text-[16px] leading-snug truncate text-slate-800 dark:text-slate-100" title={job.title}>
           {job.title}
         </h4>
-        <p className="kanban-card-subtitle text-xs truncate text-slate-500 dark:text-slate-400">{job.clientName}</p>
       </div>
+      <p
+        className={`kanban-card-subtitle text-xs truncate text-slate-500 dark:text-slate-400 pointer-events-none min-h-0 overflow-hidden ${
+          showDetails ? 'shrink-0' : 'shrink'
+        }`}
+      >
+        {renderClientName('')}
+      </p>
 
       {/* 3. 상세 정보 컨테이너 (스펙 그리드, 품목 배지, 담당자/D-day 푸터 통합 아코디언) */}
       <div 
@@ -1013,16 +1078,9 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
 
 
 
-        {/* 3-C. Footer: Assignee & Due Date */}
+        {/* 3-C. Footer: 접수자(좌) · 담당자 · D-Day */}
         <div className="flex items-center justify-between pt-2.5 border-t border-slate-100 dark:border-slate-800/80 text-[10px] text-slate-400 dark:text-slate-500 mt-0.5 pointer-events-none shrink-0">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 ${isMyJob ? 'bg-blue-100 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400' : 'bg-slate-100 dark:bg-slate-700 text-slate-400'}`}>
-               {isMultiStaff ? <Users size={12} /> : <User size={12} />}
-            </div>
-            <span className={`kanban-card-meta text-[10px] font-normal truncate ${isMyJob ? 'text-blue-700 dark:text-blue-400' : 'text-slate-600 dark:text-slate-400'}`} title={staffName}>
-                {staffName}
-            </span>
-          </div>
+          {renderReceiverAssigneeFooter({ iconSize: 12, textClass: 'text-[10px]' })}
           {!isDone && (
             <span className={ddayBadgeClass} title="납기 D-Day">
               {ddayLabel}

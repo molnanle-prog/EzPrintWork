@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { db, formatPhoneNumber } from '../../services/dataService';
 import { SmsConfig } from '../../types';
-import { MessageSquare, Save, Smartphone, Server, CheckCircle2, Lock, HelpCircle, Send, AlertTriangle, Wallet, RefreshCw, Loader2 } from 'lucide-react';
+import { MessageSquare, Save, Smartphone, Server, CheckCircle2, Lock, HelpCircle, Send, AlertTriangle, Wallet, RefreshCw, Loader2, Inbox } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { fetchSolapiBalance, sendSmsViaSolapi, SolapiBalanceInfo } from '../../services/smsService';
@@ -26,7 +26,7 @@ export const SmsManager: React.FC = () => {
   const [balanceError, setBalanceError] = useState<string | null>(null);
   const [isLoadingBalance, setIsLoadingBalance] = useState(false);
   
-  const { showAlert, showConfirm } = useDialog();
+  const { showAlert } = useDialog();
   const { currentUser, canAccessAdminSettings } = useAuth();
  
   useEffect(() => {
@@ -40,9 +40,6 @@ export const SmsManager: React.FC = () => {
       completedMessageTemplate: savedConfig.completedMessageTemplate || `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 수령하러 방문해 주시기 바랍니다. 감사합니다.`,
       billingMessageTemplate: savedConfig.billingMessageTemplate || `[{회사명}] 입금 요청 안내: 주문하신 '{주문명}'의 결제 계좌 정보입니다. - 계좌: {계좌정보}`,
       sendOnComplete: savedConfig.sendOnComplete !== undefined ? savedConfig.sendOnComplete : true,
-      pfId: savedConfig.pfId || '',
-      useAlimtalk: savedConfig.useAlimtalk || false,
-      alimtalkTemplates: savedConfig.alimtalkTemplates || {}
     });
   }, []);
 
@@ -95,7 +92,7 @@ export const SmsManager: React.FC = () => {
     
     try {
       await db.saveSmsConfig(config);
-      await showAlert('문자 발송 및 알림 설정이 안전하게 저장되었습니다.');
+      await showAlert('문자 발송 설정이 저장되었습니다.');
     } catch (e: any) {
       await showAlert(`설정 저장 중 오류가 발생했습니다: ${e.message}`);
     }
@@ -162,6 +159,20 @@ export const SmsManager: React.FC = () => {
         )}
       </div>
 
+          <div className="mb-6 rounded-xl border border-amber-200 dark:border-amber-900/50 bg-amber-50/80 dark:bg-amber-950/20 p-4 space-y-2">
+            <h4 className="text-sm font-bold text-amber-900 dark:text-amber-200 flex items-center gap-2">
+              <Inbox size={16} />
+              받은 문자는 앱이 자동으로 가져오지 않습니다
+            </h4>
+            <p className="text-xs text-amber-900/80 dark:text-amber-200/80 leading-relaxed">
+              지금 화면·작업 이력에 보이는 것은 <strong>이 프로그램에서 보낸 문자</strong>입니다.
+              고객이 매장 휴대폰으로 보낸 문자는 Windows가 문자함을 열어주지 않아서 앱이 읽을 수 없습니다.
+              받은 주문 문자는 복사한 뒤, 신규 접수 창의 「문자·통화 넣기」에 붙여넣으면 칸을 채울 수 있습니다.
+            </p>
+            <p className="text-[11px] text-amber-800/70 dark:text-amber-300/70 leading-relaxed">
+              솔라피 발신번호로도 고객 회신이 들어오지 않습니다. 수신전용 번호를 따로 쓰지 않는 한, 받은 문자 목록을 API로 불러올 수는 없습니다.
+            </p>
+          </div>
       {canShowSolapiBalance && (
         <div className="mb-6 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/80 dark:bg-emerald-950/20 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -271,7 +282,7 @@ export const SmsManager: React.FC = () => {
                 <li><strong>PC 설정:</strong> Windows 시작 단추 누르고 <span className="font-semibold">"휴대폰과 연결" (Phone Link)</span> 앱을 찾아 실행한 뒤 [Android]를 선택합니다.</li>
                 <li><strong>스마트폰 설정:</strong> 갤럭시폰 상단 바를 내려 <span className="font-semibold">'Windows와 연결'</span>을 꾹 누르고 PC 화면에 생성된 QR코드를 스캔해 연동을 마칩니다.</li>
                 <li><strong>권한 허용:</strong> 스마트폰 화면에 나타나는 연락처, 문자 읽기/보내기 등 필수 권한을 모두 <span className="font-semibold text-blue-600 dark:text-blue-400">'허용'</span>해 줍니다.</li>
-                <li><strong>작동 확인:</strong> 이제 프로그램에서 [납품/완료] 단계 이동 시 완료 문자가 팝업으로 나타나며, 클립보드 복사 및 문자 쓰기 창으로 자동 연결됩니다.</li>
+                <li><strong>작동 확인:</strong> [납품/완료] 단계 이동 시 「문자창을 띄울까요?」가 뜨고, 문자창에서 내용을 확인·수정한 뒤 보내기로 전송합니다.</li>
               </ol>
             </div>
           )}
@@ -480,7 +491,7 @@ export const SmsManager: React.FC = () => {
                 />
                 <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-blue-600"></div>
               </label>
-              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">작업이 [납품/완료]로 바뀔 때 알림 문자 발송 기능 활성화</span>
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-300">작업이 [납품/완료]로 바뀔 때 문자창 열기 제안 활성화</span>
             </div>
 
             {config.sendOnComplete && (

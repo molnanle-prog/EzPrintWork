@@ -4,6 +4,7 @@ import {
     JoinRequest, ProductProcessingSets, QuoteTemplateSettings
 } from '../types';
 import { normalizeKanbanLayoutConfig, normalizeStatusDefinition } from '../utils/kanbanLayout';
+import { dedupeSizeLabels, normalizeSizeLabel, sizesMatch } from '../utils/sizeLabel';
 import { toast } from 'sonner';
 import { 
     collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, runTransaction,
@@ -374,7 +375,7 @@ function mergeProductDefinition(template: JobTypeDefinition, source: JobTypeDefi
             ...template,
             ...source,
             name,
-            sizes: unionStringLists(template.sizes, source.sizes),
+            sizes: dedupeSizeLabels(unionStringLists(template.sizes, source.sizes)),
             paperTypes: unionStringLists(template.paperTypes, source.paperTypes),
             paperWeights: unionStringLists(template.paperWeights, source.paperWeights),
             processings: unionStringLists(template.processings, source.processings),
@@ -386,7 +387,7 @@ function mergeProductDefinition(template: JobTypeDefinition, source: JobTypeDefi
         ...template,
         ...source,
         name,
-        sizes: mergeStringListField(source.sizes, template.sizes),
+        sizes: dedupeSizeLabels(mergeStringListField(source.sizes, template.sizes)),
         paperTypes: mergeStringListField(source.paperTypes, template.paperTypes),
         paperWeights: mergeStringListField(source.paperWeights, template.paperWeights),
         processings: mergeStringListField(source.processings, template.processings),
@@ -520,11 +521,20 @@ function resolveBookletProcessingSets(def: JobTypeDefinition | undefined, typeNa
 export function normalizeProductDefinitions(definitions: JobTypeDefinition[]): { definitions: JobTypeDefinition[]; changed: boolean } {
     let changed = false;
     const sanitized = definitions.map((def) => {
-        if (!isBookletProductType(def.name)) return def;
-        const paperWeights = sanitizeBookletPaperWeights(def.paperWeights);
-        if (stringArraysEqual(paperWeights, def.paperWeights)) return def;
-        changed = true;
-        return { ...def, paperWeights };
+        let next = def;
+        if (isBookletProductType(def.name)) {
+            const paperWeights = sanitizeBookletPaperWeights(def.paperWeights);
+            if (!stringArraysEqual(paperWeights, def.paperWeights)) {
+                changed = true;
+                next = { ...next, paperWeights };
+            }
+        }
+        const sizes = dedupeSizeLabels(next.sizes);
+        if (!stringArraysEqual(sizes, next.sizes)) {
+            changed = true;
+            next = { ...next, sizes };
+        }
+        return next;
     });
     return { definitions: sanitized, changed };
 }
@@ -567,16 +577,16 @@ export class DataService {
     private isReady = false;
     private unsubscribeList: (() => void)[] = [];
     private syncPulseUnsub: (() => void) | null = null;
-    private configPollTimer: ReturnType<typeof setInterval> | null = null;
     private lastPublishedGatewayUrls: string[] = [];
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
     private lastWriteErrorToastAt = 0;
     private lastWriteErrorToastKey = '';
-    /** LicenseFlow 버전 표용 — NAS 모드 포함 tenant 활동 보고 쓰로틀 */
-    private lastTenantActivityAt = 0;
-    private static readonly TENANT_ACTIVITY_MIN_INTERVAL_MS = 2 * 60 * 1000;
+    /** 관리자 세션 시작 보고를 런타임당 1회로 제한 */
+    private tenantSessionStartReported = false;
+    private tenantSessionEndReported = false;
+    private static readonly ADMIN_SESSION_FLAG_PREFIX = 'ezpw_admin_session_open:';
     private syncUserRole: 'admin' | 'staff' | 'superadmin' | null = null;
     /** jobs 핫 캐시 — 로그인 1회 pull + pulse 시 변경분만 getDoc */
     private operationalJobs: Job[] = [];
@@ -597,6 +607,8 @@ export class DataService {
     private lastAppliedSettingsAt: string | null = null;
     private lastLocalJobWriteAt = 0;
     private pulseHandling = false;
+    /** handling 중 들어온 최신 pulse — 드롭하지 않고 이어서 적용 (PC 간 staff/settings 불일치 방지) */
+    private pendingPulseData: Record<string, unknown> | null = null;
     private liveMirrorPushTimer: ReturnType<typeof setTimeout> | null = null;
     /** Auth에서 주입 — 상품/후가공 저장 권한 */
     private sessionCanManageProductProcessing = false;
@@ -1352,6 +1364,8 @@ export class DataService {
         this.lastAppliedClientsAt = null;
         this.lastAppliedMessagesAt = null;
         this.lastAppliedSettingsAt = null;
+        this.pulseHandling = false;
+        this.pendingPulseData = null;
         this.cloudDegraded = false;
         this.localOperationalReady = false;
         this.webMirrorReady = false;
@@ -1420,6 +1434,8 @@ export class DataService {
         this.paymentJobsLoaded = false;
         this.lazyCollectionsLoaded.clear();
         this.localPulseMarkers.clear();
+        this.tenantSessionStartReported = false;
+        this.tenantSessionEndReported = false;
         this.lastNasMirrorAt = null;
         this.lastMirrorReceivedAt = null;
         this.lastNasArchiveAt = null;
@@ -1821,7 +1837,7 @@ export class DataService {
             this.runDailyAutoBackup().catch((err) => console.error('Auto backup error:', err));
         }
         void this.initializeArchiveLayer();
-        this.updateTenantActivity().catch(() => {});
+        this.reportTenantSessionStart().catch(() => {});
         void this.restoreActiveLazyPulls();
         if (this.paymentJobsWanted) void this.ensurePaymentJobsSync();
         void this.maybeBootstrapQuotes();
@@ -2327,6 +2343,7 @@ export class DataService {
         'companyInfo',
         'smsConfig',
         'quoteTemplate',
+        'receptionAssist',
     ] as const;
 
     /** 상품·후가공만 — 작업 push로 절대 덮지 않음, 관리자 저장 시에만 게시 */
@@ -2578,14 +2595,127 @@ export class DataService {
         return Array.from(map.values());
     }
 
+    /** 폴링 비교용 — UI에 보이는 작업 필드 (이력 본문 제외, 길이·마지막만) */
+    private jobPollSyncSignature(job: Job): string {
+        const ids = Array.isArray(job.assignedStaffIds) ? [...job.assignedStaffIds].sort().join(',') : '';
+        const history = job.history || [];
+        const lastHistory = history.length ? history[history.length - 1] : null;
+        let specsKey = '';
+        try {
+            specsKey = JSON.stringify(job.specs ?? null);
+        } catch {
+            specsKey = String(job.specs ?? '');
+        }
+        let subKey = '';
+        try {
+            subKey = JSON.stringify(
+                (job.subJobs || []).map((s) => ({
+                    id: s.id,
+                    type: s.type,
+                    completed: !!s.completed,
+                    lineQuote: s.lineQuote ?? null,
+                    specs: s.specs ?? null,
+                }))
+            );
+        } catch {
+            subKey = String((job.subJobs || []).length);
+        }
+        return [
+            job.id || '',
+            String(job.rev ?? ''),
+            job.updatedAt || '',
+            job.createdAt || '',
+            job.status || '',
+            job.paymentStatus || '',
+            job.priority || '',
+            job.type || '',
+            String(job.price ?? ''),
+            String(job.priceIncludesVat ?? ''),
+            String(job.progress ?? ''),
+            job.dueDate || '',
+            job.completedAt || '',
+            job.managementCardPinnedAt || '',
+            job.boardHiddenAt || '',
+            job.boardHiddenBy || '',
+            job.boardHiddenReason || '',
+            job.assignedStaffId || '',
+            ids,
+            job.receivedByStaffId || '',
+            job.completeSmsSentAt || '',
+            job.clientName || '',
+            job.contactPerson || '',
+            job.clientPhone || '',
+            job.title || '',
+            job.description || '',
+            specsKey,
+            subKey,
+            String(history.length),
+            lastHistory?.timestamp || '',
+            lastHistory?.action || '',
+            lastHistory?.staffId || '',
+            lastHistory?.details || '',
+        ].join('\u001f');
+    }
+
+    private jobsPollSyncDigest(jobs: Job[]): string {
+        if (!jobs.length) return '';
+        const parts: string[] = new Array(jobs.length);
+        for (let i = 0; i < jobs.length; i++) {
+            parts[i] = this.jobPollSyncSignature(jobs[i]);
+        }
+        parts.sort();
+        return parts.join('\u001e');
+    }
+
+    private jobsMeaningfullyChanged(before: Job[], after: Job[]): boolean {
+        if (before.length !== after.length) return true;
+        return this.jobsPollSyncDigest(before) !== this.jobsPollSyncDigest(after);
+    }
+
+    /** 거래처 — 연락처·메모·선불 등 UI 필드 누락 없이 비교 (PC 간 화면 불일치 방지) */
+    private clientPollSyncPayload(c: Client): Record<string, unknown> {
+        return {
+            id: c.id || '',
+            name: c.name || '',
+            businessRegistrationNumber: c.businessRegistrationNumber || '',
+            contactPerson: c.contactPerson || '',
+            phone: c.phone || '',
+            email: c.email || '',
+            address: c.address || '',
+            note: c.note || '',
+            notebook: c.notebook ?? null,
+            contacts: c.contacts || [],
+            sendSmsOnComplete: c.sendSmsOnComplete ?? null,
+            customSmsNumber: c.customSmsNumber || '',
+            prepaidBalance: c.prepaidBalance ?? 0,
+            prepaidLedger: c.prepaidLedger || [],
+            rev: c.rev ?? null,
+            updatedAt: c.updatedAt || '',
+            createdAt: c.createdAt || '',
+            order: c.order ?? null,
+        };
+    }
+
+    private clientsPollSyncDigest(clients: Client[]): string {
+        if (!clients.length) return '';
+        const normalized = clients
+            .map((c) => this.clientPollSyncPayload(c))
+            .sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        try {
+            return JSON.stringify(normalized);
+        } catch {
+            return normalized.map((c) => String(c.id)).join('\u001e');
+        }
+    }
+
     private recordJobTombstone(jobId: string): void {
         if (!this.tenantId || !jobId) return;
         this.jobTombstones.set(jobId, Date.now());
         saveJobTombstoneMap(this.tenantId, this.jobTombstones);
     }
 
-    private applyJobTombstonesFromMirror(list: JobTombstone[]): void {
-        if (!list?.length) return;
+    private applyJobTombstonesFromMirror(list: JobTombstone[]): boolean {
+        if (!list?.length) return false;
         let changed = false;
         for (const row of list) {
             if (!row?.id || !row.deletedAt) continue;
@@ -2601,6 +2731,7 @@ export class DataService {
             if (this.tenantId) saveJobTombstoneMap(this.tenantId, this.jobTombstones);
             this.purgeTombstonedJobsFromCaches();
         }
+        return changed;
     }
 
     private purgeTombstonedJobsFromCaches(): void {
@@ -2620,28 +2751,52 @@ export class DataService {
         settings?: Record<string, unknown>;
         updatedAt?: string;
         companyName?: string;
-    }) {
+    }): boolean {
+        let changed = false;
         if (situation.deletedClients?.length) {
-            this.applyClientTombstonesFromMirror(situation.deletedClients);
+            if (this.applyClientTombstonesFromMirror(situation.deletedClients)) {
+                changed = true;
+            }
         }
         if (Array.isArray(situation.clients)) {
+            const before = this.clientsPollSyncDigest((this.data['clients'] || []) as Client[]);
             // 통째 교체 금지 — 로컬 신규 유지 + tombstone으로 삭제 유지
             this.data['clients'] = this.mergeClientsById(
                 (this.data['clients'] || []) as Client[],
                 situation.clients as Client[]
             );
+            if (this.clientsPollSyncDigest((this.data['clients'] || []) as Client[]) !== before) {
+                changed = true;
+            }
         } else if (situation.deletedClients?.length) {
+            const beforeLen = ((this.data['clients'] || []) as Client[]).length;
             this.purgeTombstonedClientsFromCache();
+            if (((this.data['clients'] || []) as Client[]).length !== beforeLen) {
+                changed = true;
+            }
         }
         if (situation.settings && typeof situation.settings === 'object') {
+            const beforeSettings = JSON.stringify(this.getSettingsObj());
+            const beforeCompany = this.mirrorCompanyName || '';
             this.mergeSettingsFromMirror(
                 situation.settings as Record<string, unknown>,
                 situation.companyName,
                 situation.updatedAt
             );
+            if (
+                JSON.stringify(this.getSettingsObj()) !== beforeSettings ||
+                (this.mirrorCompanyName || '') !== beforeCompany
+            ) {
+                changed = true;
+            }
         } else if (situation.companyName?.trim()) {
-            this.mirrorCompanyName = situation.companyName.trim();
+            const next = situation.companyName.trim();
+            if (this.mirrorCompanyName !== next) {
+                this.mirrorCompanyName = next;
+                changed = true;
+            }
         }
+        return changed;
     }
 
     private recordClientTombstone(clientId: string): void {
@@ -2650,8 +2805,8 @@ export class DataService {
         saveClientTombstoneMap(this.tenantId, this.clientTombstones);
     }
 
-    private applyClientTombstonesFromMirror(list: ClientTombstone[]): void {
-        if (!list?.length) return;
+    private applyClientTombstonesFromMirror(list: ClientTombstone[]): boolean {
+        if (!list?.length) return false;
         let changed = false;
         for (const row of list) {
             if (!row?.id || !row.deletedAt) continue;
@@ -2667,6 +2822,7 @@ export class DataService {
             if (this.tenantId) saveClientTombstoneMap(this.tenantId, this.clientTombstones);
             this.purgeTombstonedClientsFromCache();
         }
+        return changed;
     }
 
     private purgeTombstonedClientsFromCache(): void {
@@ -2833,8 +2989,12 @@ export class DataService {
             ) {
                 this.lastNasArchiveAt = archiveSnap.updatedAt;
                 if (archiveSnap.jobs.length > 0) {
-                    mergedJobs = this.mergeJobsByUpdatedAt(takeJobs(), archiveSnap.jobs);
-                    changed = true;
+                    const beforeJobs = takeJobs();
+                    const nextJobs = this.mergeJobsByUpdatedAt(beforeJobs, archiveSnap.jobs);
+                    if (this.jobsMeaningfullyChanged(beforeJobs, nextJobs)) {
+                        mergedJobs = nextJobs;
+                        changed = true;
+                    }
                 }
             }
 
@@ -2861,8 +3021,9 @@ export class DataService {
                 this.lastNasMirrorAt = situation.updatedAt;
 
                 if (situation.deletedJobs?.length) {
-                    this.applyJobTombstonesFromMirror(situation.deletedJobs);
-                    changed = true;
+                    if (this.applyJobTombstonesFromMirror(situation.deletedJobs)) {
+                        changed = true;
+                    }
                 }
 
                 if (
@@ -2870,18 +3031,24 @@ export class DataService {
                     (situation.deletedClients?.length || 0) > 0 ||
                     (situation.settings && Object.keys(situation.settings).length > 0)
                 ) {
-                    this.applySituationMirrorMeta(situation);
-                    changed = true;
+                    if (this.applySituationMirrorMeta(situation)) {
+                        changed = true;
+                    }
                 }
             }
 
-            // 관리카드·보드숨김 — 미러 updatedAt이 같아도 매 폴링마다 병합
+            // 관리카드·보드숨김 — 미러 updatedAt이 같아도 매 폴링마다 병합 계산
             // (직원 PC가 칸반만 옮겨 rev가 높으면 핀을 놓치는 문제 방지)
+            // 결과가 동일하면 SQLite 전체 저장·notify 는 건너뜀
             if (situation?.jobs?.length) {
-                mergedJobs = this.mergeJobsByUpdatedAt(takeJobs(), situation.jobs);
-                changed = true;
+                const beforeJobs = takeJobs();
+                const nextJobs = this.mergeJobsByUpdatedAt(beforeJobs, situation.jobs);
+                if (this.jobsMeaningfullyChanged(beforeJobs, nextJobs)) {
+                    mergedJobs = nextJobs;
+                    changed = true;
+                }
             } else if (situation?.updatedAt && !this.getIsElectron()) {
-                // 유효 미러·작업 0건 — 연결 성공으로 간주
+                // 유효 미러·작업 0건 — 연결 성공으로 간주 (웹 notify만, 로컬 DB 없음)
                 changed = true;
             }
 
@@ -2969,29 +3136,7 @@ export class DataService {
             this.syncPulseUnsub();
             this.syncPulseUnsub = null;
         }
-        if (this.configPollTimer) {
-            clearInterval(this.configPollTimer);
-            this.configPollTimer = null;
-        }
-    }
-
-    /** 로컬/웹 — Firestore onSnapshot pulse 대신 staff/settings 저빈도 폴링 */
-    private startConfigPolling() {
-        if (this.configPollTimer) {
-            clearInterval(this.configPollTimer);
-            this.configPollTimer = null;
-        }
-        const tick = async () => {
-            if (!this.tenantId) return;
-            try {
-                await this.pullCollectionDocs('staff');
-                await this.pullCollectionDocs('settings');
-                this.notify();
-            } catch (e) {
-                console.warn('[DataService] config poll failed:', e);
-            }
-        };
-        this.configPollTimer = setInterval(() => void tick(), 3 * 60_000);
+        this.pendingPulseData = null;
     }
 
     private stopAllLazySync() {
@@ -3216,110 +3361,127 @@ export class DataService {
     }
 
     private async handleSyncPulse(data: Record<string, unknown> | undefined) {
-        if (!this.tenantId || !data || this.pulseHandling) return;
+        if (!this.tenantId || !data) return;
+        if (this.pulseHandling) {
+            // 처리 중 도착분 — 최신만 보관, 끝난 뒤 이어서 적용 (드롭 금지)
+            this.pendingPulseData = data;
+            return;
+        }
         this.pulseHandling = true;
         try {
-            const mirrorAt = data.mirrorAt as string | undefined;
-            if (mirrorAt && mirrorAt !== this.lastNasMirrorAt && !this.isLocalPulse('mirrorAt', mirrorAt)) {
-                await this.pollNasOperationalSync();
-            }
-
-            const jobRev = data.jobRev as { id?: string; op?: string; at?: string } | undefined;
-            if (jobRev?.id && jobRev.at && jobRev.at !== this.lastAppliedJobRevAt) {
-                if (!this.isLocalPulse('jobRev', jobRev.at)) {
-                    this.lastAppliedJobRevAt = jobRev.at;
-                    const before = this.lastNasMirrorAt;
-                    await this.pollNasOperationalSync();
-                    const mirrorApplied = before !== this.lastNasMirrorAt;
-                    if (!mirrorApplied && !this.isLocalPrimaryMode() && !this.isWebMirrorMode()) {
-                        if (jobRev.op === 'delete') {
-                            this.removeJobFromLocalCache(jobRev.id);
-                            this.notify();
-                        } else {
-                            await this.applyRemoteJobDoc(jobRev.id);
-                        }
-                    }
-                    if (this.paymentJobsWanted) void this.pullPaymentJobs();
-                }
-            }
-
-            const jobBatchRev = data.jobBatchRev as { ids?: string[]; at?: string } | undefined;
-            if (jobBatchRev?.ids?.length && jobBatchRev.at && jobBatchRev.at !== this.lastAppliedJobRevAt) {
-                if (!this.isLocalPulse('jobRev', jobBatchRev.at)) {
-                    this.lastAppliedJobRevAt = jobBatchRev.at;
-                    const before = this.lastNasMirrorAt;
-                    await this.pollNasOperationalSync();
-                    const mirrorApplied = before !== this.lastNasMirrorAt;
-                    if (!mirrorApplied && !this.isLocalPrimaryMode() && !this.isWebMirrorMode()) {
-                        for (const id of jobBatchRev.ids) {
-                            await this.applyRemoteJobDoc(id);
-                        }
-                    }
-                    if (this.paymentJobsWanted) void this.pullPaymentJobs();
-                }
-            }
-
-            const staffAt = data.staffAt as string | undefined;
-            if (staffAt && staffAt !== this.lastAppliedStaffAt && !this.isLocalPulse('staffAt', staffAt)) {
-                this.lastAppliedStaffAt = staffAt;
-                await this.pullCollectionDocs('staff');
-                this.notify();
-            }
-
-            const clientsAt = data.clientsAt as string | undefined;
-            if (clientsAt && clientsAt !== this.lastAppliedClientsAt && !this.isLocalPulse('clientsAt', clientsAt)) {
-                this.lastAppliedClientsAt = clientsAt;
-                // 거래처는 Firestore가 아니라 NAS 미러에서 동기화
-                if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
-                    await this.pollNasOperationalSync();
-                }
-                this.notify();
-            }
-
-            const messagesAt = data.messagesAt as string | undefined;
-            if (messagesAt && messagesAt !== this.lastAppliedMessagesAt && !this.isLocalPulse('messagesAt', messagesAt)) {
-                this.lastAppliedMessagesAt = messagesAt;
-                if (await this.pollChatMirror()) this.notify();
-            }
-
-            const settingsAt = data.settingsAt as string | undefined;
-            const archiveRootAt = data.archiveRootAt as string | undefined;
-            const settingsChanged =
-                !!settingsAt &&
-                settingsAt !== this.lastAppliedSettingsAt &&
-                !this.isLocalPulse('settingsAt', settingsAt);
-            const archiveRootChanged =
-                !!archiveRootAt &&
-                archiveRootAt !== this.lastAppliedArchiveRootAt &&
-                !this.isLocalPulse('archiveRootAt', archiveRootAt);
-            if (settingsChanged || archiveRootChanged) {
-                if (settingsAt) this.lastAppliedSettingsAt = settingsAt;
-                if (archiveRootAt) this.lastAppliedArchiveRootAt = archiveRootAt;
-                await this.pullCollectionDocs('settings');
-                this.notify();
-            }
-
-            for (const col of LAZY_SYNC_COLLECTIONS) {
-                const key = `${col}At` as const;
-                const at = data[key] as string | undefined;
-                if (!at || !this.activeLazyCollections.has(col) || this.isLocalPulse(key, at)) continue;
-                await this.pullLazyCollection(col, true);
+            let next: Record<string, unknown> | undefined = data;
+            while (next) {
+                this.pendingPulseData = null;
+                await this.applySyncPulseData(next);
+                next = this.pendingPulseData ?? undefined;
             }
         } catch (e) {
             console.warn('[DataService] sync pulse handle failed:', e);
         } finally {
             this.pulseHandling = false;
         }
+        if (this.pendingPulseData) {
+            const leftover = this.pendingPulseData;
+            this.pendingPulseData = null;
+            void this.handleSyncPulse(leftover);
+        }
+    }
+
+    private async applySyncPulseData(data: Record<string, unknown>) {
+        const mirrorAt = data.mirrorAt as string | undefined;
+        if (mirrorAt && mirrorAt !== this.lastNasMirrorAt && !this.isLocalPulse('mirrorAt', mirrorAt)) {
+            await this.pollNasOperationalSync();
+        }
+
+        const jobRev = data.jobRev as { id?: string; op?: string; at?: string } | undefined;
+        if (jobRev?.id && jobRev.at && jobRev.at !== this.lastAppliedJobRevAt) {
+            if (!this.isLocalPulse('jobRev', jobRev.at)) {
+                this.lastAppliedJobRevAt = jobRev.at;
+                const before = this.lastNasMirrorAt;
+                await this.pollNasOperationalSync();
+                const mirrorApplied = before !== this.lastNasMirrorAt;
+                if (!mirrorApplied && !this.isLocalPrimaryMode() && !this.isWebMirrorMode()) {
+                    if (jobRev.op === 'delete') {
+                        this.removeJobFromLocalCache(jobRev.id);
+                        this.notify();
+                    } else {
+                        await this.applyRemoteJobDoc(jobRev.id);
+                    }
+                }
+                if (this.paymentJobsWanted) void this.pullPaymentJobs();
+            }
+        }
+
+        const jobBatchRev = data.jobBatchRev as { ids?: string[]; at?: string } | undefined;
+        if (jobBatchRev?.ids?.length && jobBatchRev.at && jobBatchRev.at !== this.lastAppliedJobRevAt) {
+            if (!this.isLocalPulse('jobRev', jobBatchRev.at)) {
+                this.lastAppliedJobRevAt = jobBatchRev.at;
+                const before = this.lastNasMirrorAt;
+                await this.pollNasOperationalSync();
+                const mirrorApplied = before !== this.lastNasMirrorAt;
+                if (!mirrorApplied && !this.isLocalPrimaryMode() && !this.isWebMirrorMode()) {
+                    for (const id of jobBatchRev.ids) {
+                        await this.applyRemoteJobDoc(id);
+                    }
+                }
+                if (this.paymentJobsWanted) void this.pullPaymentJobs();
+            }
+        }
+
+        const staffAt = data.staffAt as string | undefined;
+        if (staffAt && staffAt !== this.lastAppliedStaffAt && !this.isLocalPulse('staffAt', staffAt)) {
+            this.lastAppliedStaffAt = staffAt;
+            await this.pullCollectionDocs('staff');
+            this.notify();
+        }
+
+        const clientsAt = data.clientsAt as string | undefined;
+        if (clientsAt && clientsAt !== this.lastAppliedClientsAt && !this.isLocalPulse('clientsAt', clientsAt)) {
+            this.lastAppliedClientsAt = clientsAt;
+            // 거래처는 Firestore가 아니라 NAS 미러에서 동기화
+            if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
+                await this.pollNasOperationalSync();
+            }
+            this.notify();
+        }
+
+        const messagesAt = data.messagesAt as string | undefined;
+        if (messagesAt && messagesAt !== this.lastAppliedMessagesAt && !this.isLocalPulse('messagesAt', messagesAt)) {
+            this.lastAppliedMessagesAt = messagesAt;
+            if (await this.pollChatMirror()) this.notify();
+        }
+
+        const settingsAt = data.settingsAt as string | undefined;
+        const archiveRootAt = data.archiveRootAt as string | undefined;
+        const settingsChanged =
+            !!settingsAt &&
+            settingsAt !== this.lastAppliedSettingsAt &&
+            !this.isLocalPulse('settingsAt', settingsAt);
+        const archiveRootChanged =
+            !!archiveRootAt &&
+            archiveRootAt !== this.lastAppliedArchiveRootAt &&
+            !this.isLocalPulse('archiveRootAt', archiveRootAt);
+        if (settingsChanged || archiveRootChanged) {
+            if (settingsAt) this.lastAppliedSettingsAt = settingsAt;
+            if (archiveRootAt) this.lastAppliedArchiveRootAt = archiveRootAt;
+            await this.pullCollectionDocs('settings');
+            this.notify();
+        }
+
+        for (const col of LAZY_SYNC_COLLECTIONS) {
+            const key = `${col}At` as const;
+            const at = data[key] as string | undefined;
+            if (!at || !this.activeLazyCollections.has(col) || this.isLocalPulse(key, at)) continue;
+            await this.pullLazyCollection(col, true);
+        }
     }
 
     private subscribeSyncPulse() {
         if (!this.tenantId) return;
         this.stopSyncPulse();
-        // 로컬 SQLite / 웹 미러 — 업무는 NAS 폴링, 설정·직원은 3분 폴링 (Firestore pulse 제거)
-        if (this.isLocalPrimaryMode() || this.isWebMirrorMode()) {
-            this.startConfigPolling();
-            return;
-        }
+        // 업무는 NAS 폴링. staff/settings 등은 sync/pulse(staffAt·settingsAt) 변경 시에만 pull
+        // (로컬/웹도 3분 전체 getDocs 폴링 대신 pulse 리스너 사용 — Firestore 비용·반영 속도 개선)
+        // 로그인 직후 lastApplied staff/settings 는 null → 첫 스냅샷에서 한 번 더 pull (시드 레이스 방지)
         this.syncPulseUnsub = onSnapshot(
             this.getSyncPulseRef(),
             (snap) => {
@@ -4488,46 +4650,111 @@ export class DataService {
         return Date.now().toString(36) + Math.random().toString(36).substring(2);
     }
 
-    async updateTenantActivity() {
-        // NAS/로컬 우선에서도 버전·활동만 Firestore에 보고 (작업·거래처는 미포함)
+    private adminSessionFlagKey(tenantId: string): string {
+        return `${DataService.ADMIN_SESSION_FLAG_PREFIX}${tenantId}`;
+    }
+
+    private readLocalAdminSessionOpen(tenantId: string): boolean {
+        try {
+            return localStorage.getItem(this.adminSessionFlagKey(tenantId)) === '1';
+        } catch {
+            return false;
+        }
+    }
+
+    private writeLocalAdminSessionOpen(tenantId: string, open: boolean): void {
+        try {
+            if (open) localStorage.setItem(this.adminSessionFlagKey(tenantId), '1');
+            else localStorage.setItem(this.adminSessionFlagKey(tenantId), '0');
+        } catch {
+            /* ignore */
+        }
+    }
+
+    /** 설치된 앱 버전만 — 세션 보고용 (이력 배열 없음) */
+    private async resolveReportAppVersion(): Promise<string> {
+        let reportVersion = APP_VERSION;
+        try {
+            if (typeof window !== 'undefined' && window.electron?.getAppVersion) {
+                const installed = await window.electron.getAppVersion();
+                if (installed?.trim()) reportVersion = installed.trim().replace(/^v/i, '');
+            }
+        } catch {
+            /* APP_VERSION fallback */
+        }
+        return reportVersion;
+    }
+
+    /**
+     * 관리자 앱 시작(세션 온) — CRUD 중 주기 쓰기 대신 1회.
+     * 같은 tenants/{id} 문서 필드만 덮어씀(일자별 문서/이력 배열 없음 → 저장 용량은 회사 수만큼 거의 고정).
+     * 로컬 플래그가 이미 open이면 직전 종료 신호가 없었던 것(강제 종료 등)으로만 기록하고 정상 진행.
+     */
+    async reportTenantSessionStart(): Promise<void> {
         if (!this.tenantId || !this.isSyncAdmin()) return;
-        const now = Date.now();
-        if (now - this.lastTenantActivityAt < DataService.TENANT_ACTIVITY_MIN_INTERVAL_MS) return;
-        this.lastTenantActivityAt = now;
+        if (this.tenantSessionStartReported) return;
+        this.tenantSessionStartReported = true;
+        this.tenantSessionEndReported = false;
+
+        const tenantId = this.tenantId;
+        const unclean = this.readLocalAdminSessionOpen(tenantId);
+        this.writeLocalAdminSessionOpen(tenantId, true);
 
         try {
-            const companyName = this.getCompanyInfo().name || 'EzPrintWork';
-            const jobsCount = this.data['jobs']?.length || 0;
-            const staffCount = this.data['staff']?.filter(s => s.active && !s.isDeleted).length || 0;
-            const clientsCount = this.data['clients']?.length || 0;
-            let reportVersion = APP_VERSION;
-            try {
-                if (typeof window !== 'undefined' && window.electron?.getAppVersion) {
-                    const installed = await window.electron.getAppVersion();
-                    if (installed?.trim()) reportVersion = installed.trim().replace(/^v/i, '');
-                }
-            } catch {
-                /* APP_VERSION fallback */
+            const now = new Date().toISOString();
+            const appVersion = await this.resolveReportAppVersion();
+            // 최신 스냅샷 필드만 (히스토리/카운트 누적 없음)
+            const payload: Record<string, unknown> = {
+                lastActiveAt: now,
+                appVersion,
+                lastSessionStartedAt: now,
+                lastSessionEndReason: unclean ? 'unclean_recovered' : 'open',
+            };
+            if (unclean) {
+                payload.lastUncleanExitAt = now;
+                console.info(
+                    '[LicenseMonitor] Previous admin session had no clean end (likely crash/force quit). Recovered and continuing.'
+                );
             }
-
-            const tenantDocRef = doc(firestore, 'tenants', this.tenantId);
-            await setDoc(tenantDocRef, {
-                companyName,
-                lastActiveAt: new Date().toISOString(),
-                appVersion: reportVersion,
-                lastAppVersion: reportVersion,
-                stats: {
-                    jobsCount,
-                    staffCount,
-                    clientsCount,
-                    appVersion: reportVersion,
-                }
-            }, { merge: true });
+            await setDoc(doc(firestore, 'tenants', tenantId), payload, { merge: true });
         } catch (e) {
-            console.error("[LicenseMonitor] Failed to update tenant activity:", e);
-            // 실패 시 쓰로틀 해제해 다음 기회에 재시도
-            this.lastTenantActivityAt = 0;
+            console.error('[LicenseMonitor] Failed to report tenant session start:', e);
+            // 다음 기회에 재시도 가능하도록
+            this.tenantSessionStartReported = false;
         }
+    }
+
+    /** 관리자 앱 정상 종료(로그아웃·창 닫기) — 종료 신호 */
+    async reportTenantSessionEnd(_reason: 'logout' | 'app_close' = 'app_close'): Promise<void> {
+        if (!this.tenantId || !this.isSyncAdmin()) return;
+        if (this.tenantSessionEndReported) return;
+        this.tenantSessionEndReported = true;
+
+        const tenantId = this.tenantId;
+        this.writeLocalAdminSessionOpen(tenantId, false);
+
+        try {
+            const now = new Date().toISOString();
+            await setDoc(
+                doc(firestore, 'tenants', tenantId),
+                {
+                    lastActiveAt: now,
+                    lastSessionEndedAt: now,
+                    lastSessionEndReason: 'clean',
+                },
+                { merge: true }
+            );
+        } catch (e) {
+            console.error('[LicenseMonitor] Failed to report tenant session end:', e);
+            // 종료 실패 시 로컬 플래그를 다시 open으로 — 다음 시작에서 unclean으로 복구 감지
+            this.writeLocalAdminSessionOpen(tenantId, true);
+            this.tenantSessionEndReported = false;
+        }
+    }
+
+    /** @deprecated 세션 시작으로 대체 — 호환용 */
+    async updateTenantActivity() {
+        await this.reportTenantSessionStart();
     }
 
     private notifyFirestoreWriteError(action: string, e: any) {
@@ -4594,7 +4821,6 @@ export class DataService {
                 } else {
                     this.scheduleLiveMirrorPush();
                 }
-                this.updateTenantActivity().catch(() => {});
                 return;
             }
             // 사내 채팅 — Firestore 금지, NAS chat-messages.json (쓰기는 백그라운드 큐)
@@ -4605,7 +4831,6 @@ export class DataService {
                     this.notify();
                 }
                 this.schedulePersistMessagesToNas();
-                this.updateTenantActivity().catch(() => {});
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
@@ -4640,7 +4865,6 @@ export class DataService {
             }
         }
         
-        this.updateTenantActivity().catch(() => {});
         if (col === 'jobs') this.scheduleLiveMirrorPush();
     }
 
@@ -4718,7 +4942,6 @@ export class DataService {
             } else {
                 this.scheduleLiveMirrorPush();
             }
-            this.updateTenantActivity().catch(() => {});
             return;
         }
         if (col === 'jobs' && this.tenantId && this.isWebMirrorMode()) {
@@ -4758,7 +4981,6 @@ export class DataService {
             }
         }
 
-        this.updateTenantActivity().catch(() => {});
         if (col === 'jobs') this.scheduleLiveMirrorPush();
     }
 
@@ -4896,7 +5118,6 @@ export class DataService {
                     console.warn('[DataService] best-effort Firestore job delete:', e);
                 }
                 this.flushLiveMirrorPushNow();
-                this.updateTenantActivity().catch(() => {});
                 return;
             }
             if (this.isLocalPrimaryMode() && col === 'clients') {
@@ -4914,12 +5135,10 @@ export class DataService {
                         '회사 NAS에 삭제를 반영하지 못했습니다. NAS 경로·연결을 확인해 주세요.'
                     );
                 }
-                this.updateTenantActivity().catch(() => {});
                 return;
             }
             if (col === 'messages') {
                 this.schedulePersistMessagesToNas();
-                this.updateTenantActivity().catch(() => {});
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
@@ -4928,7 +5147,6 @@ export class DataService {
             if (!this.canPersistToCloud(col)) {
                 if (col === 'jobs') {
                     this.flushLiveMirrorPushNow();
-                    this.updateTenantActivity().catch(() => {});
                 }
                 return;
             }
@@ -4962,7 +5180,6 @@ export class DataService {
             }
         }
         
-        this.updateTenantActivity().catch(() => {});
         if (col === 'jobs') this.flushLiveMirrorPushNow();
     }
 
@@ -5023,7 +5240,6 @@ export class DataService {
                     '회사 NAS에 저장하지 못했습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
                 );
             }
-            this.updateTenantActivity().catch(() => {});
             return;
         }
         
@@ -5078,7 +5294,6 @@ export class DataService {
             void this.flushLiveMirrorPushNow();
         }
         
-        this.updateTenantActivity().catch(() => {});
     }
 
     // --- Public Business Methods ---
@@ -5748,7 +5963,6 @@ export class DataService {
                 '거래처 합치기가 회사 NAS에 반영되지 않았습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
             );
         }
-        this.updateTenantActivity().catch(() => {});
     }
 
     /** 거래처 선불(예치) 추가 입금 */
@@ -6128,6 +6342,14 @@ export class DataService {
         await this.updateSetting('kanbanLayout', layout);
     }
     async saveSmsConfig(config: any) { await this.updateSetting('smsConfig', config); }
+    isReceptionAssistEnabled(): boolean {
+        const raw = this.getSettingsObj()['receptionAssist'] as { enabled?: boolean } | undefined;
+        if (typeof raw?.enabled === 'boolean') return raw.enabled;
+        return true;
+    }
+    async saveReceptionAssistEnabled(enabled: boolean) {
+        await this.updateSetting('receptionAssist', { enabled });
+    }
     async saveRoles(roles: string[]) { await this.updateSetting('roles', { roles }); }
     async addRole(role: string) {
         if (isReservedStaffAuthRole(role)) return;
@@ -6154,8 +6376,9 @@ export class DataService {
         if (defIdx === -1) return;
         const def = { ...definitions[defIdx] };
         const options = (def as any)[optionType] as string[];
-        if (options && !options.includes(value)) {
-            (def as any)[optionType] = [...options, value];
+        const nextValue = optionType === 'sizes' ? normalizeSizeLabel(value) : value;
+        if (options && !options.some((opt) => (optionType === 'sizes' ? sizesMatch(opt, nextValue) : opt === nextValue))) {
+            (def as any)[optionType] = [...options, nextValue];
             const newDefinitions = [...definitions];
             newDefinitions[defIdx] = def;
             await this.saveProductDefinitions(newDefinitions);

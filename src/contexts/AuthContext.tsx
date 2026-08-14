@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
-import { auth, db, startPresenceSession, stopPresenceSession, setPresenceOffline, setPresenceGatewayUrls } from '../services/firebase';
+import { auth, db, startPresenceSession, stopPresenceSession, setPresenceGatewayUrls } from '../services/firebase';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { presenceSessionService } from '../services/presenceSessionService';
@@ -42,6 +42,7 @@ import {
   releaseStaffSessionOnNas,
   claimStaffSessionOnNas,
 } from '../utils/staffSession';
+import { flushAppSessionEnd } from '../utils/appSessionLifecycle';
 
 // [개발용 설정] Firebase 도메인 승인 오류 발생 시 true로 설정하여 로그인을 건너뜁니다.
 const DEV_BYPASS_LOGIN = false;
@@ -1202,12 +1203,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const tenantId = currentUser?.tenantId;
     const email = currentUser?.email || firebaseUser?.email;
     const loginId = currentUser?.loginId;
+    const name = currentUser?.name || currentUser?.displayName;
     const localSid = getLocalStaffSessionId();
+    const staffList = dataService.getStaff();
+    const staffDocId =
+      (currentUser && getStaffIdForUser(staffList, currentUser)) ||
+      staffList.find((s) => s.uid === uid)?.id ||
+      uid ||
+      null;
 
     try {
+      // 종료 보고는 clearSession 전에 (tenantId·admin 역할 필요)
       stopPresenceSession();
+      await flushAppSessionEnd({
+        reason: 'logout',
+        presenceUser:
+          uid && tenantId
+            ? {
+                uid,
+                tenantId,
+                email,
+                loginId,
+                name,
+                staffDocId,
+              }
+            : null,
+        releaseNas:
+          uid && tenantId
+            ? {
+                uid,
+                tenantId,
+                email,
+                loginId,
+                onlyIfSessionId: localSid,
+                gatewayBaseUrl: dataService.getStoreGatewayUrls(),
+              }
+            : null,
+        timeoutMs: 2500,
+      });
 
-      // 1) 로컬 로그아웃 먼저 — NAS hang에 막히지 않음
       clearPersistedStaffSession();
       clearLocalStaffSessionId();
       try {
@@ -1218,31 +1252,81 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       setCurrentUser(null);
       setFirebaseUser(null);
       dataService.clearSession();
-
-      // 2) presence 해제는 백그라운드 + 타임아웃 (내 세션만 — 다른 기기 로그인 보호)
-      if (uid && tenantId) {
-        void (async () => {
-          try {
-            await Promise.race([
-              releaseStaffSessionOnNas({
-                uid,
-                tenantId,
-                email,
-                loginId,
-                onlyIfSessionId: localSid,
-                gatewayBaseUrl: dataService.getStoreGatewayUrls(),
-              }),
-              new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2500)),
-            ]);
-          } catch (err) {
-            console.warn('[StaffSession] background release failed:', err);
-          }
-        })();
-      }
     } finally {
       logoutInFlightRef.current = false;
     }
-  }, [firebaseUser?.uid, firebaseUser?.email, currentUser?.tenantId, currentUser?.email, currentUser?.loginId]);
+  }, [firebaseUser?.uid, firebaseUser?.email, currentUser]);
+
+  // Electron 창 닫기 / 웹 탭 종료 — 정상 종료 신호 (강제 종료는 다음 시작에서 unclean 복구)
+  useEffect(() => {
+    const buildEndOpts = () => {
+      if (!currentUser?.tenantId || !firebaseUser?.uid) return null;
+      const uid = firebaseUser.uid;
+      const tenantId = currentUser.tenantId;
+      const email = currentUser.email || firebaseUser.email;
+      const loginId = currentUser.loginId;
+      const name = currentUser.name || currentUser.displayName;
+      const localSid = getLocalStaffSessionId();
+      const staffList = dataService.getStaff();
+      const staffDocId =
+        getStaffIdForUser(staffList, currentUser) ||
+        staffList.find((s) => s.uid === uid)?.id ||
+        uid;
+      return {
+        reason: 'app_close' as const,
+        presenceUser: {
+          uid,
+          tenantId,
+          email,
+          loginId,
+          name,
+          staffDocId,
+        },
+        releaseNas: {
+          uid,
+          tenantId,
+          email,
+          loginId,
+          onlyIfSessionId: localSid,
+          gatewayBaseUrl: dataService.getStoreGatewayUrls(),
+        },
+        timeoutMs: 2500,
+      };
+    };
+
+    const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
+    if (electronApi?.onAppSessionEnding && electronApi.notifyAppSessionEnded) {
+      return electronApi.onAppSessionEnding(() => {
+        void (async () => {
+          try {
+            const opts = buildEndOpts();
+            if (opts) {
+              stopPresenceSession();
+              await flushAppSessionEnd(opts);
+            }
+          } finally {
+            electronApi.notifyAppSessionEnded?.();
+          }
+        })();
+      });
+    }
+
+    if (!currentUser?.tenantId || !firebaseUser?.uid) return;
+
+    // 웹 — Electron은 창 close IPC로 처리 (최소화/전환과 구분)
+    const onPageHide = () => {
+      const opts = buildEndOpts();
+      if (!opts) return;
+      stopPresenceSession();
+      void flushAppSessionEnd(opts);
+    };
+    window.addEventListener('pagehide', onPageHide);
+    window.addEventListener('beforeunload', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      window.removeEventListener('beforeunload', onPageHide);
+    };
+  }, [currentUser, firebaseUser?.uid, firebaseUser?.email]);
 
   // 다른 기기에서 동일 계정 로그인 시 기존 접속 종료 — 결제 테스트 안정화 전까지
   // 강제 로그아웃은 shouldSuppressSessionKick 일 때 건너뛰며, 킥 자체도 로그 위주로 완화 가능.

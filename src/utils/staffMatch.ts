@@ -94,6 +94,30 @@ export function resolveHistoryActorName(
     return fallback;
 }
 
+/** 접수자 staff id — 전용 필드 우선, 없으면 이력「작업 생성」작성자 */
+export function getJobReceiverStaffId(job: {
+    receivedByStaffId?: string;
+    history?: { action: string; staffId: string }[];
+}): string | undefined {
+    if (job.receivedByStaffId && job.receivedByStaffId !== 'system') {
+        return job.receivedByStaffId;
+    }
+    const created = job.history?.find((h) => h.action === '작업 생성');
+    if (created?.staffId && created.staffId !== 'system') return created.staffId;
+    return undefined;
+}
+
+/** 접수자 표시 이름 (없으면 빈 문자열) */
+export function getJobReceiverName(
+    job: { receivedByStaffId?: string; history?: { action: string; staffId: string }[] },
+    staffList: Staff[]
+): string {
+    const id = getJobReceiverStaffId(job);
+    if (!id) return '';
+    const name = resolveHistoryActorName(staffList, id, '');
+    return name === '시스템' ? '' : name;
+}
+
 /** staff.id / Firebase uid 가 같은 사람을 가리키는지 */
 export function staffIdsEqual(a?: string | null, b?: string | null, staffList: Staff[] = []): boolean {
     if (!a || !b) return false;

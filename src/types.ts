@@ -106,6 +106,10 @@ export interface Job {
   paymentStatus: PaymentStatus; 
   assignedStaffId?: string; 
   assignedStaffIds?: string[]; 
+  /** 접수자(등록한 직원). 담당자(assignedStaffIds)와 별개 — 접수했다고 담당이 아님 */
+  receivedByStaffId?: string;
+  /** 완료 안내 문자 발송 성공 시각 — 칸반 카드 거래처명 옆 표시 */
+  completeSmsSentAt?: string;
   history?: JobHistoryLog[]; 
   createdAt: string;
   dueDate: string;
@@ -335,12 +339,14 @@ export interface SmsConfig {
   apiKey: string;
   apiSecret: string;
   senderNumber: string; 
-  pfId?: string;
-  useAlimtalk?: boolean;
-  alimtalkTemplates?: Record<string, string>;
   completedMessageTemplate?: string;
   billingMessageTemplate?: string;
   sendOnComplete?: boolean;
+}
+
+/** 신규 접수 시 문자·통화 글자로 칸 채우기 */
+export interface ReceptionAssistConfig {
+  enabled: boolean;
 }
 
 export interface CompanyInfo {
@@ -529,6 +535,9 @@ export interface IElectronAPI {
   maximize: () => void;
   close: () => void;
   lower: () => void;
+  /** Electron 창 닫기 직전 세션 종료 훅 */
+  onAppSessionEnding?: (callback: () => void) => () => void;
+  notifyAppSessionEnded?: () => void;
   toggleAlwaysOnTop: (flag: boolean) => void;
   setSize: (width: number, height: number) => void;
   /** 사내 메신저 OS 토스트 (닫히면 작업표시줄 깜빡임) */

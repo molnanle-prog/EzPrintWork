@@ -2,14 +2,14 @@
 import React, { useState, useEffect } from 'react';
 import { db, getErrorMessage } from '../../services/dataService';
 import { JobStatusDefinition, KanbanLayoutConfig, KanbanSplitPair } from '../../types';
-import { ListChecks, Save, Trash2, Plus, Eye, EyeOff, LayoutGrid, Rows3, Unlink } from 'lucide-react';
+import { ListChecks, Save, Trash2, Plus, Eye, EyeOff, LayoutGrid, Unlink, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import {
   clampSplitTopPercent,
   findPairForKey,
   normalizeKanbanLayoutConfig,
   normalizeStatusDefinition,
-  orderedPairKeysFromSelection,
+  swapSplitPair,
   upsertSplitPair,
 } from '../../utils/kanbanLayout';
 
@@ -19,6 +19,8 @@ export const StatusManager: React.FC = () => {
   const [newStatusName, setNewStatusName] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
+  const [draftTop, setDraftTop] = useState<string | null>(null);
+  const [draftBottom, setDraftBottom] = useState<string | null>(null);
   const { showConfirm, showAlert } = useDialog();
 
   useEffect(() => {
@@ -48,39 +50,65 @@ export const StatusManager: React.FC = () => {
     setStatuses((prev) => prev.map((s) => (s.key === key ? { ...s, isVisible: !s.isVisible } : s)));
   };
 
-  const toggleSelectKey = (key: string) => {
-    setSelectedKeys((prev) => {
-      if (prev.includes(key)) return prev.filter((k) => k !== key);
-      if (prev.length >= 2) return [prev[1], key];
-      return [...prev, key];
-    });
+  const commitSelection = (nextKeys: string[], top: string | null, bottom: string | null) => {
+    const nextTop = top && nextKeys.includes(top) ? top : null;
+    const nextBottom = bottom && nextKeys.includes(bottom) && bottom !== nextTop ? bottom : null;
+    const unused = nextKeys.filter((k) => k !== nextTop && k !== nextBottom);
+    const filledTop = nextTop || unused[0] || null;
+    const filledBottom = nextBottom || unused.find((k) => k !== filledTop) || null;
+    setSelectedKeys(nextKeys);
+    setDraftTop(filledTop);
+    setDraftBottom(filledBottom);
   };
 
-  const applySplitPairFromSelection = (
-    keys: string[],
-    baseLayout: KanbanLayoutConfig
-  ): KanbanLayoutConfig | null => {
-    const ordered = orderedPairKeysFromSelection(statuses, keys);
-    if (!ordered) return null;
-    return upsertSplitPair(baseLayout, ordered[0], ordered[1]);
+  const toggleSelectKey = (key: string) => {
+    if (selectedKeys.includes(key)) {
+      commitSelection(
+        selectedKeys.filter((k) => k !== key),
+        draftTop,
+        draftBottom
+      );
+      return;
+    }
+    if (selectedKeys.length >= 3) {
+      void showAlert('한 번에 최대 3개까지 고를 수 있습니다.\n위·아래에 넣을 두 단계와, 이 칸에서 빼고 싶은 단계를 고르세요.');
+      return;
+    }
+    commitSelection([...selectedKeys, key], draftTop, draftBottom);
+  };
+
+  const moveDraftToTop = (key: string) => {
+    if (!selectedKeys.includes(key) || draftTop === key) return;
+    if (draftBottom === key) commitSelection(selectedKeys, key, draftTop);
+    else commitSelection(selectedKeys, key, draftBottom);
+  };
+
+  const moveDraftToBottom = (key: string) => {
+    if (!selectedKeys.includes(key) || draftBottom === key) return;
+    if (draftTop === key) commitSelection(selectedKeys, draftBottom, key);
+    else commitSelection(selectedKeys, draftTop, key);
+  };
+
+  const swapDraftSlots = () => {
+    if (!draftTop || !draftBottom) return;
+    commitSelection(selectedKeys, draftBottom, draftTop);
   };
 
   const handleApplySplitPair = async () => {
-    if (selectedKeys.length !== 2) {
-      await showAlert('상·하로 배치할 단계 2개를 체크해 주세요.\n(목록 위쪽 단계가 상단, 아래쪽이 하단)');
+    if (!draftTop || !draftBottom || draftTop === draftBottom) {
+      await showAlert('아래 목록에서 단계 2개를 고른 뒤, 미리보기에서 위·아래를 정하세요.');
       return;
     }
 
-    const nextLayout = applySplitPairFromSelection(selectedKeys, kanbanLayout);
-    if (!nextLayout) return;
-
-    const [topKey, bottomKey] = orderedPairKeysFromSelection(statuses, selectedKeys)!;
-    const topLabel = statuses.find((s) => s.key === topKey)?.label || topKey;
-    const bottomLabel = statuses.find((s) => s.key === bottomKey)?.label || bottomKey;
-
+    const nextLayout = upsertSplitPair(kanbanLayout, draftTop, draftBottom);
     setKanbanLayout(nextLayout);
     setSelectedKeys([]);
-    await showAlert(`'${topLabel}'(상단) + '${bottomLabel}'(하단)이 한 칸 안에서 상·하로 배치됩니다.\n저장 버튼을 눌러 적용해 주세요.`);
+    setDraftTop(null);
+    setDraftBottom(null);
+  };
+
+  const handleSwapSavedPair = (pair: KanbanSplitPair) => {
+    setKanbanLayout(swapSplitPair(kanbanLayout, pair));
   };
 
   const handleRemovePair = (pair: KanbanSplitPair) => {
@@ -200,24 +228,23 @@ export const StatusManager: React.FC = () => {
     setIsSaving(true);
     try {
       let layout = normalizeKanbanLayoutConfig(kanbanLayout);
+      const appliedTop = draftTop;
+      const appliedBottom = draftBottom;
 
-      if (selectedKeys.length === 2) {
-        const next = applySplitPairFromSelection(selectedKeys, layout);
-        if (next) layout = normalizeKanbanLayoutConfig(next);
+      if (appliedTop && appliedBottom && appliedTop !== appliedBottom) {
+        layout = normalizeKanbanLayoutConfig(upsertSplitPair(layout, appliedTop, appliedBottom));
       }
 
       await db.saveStatusDefinitionsAndKanbanLayout(statuses, layout, db.getStatusDefinitionRemovedKeys());
       setKanbanLayout(layout);
       setSelectedKeys([]);
+      setDraftTop(null);
+      setDraftBottom(null);
 
       let msg = '작업 단계 및 칸반 레이아웃이 저장되었습니다.';
-      if (selectedKeys.length === 2) {
-        const ordered = orderedPairKeysFromSelection(statuses, selectedKeys);
-        if (ordered) {
-          msg += `\n\n상·하 배치: ${labelFor(ordered[0])}(상) + ${labelFor(ordered[1])}(하)`;
-        }
+      if (appliedTop && appliedBottom && appliedTop !== appliedBottom) {
+        msg += `\n\n상·하 배치: ${labelFor(appliedTop)}(위) + ${labelFor(appliedBottom)}(아래)`;
       }
-      msg += '\n\n※ 체크박스는 배치 선택용입니다. 저장 후에는 아래 「현재 상·하 배치」와 각 단계 옆 표시로 확인하세요.';
       await showAlert(msg);
     } catch (error) {
       await showAlert('저장 실패: ' + getErrorMessage(error));
@@ -235,75 +262,160 @@ export const StatusManager: React.FC = () => {
         작업 단계(칸반) 관리
       </h3>
       <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-        가로 칸 수는 그대로 두고, <strong>선택한 한 칸만</strong> 위·아래 두 단계로 나눌 수 있습니다.
-        (예: 접수+견적, 납품+완료)
+        아래 목록에서 단계를 <strong>2개 또는 3개</strong> 고르면, 위에 칸 미리보기가 나옵니다.
+        거기서 <strong>위로 / 아래로</strong>를 눌러 자리를 정한 뒤 저장하세요.
       </p>
 
-      <div className="mb-6 p-4 rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-3">
+      <div className="mb-6 p-4 rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-4">
         <h4 className="text-sm font-bold text-indigo-800 dark:text-indigo-200 flex items-center gap-2">
           <LayoutGrid size={16} />
-          한 칸 상·하 배치
+          현재 상·하 배치
         </h4>
-        <p className="text-[11px] text-slate-500 leading-relaxed">
-          단계 <strong>2개를 체크</strong>한 뒤 <strong>저장</strong>하면 자동으로 한 칸 안 상·하 배치됩니다.
-          (목록에서 위쪽 = 상단, 아래쪽 = 하단) 나머지 단계는 기존처럼 전체 높이 칸을 씁니다.
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-relaxed">
+          한 칸에는 위·아래 <strong>두 단계</strong>만 들어갑니다. 3개를 고르면 나머지 하나는 보드에서 따로 한 칸이 됩니다.
         </p>
-        <button
-          type="button"
-          onClick={() => void handleApplySplitPair()}
-          disabled={selectedKeys.length !== 2}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-bold"
-        >
-          <Rows3 size={16} />
-          선택 2개 상·하 배치 ({selectedKeys.length}/2)
-        </button>
+
+        {selectedKeys.length >= 2 && draftTop && draftBottom && (
+          <div className="rounded-xl border-2 border-indigo-400 bg-white dark:bg-slate-900 p-3 space-y-3">
+            <p className="text-[11px] font-bold text-indigo-700 dark:text-indigo-300">지금 고른 배치 (저장 전)</p>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="w-full sm:w-44 shrink-0 rounded-lg overflow-hidden border border-slate-300 dark:border-slate-600 shadow-sm">
+                <div className="w-full text-left px-3 py-3 bg-indigo-600 text-white">
+                  <p className="text-[10px] font-bold text-indigo-100 mb-0.5">위</p>
+                  <p className="text-sm font-bold truncate">{labelFor(draftTop)}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => swapDraftSlots()}
+                  className="w-full py-1 bg-slate-200 dark:bg-slate-700 text-[10px] font-bold text-slate-600 dark:text-slate-200 flex items-center justify-center gap-1 hover:bg-slate-300 dark:hover:bg-slate-600"
+                  title="위·아래 맞바꾸기"
+                >
+                  <ArrowUpDown size={12} /> 맞바꾸기
+                </button>
+                <div className="px-3 py-3 bg-slate-700 text-white">
+                  <p className="text-[10px] font-bold text-slate-300 mb-0.5">아래</p>
+                  <p className="text-sm font-bold truncate">{labelFor(draftBottom)}</p>
+                </div>
+              </div>
+              <div className="flex-1 space-y-1.5 min-w-0">
+                {selectedKeys.map((key) => {
+                  const place = key === draftTop ? '위' : key === draftBottom ? '아래' : '이 칸에 안 넣음';
+                  return (
+                    <div
+                      key={key}
+                      className={`flex items-center gap-2 rounded-lg border px-2 py-1.5 ${
+                        key === draftTop
+                          ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/40'
+                          : key === draftBottom
+                            ? 'border-slate-400 bg-slate-100 dark:bg-slate-800'
+                            : 'border-dashed border-slate-300 dark:border-slate-600 bg-transparent'
+                      }`}
+                    >
+                      <span className="flex-1 text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                        {labelFor(key)}
+                        <span className="ml-1.5 text-[10px] font-medium text-slate-500">{place}</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => moveDraftToTop(key)}
+                        disabled={draftTop === key}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-bold bg-indigo-600 text-white disabled:opacity-30"
+                      >
+                        <ArrowUp size={11} /> 위로
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => moveDraftToBottom(key)}
+                        disabled={draftBottom === key}
+                        className="inline-flex items-center gap-0.5 px-2 py-1 rounded text-[10px] font-bold bg-slate-600 text-white disabled:opacity-30"
+                      >
+                        <ArrowDown size={11} /> 아래로
+                      </button>
+                    </div>
+                  );
+                })}
+                <button
+                  type="button"
+                  onClick={() => void handleApplySplitPair()}
+                  className="w-full mt-1 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold"
+                >
+                  이 배치를 칸에 넣기
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedKeys.length === 1 && (
+          <p className="text-[11px] text-indigo-700 dark:text-indigo-300 bg-indigo-100/80 dark:bg-indigo-900/30 rounded-lg px-3 py-2">
+            한 개 더 고르면 위·아래 미리보기가 나옵니다. (최대 3개)
+          </p>
+        )}
 
         {kanbanLayout.splitPairs.length > 0 && (
-          <div className="space-y-2 pt-2 border-t border-indigo-200/60 dark:border-indigo-800/60">
-            <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">현재 상·하 배치</p>
+          <div className="space-y-2">
+            {!(selectedKeys.length >= 2 && draftTop && draftBottom) && (
+              <p className="text-[11px] font-bold text-slate-600 dark:text-slate-300">저장된 상·하 칸</p>
+            )}
             {kanbanLayout.splitPairs.map((pair) => (
               <div
                 key={`${pair.topKey}-${pair.bottomKey}`}
                 className="p-3 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 space-y-2"
               >
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                    {labelFor(pair.topKey)} ↑ / {labelFor(pair.bottomKey)} ↓
-                  </span>
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleBottomCompact(pair)}
-                      className={`px-2 py-1 rounded text-[10px] font-bold border ${
-                        pair.bottomCompact !== false
-                          ? 'bg-emerald-600 text-white border-emerald-600'
-                          : 'bg-white dark:bg-slate-800 text-slate-600 border-slate-300'
-                      }`}
-                    >
-                      하단 컴팩트 {pair.bottomCompact !== false ? '✓' : ''}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRemovePair(pair)}
-                      className="px-2 py-1 rounded text-[10px] font-bold text-rose-600 border border-rose-200 hover:bg-rose-50 dark:hover:bg-rose-950/30 flex items-center gap-1"
-                    >
-                      <Unlink size={12} /> 분리
-                    </button>
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="w-full sm:w-36 shrink-0 rounded-lg overflow-hidden border border-slate-300 dark:border-slate-600">
+                    <div className="px-2.5 py-2 bg-indigo-600 text-white">
+                      <p className="text-[9px] font-bold text-indigo-100">위</p>
+                      <p className="text-xs font-bold truncate">{labelFor(pair.topKey)}</p>
+                    </div>
+                    <div className="px-2.5 py-2 bg-slate-700 text-white">
+                      <p className="text-[9px] font-bold text-slate-300">아래</p>
+                      <p className="text-xs font-bold truncate">{labelFor(pair.bottomKey)}</p>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-[10px] text-slate-500 mb-0.5">
-                    <span>상단 비율</span>
-                    <span>{pair.splitTopPercent ?? 65}%</span>
+                  <div className="flex-1 space-y-2 min-w-0">
+                    <div className="flex flex-wrap gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleSwapSavedPair(pair)}
+                        className="px-2 py-1 rounded text-[10px] font-bold border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 inline-flex items-center gap-1"
+                      >
+                        <ArrowUpDown size={12} /> 위·아래 맞바꾸기
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleBottomCompact(pair)}
+                        className={`px-2 py-1 rounded text-[10px] font-bold border ${
+                          pair.bottomCompact !== false
+                            ? 'bg-emerald-600 text-white border-emerald-600'
+                            : 'bg-white dark:bg-slate-800 text-slate-600 border-slate-300'
+                        }`}
+                      >
+                        하단 컴팩트 {pair.bottomCompact !== false ? '✓' : ''}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRemovePair(pair)}
+                        className="px-2 py-1 rounded text-[10px] font-bold text-rose-600 border border-rose-200 hover:bg-rose-50 dark:hover:bg-rose-950/30 flex items-center gap-1"
+                      >
+                        <Unlink size={12} /> 분리
+                      </button>
+                    </div>
+                    <div>
+                      <div className="flex justify-between text-[10px] text-slate-500 mb-0.5">
+                        <span>위쪽 칸 높이</span>
+                        <span>{pair.splitTopPercent ?? 65}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={35}
+                        max={85}
+                        value={pair.splitTopPercent ?? 65}
+                        onChange={(e) => handlePairSplitPercent(pair, Number(e.target.value))}
+                        className="w-full accent-indigo-600"
+                      />
+                    </div>
                   </div>
-                  <input
-                    type="range"
-                    min={35}
-                    max={85}
-                    value={pair.splitTopPercent ?? 65}
-                    onChange={(e) => handlePairSplitPercent(pair, Number(e.target.value))}
-                    className="w-full accent-indigo-600"
-                  />
                 </div>
               </div>
             ))}
@@ -312,6 +424,9 @@ export const StatusManager: React.FC = () => {
       </div>
 
       <div className="space-y-4 mb-8">
+        <p className="text-xs font-bold text-slate-600 dark:text-slate-300">
+          작업 단계 목록 — 체크하면 위 미리보기에 바로 반영됩니다
+        </p>
         {statuses.map((status, index) => {
           const pair = findPairForKey(kanbanLayout, status.key);
           const isSelected = selectedKeys.includes(status.key);
@@ -325,15 +440,13 @@ export const StatusManager: React.FC = () => {
               } ${isSelected ? 'ring-2 ring-indigo-400' : ''}`}
             >
               <div className="flex items-center gap-3">
-                {status.key !== 'QUOTE' && (
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => toggleSelectKey(status.key)}
-                    className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shrink-0"
-                    title="상·하 배치할 단계 선택 (2개)"
-                  />
-                )}
+                <input
+                  type="checkbox"
+                  checked={isSelected}
+                  onChange={() => toggleSelectKey(status.key)}
+                  className="w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shrink-0"
+                  title="상·하 칸에 넣을 단계 선택 (2~3개)"
+                />
                 <span className="font-bold text-blue-600 dark:text-blue-400 w-6 text-center shrink-0">
                   {index + 1}
                 </span>

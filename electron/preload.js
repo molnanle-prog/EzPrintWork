@@ -24,6 +24,13 @@ contextBridge.exposeInMainWorld('electron', {
     maximize: () => ipcRenderer.send('window-maximize'),
     close: () => ipcRenderer.send('window-close'),
     lower: () => ipcRenderer.send('window-lower'),
+    /** 메인 창 닫기 직전 — 세션 종료 훅 */
+    onAppSessionEnding: (callback) => {
+        const handler = () => callback();
+        ipcRenderer.on('app-session-ending', handler);
+        return () => ipcRenderer.removeListener('app-session-ending', handler);
+    },
+    notifyAppSessionEnded: () => ipcRenderer.send('app-session-ended'),
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),
     updaterCheck: () => ipcRenderer.invoke('updater-check'),
     updaterDownload: () => ipcRenderer.invoke('updater-download'),

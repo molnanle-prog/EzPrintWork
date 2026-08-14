@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber } from '../../services/dataService';
 import { CompanyInfo, QuoteTemplateSettings } from '../../types';
-import { Building, Save, Check, Copy, History, Search, Image, Upload } from 'lucide-react';
+import { Building, Save, Check, Copy, History, Search, Image, Upload, ClipboardPaste } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -13,11 +13,24 @@ export const CompanyInfoManager: React.FC = () => {
   const { showAlert } = useDialog();
   const { currentUser } = useAuth();
   const [copied, setCopied] = useState(false);
+  const [receptionAssistEnabled, setReceptionAssistEnabled] = useState(true);
 
   useEffect(() => {
     setInfo(db.getCompanyInfo());
     setQuoteTemplate(db.getQuoteTemplate());
+    setReceptionAssistEnabled(db.isReceptionAssistEnabled());
   }, []);
+
+  const handleToggleReceptionAssist = async (enabled: boolean) => {
+    const prev = receptionAssistEnabled;
+    setReceptionAssistEnabled(enabled);
+    try {
+      await db.saveReceptionAssistEnabled(enabled);
+    } catch {
+      setReceptionAssistEnabled(prev);
+      await showAlert('접수 보조 설정을 저장하지 못했습니다. NAS 연결을 확인한 뒤 다시 시도해 주세요.');
+    }
+  };
 
   const handleCopyCode = () => {
     if (currentUser?.tenantId) {
@@ -144,6 +157,32 @@ export const CompanyInfoManager: React.FC = () => {
 
           <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-100 dark:border-blue-800 p-4 rounded-lg text-sm text-blue-800 dark:text-blue-300 mb-6">
               이곳에 입력된 정보는 프로그램 상단의 로고 텍스트, 견적서, 거래명세서 등의 공급자 정보로 사용됩니다.
+          </div>
+
+          <div className="mb-6 rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50/70 dark:bg-violet-950/20 p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h4 className="text-sm font-bold text-violet-900 dark:text-violet-200 flex items-center gap-2">
+                  <ClipboardPaste size={16} />
+                  신규 접수 보조 (문자·통화 넣기)
+                </h4>
+                <p className="text-xs text-violet-800/80 dark:text-violet-300/80 mt-1 leading-relaxed">
+                  켜면 신규 접수 창에 「문자·통화 넣기」가 나타납니다. 끄면 접수 창에서 버튼이 사라집니다.
+                </p>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
+                <input
+                  type="checkbox"
+                  checked={receptionAssistEnabled}
+                  onChange={(e) => void handleToggleReceptionAssist(e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-violet-600"></div>
+              </label>
+            </div>
+            <p className="text-[11px] font-bold text-violet-700 dark:text-violet-300 mt-2">
+              {receptionAssistEnabled ? '사용 중 — 신규 접수 창에서 바로 쓸 수 있습니다.' : '꺼짐 — 신규 접수 창에 표시되지 않습니다.'}
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

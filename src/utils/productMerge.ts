@@ -1,5 +1,6 @@
 import { Job, JobTypeDefinition } from '../types';
 import { db } from '../services/dataService';
+import { dedupeSizeLabels } from './sizeLabel';
 
 export interface ProductMergePreview {
     primaryName: string;
@@ -33,7 +34,7 @@ function mergeProductDefinitions(
     return {
         ...primary,
         name: primary.name,
-        sizes: unionStringLists(primary.sizes, secondary.sizes),
+        sizes: dedupeSizeLabels(unionStringLists(primary.sizes, secondary.sizes)),
         paperTypes: unionStringLists(primary.paperTypes, secondary.paperTypes),
         paperWeights: unionStringLists(primary.paperWeights, secondary.paperWeights),
         processings: unionStringLists(primary.processings, secondary.processings),

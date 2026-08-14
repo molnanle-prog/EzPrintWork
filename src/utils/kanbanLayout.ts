@@ -127,6 +127,10 @@ export function orderedPairKeysFromSelection(
   return [ordered[0].key, ordered[1].key];
 }
 
+export function swapSplitPair(layout: KanbanLayoutConfig, pair: KanbanSplitPair): KanbanLayoutConfig {
+  return upsertSplitPair(layout, pair.bottomKey, pair.topKey);
+}
+
 export function upsertSplitPair(
   layout: KanbanLayoutConfig,
   topKey: string,

@@ -6,6 +6,7 @@ import { Plus, Trash2, Package, Layers, FileBox, File, Save, Check, RefreshCcw, 
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
 import { getProductMergePreview, mergeProducts } from '../../utils/productMerge';
+import { formatSizeFromWidthHeight, normalizeSizeLabel, sizesMatch } from '../../utils/sizeLabel';
 
 function focusRequiredInput(input: HTMLInputElement | null) {
   if (!input) return;
@@ -20,7 +21,8 @@ export const ProductManager: React.FC = () => {
   const [newTypeName, setNewTypeName] = useState('');
   
   // Inputs for sub-options
-  const [newSize, setNewSize] = useState('');
+  const [newSizeW, setNewSizeW] = useState('');
+  const [newSizeH, setNewSizeH] = useState('');
   const [newPaper, setNewPaper] = useState('');
   const [newWeight, setNewWeight] = useState('');
   const [allProcessings, setAllProcessings] = useState<string[]>([]);
@@ -327,6 +329,16 @@ export const ProductManager: React.FC = () => {
 
   // --- Option Management ---
 
+  const clearSizeInputs = () => {
+      setNewSizeW('');
+      setNewSizeH('');
+  };
+
+  const handleAddSize = () => {
+      const composed = formatSizeFromWidthHeight(newSizeW, newSizeH);
+      void handleAddOption('sizes', composed, clearSizeInputs);
+  };
+
   const getOptionInputRef = (category: 'sizes' | 'paperTypes' | 'paperWeights') => {
       if (category === 'sizes') return newSizeInputRef;
       if (category === 'paperTypes') return newPaperInputRef;
@@ -350,13 +362,14 @@ export const ProductManager: React.FC = () => {
 
       // Auto-append logic
       if (category === 'sizes') {
-          // If purely numbers (e.g. "50") -> "50mm"
-          if (/^\d+$/.test(finalValue)) {
+          finalValue = normalizeSizeLabel(finalValue);
+          if (/^\d+(?:\.\d+)?$/.test(finalValue)) {
               finalValue += 'mm';
-          } 
-          // If dimensions like "90x50" or "90 50" -> "90x50mm"
-          else if (/^\d+\s*[xX*]\s*\d+$/.test(finalValue)) {
-              finalValue = finalValue.replace(/\s+/g, '') + 'mm'; // Remove spaces if any
+          } else if (/^\d+(?:\.\d+)?\*\d+(?:\.\d+)?$/.test(finalValue)) {
+              finalValue += 'mm';
+          } else if (/^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?$/.test(finalValue)) {
+              const [w, h] = finalValue.split(/\s+/);
+              finalValue = `${w}*${h}mm`;
           }
       } else if (category === 'paperWeights') {
           // If purely numbers (e.g. "250") -> "250g"
@@ -369,7 +382,7 @@ export const ProductManager: React.FC = () => {
       const currentType = latestDefs.find((d) => d.name === selectedType.name);
       if (!currentType) return;
 
-      if (currentType[category].includes(finalValue)) {
+      if (currentType[category].some((opt) => (category === 'sizes' ? sizesMatch(opt, finalValue) : opt === finalValue))) {
           await showAlert(`이미 존재하는 ${categoryName}입니다.\n다른 값을 입력해 주세요.`);
           focusRequiredInput(inputRef.current);
           return;
@@ -511,19 +524,32 @@ export const ProductManager: React.FC = () => {
                               <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <FileBox size={16} className="text-blue-500"/> 규격 (Sizes)
                               </h4>
-                              <div className="flex gap-2">
-                                  <input 
+                              <div className="flex gap-1.5 items-center">
+                                  <input
                                       ref={newSizeInputRef}
-                                      value={newSize} 
-                                      onChange={(e) => setNewSize(e.target.value)}
+                                      value={newSizeW}
+                                      onChange={(e) => setNewSizeW(e.target.value)}
                                       className={inputClass}
-                                      placeholder="예: 90 50 (자동 mm)"
-                                      onKeyDown={(e) => e.key === 'Enter' && handleAddOption('sizes', newSize, setNewSize)}
+                                      placeholder="가로"
+                                      inputMode="decimal"
+                                      onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
                                   />
-                                  <button onClick={() => handleAddOption('sizes', newSize, setNewSize)} className={btnClass}>
+                                  <span className="text-sm font-black text-slate-400 shrink-0">*</span>
+                                  <input
+                                      value={newSizeH}
+                                      onChange={(e) => setNewSizeH(e.target.value)}
+                                      className={inputClass}
+                                      placeholder="세로"
+                                      inputMode="decimal"
+                                      onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
+                                  />
+                                  <button type="button" onClick={handleAddSize} className={btnClass}>
                                       <Plus size={16} />
                                   </button>
                               </div>
+                              <p className="text-[10px] text-slate-400 leading-snug">
+                                숫자만 넣으면 <strong>가로*세로mm</strong> 로 저장됩니다. x 로 적어도 * 로 통일합니다. 규격외·A4 는 가로칸에 적으세요.
+                              </p>
                               <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
                                   {selectedType.sizes.map(opt => (
                                       <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">

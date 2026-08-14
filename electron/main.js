@@ -79,6 +79,40 @@ function createWindow() {
         win.focus();
     });
 
+    // 렌더러가 정상 종료 보고(라이선스·NAS presence)를 마칠 때까지 창 닫기 대기
+    let sessionEndAllowClose = false;
+    let sessionEndInProgress = false;
+    win.on('close', (e) => {
+        if (sessionEndAllowClose || win.isDestroyed()) return;
+        if (sessionEndInProgress) {
+            e.preventDefault();
+            return;
+        }
+        e.preventDefault();
+        sessionEndInProgress = true;
+
+        const finishClose = () => {
+            sessionEndAllowClose = true;
+            sessionEndInProgress = false;
+            if (!win.isDestroyed()) win.close();
+        };
+
+        const timeout = setTimeout(finishClose, 3000);
+        const onEnded = () => {
+            clearTimeout(timeout);
+            ipcMain.removeListener('app-session-ended', onEnded);
+            finishClose();
+        };
+        ipcMain.once('app-session-ended', onEnded);
+        try {
+            win.webContents.send('app-session-ending');
+        } catch {
+            clearTimeout(timeout);
+            ipcMain.removeListener('app-session-ended', onEnded);
+            finishClose();
+        }
+    });
+
     // 웹 UI(JS/CSS) 캐시만 갱신 — localStorage·IndexedDB는 유지
     // (직원 '선택회사 저장'·'자동 로그인 유지' 및 Firebase persistence 보존)
     win.webContents.session.clearCache().catch(() => {});

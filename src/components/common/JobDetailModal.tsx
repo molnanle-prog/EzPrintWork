@@ -9,6 +9,7 @@ import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors
 import { ClientContactModal } from './ClientContactModal';
 import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
+import { OrderTextAssistPanel } from './OrderTextAssistPanel';
 import { calcQuoteTotals } from '../../utils/quoteCalculator';
 import { useDialog } from '../../contexts/DialogContext';
 import { LocalPathInput } from './LocalPathInput';
@@ -18,6 +19,7 @@ import { findQuoteForJob } from '../../utils/quoteJobSync';
 import { openQuotePreviewWindow } from '../../utils/quotePreviewStorage';
 import { getStaffIdForUser, resolveHistoryActorName } from '../../utils/staffMatch';
 import { toast } from 'sonner';
+import { normalizeSizeLabel, sizesMatch } from '../../utils/sizeLabel';
 
 
 // --- Helper Components for History Timeline ---
@@ -80,6 +82,8 @@ interface JobDetailModalProps {
   onClose: () => void;
   onUpdate: (job: Job) => void | Promise<void>;
   onNavigateToQuote?: (quoteId?: string) => void;
+  /** 상세 저장 후 부모가 문자창을 띄울 때 (칸반 등 — 상세 모달이 닫혀도 유지) */
+  onRequestCompleteSms?: (job: Job) => void;
   isNew?: boolean;
   initialViewMode?: 'summary' | 'edit';
 }
@@ -98,7 +102,8 @@ const TIME_OPTIONS = (() => {
 const AFTER_HOURS_VALUE = '19:00';
 
 const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix, subLabel }: any) => {
-    const isCustomValue = value && options.length > 0 && !options.includes(value);
+    const matchedOption = (options as string[]).find((opt) => sizesMatch(opt, value));
+    const isCustomValue = value && options.length > 0 && !matchedOption;
     const [forceDirect, setForceDirect] = useState(false);
     const isDirect = isCustomValue || forceDirect || options.length === 0;
     const inputClass = "w-full px-2.5 py-1.5 h-[34px] bg-white border border-slate-300 rounded-lg text-slate-700 focus:ring-2 focus:ring-blue-500 text-sm placeholder-slate-400";
@@ -106,20 +111,23 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
     // value="" 인데 옵션이 있으면 브라우저는 첫 항목처럼 보이지만 state는 비어 저장됨 → 첫 옵션으로 동기화
     useEffect(() => {
         if (forceDirect || options.length === 0) return;
-        if (value && !options.includes(value)) return; // 직접입력(커스텀) 값 유지
+        if (value && !matchedOption) return; // 직접입력(커스텀) 값 유지
         if (!value || !String(value).trim()) {
             onChange(options[0]);
+        } else if (matchedOption && matchedOption !== value) {
+            onChange(matchedOption);
         }
         // onChange는 매 렌더 인라인일 수 있어 의존성에서 제외
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [value, options, forceDirect]);
+    }, [value, options, forceDirect, matchedOption]);
 
     const processSuffix = (val: string) => {
         if (!val) return val;
         let newVal = val.trim();
+        if (suffix === 'mm') newVal = normalizeSizeLabel(newVal);
         if (suffix && !newVal.endsWith(suffix)) {
             if (suffix === 'mm') {
-                if (/^\d+$/.test(newVal) || /^\d+\s*[xX*]\s*\d+$/.test(newVal)) newVal += suffix;
+                if (/^\d+(?:\.\d+)?$/.test(newVal) || /^\d+(?:\.\d+)?\*\d+(?:\.\d+)?$/.test(newVal)) newVal += suffix;
             } else if (suffix === 'g') {
                 if (/^\d+$/.test(newVal)) newVal += suffix;
             }
@@ -169,7 +177,7 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
             ) : (
                 <div className="relative">
                     <select 
-                        value={value}
+                        value={matchedOption || value}
                         onChange={(e) => {
                             if(e.target.value === '_DIRECT_') { setForceDirect(true); onChange(''); } 
                             else onChange(e.target.value);
@@ -188,7 +196,7 @@ const SpecSelect = ({ label, value, options = [], onChange, onAdd, icon, suffix,
     );
 };
 
-function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNew = false, initialViewMode }: JobDetailModalProps) {
+function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRequestCompleteSms, isNew = false, initialViewMode }: JobDetailModalProps) {
   const initialSubJobs: JobItem[] = job.subJobs && job.subJobs.length > 0 
     ? job.subJobs 
     : [{ id: '1', type: job.type || '책자', specs: job.specs }];
@@ -216,11 +224,13 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
   const [isCustomChecked, setIsCustomChecked] = useState(false);
   
   const [showContactModal, setShowContactModal] = useState(false);
+  const [preferCompleteSmsTemplate, setPreferCompleteSmsTemplate] = useState(false);
   const [openingQuote, setOpeningQuote] = useState(false);
   const [pathCopied, setPathCopied] = useState(false);
   const [isStaffDropdownOpen, setIsStaffDropdownOpen] = useState(false);
   
   const [productDefs, setProductDefs] = useState<JobTypeDefinition[]>([]);
+  const [receptionAssistEnabled, setReceptionAssistEnabled] = useState(() => db.isReceptionAssistEnabled());
   const [isManagingTypes, setIsManagingTypes] = useState(false);
   const [newTypeInput, setNewTypeInput] = useState('');
 
@@ -250,9 +260,11 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
     setStatusDefinitions(db.getStatusDefinitions());
     setProductDefs(db.getProductDefinitions());
     setProcessingOptions(db.getProcessingDefinitions());
+    setReceptionAssistEnabled(db.isReceptionAssistEnabled());
     const unsubscribe = db.subscribe(() => {
         setProductDefs(db.getProductDefinitions());
         setProcessingOptions(db.getProcessingDefinitions());
+        setReceptionAssistEnabled(db.isReceptionAssistEnabled());
     });
     return () => unsubscribe();
   }, []);
@@ -659,6 +671,10 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
         description: summaryDesc,
         subJobs: subJobs,
         progress: progressPercent,
+        // 신규 접수 시 접수자만 기록 — 담당자는 자동 배정하지 않음
+        ...(isNew && historyActorId && historyActorId !== 'system'
+          ? { receivedByStaffId: historyActorId }
+          : {}),
     };
     if (editedJob.assignedStaffIds && editedJob.assignedStaffIds.length > 0) {
         finalJob.assignedStaffId = editedJob.assignedStaffIds[0];
@@ -675,41 +691,13 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
         finalJob.completedAt = undefined;
     }
 
-    // --- 완료 알림 문자 발송 및 이력 자동 기록 트리거 ---
+    let openCompleteSmsAfterSave = false;
     if (isStatusChangedToDelivery && finalJob.clientPhone) {
         const smsConfig = db.getSmsConfig();
         if (smsConfig && smsConfig.sendOnComplete) {
-            const companyName = db.getCompanyInfo().name || 'EzPrintWork';
-            const { replaceTemplateVariables, sendCompleteSms } = await import('../../services/smsService');
-            
-            const rawTemplate = smsConfig.completedMessageTemplate || 
-              `[{회사명}] {고객명}님, 주문하신 '{주문명}' 제품의 인쇄/작업이 완료되었습니다. 물건을 찾으러 내방해 주시기 바랍니다. 감사합니다.`;
-            const previewMsg = replaceTemplateVariables(rawTemplate, finalJob, companyName);
-            
-            const isConfirmed = await showConfirm(
-              `[완료 알림 문자 발송]\n\n고객님(${finalJob.clientPhone})께 완료 안내 문자를 전송하시겠습니까?\n\n[문자 미리보기]\n${previewMsg}`
+            openCompleteSmsAfterSave = await showConfirm(
+              `[완료 안내 문자]\n\n고객님(${finalJob.clientPhone})\n\n문자창을 띄울까요?\n(내용을 확인·수정한 뒤 보내기 버튼으로 전송합니다.)`
             );
-            
-            if (isConfirmed) {
-                const res = await sendCompleteSms(finalJob, smsConfig, companyName);
-                if (res.success) {
-                    finalJob.history!.push({
-                        timestamp: new Date().toISOString(),
-                        staffId: historyActorId,
-                        action: '문자 발송',
-                        details: `완료 문자 발송 성공 (수신: ${finalJob.clientPhone})\n내용: ${res.sentContent}`
-                    });
-                    await showAlert('완료 알림 문자가 정상적으로 발송되었습니다.');
-                } else {
-                    finalJob.history!.push({
-                        timestamp: new Date().toISOString(),
-                        staffId: historyActorId,
-                        action: '문자 발송 실패',
-                        details: `발송 실패: ${res.message} (수신: ${finalJob.clientPhone})`
-                    });
-                    await showAlert(`문자 발송 실패: ${res.message}`);
-                }
-            }
         }
     }
 
@@ -727,6 +715,15 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
 
     try {
       await onUpdate(finalJob);
+      setEditedJob(finalJob);
+      if (openCompleteSmsAfterSave) {
+        if (onRequestCompleteSms) {
+          onRequestCompleteSms(finalJob);
+        } else {
+          setPreferCompleteSmsTemplate(true);
+          setShowContactModal(true);
+        }
+      }
     } catch (error) {
       await showAlert(getErrorMessage(error));
       return;
@@ -1537,6 +1534,23 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
                   
                   {/* Top Section: 접수 내용들 - 내용이 많을 때 독립적으로 스크롤되도록 설정 */}
                   <div className="w-full py-1.5 px-2.5 flex flex-col gap-1.5 flex-1 overflow-y-auto custom-scrollbar min-h-0">
+                      {isNew && receptionAssistEnabled && (
+                        <OrderTextAssistPanel
+                          job={editedJob}
+                          productDefs={productDefs}
+                          processingOptions={processingOptions}
+                          onApply={(next) => {
+                            setEditedJob(next);
+                            setActiveTabIdx(0);
+                            const isQuote = /^견적/.test(next.title || '') || /^\[견적의뢰\]/.test(next.specs?.memo || '');
+                            toast.success(
+                              isQuote
+                                ? '견적의뢰로 칸을 채웠습니다. 금액은 확인 후 저장하세요.'
+                                : '문자·통화 내용으로 칸을 채웠습니다. 확인 후 저장하세요.'
+                            );
+                          }}
+                        />
+                      )}
                       {/* Past Jobs History */}
                       {isNew && pastJobs.length > 0 && (
                         <div className="bg-white border border-blue-100 rounded-lg p-2 shadow-sm animate-in slide-in-from-left-2 duration-300">
@@ -2284,8 +2298,12 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, isNe
       </div>
       {showContactModal && (
         <ClientContactModal 
-          job={editedJob} 
-          onClose={() => setShowContactModal(false)} 
+          job={editedJob}
+          preferCompleteTemplate={preferCompleteSmsTemplate}
+          onClose={() => {
+            setShowContactModal(false);
+            setPreferCompleteSmsTemplate(false);
+          }} 
           onUpdate={(updatedJob) => {
             setEditedJob(updatedJob);
             onUpdate(updatedJob);

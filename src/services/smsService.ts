@@ -117,9 +117,6 @@ export const sendSmsViaSolapi = async (
     return { success: false, message: '수신인 연락처가 유효하지 않습니다.' };
   }
 
-  const date = new Date().toISOString();
-  const salt = Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
-  
   try {
     const authHeaders = await buildSolapiAuthHeaders(apiKey, apiSecret);
     const response = await fetch('https://api.solapi.com/messages/v4/send-many', {
