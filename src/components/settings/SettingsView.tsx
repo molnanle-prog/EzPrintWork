@@ -135,7 +135,9 @@ export const SettingsView: React.FC = () => {
        </div>
 
        {/* Settings Content */}
-       <div className="flex-1 min-w-0 h-full overflow-y-auto custom-scrollbar bg-white dark:bg-slate-800 lg:bg-transparent rounded-xl lg:rounded-none shadow-sm lg:shadow-none border border-slate-200 dark:border-slate-700 lg:border-none p-4 lg:p-0 transition-colors">
+       <div className={`flex-1 min-w-0 h-full min-h-0 flex flex-col bg-white dark:bg-slate-800 lg:bg-transparent rounded-xl lg:rounded-none shadow-sm lg:shadow-none border border-slate-200 dark:border-slate-700 lg:border-none p-4 lg:p-0 transition-colors ${
+          activeSubTab === 'product' ? 'overflow-hidden' : 'overflow-y-auto custom-scrollbar'
+       }`}>
           {renderContent()}
        </div>
     </div>

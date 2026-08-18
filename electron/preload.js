@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electron', {
     maximize: () => ipcRenderer.send('window-maximize'),
     close: () => ipcRenderer.send('window-close'),
     lower: () => ipcRenderer.send('window-lower'),
+    pinToBack: (enabled) => ipcRenderer.invoke('window-pin-back', !!enabled),
     /** 메인 창 닫기 직전 — 세션 종료 훅 */
     onAppSessionEnding: (callback) => {
         const handler = () => callback();
@@ -69,8 +70,14 @@ contextBridge.exposeInMainWorld('electron', {
     chatNotifyClear: () => ipcRenderer.send('chat-notify-clear'),
     /** 코페이 결제 — 메인 창과 분리된 BrowserWindow */
     openKorpayPayment: (payload) => ipcRenderer.invoke('open-korpay-payment', payload || {}),
-    /** 결제 중 메인 창이 외부 URL로 이동하지 못하게 잠금 */
     setPaymentNavigationLock: (locked) => ipcRenderer.invoke('set-payment-navigation-lock', !!locked),
+    mailInboxGet: () => ipcRenderer.invoke('mail-inbox-get'),
+    mailInboxSave: (payload) => ipcRenderer.invoke('mail-inbox-save', payload || {}),
+    mailInboxClear: () => ipcRenderer.invoke('mail-inbox-clear'),
+    mailInboxTest: () => ipcRenderer.invoke('mail-inbox-test'),
+    mailInboxList: (payload) => ipcRenderer.invoke('mail-inbox-list', payload || {}),
+    mailInboxRead: (uid) => ipcRenderer.invoke('mail-inbox-read', { uid }),
+    openExternal: (url) => ipcRenderer.invoke('open-external', url),
     onChatNotificationClicked: (callback) => {
         const handler = (_event, payload) => callback(payload);
         ipcRenderer.on('chat-notification-clicked', handler);

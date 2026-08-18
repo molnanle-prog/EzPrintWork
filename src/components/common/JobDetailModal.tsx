@@ -1546,7 +1546,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                             toast.success(
                               isQuote
                                 ? '견적의뢰로 칸을 채웠습니다. 금액은 확인 후 저장하세요.'
-                                : '문자·통화 내용으로 칸을 채웠습니다. 확인 후 저장하세요.'
+                                : '문자·통화·이메일 내용으로 칸을 채웠습니다. 확인 후 저장하세요.'
                             );
                           }}
                         />

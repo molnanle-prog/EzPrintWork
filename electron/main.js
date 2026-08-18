@@ -5,6 +5,8 @@ const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
 const localDb = require('./localDb');
 const { LocalGateway } = require('./localGateway');
+const { setupMailInboxIpc } = require('./mailInbox');
+const { sendWindowToBack } = require('./windowZorder');
 
 const localGateway = new LocalGateway();
 
@@ -49,6 +51,19 @@ let chatNotifyClicked = false;
 /** 새 토스트로 교체할 때 이전 close로 깜빡이지 않도록 */
 let suppressNextChatNotifyCloseFlash = false;
 let activeChatNotification = null;
+/** 다른 창 작업 중에도 EzPrintWork를 맨 뒤에 유지 */
+let pinToBack = false;
+
+function getControlWindow() {
+    return getMainWindow() || BrowserWindow.getFocusedWindow();
+}
+
+function applyPinToBack(win) {
+    if (!pinToBack) return;
+    const target = win && !win.isDestroyed() ? win : getMainWindow();
+    if (!target || target.isDestroyed() || target.isMinimized()) return;
+    sendWindowToBack(target);
+}
 
 // 프로토콜 등록 (ezpw://)
 if (process.defaultApp) {
@@ -78,6 +93,8 @@ function createWindow() {
         win.show();
         win.focus();
     });
+
+    win.on('blur', () => applyPinToBack(win));
 
     // 렌더러가 정상 종료 보고(라이선스·NAS presence)를 마칠 때까지 창 닫기 대기
     let sessionEndAllowClose = false;
@@ -753,12 +770,12 @@ ipcMain.handle('local-db-delete-aux', async (_event, { tenantId, collection, id 
 
 // 8. 창 제어 (최소화, 최대화, 닫기)
 ipcMain.on('window-minimize', () => {
-    const win = BrowserWindow.getFocusedWindow();
+    const win = getControlWindow();
     if (win) win.minimize();
 });
 
 ipcMain.on('window-maximize', () => {
-    const win = BrowserWindow.getFocusedWindow();
+    const win = getControlWindow();
     if (win) {
         if (win.isMaximized()) {
             win.unmaximize();
@@ -769,13 +786,20 @@ ipcMain.on('window-maximize', () => {
 });
 
 ipcMain.on('window-close', () => {
-    const win = BrowserWindow.getFocusedWindow();
+    const win = getControlWindow();
     if (win) win.close();
 });
 
 ipcMain.on('window-lower', () => {
-    const win = BrowserWindow.getFocusedWindow();
-    if (win) win.lower();
+    const win = getControlWindow();
+    if (win) sendWindowToBack(win);
+});
+
+ipcMain.handle('window-pin-back', async (_event, enabled) => {
+    pinToBack = !!enabled;
+    const win = getControlWindow();
+    if (win && pinToBack) sendWindowToBack(win);
+    return { ok: true, enabled: pinToBack };
 });
 
 /**
@@ -1297,3 +1321,16 @@ ipcMain.handle('create-desktop-shortcut', async () => {
 ipcMain.handle('get-open-at-login', async () => getOpenAtLoginState());
 
 ipcMain.handle('set-open-at-login', async (_event, enabled) => setOpenAtLoginState(!!enabled));
+
+setupMailInboxIpc(ipcMain);
+
+ipcMain.handle('open-external', async (_event, url) => {
+    const s = String(url || '');
+    if (!/^https:\/\//i.test(s)) return { ok: false };
+    try {
+        await shell.openExternal(s);
+        return { ok: true };
+    } catch (err) {
+        return { ok: false, error: err?.message || String(err) };
+    }
+});

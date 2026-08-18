@@ -167,7 +167,7 @@ export const SmsManager: React.FC = () => {
             <p className="text-xs text-amber-900/80 dark:text-amber-200/80 leading-relaxed">
               지금 화면·작업 이력에 보이는 것은 <strong>이 프로그램에서 보낸 문자</strong>입니다.
               고객이 매장 휴대폰으로 보낸 문자는 Windows가 문자함을 열어주지 않아서 앱이 읽을 수 없습니다.
-              받은 주문 문자는 복사한 뒤, 신규 접수 창의 「문자·통화 넣기」에 붙여넣으면 칸을 채울 수 있습니다.
+              받은 주문 문자는 복사한 뒤, 신규 접수 창의 「문자·통화·이메일 넣기」에 붙여넣으면 칸을 채울 수 있습니다.
             </p>
             <p className="text-[11px] text-amber-800/70 dark:text-amber-300/70 leading-relaxed">
               솔라피 발신번호로도 고객 회신이 들어오지 않습니다. 수신전용 번호를 따로 쓰지 않는 한, 받은 문자 목록을 API로 불러올 수는 없습니다.

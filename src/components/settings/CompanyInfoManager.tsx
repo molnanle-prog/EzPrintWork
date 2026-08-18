@@ -4,6 +4,7 @@ import { CompanyInfo, QuoteTemplateSettings } from '../../types';
 import { Building, Save, Check, Copy, History, Search, Image, Upload, ClipboardPaste } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
+import { MailInboxSettings } from './MailInboxSettings';
 
 export const CompanyInfoManager: React.FC = () => {
   const [info, setInfo] = useState<CompanyInfo>({ name: '' });
@@ -164,10 +165,10 @@ export const CompanyInfoManager: React.FC = () => {
               <div>
                 <h4 className="text-sm font-bold text-violet-900 dark:text-violet-200 flex items-center gap-2">
                   <ClipboardPaste size={16} />
-                  신규 접수 보조 (문자·통화 넣기)
+                  신규 접수 보조 (문자·통화·이메일 넣기)
                 </h4>
                 <p className="text-xs text-violet-800/80 dark:text-violet-300/80 mt-1 leading-relaxed">
-                  켜면 신규 접수 창에 「문자·통화 넣기」가 나타납니다. 끄면 접수 창에서 버튼이 사라집니다.
+                  켜면 신규 접수 창에 「문자·통화·이메일 넣기」가 나타납니다. 끄면 접수 창에서 버튼이 사라집니다.
                 </p>
               </div>
               <label className="relative inline-flex items-center cursor-pointer shrink-0 mt-0.5">
@@ -183,6 +184,7 @@ export const CompanyInfoManager: React.FC = () => {
             <p className="text-[11px] font-bold text-violet-700 dark:text-violet-300 mt-2">
               {receptionAssistEnabled ? '사용 중 — 신규 접수 창에서 바로 쓸 수 있습니다.' : '꺼짐 — 신규 접수 창에 표시되지 않습니다.'}
             </p>
+            <MailInboxSettings />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

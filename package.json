@@ -1,6 +1,6 @@
 {
   "name": "ezprintwork",
-  "version": "2.0.9",
+  "version": "2.1.0",
   "author": "EzPrintWork",
   "description": "인쇄소 통합 관리 시스템",
   "main": "electron/main.js",
@@ -34,8 +34,10 @@
     "firebase": "^12.13.0",
     "framer-motion": "^12.38.0",
     "html2canvas": "^1.4.1",
+    "imapflow": "^1.7.1",
     "jspdf": "^2.5.1",
     "lucide-react": "^0.562.0",
+    "mailparser": "^3.9.15",
     "motion": "^12.38.0",
     "papaparse": "^5.5.3",
     "react": "^19.2.3",

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, ArrowDownToLine, Pin, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, Pin, ChevronsDown, ArrowDownToLine, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -302,11 +302,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
-  const [isPinned, setIsPinned] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem('ezprint_widget_mode') === 'true';
-  });
-  const [opacity, setOpacity] = useState(1);
+  const [pinToBack, setPinToBack] = useState(false);
   const sidebarRef = useRef<HTMLElement>(null);
 
   const handleMobileTabChange = (tab: string) => {
@@ -322,6 +318,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     
     if (isRunningInElectron) {
       localStorage.setItem('desktop-app-installed', 'true');
+      localStorage.removeItem('ezprint_widget_mode');
       setShowDownloadBanner(false);
       return;
     }
@@ -372,44 +369,49 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   ];
 
   // Window Controls
-  const togglePin = () => {
-    setIsPinned((prev) => {
-      const next = !prev;
-      localStorage.setItem('ezprint_widget_mode', next ? 'true' : 'false');
-      toast.info(next ? '위젯 모드 — 하단 탭만 표시됩니다.' : '일반 모드로 돌아왔습니다.');
-      return next;
-    });
-  };
-  const toggleOpacity = () => setOpacity((prev) => (prev === 1 ? 0.88 : 1));
   const sendWindowToBack = () => {
     if (isElectron && window.electron?.lower) {
       window.electron.lower();
-      toast.success('다른 창 뒤로 보냈습니다. 작업표시줄에서 다시 열 수 있습니다.');
+      toast.success('맨 뒤로 보냈습니다.');
       return;
     }
     toast.info('이 기능은 PC 전용 앱에서 사용할 수 있습니다.');
   };
+  const togglePinToBack = async () => {
+    if (!isElectron || !window.electron?.pinToBack) {
+      toast.info('이 기능은 PC 전용 앱에서 사용할 수 있습니다.');
+      return;
+    }
+    const next = !pinToBack;
+    try {
+      const res = await window.electron.pinToBack(next);
+      if (!res?.ok) {
+        toast.error(res?.error || '맨 뒤 고정에 실패했습니다.');
+        return;
+      }
+      setPinToBack(!!res.enabled);
+      toast.success(res.enabled
+        ? '창을 맨 뒤에 고정했습니다. 다른 프로그램을 쓰면 이 창은 뒤에 머뭅니다.'
+        : '맨 뒤 고정을 해제했습니다.');
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : '맨 뒤 고정에 실패했습니다.');
+    }
+  };
 
-  const containerClass = isPinned 
-    ? "flex flex-col h-screen bg-slate-900/95 border-2 border-blue-500 overflow-hidden transition-all duration-300 shadow-2xl"
-    : `flex flex-col h-screen ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} overflow-hidden transition-colors duration-200`;
-
-  const sidebarClass = isPinned
-    ? "hidden"
-    : `hidden lg:flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-xl z-50 transition-all duration-300 relative ${isSidebarExpanded ? 'w-72' : 'w-14'}`;
+  const containerClass = `flex flex-col h-screen ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} overflow-hidden transition-colors duration-200`;
 
   return (
-    <div className={containerClass} style={{ opacity: opacity < 1 ? opacity : 1 }}>
+    <div className={containerClass}>
       
       {/* Title Bar */}
       <div 
-        className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors ${isPinned ? 'bg-blue-900' : 'bg-slate-900 dark:bg-slate-950'} ${isTvMode ? 'hidden' : ''}`}
+        className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors bg-slate-900 dark:bg-slate-950 ${isTvMode ? 'hidden' : ''}`}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
           <div className="flex items-center gap-2 px-3 text-slate-300">
-              <Printer size={isPinned ? 14 : 16} className={isPinned ? "text-yellow-400" : "text-blue-500"} />
-              <span className={`font-bold tracking-wide ${isPinned ? 'text-[10px]' : 'text-xs'}`}>
-                  {isPinned ? `EzPrint v${installedAppVersion} (위젯)` : `EzPrintWork Cloud v${installedAppVersion}`}
+              <Printer size={16} className="text-blue-500" />
+              <span className="font-bold tracking-wide text-xs">
+                  EzPrintWork v{installedAppVersion}
               </span>
           </div>
           
@@ -422,27 +424,19 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 <>
                   <button
                     type="button"
-                    onClick={toggleOpacity}
-                    className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
-                    title="창 투명도"
-                  >
-                    <Eye size={14} className={opacity < 1 ? 'text-blue-400' : ''} />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={togglePin}
-                    className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
-                    title={isPinned ? '위젯 모드 해제' : '위젯 모드 (컴팩트)'}
-                  >
-                    <Pin size={14} className={isPinned ? 'text-yellow-400 fill-yellow-400/20' : ''} />
-                  </button>
-                  <button
-                    type="button"
                     onClick={sendWindowToBack}
                     className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-amber-300 transition-colors"
-                    title="다른 창 맨 뒤로 (최하단 고정)"
+                    title="맨 뒤로 보내기"
                   >
-                    <ArrowDownToLine size={14} />
+                    <ChevronsDown size={15} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void togglePinToBack()}
+                    className="w-10 lg:w-11 h-full flex items-center justify-center hover:bg-slate-800 hover:text-white transition-colors"
+                    title={pinToBack ? '맨 뒤 고정 해제' : '창 맨 뒤에 고정'}
+                  >
+                    <Pin size={14} className={pinToBack ? 'text-amber-300 fill-amber-300/20' : ''} />
                   </button>
                 </>
               )}
@@ -509,7 +503,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
       <div className="flex-1 flex overflow-hidden relative">
         {/* Sidebar - Hover based expansion */}
-        {!isPinned && !isTvMode && (
+        {!isTvMode && (
           <aside 
               ref={sidebarRef}
               className={`hidden lg:flex flex-col bg-slate-900 dark:bg-slate-950 text-slate-300 shadow-2xl transition-all duration-300 ease-out shrink-0 z-50 border-r border-slate-800 ${isSidebarExpanded ? 'w-72' : 'w-14'}`}
@@ -639,7 +633,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
         )}
 
         {/* 태블릿·휴대폰: 햄버거 드로어 (메뉴·설정·로그아웃) */}
-        {!isPinned && !isTvMode && mobileNavOpen && (
+        {!isTvMode && mobileNavOpen && (
           <div className="lg:hidden fixed inset-0 z-[80] flex">
             <button
               type="button"
@@ -710,7 +704,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
         )}
 
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
-            {!isPinned && !isTvMode && (
+            {!isTvMode && (
                 <header className={`border-b flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-3 sm:px-4 md:px-5 lg:px-7 ${
                   theme === 'trello' 
                     ? 'bg-[#152238]/90 border-[#22334b]' 
@@ -784,7 +778,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             )}
             
             {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
-            {!isElectron && showDownloadBanner && !isPinned && !isTvMode && (
+            {!isElectron && showDownloadBanner && !isTvMode && (
                 <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">
@@ -816,33 +810,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                 </div>
             )}
             
-            <div className={`flex-1 flex flex-col min-h-0 relative ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} ${isPinned ? 'p-1' : isTvMode ? 'p-0.5' : 'p-2 md:p-3 lg:p-4'}`}>
+            <div className={`flex-1 flex flex-col min-h-0 relative ${theme === 'trello' ? 'bg-[#1d2d44]' : 'bg-slate-100 dark:bg-slate-900'} ${isTvMode ? 'p-0.5' : 'p-2 md:p-3 lg:p-4'}`}>
                 <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
                     {children}
                 </div>
             </div>
-            
-            {isPinned && (
-                <div className="flex-none bg-slate-800 border-t border-slate-700 h-14 flex items-center justify-between px-2 z-50 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.3)]">
-                    {menuItems.map(item => (
-                        <button 
-                            key={item.id} 
-                            onClick={() => onTabChange(item.id)} 
-                            className={`flex flex-col items-center justify-center flex-1 h-full transition-colors ${activeTab === item.id ? 'text-blue-400' : 'text-slate-500 hover:text-slate-300'}`}
-                        >
-                            <item.icon size={22} />
-                            <span className="text-xs font-bold mt-0.5">{item.label}</span>
-                        </button>
-                    ))}
-                    <button 
-                        onClick={() => setShowSearchModal(true)} 
-                        className="flex flex-col items-center justify-center flex-1 h-full text-slate-500 hover:text-slate-300"
-                    >
-                        <Search size={22} />
-                        <span className="text-xs font-bold mt-0.5">작업 검색</span>
-                    </button>
-                </div>
-            )}
             
             <ChatWidget />
         </main>

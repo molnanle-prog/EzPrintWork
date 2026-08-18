@@ -535,10 +535,11 @@ export interface IElectronAPI {
   maximize: () => void;
   close: () => void;
   lower: () => void;
+  pinToBack?: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
   /** Electron 창 닫기 직전 세션 종료 훅 */
   onAppSessionEnding?: (callback: () => void) => () => void;
   notifyAppSessionEnded?: () => void;
-  toggleAlwaysOnTop: (flag: boolean) => void;
+  toggleAlwaysOnTop?: (flag: boolean) => void;
   setSize: (width: number, height: number) => void;
   /** 사내 메신저 OS 토스트 (닫히면 작업표시줄 깜빡임) */
   chatNotify?: (payload: {
@@ -556,6 +557,43 @@ export interface IElectronAPI {
       receiverId?: string | null;
     }) => void
   ) => () => void;
+  mailInboxGet?: () => Promise<{
+    ok: boolean;
+    configured?: boolean;
+    hasPassword?: boolean;
+    preset?: string;
+    host?: string;
+    port?: number;
+    secure?: boolean;
+    user?: string;
+    mailbox?: string;
+    error?: string;
+  }>;
+  mailInboxSave?: (payload: {
+    preset?: string;
+    host?: string;
+    port?: number;
+    secure?: boolean;
+    user?: string;
+    mailbox?: string;
+    password?: string;
+  }) => Promise<{ ok: boolean; configured?: boolean; hasPassword?: boolean; error?: string }>;
+  mailInboxClear?: () => Promise<{ ok: boolean; error?: string }>;
+  mailInboxTest?: () => Promise<{ ok: boolean; message?: string; error?: string }>;
+  mailInboxList?: (payload?: { limit?: number }) => Promise<{
+    ok: boolean;
+    messages?: { uid: number; from: string; subject: string; date: string | null }[];
+    error?: string;
+  }>;
+  mailInboxRead?: (uid: number) => Promise<{
+    ok: boolean;
+    uid?: number;
+    from?: string;
+    subject?: string;
+    date?: string | null;
+    text?: string;
+    error?: string;
+  }>;
 }
 
 declare global {

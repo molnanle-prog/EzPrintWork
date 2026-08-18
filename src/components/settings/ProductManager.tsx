@@ -426,11 +426,13 @@ export const ProductManager: React.FC = () => {
       }
   };
 
-  const inputClass = "flex-1 p-2 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-blue-500 text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-700 placeholder-slate-400";
-  const btnClass = "bg-slate-100 dark:bg-slate-600 hover:bg-slate-200 dark:hover:bg-slate-500 text-slate-700 dark:text-slate-200 p-2 rounded transition-colors";
+  const inputClass = "flex-1 min-w-0 w-full p-2 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-blue-500 text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-700 placeholder-slate-400";
+  const btnClass = "shrink-0 bg-slate-100 dark:bg-slate-600 hover:bg-slate-200 dark:hover:bg-slate-500 text-slate-700 dark:text-slate-200 p-2 rounded transition-colors";
+  const optionColClass = "flex flex-col min-w-0 gap-3 min-h-[14rem] xl:min-h-0 xl:h-full";
+  const optionListClass = "flex-1 min-h-0 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 overflow-y-auto custom-scrollbar space-y-1";
 
   return (
-    <div className="flex flex-col h-full bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
+    <div className="flex flex-col h-full min-h-0 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 overflow-hidden transition-colors">
       <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 flex items-center justify-between flex-none transition-colors">
          <div className="flex items-center gap-2">
             <Package className="text-blue-600 dark:text-blue-400" />
@@ -466,7 +468,7 @@ export const ProductManager: React.FC = () => {
         </div>
       )}
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 min-h-0 overflow-hidden">
           {/* Left: Job Types List */}
           <div className="w-1/3 border-r border-slate-200 dark:border-slate-700 flex flex-col bg-slate-50/50 dark:bg-slate-900/50">
               <div className="px-2 py-1.5 border-b border-slate-200 dark:border-slate-700">
@@ -510,47 +512,53 @@ export const ProductManager: React.FC = () => {
           </div>
 
           {/* Right: Detailed Options */}
-          <div className="flex-1 flex flex-col bg-white dark:bg-slate-800 transition-colors">
+          <div className="flex-1 min-h-0 flex flex-col bg-white dark:bg-slate-800 transition-colors">
               {selectedType ? (
-                  <div className="flex-1 overflow-y-auto p-6">
-                      <div className="flex items-center gap-2 mb-6 pb-2 border-b border-slate-100 dark:border-slate-700">
+                  <div className="flex-1 min-h-0 overflow-y-auto xl:overflow-hidden flex flex-col p-6">
+                      <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-100 dark:border-slate-700 flex-none">
                           <span className="text-2xl font-bold text-slate-800 dark:text-slate-100">{selectedType.name}</span>
                           <span className="text-sm text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-700 px-2 py-1 rounded">하위 옵션 설정</span>
                       </div>
 
-                      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+                      <div className={`flex-1 min-h-0 grid gap-6 grid-cols-1 ${
+                          isBookletProductType(selectedType.name)
+                              ? 'xl:grid-cols-3 xl:grid-rows-[minmax(0,1fr)_minmax(0,1.15fr)]'
+                              : 'xl:grid-cols-4 xl:grid-rows-[minmax(0,1fr)]'
+                      }`}>
                           {/* 1. Sizes */}
-                          <div className="space-y-3">
-                              <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                          <div className={optionColClass}>
+                              <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <FileBox size={16} className="text-blue-500"/> 규격 (Sizes)
                               </h4>
-                              <div className="flex gap-1.5 items-center">
-                                  <input
-                                      ref={newSizeInputRef}
-                                      value={newSizeW}
-                                      onChange={(e) => setNewSizeW(e.target.value)}
-                                      className={inputClass}
-                                      placeholder="가로"
-                                      inputMode="decimal"
-                                      onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
-                                  />
-                                  <span className="text-sm font-black text-slate-400 shrink-0">*</span>
-                                  <input
-                                      value={newSizeH}
-                                      onChange={(e) => setNewSizeH(e.target.value)}
-                                      className={inputClass}
-                                      placeholder="세로"
-                                      inputMode="decimal"
-                                      onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
-                                  />
+                              <div className="flex-none flex gap-2 w-full min-w-0 items-center">
+                                  <div className="flex-1 min-w-0 flex items-center gap-1">
+                                      <input
+                                          ref={newSizeInputRef}
+                                          value={newSizeW}
+                                          onChange={(e) => setNewSizeW(e.target.value)}
+                                          className={inputClass}
+                                          placeholder="가로/지름"
+                                          inputMode="decimal"
+                                          onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
+                                      />
+                                      <span className="text-sm font-black text-slate-400 shrink-0">*</span>
+                                      <input
+                                          value={newSizeH}
+                                          onChange={(e) => setNewSizeH(e.target.value)}
+                                          className={inputClass}
+                                          placeholder="세로"
+                                          inputMode="decimal"
+                                          onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
+                                      />
+                                  </div>
                                   <button type="button" onClick={handleAddSize} className={btnClass}>
                                       <Plus size={16} />
                                   </button>
                               </div>
-                              <p className="text-[10px] text-slate-400 leading-snug">
-                                숫자만 넣으면 <strong>가로*세로mm</strong> 로 저장됩니다. x 로 적어도 * 로 통일합니다. 규격외·A4 는 가로칸에 적으세요.
+                              <p className="flex-none text-[10px] text-slate-400 leading-snug">
+                                가로·세로 숫자 → <strong>4000*900mm</strong>. 지름·한 치수는 첫 칸만 (예: 50 → 50mm). 규격외·A4 도 첫 칸.
                               </p>
-                              <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                              <div className={optionListClass}>
                                   {selectedType.sizes.map(opt => (
                                       <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">
                                           <span>{opt}</span>
@@ -563,11 +571,11 @@ export const ProductManager: React.FC = () => {
                           </div>
 
                           {/* 2. Paper Types */}
-                          <div className="space-y-3">
-                              <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                          <div className={optionColClass}>
+                              <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <File size={16} className="text-emerald-500"/> 용지 종류 (Papers)
                               </h4>
-                              <div className="flex gap-2">
+                              <div className="flex-none flex gap-2 w-full min-w-0 items-center">
                                   <input 
                                       ref={newPaperInputRef}
                                       value={newPaper} 
@@ -580,7 +588,7 @@ export const ProductManager: React.FC = () => {
                                       <Plus size={16} />
                                   </button>
                               </div>
-                              <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                              <div className={optionListClass}>
                                   {selectedType.paperTypes.map(opt => (
                                       <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">
                                           <span>{opt}</span>
@@ -593,11 +601,11 @@ export const ProductManager: React.FC = () => {
                           </div>
 
                           {/* 3. Weights */}
-                          <div className="space-y-3">
-                              <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                          <div className={optionColClass}>
+                              <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <Layers size={16} className="text-purple-500"/> 평량/두께 (Weights)
                               </h4>
-                              <div className="flex gap-2">
+                              <div className="flex-none flex gap-2 w-full min-w-0 items-center">
                                   <input 
                                       ref={newWeightInputRef}
                                       value={newWeight} 
@@ -610,7 +618,7 @@ export const ProductManager: React.FC = () => {
                                       <Plus size={16} />
                                   </button>
                               </div>
-                              <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-60 overflow-y-auto custom-scrollbar space-y-1">
+                              <div className={optionListClass}>
                                   {selectedType.paperWeights.map(opt => (
                                       <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">
                                           <span>{opt}</span>
@@ -623,18 +631,18 @@ export const ProductManager: React.FC = () => {
                           </div>
 
                           {/* 4. Processings */}
-                          <div className={`space-y-3 ${isBookletProductType(selectedType.name) ? 'xl:col-span-4' : ''}`}>
-                              <h4 className="text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
+                          <div className={`${optionColClass} ${isBookletProductType(selectedType.name) ? 'xl:col-span-3' : ''}`}>
+                              <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <Scissors size={16} className="text-blue-500"/> 후가공 설정 (Processings)
                               </h4>
-                              <p className="text-[10px] text-slate-400">
+                              <p className="flex-none text-[10px] text-slate-400">
                                   {isBookletProductType(selectedType.name)
                                       ? '제본·공통 / 표지 / 내지 후가공을 각각 선택한 뒤 하단 후가공 저장을 눌러 주세요. (목록에 없으면 「후가공 관리」에서 먼저 추가)'
                                       : '여러 개를 체크한 뒤 하단 후가공 저장을 눌러 주세요. (목록에 없으면 「후가공 관리」에서 먼저 추가)'}
                               </p>
 
                               {isBookletProductType(selectedType.name) ? (
-                                  <div className="space-y-4">
+                                  <div className="flex-1 min-h-0 grid grid-cols-1 md:grid-cols-3 gap-3 overflow-hidden">
                                       {([
                                           {
                                               key: 'common' as const,
@@ -661,10 +669,10 @@ export const ProductManager: React.FC = () => {
                                               checkedClass: 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-300 dark:border-emerald-600 text-emerald-800 dark:text-emerald-100',
                                           },
                                       ]).map((section) => (
-                                          <div key={section.key} className={`rounded-lg border p-3 ${section.boxClass}`}>
-                                              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                          <div key={section.key} className={`min-h-0 min-w-0 flex flex-col overflow-hidden p-3 ${section.boxClass}`}>
+                                              <div className="flex-none flex flex-col gap-1.5 mb-2">
                                                   <span className={`text-xs font-bold ${section.titleClass}`}>{section.title}</span>
-                                                  <div className="flex flex-wrap gap-2">
+                                                  <div className="flex flex-wrap gap-1.5">
                                                       <button
                                                           type="button"
                                                           onClick={() => handleSelectAllProcessings(section.key)}
@@ -684,7 +692,7 @@ export const ProductManager: React.FC = () => {
                                                       </span>
                                                   </div>
                                               </div>
-                                              <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-1.5 max-h-[22rem] overflow-y-auto custom-scrollbar">
+                                              <div className="flex-1 min-h-0 grid grid-cols-2 gap-1.5 overflow-y-auto custom-scrollbar content-start">
                                                   {allProcessings.map((opt) => {
                                                       const isChecked = section.draft.includes(opt);
                                                       return (
@@ -708,7 +716,7 @@ export const ProductManager: React.FC = () => {
                                   </div>
                               ) : (
                                   <>
-                                      <div className="flex flex-wrap gap-2">
+                                      <div className="flex-none flex flex-wrap gap-2">
                                           <button
                                               type="button"
                                               onClick={() => handleSelectAllProcessings('common')}
@@ -727,7 +735,7 @@ export const ProductManager: React.FC = () => {
                                               선택 {draftProcessings.length} / {allProcessings.length}
                                           </span>
                                       </div>
-                                      <div className="bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg p-2 max-h-[28rem] overflow-y-auto custom-scrollbar space-y-1">
+                                      <div className={optionListClass}>
                                           {allProcessings.map(opt => {
                                               const isChecked = draftProcessings.includes(opt);
                                               return (
@@ -750,7 +758,7 @@ export const ProductManager: React.FC = () => {
                                   type="button"
                                   onClick={handleSaveProcessings}
                                   disabled={!processingsDirty}
-                                  className={`w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors ${
+                                  className={`flex-none w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors ${
                                       processingsDirty
                                           ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm'
                                           : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'

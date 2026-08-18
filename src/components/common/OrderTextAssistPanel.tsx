@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { ClipboardPaste, Sparkles, Check, X, Calculator, Package } from 'lucide-react';
+import { ClipboardPaste, Sparkles, Check, X, Calculator, Package, Inbox, Loader2, RefreshCw } from 'lucide-react';
 import { Job, JobTypeDefinition } from '../../types';
 import { db } from '../../services/dataService';
 import {
@@ -26,6 +26,65 @@ export const OrderTextAssistPanel: React.FC<OrderTextAssistPanelProps> = ({
   const [text, setText] = useState('');
   const [result, setResult] = useState<OrderTextParseResult | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const canUseMail = typeof window !== 'undefined' && !!window.electron?.mailInboxList;
+  const [mailOpen, setMailOpen] = useState(false);
+  const [mailLoading, setMailLoading] = useState(false);
+  const [mailReading, setMailReading] = useState<number | null>(null);
+  const [mailError, setMailError] = useState('');
+  const [mailRows, setMailRows] = useState<{ uid: number; from: string; subject: string; date: string | null }[]>([]);
+
+  const analyzeFrom = (raw: string) => {
+    const parsed = parseOrderText(raw, {
+      products: productDefs,
+      processingOptions,
+      clientNames: db.getClients().map((c) => c.name),
+      ownCompanyName: db.getCompanyInfo()?.name,
+    });
+    setResult(parsed);
+  };
+
+  const handleAnalyze = () => analyzeFrom(text);
+
+  const loadMailList = async () => {
+    if (!window.electron?.mailInboxList) return;
+    setMailLoading(true);
+    setMailError('');
+    try {
+      const cfg = await window.electron.mailInboxGet?.();
+      if (!cfg?.configured || !cfg.hasPassword) {
+        setMailError('회사 정보에서 받는 메일함을 먼저 연결해 주세요.');
+        setMailRows([]);
+        return;
+      }
+      const res = await window.electron.mailInboxList({ limit: 40 });
+      if (!res.ok) {
+        setMailError(res.error || '메일 목록을 가져오지 못했습니다.');
+        setMailRows([]);
+        return;
+      }
+      setMailRows(res.messages || []);
+      if (!res.messages?.length) setMailError('받은편지함이 비어 있습니다.');
+    } finally {
+      setMailLoading(false);
+    }
+  };
+
+  const pickMail = async (uid: number) => {
+    if (!window.electron?.mailInboxRead) return;
+    setMailReading(uid);
+    setMailError('');
+    try {
+      const res = await window.electron.mailInboxRead(uid);
+      if (!res.ok || !res.text) {
+        setMailError(res.error || '메일 본문을 읽지 못했습니다.');
+        return;
+      }
+      setText(res.text);
+      analyzeFrom(res.text);
+    } finally {
+      setMailReading(null);
+    }
+  };
 
   useEffect(() => {
     if (!open) return;
@@ -39,16 +98,6 @@ export const OrderTextAssistPanel: React.FC<OrderTextAssistPanelProps> = ({
       window.removeEventListener('keydown', onKey);
     };
   }, [open]);
-
-  const handleAnalyze = () => {
-    const parsed = parseOrderText(text, {
-      products: productDefs,
-      processingOptions,
-      clientNames: db.getClients().map((c) => c.name),
-      ownCompanyName: db.getCompanyInfo()?.name,
-    });
-    setResult(parsed);
-  };
 
   const toggleItemField = (itemIdx: number, fieldIdx: number) => {
     setResult((prev) => {
@@ -106,14 +155,14 @@ export const OrderTextAssistPanel: React.FC<OrderTextAssistPanelProps> = ({
         className="w-full flex items-center justify-between px-1 py-0.5 text-left"
       >
         <span className="text-[11px] font-bold text-violet-700 flex items-center gap-1">
-          <ClipboardPaste size={11} /> 문자·통화 넣기
+          <ClipboardPaste size={11} /> 문자·통화·이메일 넣기
         </span>
         <span className="text-[9px] font-bold text-violet-500">
           {text.trim() ? '다시 열기' : '창 열기'}
         </span>
       </button>
       <p className="px-1 pt-0.5 text-[9px] text-slate-400 leading-snug">
-        이메일·문자·통화 글을 큰 창에 붙여 넣고 분석합니다.
+        이메일·문자·통화 글을 붙여 넣거나, PC에서는 메일함에서 골라 분석합니다.
       </p>
 
       {open && (
@@ -126,10 +175,11 @@ export const OrderTextAssistPanel: React.FC<OrderTextAssistPanelProps> = ({
               <div>
                 <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
                   <ClipboardPaste className="text-violet-600" size={20} />
-                  문자·이메일 넣기
+                  문자·통화·이메일 넣기
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
                   글자만 가져옵니다. 굵기·색·표 모양은 무시하고, 줄바꿈은 그대로 둡니다.
+                  PC에서 메일함을 연결했다면 목록에서 고를 수 있습니다.
                 </p>
               </div>
               <button
@@ -144,7 +194,61 @@ export const OrderTextAssistPanel: React.FC<OrderTextAssistPanelProps> = ({
 
             <div className="flex-1 min-h-0 flex flex-col lg:flex-row">
               <div className="flex-1 min-h-0 flex flex-col border-b lg:border-b-0 lg:border-r border-slate-200 p-4 gap-2">
-                <label className="text-xs font-bold text-slate-600 shrink-0">원문 붙여넣기</label>
+                <div className="flex items-center justify-between gap-2 shrink-0">
+                  <label className="text-xs font-bold text-slate-600">원문</label>
+                  {canUseMail && (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = !mailOpen;
+                          setMailOpen(next);
+                          if (next && mailRows.length === 0) void loadMailList();
+                        }}
+                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100"
+                      >
+                        <Inbox size={12} /> 메일함에서 넣기
+                      </button>
+                      {mailOpen && (
+                        <button
+                          type="button"
+                          onClick={() => void loadMailList()}
+                          disabled={mailLoading}
+                          className="p-1 rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-40"
+                          title="목록 새로고침"
+                        >
+                          {mailLoading ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </div>
+                {mailOpen && canUseMail && (
+                  <div className="shrink-0 max-h-44 overflow-y-auto custom-scrollbar rounded-lg border border-violet-100 bg-violet-50/50">
+                    {mailError && <p className="px-2.5 py-2 text-[11px] text-amber-800">{mailError}</p>}
+                    {!mailError && mailLoading && (
+                      <p className="px-2.5 py-2 text-[11px] text-slate-500">메일 목록을 불러오는 중…</p>
+                    )}
+                    {mailRows.map((row) => (
+                      <button
+                        key={row.uid}
+                        type="button"
+                        onClick={() => void pickMail(row.uid)}
+                        disabled={mailReading !== null}
+                        className="w-full text-left px-2.5 py-1.5 border-b border-violet-50 last:border-b-0 hover:bg-white disabled:opacity-50"
+                      >
+                        <p className="text-[11px] font-bold text-slate-800 truncate">
+                          {mailReading === row.uid ? '읽는 중… ' : ''}
+                          {row.subject}
+                        </p>
+                        <p className="text-[10px] text-slate-500 truncate">
+                          {row.from}
+                          {row.date ? ` · ${new Date(row.date).toLocaleString('ko-KR')}` : ''}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   ref={textareaRef}
                   value={text}
@@ -193,7 +297,7 @@ export const OrderTextAssistPanel: React.FC<OrderTextAssistPanelProps> = ({
                 <div className="flex-1 min-h-0 overflow-y-auto custom-scrollbar space-y-2 pr-0.5">
                   {!result && (
                     <div className="text-[11px] text-slate-400 leading-relaxed space-y-1.5">
-                      <p>왼쪽 글을 붙여 넣은 뒤 분석을 누르세요.</p>
+                      <p>왼쪽 글을 붙여 넣거나, 메일함에서 고른 뒤 분석을 누르세요.</p>
                       <p className="font-bold text-slate-500">찾는 항목</p>
                       <p>거래처 · 담당자 · 연락처 · 제목 · 납기 · 우선순위 · 총액</p>
                       <p>품목 · 규격 · 수량 · 용지 · 평량 · 인쇄도수 · 후가공</p>
