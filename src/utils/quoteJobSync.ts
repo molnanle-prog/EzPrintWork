@@ -15,6 +15,7 @@ export function isBookletProductType(typeName: string): boolean {
   if (!typeName) return false;
   if (typeName.includes('책자')) return true;
   if (typeName.includes('카탈로그') || typeName.includes('카달로그')) return true;
+  if (typeName.includes('복사')) return true;
   return false;
 }
 
@@ -135,7 +136,7 @@ function formatStandardSpecsDescription(specs: JobSpecs): string {
   return parts.join(' / ') || '사양 미입력';
 }
 
-/** 견적서·명세 품목 사양 — 책자/카탈로그는 표지·내지 구분 */
+/** 견적서·명세 품목 사양 — 책자/카탈로그/복사는 표지·내지 구분 */
 export function formatQuoteLineDescription(productType: string, specs: JobSpecs): string {
   if (!isBookletProductType(productType)) {
     return formatStandardSpecsDescription(specs);

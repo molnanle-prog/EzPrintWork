@@ -4,6 +4,10 @@ import { storage } from './firebase';
 import { isIncomingJobNewer } from '../utils/jobRevision';
 import { applyIncomingJobVisibilityClears, mergeJobVisibilityFields } from '../utils/jobVisibilitySync';
 import {
+    ensureAssignmentNoticeForNewlySeenJob,
+    mergeAssignmentNoticeFields,
+} from '../utils/assignmentNotice';
+import {
     ARCHIVE_FILE_NAME,
     ARCHIVE_README_NAME,
     ARCHIVE_USE_DEFAULT_KEY,
@@ -115,7 +119,7 @@ export class JobArchiveService {
             if (!job?.id) continue;
             const prev = map.get(job.id);
             if (!prev) {
-                map.set(job.id, job);
+                map.set(job.id, ensureAssignmentNoticeForNewlySeenJob(job));
                 continue;
             }
             // rev(리비전) 우선 비교 — PC 간 시스템 시계가 달라도(clock skew) 정확한 선후 판단
@@ -124,9 +128,23 @@ export class JobArchiveService {
                     { ...prev, ...job } as unknown as Record<string, unknown>,
                     job as unknown as Record<string, unknown>
                 ) as unknown as Job;
-                map.set(job.id, mergeJobVisibilityFields(merged, prev, job));
+                map.set(
+                    job.id,
+                    mergeAssignmentNoticeFields(
+                        prev,
+                        job,
+                        mergeJobVisibilityFields(merged, prev, job)
+                    )
+                );
             } else {
-                map.set(job.id, mergeJobVisibilityFields({ ...prev }, prev, job));
+                map.set(
+                    job.id,
+                    mergeAssignmentNoticeFields(
+                        prev,
+                        job,
+                        mergeJobVisibilityFields({ ...prev }, prev, job)
+                    )
+                );
             }
         }
         return Array.from(map.values());

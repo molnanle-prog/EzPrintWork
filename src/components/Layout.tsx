@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, Pin, ChevronsDown, ArrowDownToLine, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu } from 'lucide-react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, Pin, ChevronsDown, ArrowDownToLine, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu, Bell } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -11,12 +11,19 @@ import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
 import { FinanceBoardModal } from './payments/FinanceBoardModal';
 import { db } from '../services/dataService';
+import { presenceSessionService, type PresenceSessionEntry } from '../services/presenceSessionService';
+import { resolveStaffOnline } from '../utils/staffSession';
 import { Job, Staff } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { toast } from 'sonner';
 import { useInstalledAppVersion } from '../hooks/useInstalledAppVersion';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
+import {
+  formatAssignmentNoticeTime,
+  formatAssigneeNames,
+  listUnackedAssignmentJobs,
+} from '../utils/assignmentNotice';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -252,8 +259,25 @@ const ReconnectOverlay: React.FC = () => {
     );
 };
 
+function isStaffCurrentlyOnline(
+  s: Staff,
+  sessions: Record<string, PresenceSessionEntry>
+): boolean {
+  const keys = [s.uid, s.id].filter(Boolean) as string[];
+  for (const key of keys) {
+    const row = sessions[key];
+    if (row && resolveStaffOnline(row)) return true;
+  }
+  for (const row of Object.values(sessions)) {
+    if (row?.staffDocId && (row.staffDocId === s.id || row.staffDocId === s.uid) && resolveStaffOnline(row)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange }) => {
-  const { tenantPlan } = useAuth();
+  const { tenantPlan, currentUser } = useAuth();
   const { theme } = useTheme();
   const installedAppVersion = useInstalledAppVersion();
   const [isTvMode, setIsTvMode] = useState(() => {
@@ -267,6 +291,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   const [showFinanceModal, setShowFinanceModal] = useState(false);
   const [selectedSearchJob, setSelectedSearchJob] = useState<Job | null>(null);
   const [staff, setStaff] = useState<Staff[]>([]);
+  const [onlineByKey, setOnlineByKey] = useState<Record<string, boolean>>({});
+  const [jobs, setJobs] = useState<Job[]>([]);
 
   useEffect(() => {
     const handleTvModeChange = (e: Event) => {
@@ -340,12 +366,46 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     const refresh = () => {
       setStaff(db.getStaff());
       setCompanyName(db.getCompanyInfo().name);
+      setJobs(db.getActiveJobs());
     };
 
     refresh();
     const unsubscribe = db.subscribe(refresh);
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    if (!currentUser?.tenantId) return;
+    let cancelled = false;
+
+    const refreshPresence = async () => {
+      try {
+        const file = await presenceSessionService.read(
+          currentUser.tenantId!,
+          db.getStoreGatewayUrls()
+        );
+        if (cancelled) return;
+        const sessions = file?.sessions || {};
+        const next: Record<string, boolean> = {};
+        for (const s of db.getStaff()) {
+          if (!s?.id) continue;
+          const on = isStaffCurrentlyOnline(s, sessions);
+          next[s.id] = on;
+          if (s.uid) next[s.uid] = on;
+        }
+        setOnlineByKey(next);
+      } catch (e) {
+        console.warn('[Layout] presence refresh failed:', e);
+      }
+    };
+
+    void refreshPresence();
+    const timer = window.setInterval(() => void refreshPresence(), 20_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser?.tenantId]);
 
   const handleJobUpdate = async (updatedJob: Job) => {
       try {
@@ -357,6 +417,21 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
           throw error;
       }
   };
+
+  const assignmentAlerts = useMemo(
+    () => listUnackedAssignmentJobs(jobs, currentUser, staff),
+    [jobs, currentUser, staff]
+  );
+  const assignmentAlertJob = assignmentAlerts[0] || null;
+  const assignmentAlertTime = assignmentAlertJob
+    ? formatAssignmentNoticeTime(assignmentAlertJob.assignmentNotice?.assignedAt)
+    : '';
+  const assignmentAlertAssignees = assignmentAlertJob
+    ? formatAssigneeNames(assignmentAlertJob.assignmentNotice?.staffIds, staff)
+    : '';
+  const assignmentAlertAction = assignmentAlertAssignees
+    ? `${assignmentAlertAssignees}로 담당자 지정`
+    : '담당자 지정';
 
   const menuItems = [
     { id: 'dashboard', label: '상황판', icon: LayoutDashboard },
@@ -577,15 +652,25 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                                 <Phone size={14} className="text-blue-500"/> 내선 번호
                             </h3>
                             <div className="space-y-1.5 max-h-[140px] overflow-y-auto custom-scrollbar pr-1">
-                                {staff.filter(s => s.active && s.extensionNumber).map(s => (
+                                {staff.filter(s => s.active && !s.isDeleted).map(s => {
+                                    const online = !!(s.uid && onlineByKey[s.uid]) || !!onlineByKey[s.id];
+                                    return (
                                     <div key={s.id} className="flex justify-between items-center text-xs py-1.5 border-b border-slate-700/30 last:border-0 group">
-                                        <div className="flex items-center gap-2">
-                                            <div className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                                            <span className="text-slate-300 font-bold">{s.name}</span>
+                                        <div className="flex items-center gap-2 min-w-0">
+                                            <span
+                                                className={`w-8 shrink-0 text-center text-[10px] font-black tracking-tight ${
+                                                    online ? 'text-emerald-400' : 'text-slate-500'
+                                                }`}
+                                                title={online ? '온라인' : '오프라인'}
+                                            >
+                                                {online ? 'ON' : 'OFF'}
+                                            </span>
+                                            <span className="text-slate-300 font-bold truncate">{s.name}</span>
                                         </div>
-                                        <span className="text-blue-400 font-black font-mono group-hover:text-blue-300 transition-colors">{s.extensionNumber}</span>
+                                        <span className="text-blue-400 font-black font-mono group-hover:text-blue-300 transition-colors shrink-0">{s.extensionNumber || ''}</span>
                                     </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         </div>
                     </div>
@@ -705,7 +790,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
         <main className="flex-1 flex flex-col h-full overflow-hidden relative">
             {!isTvMode && (
-                <header className={`border-b flex items-center justify-between z-10 shrink-0 h-14 lg:h-16 px-3 sm:px-4 md:px-5 lg:px-7 ${
+                <header className={`border-b flex items-center justify-between z-[70] shrink-0 min-h-14 lg:min-h-16 py-1 px-3 sm:px-4 md:px-5 lg:px-7 ${
                   theme === 'trello' 
                     ? 'bg-[#152238]/90 border-[#22334b]' 
                     : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'
@@ -732,8 +817,36 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
                             {activeTab === 'settings' ? '설정' : menuItems.find(m => m.id === activeTab)?.label}
                         </h2>
                     </div>
+                    {assignmentAlertJob && (
+                        <button
+                            type="button"
+                            onClick={() => setSelectedSearchJob(assignmentAlertJob)}
+                            className={`assignment-notice-blink mx-2 sm:mx-3 flex-1 min-w-[240px] max-w-3xl rounded-full px-3 sm:px-4 h-10 sm:h-11 flex items-center gap-1.5 text-left shadow-sm border ${
+                                theme === 'trello'
+                                    ? 'bg-amber-400 border-amber-200 text-slate-900'
+                                    : 'bg-amber-400 border-amber-500 text-slate-900'
+                            }`}
+                            title="카드를 열면 이 알림이 멈춥니다"
+                        >
+                            <Bell size={15} className="shrink-0" />
+                            <span className="min-w-0 flex-1 flex items-center gap-1.5 text-[12px] sm:text-[13px] font-bold">
+                                {assignmentAlertTime && (
+                                    <span className="shrink-0">{assignmentAlertTime}</span>
+                                )}
+                                <span className="shrink-0 text-slate-800/70">·</span>
+                                <span className="min-w-0 truncate">
+                                    {assignmentAlertJob.title || '작업'}
+                                </span>
+                                <span className="shrink-0 text-slate-800/70">·</span>
+                                <span className="shrink-0">
+                                    {assignmentAlertAction}
+                                    {assignmentAlerts.length > 1 ? ` · 외 ${assignmentAlerts.length - 1}건` : ''}
+                                </span>
+                            </span>
+                        </button>
+                    )}
                     <div className="flex items-center gap-2 sm:gap-3 lg:gap-5 shrink-0">
-                        {tenantPlan === 'free' && (
+                        {tenantPlan === 'free' && !assignmentAlertJob && (
                             <button 
                                 onClick={() => setShowUpgradeModal(true)}
                                 className="hidden md:flex items-center gap-3 px-4 h-12 bg-gradient-to-r from-amber-500 via-orange-600 to-amber-600 text-white rounded-xl text-xs font-black shadow-lg shadow-amber-500/30 hover:scale-105 active:scale-95 transition-all group border border-amber-400/30 overflow-hidden relative min-w-[220px]"

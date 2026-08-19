@@ -92,6 +92,12 @@ export interface JobHistoryLog {
   details: string; // e.g., "접수 -> 디자인", "김철수 -> 이영희"
 }
 
+export interface AssignmentNotice {
+  assignedAt: string;
+  staffIds: string[];
+  viewedBy?: Record<string, string>;
+}
+
 export interface Job {
   id: string;
   title: string;
@@ -108,6 +114,8 @@ export interface Job {
   assignedStaffIds?: string[]; 
   /** 접수자(등록한 직원). 담당자(assignedStaffIds)와 별개 — 접수했다고 담당이 아님 */
   receivedByStaffId?: string;
+  /** 담당자 지정 알림 — 지정 시각·대상·카드 확인(다른 PC와 NAS로 공유) */
+  assignmentNotice?: AssignmentNotice | null;
   /** 완료 안내 문자 발송 성공 시각 — 칸반 카드 거래처명 옆 표시 */
   completeSmsSentAt?: string;
   history?: JobHistoryLog[]; 
@@ -306,11 +314,11 @@ export interface JobTypeDefinition {
   sizes: string[]; 
   paperTypes: string[]; 
   paperWeights: string[]; 
-  /** 일반 품목 후가공 / 책자·카탈로그 제본·공통 후가공 */
+  /** 일반 품목 후가공 / 책자·카탈로그·복사 제본·공통 후가공 */
   processings?: string[];
-  /** 책자·카탈로그 표지 전용 후가공 */
+  /** 책자·카탈로그·복사 표지 전용 후가공 */
   processingsCover?: string[];
-  /** 책자·카탈로그 내지 전용 후가공 */
+  /** 책자·카탈로그·복사 내지 전용 후가공 */
   processingsInner?: string[];
 }
 

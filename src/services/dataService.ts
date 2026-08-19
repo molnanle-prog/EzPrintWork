@@ -101,6 +101,10 @@ import {
     JOB_VISIBILITY_CLEAR_FIELDS,
 } from '../utils/jobVisibilitySync';
 import { isIncomingJobNewer, nextJobRev } from '../utils/jobRevision';
+import {
+    ensureAssignmentNoticeForNewlySeenJob,
+    mergeAssignmentNoticeFields,
+} from '../utils/assignmentNotice';
 import { staffCountToPlanCode, tierToPaymentStatus, PlanTier, AD_TIER_MAX, countActiveStaffSeats } from '../utils/planLimits';
 import { filterJobTitleOptions, normalizeStaffRecord, isReservedStaffAuthRole } from '../utils/adminAccess';
 import { APP_VERSION } from '../utils/autoUpdate';
@@ -298,6 +302,15 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
         processingsInner: ['유광코팅', '무광코팅', '오시', '미싱']
     },
     {
+        name: '복사',
+        sizes: ['A4(210x297)', 'A3(297x420)', 'B4(257x364)', 'B5(182x257)', 'A5(148x210)', '규격외'],
+        paperTypes: ['복사용지(백색)', '모조지', '아트지', '스노우지', '색지', '재생지', '표지용 아트지'],
+        paperWeights: [...BOOKLET_SINGLE_PAPER_WEIGHTS],
+        processings: ['중철제본', '스프링제본', '무선제본', '스테이플', '펀칭'],
+        processingsCover: ['유광코팅', '무광코팅'],
+        processingsInner: ['유광코팅', '무광코팅']
+    },
+    {
         name: '봉투',
         sizes: ['소봉투(220x105)', '대봉투(A4용/330x245)', '중봉투(260x190)', '자켓봉투', '규격외'],
         paperTypes: ['모조지(백색)', '크라프트지(갈색)', '체크레자', '줄레자', '밍크지', '특수레자'],
@@ -334,6 +347,8 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
 ];
 
 const LEGACY_CATALOG_TYPE_NAMES = ['카탈로그/브로셔', '카탈로그/책자', '카달로그/책자', '카달로그/브로셔'];
+/** 기존 매장 품목 목록에 없으면 한 번 넣어 줄 신규 기본 품목 (삭제된 옛 기본 품목은 되살리지 않음) */
+const ENSURE_NEW_DEFAULT_PRODUCTS = new Set(['복사']);
 /** 작업(jobs) type 레거시 보정용 — 해당 품목명이 마스터에 없을 때만 적용 */
 const LEGACY_JOB_SIGNAGE_TYPE_NAMES = ['현수막/배너', '현수막'];
 
@@ -423,6 +438,9 @@ export function mergeAllProductDefinitionsWithInitial(
             if (!productDefinitionFieldsEqual(merged, existing)) changed = true;
             result.push(merged);
             byName.delete(template.name);
+        } else if (ENSURE_NEW_DEFAULT_PRODUCTS.has(template.name)) {
+            result.push({ ...template });
+            changed = true;
         }
         // 삭제된 기본 품목은 merge로 되살리지 않음 (신규 테넌트는 INITIAL 전체로 초기화)
     }
@@ -543,6 +561,7 @@ export function isBookletProductType(typeName: string): boolean {
     if (!typeName) return false;
     if (typeName.includes('책자')) return true;
     if (typeName.includes('카탈로그') || typeName.includes('카달로그')) return true;
+    if (typeName.includes('복사')) return true;
     return LEGACY_CATALOG_TYPE_NAMES.some(name => typeName === name);
 }
 
@@ -612,7 +631,8 @@ export class DataService {
     private liveMirrorPushTimer: ReturnType<typeof setTimeout> | null = null;
     /** Auth에서 주입 — 상품/후가공 저장 권한 */
     private sessionCanManageProductProcessing = false;
-    private lastProductProcessingFingerprint: string | null = null;
+    private lastProductFingerprint: string | null = null;
+    private lastProcessingFingerprint: string | null = null;
     private cloudDegraded = false;
     private localOperationalReady = false;
     private lastNasMirrorAt: string | null = null;
@@ -2452,21 +2472,16 @@ export class DataService {
             } else if (this.isProductProcessingSetting(key)) {
                 // 상품·후가공 — NAS SSOT이지만, 로컬이 더 최신이면 유지
                 // (저장 직후 폴이 옛 NAS로 덮어 ‘추가는 안 되고 삭제만 된다’ 현상 방지)
+                // situation.updatedAt(작업 저장에도 갱신)은 쓰지 않음 — 후가공 안 바꿨는데 안내 뜨던 원인
                 if (value === undefined || value === null) continue;
                 const curTs = this.settingsKeyUpdatedAtMs(current, key);
-                let inTs = this.settingsKeyUpdatedAtMs(incoming, key);
-                if (inTs === 0 && mirrorFallbackTs) {
-                    inTs = Date.parse(mirrorFallbackTs) || 0;
-                }
-                if (inTs > curTs || curTs === 0) {
+                const inTs = this.settingsKeyUpdatedAtMs(incoming, key);
+                if (inTs > curTs || (curTs === 0 && inTs > 0)) {
                     merged[key] = value;
-                    outMeta[key] =
-                        inMeta[key] ||
-                        (mirrorFallbackTs
-                            ? { updatedAt: mirrorFallbackTs }
-                            : { updatedAt: new Date().toISOString() });
+                    outMeta[key] = inMeta[key] || { updatedAt: new Date().toISOString() };
                 }
-                // else: 로컬(방금 추가/수정)이 더 최신 — 유지
+                // curTs === 0 && inTs === 0: 로컬 값 유지 (작업 미러 폴에 상품을 덮지 않음)
+                // else: 로컬이 더 최신 — 유지
             } else if (this.isNasMasterSetting(key)) {
                 if (value === undefined || value === null) continue;
                 const curTs = this.settingsKeyUpdatedAtMs(current, key);
@@ -2507,37 +2522,52 @@ export class DataService {
         this.emitProductProcessingSyncNotice(current, merged);
     }
 
-    private productProcessingFingerprint(settings: Record<string, unknown>): string {
+    private settingDefinitionsFingerprint(
+        settings: Record<string, unknown>,
+        key: 'productDefinitions' | 'processingDefinitions'
+    ): string {
+        const raw = settings[key];
+        const defs =
+            raw && typeof raw === 'object' && 'definitions' in (raw as object)
+                ? (raw as { definitions: unknown }).definitions
+                : raw ?? null;
         try {
-            return JSON.stringify({
-                product: settings.productDefinitions ?? null,
-                processing: settings.processingDefinitions ?? null,
-            });
+            return JSON.stringify(defs);
         } catch {
             return '';
         }
     }
 
-    /** 다른 PC에서 상품/후가공이 바뀌면 안내 — 동일 데이터 유지 */
+    /** 다른 PC에서 상품/후가공이 바뀌면 안내 — 자동 기본값 주입·작업 미러는 제외 */
     private emitProductProcessingSyncNotice(
-        before: Record<string, unknown>,
+        _before: Record<string, unknown>,
         after: Record<string, unknown>
     ): void {
-        const prev = this.productProcessingFingerprint(before);
-        const next = this.productProcessingFingerprint(after);
-        if (!next || prev === next) {
-            this.lastProductProcessingFingerprint = next || this.lastProductProcessingFingerprint;
+        const nextProduct = this.settingDefinitionsFingerprint(after, 'productDefinitions');
+        const nextProcessing = this.settingDefinitionsFingerprint(after, 'processingDefinitions');
+        const isFirst = this.lastProductFingerprint === null && this.lastProcessingFingerprint === null;
+        if (isFirst) {
+            this.lastProductFingerprint = nextProduct;
+            this.lastProcessingFingerprint = nextProcessing;
             return;
         }
-        const isFirst = this.lastProductProcessingFingerprint === null;
-        this.lastProductProcessingFingerprint = next;
-        if (isFirst || !prev) return;
+        const productChanged = nextProduct !== this.lastProductFingerprint;
+        const processingChanged = nextProcessing !== this.lastProcessingFingerprint;
+        this.lastProductFingerprint = nextProduct;
+        this.lastProcessingFingerprint = nextProcessing;
+        if (!productChanged && !processingChanged) return;
         if (typeof window === 'undefined') return;
+        const target =
+            productChanged && processingChanged
+                ? '상품/후가공'
+                : productChanged
+                  ? '상품'
+                  : '후가공';
         window.dispatchEvent(
             new CustomEvent('ezpw-product-processing-updated', {
                 detail: {
                     message:
-                        '회사 상품/후가공 설정이 갱신되었습니다. 화면이 자동 반영됩니다. 목록이 다르면 NAS 연결을 확인하거나 앱을 다시 시작해 주세요.',
+                        `회사 ${target} 설정이 갱신되었습니다. 화면이 자동 반영됩니다. 목록이 다르면 NAS 연결을 확인하거나 앱을 다시 시작해 주세요.`,
                 },
             })
         );
@@ -2577,7 +2607,7 @@ export class DataService {
             }
             const prev = map.get(job.id);
             if (!prev) {
-                map.set(job.id, job);
+                map.set(job.id, ensureAssignmentNoticeForNewlySeenJob(job));
                 continue;
             }
             const useIncoming = isIncomingJobNewer(job, prev);
@@ -2590,7 +2620,9 @@ export class DataService {
             } else {
                 merged = { ...prev };
             }
-            map.set(job.id, mergeJobVisibilityFields(merged, prev, job));
+            merged = mergeJobVisibilityFields(merged, prev, job);
+            merged = mergeAssignmentNoticeFields(prev, job, merged, this.getStaff());
+            map.set(job.id, merged);
         }
         return Array.from(map.values());
     }
@@ -2642,6 +2674,7 @@ export class DataService {
             ids,
             job.receivedByStaffId || '',
             job.completeSmsSentAt || '',
+            JSON.stringify(job.assignmentNotice ?? null),
             job.clientName || '',
             job.contactPerson || '',
             job.clientPhone || '',
@@ -2935,7 +2968,8 @@ export class DataService {
             } else {
                 merged = { ...local };
             }
-            return mergeJobVisibilityFields(merged, local, mirrored);
+            merged = mergeJobVisibilityFields(merged, local, mirrored);
+            return mergeAssignmentNoticeFields(local, mirrored, merged, this.getStaff());
         };
 
         const next: Job[] = [];
@@ -2960,7 +2994,7 @@ export class DataService {
 
         for (const mirrored of incomingById.values()) {
             if (!isJobTombstoned(mirrored.id, this.jobTombstones, this.jobTimestampMs(mirrored))) {
-                next.push(mirrored);
+                next.push(ensureAssignmentNoticeForNewlySeenJob(mirrored));
             }
         }
 
@@ -6530,7 +6564,7 @@ export class DataService {
         }
         return [];
     }
-    /** 책자·카탈로그 품목의 공통/표지/내지 후가공 목록 */
+    /** 책자·카탈로그·복사 품목의 공통/표지/내지 후가공 목록 */
     getProductProcessingSets(typeName: string): ProductProcessingSets {
         if (!isBookletProductType(typeName)) {
             const def = this.getProductDefinitions().find((d) => d.name === typeName);

@@ -20,6 +20,7 @@ function inferQuantityUnit(type?: string): string {
   const t = (type || '').toLowerCase();
   if (!t) return '개';
   if (t.includes('책자') || t.includes('카탈로그') || t.includes('브로슈어') || t.includes('매뉴얼')) return '권';
+  if (t.includes('복사')) return '부';
   if (t.includes('명함') || t.includes('전단') || t.includes('리플렛') || t.includes('포스터') || t.includes('스티커')) return '장';
   return '개';
 }

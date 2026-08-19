@@ -18,6 +18,7 @@ import { syncClientFromJob, getClientContacts, findClientByNormalizedName, norma
 import { findQuoteForJob } from '../../utils/quoteJobSync';
 import { openQuotePreviewWindow } from '../../utils/quotePreviewStorage';
 import { getStaffIdForUser, resolveHistoryActorName } from '../../utils/staffMatch';
+import { ackAssignmentNoticeIfNeeded, applyAssignmentNoticePatch } from '../../utils/assignmentNotice';
 import { toast } from 'sonner';
 import { normalizeSizeLabel, sizesMatch } from '../../utils/sizeLabel';
 
@@ -247,6 +248,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   /** 작업 이력 작성자 — Firebase uid가 아닌 staff 문서 id로 통일 */
   const historyActorId = getStaffIdForUser(staff, currentUser) || currentUser?.id || 'system';
   const [pastJobs, setPastJobs] = useState<Job[]>([]);
+  /** 이번 선택에서만 최근 이력 패널을 접음. 거래처가 바뀌면 다시 표시 */
+  const [pastJobsDismissed, setPastJobsDismissed] = useState(false);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [showQuoteCalculator, setShowQuoteCalculator] = useState(false);
   const [calcLineQuotes, setCalcLineQuotes] = useState<Record<string, number>>({});
@@ -255,6 +258,22 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   const currentSubJob = editedJob.subJobs![activeTabIdx];
   const currentSpecs = currentSubJob.specs;
   const isBooklet = isBookletProductType(currentSubJob.type);
+  const assignmentAckedRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (isNew || !job?.id || !currentUser) return;
+    if (assignmentAckedRef.current === job.id) return;
+    const next = ackAssignmentNoticeIfNeeded(job, currentUser, staff);
+    if (!next) {
+      if (staff.length > 0) assignmentAckedRef.current = job.id;
+      return;
+    }
+    assignmentAckedRef.current = job.id;
+    void db.updateJob(next).catch((err) => {
+      console.warn('[assignmentNotice] ack failed:', err);
+      assignmentAckedRef.current = null;
+    });
+  }, [job, isNew, currentUser, staff]);
 
   useEffect(() => {
     setStatusDefinitions(db.getStatusDefinitions());
@@ -331,6 +350,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                      { name: '직접입력', sizes: [], paperTypes: [], paperWeights: [] };
 
   useEffect(() => {
+    setPastJobsDismissed(false);
     if (!isNew || !editedJob.clientName || editedJob.clientName.length < 2) {
       setPastJobs([]);
       return;
@@ -684,6 +704,22 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
         finalJob.assignedStaffIds = [];
     }
 
+    const nextIds = finalJob.assignedStaffIds || [];
+    const actorId = historyActorId === 'system' ? null : historyActorId;
+    if (!isNew) {
+        Object.assign(finalJob, applyAssignmentNoticePatch(job, nextIds, actorId, staff));
+    } else if (nextIds.length > 0) {
+        Object.assign(
+            finalJob,
+            applyAssignmentNoticePatch(
+                { ...finalJob, assignedStaffIds: [], assignedStaffId: undefined } as Job,
+                nextIds,
+                actorId,
+                staff
+            )
+        );
+    }
+
     if (isStatusChangedToCompleted) {
         finalJob.completedAt = new Date().toISOString();
         finalJob.progress = 100;
@@ -887,6 +923,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
         price: pastJob.price
       });
       setActiveTabIdx(0);
+      setPastJobsDismissed(true);
     }
   };
 
@@ -1552,11 +1589,21 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                         />
                       )}
                       {/* Past Jobs History */}
-                      {isNew && pastJobs.length > 0 && (
+                      {isNew && pastJobs.length > 0 && !pastJobsDismissed && (
                         <div className="bg-white border border-blue-100 rounded-lg p-2 shadow-sm animate-in slide-in-from-left-2 duration-300">
                           <div className="flex items-center justify-between mb-1 px-1">
                              <h3 className="text-[11px] font-bold text-blue-700 flex items-center gap-1"><History size={11} /> 최근 주문 이력</h3>
-                             <span className="text-[9px] bg-blue-100 text-blue-600 px-1 rounded-full font-bold">{pastJobs.length}건</span>
+                             <div className="flex items-center gap-1">
+                               <span className="text-[9px] bg-blue-100 text-blue-600 px-1 rounded-full font-bold">{pastJobs.length}건</span>
+                               <button
+                                 type="button"
+                                 onClick={() => setPastJobsDismissed(true)}
+                                 className="flex items-center gap-0.5 px-1.5 py-0.5 bg-white border border-slate-200 text-[9px] font-bold text-slate-500 rounded hover:bg-slate-100 hover:text-slate-700 transition-colors"
+                                 title="이번만 닫기 (다음 거래처 선택 시 다시 표시)"
+                               >
+                                 <X size={10} /> 닫기
+                               </button>
+                             </div>
                           </div>
                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 max-h-20 overflow-y-auto custom-scrollbar pr-1">
                             {pastJobs.slice(0, 4).map(pj => (
@@ -2098,7 +2145,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                 <div className="h-5 flex items-center">
                                     <label className="text-sm font-bold text-slate-700 flex items-center gap-1"><Printer size={16}/> 수량</label>
                                 </div>
-                                <input type="text" value={currentSpecs.quantity} onChange={(e) => updateCurrentSpecs({ quantity: e.target.value })} placeholder="예: 500권" className={inputClass} />
+                                <input type="text" value={currentSpecs.quantity} onChange={(e) => updateCurrentSpecs({ quantity: e.target.value })} placeholder={currentSubJob.type.includes('복사') ? '예: 100부' : '예: 500권'} className={inputClass} />
                             </div>
                         </div>
                     ) : (

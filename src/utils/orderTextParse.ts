@@ -118,6 +118,7 @@ const PRODUCT_SYNONYMS: Record<string, string[]> = {
   '서식지/NCR(양식지)': ['서식지', 'NCR', '양식지'],
   '쇼핑백/종이가방': ['쇼핑백', '종이가방'],
   카탈로그: ['카달로그', '브로셔', '브로슈어'],
+  복사: ['컬러복사', '흑백복사', '복사본'],
 };
 
 function aliasesFor(name: string): string[] {
@@ -293,7 +294,7 @@ function extractPerson(text: string): { value: string; evidence: string } | null
   return null;
 }
 
-const NOT_COMPANY = /^(안녕|감사|문의|전달|제작|파일|유선|현수막|배너|실사|명함|스티커|전단지|리플렛|카탈로그|책자|봉투|쇼핑백|안녕하세요|감사합니다)$/;
+const NOT_COMPANY = /^(안녕|감사|문의|전달|제작|파일|유선|현수막|배너|실사|명함|스티커|전단지|리플렛|카탈로그|책자|복사|봉투|쇼핑백|안녕하세요|감사합니다)$/;
 
 function isOwnCompany(name: string, own?: string): boolean {
   const a = (own || '').trim().replace(/\s+/g, '');
@@ -622,7 +623,7 @@ export function parseOrderText(raw: string, catalog: OrderParseCatalog): OrderTe
 }
 
 function isBookletName(typeName: string): boolean {
-  return /책자|카탈로그|카달로그/.test(typeName || '');
+  return /책자|카탈로그|카달로그|복사/.test(typeName || '');
 }
 
 function emptySpecs(def: JobTypeDefinition | undefined, typeName: string): JobSpecs {

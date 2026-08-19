@@ -17,6 +17,7 @@ import {
   getStaffIdForUser,
   getJobReceiverName,
 } from '../../utils/staffMatch';
+import { applyAssignmentNoticePatch } from '../../utils/assignmentNotice';
 import { hasCompleteSmsSent } from '../../utils/jobSms';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -288,10 +289,12 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           : addUserToJobAssignees(job, currentUser, staffList);
         const assignStaffId = getStaffIdForUser(staffList, currentUser);
 
+        const noticePatch = applyAssignmentNoticePatch(job, assignedStaffIds, assignStaffId);
         const updatedJob = {
           ...job,
           assignedStaffIds,
           ...(assignedStaffIds[0] ? { assignedStaffId: assignedStaffIds[0] } : {}),
+          ...noticePatch,
           history: [
             ...(job.history || []),
             {

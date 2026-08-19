@@ -39,6 +39,8 @@ export type PresenceSessionsFile = {
   tenantId: string;
   updatedAt: string;
   sessions: Record<string, PresenceSessionEntry>;
+  /** 이메일·로그인ID·직원문서ID → sessions 키(uid). 매니저 식별용, 세션 claim 키는 그대로 uid */
+  identities?: Record<string, string>;
 };
 
 function isElectron(): boolean {
@@ -65,7 +67,26 @@ function emptyFile(tenantId: string): PresenceSessionsFile {
     tenantId,
     updatedAt: new Date().toISOString(),
     sessions: {},
+    identities: {},
   };
+}
+
+function buildIdentities(sessions: Record<string, PresenceSessionEntry>): Record<string, string> {
+  const identities: Record<string, string> = {};
+  for (const [uid, entry] of Object.entries(sessions || {})) {
+    if (!uid || !entry) continue;
+    identities[uid] = uid;
+    const email = String(entry.email || '').trim().toLowerCase();
+    if (email) identities[email] = uid;
+    const loginId = String(entry.loginId || '').trim().toLowerCase();
+    if (loginId) {
+      identities[loginId] = uid;
+      if (!loginId.includes('@')) identities[`${loginId}@ez-hub.kr`] = uid;
+    }
+    const staffDocId = String(entry.staffDocId || '').trim();
+    if (staffDocId) identities[staffDocId] = uid;
+  }
+  return identities;
 }
 
 function normalizeFile(tenantId: string, raw: unknown): PresenceSessionsFile {
@@ -78,6 +99,10 @@ function normalizeFile(tenantId: string, raw: unknown): PresenceSessionsFile {
       data.sessions && typeof data.sessions === 'object' && !Array.isArray(data.sessions)
         ? (data.sessions as Record<string, PresenceSessionEntry>)
         : {},
+    identities:
+      data.identities && typeof data.identities === 'object' && !Array.isArray(data.identities)
+        ? (data.identities as Record<string, string>)
+        : undefined,
   };
 }
 
@@ -240,6 +265,7 @@ export class PresenceSessionService {
       version: FILE_VERSION,
       tenantId,
       updatedAt: new Date().toISOString(),
+      identities: buildIdentities(file.sessions || {}),
     };
     const content = JSON.stringify(payload, null, 2);
 

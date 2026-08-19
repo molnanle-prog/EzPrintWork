@@ -508,6 +508,15 @@ html.trello .job-urgency-surface-dashboard.job-urgency-tier-very-urgent {
   transition: none !important;
 }
 
+@keyframes assignment-notice-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.38; }
+}
+
+.assignment-notice-blink {
+  animation: assignment-notice-blink 2.4s ease-in-out infinite;
+}
+
 /* D-Day 뱃지 */
 .job-dday-badge {
   display: inline-flex;

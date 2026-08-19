@@ -752,6 +752,9 @@ class LocalGateway {
                         sessions: presence.sessions && typeof presence.sessions === 'object'
                             ? presence.sessions
                             : {},
+                        identities: presence.identities && typeof presence.identities === 'object'
+                            ? presence.identities
+                            : {},
                     }));
                     return;
                 }
