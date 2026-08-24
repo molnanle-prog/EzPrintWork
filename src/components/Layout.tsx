@@ -306,12 +306,8 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   useEffect(() => {
     const onMasterUpdated = (ev: Event) => {
       const detail = (ev as CustomEvent<{ message?: string }>).detail;
-      toast.message(detail?.message || '회사 상품/후가공 설정이 갱신되었습니다.', {
-        duration: 8000,
-        action: {
-          label: '앱 다시 시작',
-          onClick: () => hardReloadApp(),
-        },
+      toast.message(detail?.message || '회사 상품/후가공 목록이 다른 PC에서 반영되었습니다.', {
+        duration: 5000,
       });
     };
     window.addEventListener('ezpw-product-processing-updated', onMasterUpdated);

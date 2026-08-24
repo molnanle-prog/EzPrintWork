@@ -33,6 +33,12 @@ import {
 } from '../../utils/staffMatch';
 import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
 import { buildKanbanColumnSlots, getKeysInKanbanSlots } from '../../utils/kanbanLayout';
+import {
+  applyKanbanSplitPercents,
+  getKanbanSplitStorageKey,
+  loadKanbanSplitPercents,
+  saveKanbanSplitPercent,
+} from '../../utils/kanbanSplitPrefs';
 import { KanbanSplitColumn } from './KanbanSplitColumn';
 import type { KanbanLayoutConfig } from '../../types';
 
@@ -73,6 +79,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const { theme } = useTheme();
   const { showAlert, showConfirm } = useDialog();
 
+  const splitPrefStorageKey = useMemo(
+    () =>
+      getKanbanSplitStorageKey({
+        tenantId: currentUser?.tenantId,
+        loginId: currentUser?.loginId,
+        uid: currentUser?.uid || currentUser?.id,
+        email: currentUser?.email,
+      }),
+    [currentUser?.tenantId, currentUser?.loginId, currentUser?.uid, currentUser?.id, currentUser?.email]
+  );
+
   // 스마트 실시간 필터 상태
   const [searchQuery, setSearchQuery] = useState('');
   const [filterOnlyMyJobs, setFilterOnlyMyJobs] = useState(false);
@@ -109,7 +126,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     const allJobs = db.getAllJobs();
     const activeJobs = db.getActiveJobs(); 
     const statuses = db.getStatusDefinitions();
-    const layout = db.getKanbanLayoutConfig();
+    const layout = applyKanbanSplitPercents(
+      db.getKanbanLayoutConfig(),
+      loadKanbanSplitPercents(splitPrefStorageKey)
+    );
     
     setAllStatusDefinitions(statuses.filter((s) => s.isVisible !== false));
     setKanbanLayout(layout);
@@ -136,7 +156,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         loadBoardData();
     });
     return () => unsubscribe();
-  }, [selectedDate, filterCanceled]); // Reload if date or cancel filter changes
+  }, [selectedDate, filterCanceled, splitPrefStorageKey]); // Reload if date or cancel filter changes
 
   useEffect(() => {
     localStorage.setItem('ezprint_hidden_columns', JSON.stringify(hiddenStatusKeys));
@@ -569,19 +589,14 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     return map;
   }, [allStatusDefinitions]);
 
-  const handleSplitTopPercentCommit = async (topKey: string, bottomKey: string, percent: number) => {
+  const handleSplitTopPercentCommit = (topKey: string, bottomKey: string, percent: number) => {
+    saveKanbanSplitPercent(splitPrefStorageKey, topKey, bottomKey, percent);
     const nextPairs = kanbanLayout.splitPairs.map((p) =>
       p.topKey === topKey && p.bottomKey === bottomKey
         ? { ...p, splitTopPercent: percent }
         : p
     );
-    const nextLayout = { splitPairs: nextPairs };
-    setKanbanLayout(nextLayout);
-    try {
-      await db.saveKanbanLayoutConfig(nextLayout);
-    } catch (error) {
-      showAlert(getErrorMessage(error));
-    }
+    setKanbanLayout({ splitPairs: nextPairs });
   };
 
   const renderKanbanColumn = (statusDef: JobStatusDefinition) => (

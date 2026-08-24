@@ -538,7 +538,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         onContextMenu={handleCardContextMenu}
         title={!isHovered ? `${job.title}\n${job.clientName}` : undefined}
       >
-        <div className={`kanban-card-title font-bold text-slate-800 dark:text-slate-100 leading-snug pr-4 ${isHovered ? 'text-[11px] whitespace-normal' : 'text-[10px] line-clamp-2'}`}>
+        <div className={`kanban-card-title font-bold text-slate-800 dark:text-slate-100 leading-snug pr-4 ${isHovered ? 'text-[11px] whitespace-normal' : isTvMode ? 'text-[10px] truncate' : 'text-[10px] line-clamp-2'}`}>
           {job.title}
         </div>
         {isHovered ? (
@@ -580,7 +580,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
               </button>
             </div>
           </div>
-        ) : (
+        ) : isTvMode ? null : (
           <div className="kanban-tray-price text-[9px] font-mono font-bold truncate mt-0.5">
             {job.price ? `${job.price.toLocaleString()}원` : '미정'}
           </div>
@@ -598,7 +598,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group ${cardSurfaceClass} ${
+        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group overflow-hidden min-h-[1.75rem] ${cardSurfaceClass} ${
           theme === 'trello'
             ? 'bg-[#24364e] border-[#384c66] hover:border-indigo-400'
             : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500'
@@ -610,15 +610,15 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           size={14}
           className="kanban-tray-icon shrink-0 text-slate-300 dark:text-slate-600 group-hover:text-indigo-400"
         />
-        <div className="flex-1 min-w-0">
-          <div className="kanban-card-title text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate" title={job.title}>
+        <div className="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col">
+          <div className="kanban-card-title text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate shrink-0" title={job.title}>
             {job.title}
           </div>
-          <div className="kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate">
+          <div className="kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate shrink min-h-0 overflow-hidden">
             {renderClientName('')}
           </div>
         </div>
-        <span className="kanban-tray-price text-[10px] font-mono font-bold shrink-0">
+        <span className={`kanban-tray-price text-[10px] font-mono font-bold ${isTvMode ? 'shrink min-h-0 overflow-hidden' : 'shrink-0'}`}>
           {job.price ? `${job.price.toLocaleString()}원` : '미정'}
         </span>
         {renderManagementMoveButton(13)}
@@ -737,7 +737,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         style={sortableStyle}
         {...sortableProps}
         className={`
-          kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
+          kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden min-h-[2.75rem] backdrop-blur-premium ${cardSurfaceClass}
           ${cardStyleClass}
           ${completedOutstandingClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
@@ -751,8 +751,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           }
         `}</style>
 
-        {/* 1. Header: Badges */}
-        <div className="flex justify-between items-start pointer-events-none">
+        {/* 1. Header: Badges — 카드가 많으면 접힘, 제목은 유지 */}
+        <div className="flex justify-between items-start pointer-events-none shrink min-h-0 overflow-hidden">
           <div className="flex gap-2 flex-wrap items-center">
              {!isDone && (
                <span className={ddayBadgeClass} title="납기 D-Day">
@@ -803,18 +803,16 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           </div>
         </div>
 
-        {/* 2. Title and Client (Enlarged) */}
-        <div className="pointer-events-none flex flex-col gap-0.5">
-          <h4 className="kanban-card-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide line-clamp-1 text-slate-800 dark:text-slate-100" title={job.title}>
-            {job.title}
-          </h4>
-          <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400">
-            {renderClientName('')}
-          </p>
-        </div>
+        {/* 2. Title — 한 줄까지는 항상 유지 / 거래처명은 여유 있을 때만 */}
+        <h4 className="kanban-card-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide truncate shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none" title={job.title}>
+          {job.title}
+        </h4>
+        <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400 truncate pointer-events-none shrink min-h-0 overflow-hidden">
+          {renderClientName('')}
+        </p>
 
-        {/* 3. Specs & Giant Quantity Box */}
-        <div className="flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none">
+        {/* 3. Specs & Giant Quantity Box — 카드가 많으면 접힘 */}
+        <div className="flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none shrink min-h-0 overflow-hidden">
           <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-normal flex-1 min-w-0 leading-tight">
              <div className="truncate flex items-center gap-1.5">
                 <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📄</span>
@@ -833,8 +831,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           </div>
         </div>
 
-        {/* 4. Footer: 접수자(좌) · 담당자 · D-Day */}
-        <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none shrink-0">
+        {/* 4. Footer: 접수자(좌) · 담당자 · D-Day — 카드가 많으면 접힘 */}
+        <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none shrink min-h-0 overflow-hidden">
           {renderReceiverAssigneeFooter({ iconSize: 14, textClass: 'text-[12px]' })}
           {!isDone && (
             <span className={ddayBadgeClass} title="납기 D-Day">

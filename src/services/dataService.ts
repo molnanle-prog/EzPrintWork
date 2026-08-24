@@ -633,6 +633,11 @@ export class DataService {
     private sessionCanManageProductProcessing = false;
     private lastProductFingerprint: string | null = null;
     private lastProcessingFingerprint: string | null = null;
+    /** 상품/후가공 안내 도배 방지 */
+    private lastProductProcessingNoticeAt = 0;
+    private lastProductProcessingNoticeKey = '';
+    /** 이 PC에서 방금 저장한 뒤 메아리 안내 생략 */
+    private skipProductProcessingNoticeUntil = 0;
     private cloudDegraded = false;
     private localOperationalReady = false;
     private lastNasMirrorAt: string | null = null;
@@ -2462,6 +2467,8 @@ export class DataService {
         const inMeta = this.getSettingsMetaMap(incoming);
         const outMeta: Record<string, { updatedAt?: string }> = { ...curMeta };
         const mirrorFallbackTs = mirrorUpdatedAt && Date.parse(mirrorUpdatedAt) ? mirrorUpdatedAt : undefined;
+        let productAppliedFromNas = false;
+        let processingAppliedFromNas = false;
 
         for (const [key, value] of Object.entries(incoming)) {
             if (key === 'settingsMeta') continue;
@@ -2479,6 +2486,8 @@ export class DataService {
                 if (inTs > curTs || (curTs === 0 && inTs > 0)) {
                     merged[key] = value;
                     outMeta[key] = inMeta[key] || { updatedAt: new Date().toISOString() };
+                    if (key === 'productDefinitions') productAppliedFromNas = true;
+                    if (key === 'processingDefinitions') processingAppliedFromNas = true;
                 }
                 // curTs === 0 && inTs === 0: 로컬 값 유지 (작업 미러 폴에 상품을 덮지 않음)
                 // else: 로컬이 더 최신 — 유지
@@ -2519,7 +2528,10 @@ export class DataService {
         };
         this.data['settings'] = [merged];
         this.applySettingsDefaultsMerge(merged);
-        this.emitProductProcessingSyncNotice(current, merged);
+        this.emitProductProcessingSyncNotice(merged, {
+            productAppliedFromNas,
+            processingAppliedFromNas,
+        });
     }
 
     private settingDefinitionsFingerprint(
@@ -2538,36 +2550,42 @@ export class DataService {
         }
     }
 
-    /** 다른 PC에서 상품/후가공이 바뀌면 안내 — 자동 기본값 주입·작업 미러는 제외 */
+    /** 다른 PC에서 상품/후가공 목록이 실제로 들어온 때만 안내 — 칸 조절·작업 저장·기본값 병합은 제외 */
     private emitProductProcessingSyncNotice(
-        _before: Record<string, unknown>,
-        after: Record<string, unknown>
+        after: Record<string, unknown>,
+        applied: { productAppliedFromNas: boolean; processingAppliedFromNas: boolean }
     ): void {
         const nextProduct = this.settingDefinitionsFingerprint(after, 'productDefinitions');
         const nextProcessing = this.settingDefinitionsFingerprint(after, 'processingDefinitions');
         const isFirst = this.lastProductFingerprint === null && this.lastProcessingFingerprint === null;
-        if (isFirst) {
-            this.lastProductFingerprint = nextProduct;
-            this.lastProcessingFingerprint = nextProcessing;
-            return;
-        }
         const productChanged = nextProduct !== this.lastProductFingerprint;
         const processingChanged = nextProcessing !== this.lastProcessingFingerprint;
         this.lastProductFingerprint = nextProduct;
         this.lastProcessingFingerprint = nextProcessing;
-        if (!productChanged && !processingChanged) return;
+        if (isFirst) return;
+
+        const productNotice = applied.productAppliedFromNas && productChanged;
+        const processingNotice = applied.processingAppliedFromNas && processingChanged;
+        if (!productNotice && !processingNotice) return;
+        if (Date.now() < this.skipProductProcessingNoticeUntil) return;
         if (typeof window === 'undefined') return;
+
         const target =
-            productChanged && processingChanged
+            productNotice && processingNotice
                 ? '상품/후가공'
-                : productChanged
+                : productNotice
                   ? '상품'
                   : '후가공';
+        const now = Date.now();
+        if (this.lastProductProcessingNoticeKey === target && now - this.lastProductProcessingNoticeAt < 90_000) {
+            return;
+        }
+        this.lastProductProcessingNoticeKey = target;
+        this.lastProductProcessingNoticeAt = now;
         window.dispatchEvent(
             new CustomEvent('ezpw-product-processing-updated', {
                 detail: {
-                    message:
-                        `회사 ${target} 설정이 갱신되었습니다. 화면이 자동 반영됩니다. 목록이 다르면 NAS 연결을 확인하거나 앱을 다시 시작해 주세요.`,
+                    message: `회사 ${target} 목록이 다른 PC에서 갱신되어 화면에 반영되었습니다.`,
                 },
             })
         );
@@ -5252,6 +5270,9 @@ export class DataService {
             const meta = this.getSettingsMetaMap(settings);
             meta[name] = { updatedAt: new Date().toISOString() };
             settings.settingsMeta = meta;
+        }
+        if (this.isProductProcessingSetting(name)) {
+            this.skipProductProcessingNoticeUntil = Date.now() + 10_000;
         }
         this.data['settings'] = [settings];
         this.notify();
