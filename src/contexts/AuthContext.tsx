@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { auth, db, startPresenceSession, stopPresenceSession, setPresenceGatewayUrls } from '../services/firebase';
+import { startPresenceHeartbeat, stopPresenceHeartbeat } from '../services/gasPresencePing';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
 import { presenceSessionService } from '../services/presenceSessionService';
@@ -1047,6 +1048,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (!currentUser?.tenantId || !firebaseUser?.uid) {
       stopPresenceSession();
+      stopPresenceHeartbeat();
       return;
     }
 
@@ -1095,9 +1097,17 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       staffDocId: staffDocId || null,
     });
 
+    startPresenceHeartbeat({
+      loginId,
+      email: currentUser.email || firebaseUser.email,
+      name: currentUser.name || currentUser.displayName,
+      tenantId: currentUser.tenantId,
+    });
+
     // 의존성 변경 시 cleanup에서 offline 쓰지 않음 — 로그아웃에서만 release
     return () => {
       stopPresenceSession();
+      stopPresenceHeartbeat();
     };
   }, [currentUser?.tenantId, currentUser?.email, currentUser?.loginId, currentUser?.name, currentUser?.displayName, currentUser?.id, firebaseUser?.uid, firebaseUser?.email]);
 
@@ -1215,6 +1225,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       // 종료 보고는 clearSession 전에 (tenantId·admin 역할 필요)
       stopPresenceSession();
+      stopPresenceHeartbeat();
       await flushAppSessionEnd({
         reason: 'logout',
         presenceUser:
@@ -1302,6 +1313,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             const opts = buildEndOpts();
             if (opts) {
               stopPresenceSession();
+              stopPresenceHeartbeat();
               await flushAppSessionEnd(opts);
             }
           } finally {
@@ -1318,6 +1330,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const opts = buildEndOpts();
       if (!opts) return;
       stopPresenceSession();
+      stopPresenceHeartbeat();
       void flushAppSessionEnd(opts);
     };
     window.addEventListener('pagehide', onPageHide);

@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { Job, Priority, Staff, PaymentStatus, Client, ClientContact, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
 import { findClientByName, normalizePrepaidBalance, getJobPrepaidBreakdown, getPrepaidSlotForJob } from '../../utils/prepaidBalance';
@@ -1104,8 +1105,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   const selectedStaffIds = editedJob.assignedStaffIds || [];
   const shouldWrapTabs = (editedJob.subJobs || []).length > 4;
   
-  return (
-    <>
+  return createPortal(
+    <div className="relative z-[200]">
       <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
         <div className={`bg-white rounded-xl shadow-2xl w-full overflow-hidden flex flex-col transition-all duration-300 ${viewMode === 'summary' ? 'max-w-6xl h-[65vh] max-h-[65vh]' : 'max-w-6xl h-[85vh] max-h-[85vh]'}`}>
           {viewMode === 'summary' ? (
@@ -2370,7 +2371,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
           }}
         />
       )}
-    </>
+    </div>,
+    document.body
   );
 }
 

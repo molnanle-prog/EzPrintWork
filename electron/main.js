@@ -1,5 +1,5 @@
 
-const { app, BrowserWindow, ipcMain, dialog, shell, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Notification, screen } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
@@ -74,10 +74,67 @@ if (process.defaultApp) {
   app.setAsDefaultProtocolClient('ezpw');
 }
 
+const WINDOW_MIN_WIDTH = 800;
+const WINDOW_MIN_HEIGHT = 600;
+
+function windowStatePath() {
+    return path.join(app.getPath('userData'), 'window-state.json');
+}
+
+function loadWindowState() {
+    try {
+        const raw = JSON.parse(fs.readFileSync(windowStatePath(), 'utf8'));
+        const width = Math.max(WINDOW_MIN_WIDTH, Math.round(Number(raw.width) || 0));
+        const height = Math.max(WINDOW_MIN_HEIGHT, Math.round(Number(raw.height) || 0));
+        const x = Math.round(Number(raw.x));
+        const y = Math.round(Number(raw.y));
+        if (!Number.isFinite(width) || !Number.isFinite(height)) {
+            return { width: 1300, height: 900 };
+        }
+        const state = { width, height, isMaximized: !!raw.isMaximized };
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return state;
+
+        const bounds = { x, y, width, height };
+        const area = screen.getDisplayMatching(bounds).workArea;
+        const overlapW = Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x);
+        const overlapH = Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y);
+        if (overlapW < 120 || overlapH < 80) {
+            return {
+                width: Math.min(width, area.width),
+                height: Math.min(height, area.height),
+                isMaximized: !!raw.isMaximized,
+            };
+        }
+        return { ...bounds, isMaximized: !!raw.isMaximized };
+    } catch {
+        return { width: 1300, height: 900 };
+    }
+}
+
+function saveWindowState(win) {
+    if (!win || win.isDestroyed()) return;
+    try {
+        const isMaximized = win.isMaximized();
+        const bounds = typeof win.getNormalBounds === 'function' ? win.getNormalBounds() : win.getBounds();
+        fs.writeFileSync(windowStatePath(), JSON.stringify({
+            x: Math.round(bounds.x),
+            y: Math.round(bounds.y),
+            width: Math.max(WINDOW_MIN_WIDTH, Math.round(bounds.width)),
+            height: Math.max(WINDOW_MIN_HEIGHT, Math.round(bounds.height)),
+            isMaximized,
+        }));
+    } catch (err) {
+        console.warn('[WindowState] save failed:', err);
+    }
+}
+
 function createWindow() {
-    const win = new BrowserWindow({
-        width: 1300,
-        height: 900,
+    const state = loadWindowState();
+    const winOptions = {
+        width: state.width || 1300,
+        height: state.height || 900,
+        minWidth: WINDOW_MIN_WIDTH,
+        minHeight: WINDOW_MIN_HEIGHT,
         show: false,
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
@@ -87,12 +144,28 @@ function createWindow() {
         title: "EzPrintWork",
         autoHideMenuBar: true,
         frame: false // 타이틀바 및 브라우저 기본 프레임을 숨겨 프로그램 창처럼 구현
-    });
+    };
+    if (Number.isFinite(state.x) && Number.isFinite(state.y)) {
+        winOptions.x = state.x;
+        winOptions.y = state.y;
+    }
+    const win = new BrowserWindow(winOptions);
 
     win.once('ready-to-show', () => {
+        if (state.isMaximized) win.maximize();
         win.show();
         win.focus();
     });
+
+    let saveTimer = null;
+    const scheduleSaveWindowState = () => {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(() => saveWindowState(win), 400);
+    };
+    win.on('move', scheduleSaveWindowState);
+    win.on('resize', scheduleSaveWindowState);
+    win.on('maximize', scheduleSaveWindowState);
+    win.on('unmaximize', scheduleSaveWindowState);
 
     win.on('blur', () => applyPinToBack(win));
 
@@ -100,6 +173,7 @@ function createWindow() {
     let sessionEndAllowClose = false;
     let sessionEndInProgress = false;
     win.on('close', (e) => {
+        saveWindowState(win);
         if (sessionEndAllowClose || win.isDestroyed()) return;
         if (sessionEndInProgress) {
             e.preventDefault();
