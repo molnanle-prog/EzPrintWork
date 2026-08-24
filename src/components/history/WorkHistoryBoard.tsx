@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { db } from '../../services/dataService';
 import { Job, Staff } from '../../types';
-import { Search, History, EyeOff, RotateCcw, ArrowUpDown } from 'lucide-react';
+import { Search, History, EyeOff, RotateCcw, ArrowUpDown, Calendar } from 'lucide-react';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { isJobHiddenForManagementCard } from '../../utils/jobBoardVisibility';
 
@@ -16,6 +16,7 @@ const DEFAULT_STATUS_LABELS: Record<string, string> = {
 type VisibilityFilter = 'all' | 'hidden' | 'visible';
 type SortKey = 'createdAt' | 'updatedAt' | 'boardHiddenAt' | 'title' | 'clientName' | 'status';
 type SortDir = 'asc' | 'desc';
+type PeriodPreset = 'all' | 'month' | 'lastMonth' | 'custom';
 
 function summarizeSubJob(job: Job): string {
   const subJobs = job.subJobs || [];
@@ -93,12 +94,46 @@ function getJobDateValue(job: Job, sortKey: SortKey): string {
   return '';
 }
 
+function formatYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function toDateKey(iso?: string): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return formatYmd(date);
+}
+
+function isInDateRange(iso: string | undefined, from: string, to: string): boolean {
+  const key = toDateKey(iso);
+  if (!key) return !from && !to;
+  const start = from && to && from > to ? to : from;
+  const end = from && to && from > to ? from : to;
+  if (start && key < start) return false;
+  if (end && key > end) return false;
+  return true;
+}
+
+function getMonthRange(monthOffset = 0): { from: string; to: string } {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 0);
+  return { from: formatYmd(start), to: formatYmd(end) };
+}
+
 export const WorkHistoryBoard: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
   const [query, setQuery] = useState('');
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [sortKey, setSortKey] = useState<SortKey>('createdAt');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
@@ -130,9 +165,36 @@ export const WorkHistoryBoard: React.FC = () => {
     });
   }, [jobs, statusLabelMap]);
 
+  const applyPeriodPreset = useCallback((preset: PeriodPreset) => {
+    setPeriodPreset(preset);
+    if (preset === 'all') {
+      setDateFrom('');
+      setDateTo('');
+      return;
+    }
+    const range = getMonthRange(preset === 'lastMonth' ? -1 : 0);
+    setDateFrom(range.from);
+    setDateTo(range.to);
+  }, []);
+
+  const handleDateFromChange = (value: string) => {
+    setDateFrom(value);
+    setPeriodPreset('custom');
+  };
+
+  const handleDateToChange = (value: string) => {
+    setDateTo(value);
+    setPeriodPreset('custom');
+  };
+
+  const periodJobs = useMemo(() => {
+    if (!dateFrom && !dateTo) return jobs;
+    return jobs.filter((job) => isInDateRange(job.createdAt, dateFrom, dateTo));
+  }, [jobs, dateFrom, dateTo]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return [...jobs]
+    return [...periodJobs]
       .filter((job) => {
         if (visibilityFilter === 'hidden' && !job.boardHiddenAt) return false;
         if (visibilityFilter === 'visible' && job.boardHiddenAt) return false;
@@ -145,33 +207,82 @@ export const WorkHistoryBoard: React.FC = () => {
           (job.description || '').toLowerCase().includes(q)
         );
       })
-      .sort((a, b) => compareJobs(a, b, sortKey, sortDir));
-  }, [jobs, query, visibilityFilter, statusFilter, sortKey, sortDir]);
+      .sort((a, b) => {
+        if (q) {
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        }
+        return compareJobs(a, b, sortKey, sortDir);
+      });
+  }, [periodJobs, query, visibilityFilter, statusFilter, sortKey, sortDir]);
 
-  const hiddenCount = useMemo(() => jobs.filter((job) => job.boardHiddenAt).length, [jobs]);
+  const hiddenCount = useMemo(() => periodJobs.filter((job) => job.boardHiddenAt).length, [periodJobs]);
 
   const toggleSortDir = () => setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 overflow-hidden">
-      <div className="p-4 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40">
-        <div className="flex items-center gap-2 mb-3">
-          <History size={18} className="text-blue-600" />
-          <h3 className="font-bold text-slate-800 dark:text-slate-100">작업 내역 게시판</h3>
-          {hiddenCount > 0 && (
-            <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
-              보드 숨김 {hiddenCount}건
+      <div className="p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40">
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_auto_1fr] xl:items-center gap-2 mb-3">
+          <div className="flex items-center gap-2 shrink-0">
+            <History size={18} className="text-blue-600" />
+            <h3 className="font-bold text-slate-800 dark:text-slate-100 text-lg md:text-xl">작업 내역 게시판</h3>
+            {hiddenCount > 0 && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+                보드 숨김 {hiddenCount}건
+              </span>
+            )}
+          </div>
+          <div className="relative w-full xl:w-[28rem] justify-self-center">
+            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="작업명/고객사/품목 검색"
+              className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-800 dark:text-slate-100 outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex flex-wrap items-center justify-center xl:justify-end gap-1.5 min-w-0">
+            <span className="inline-flex items-center gap-1 text-sm font-bold text-slate-600 dark:text-slate-300">
+              <Calendar size={16} className="text-blue-600" />
+              기간
             </span>
-          )}
-        </div>
-        <div className="relative mb-3">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="작업명/고객사/품목 검색"
-            className="w-full pl-8 pr-3 py-2 rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm"
-          />
+            {([
+              { id: 'all', label: '전체' },
+              { id: 'month', label: '이번 달' },
+              { id: 'lastMonth', label: '지난 달' },
+            ] as const).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => applyPeriodPreset(tab.id)}
+                className={`h-9 px-3 inline-flex items-center rounded-lg text-sm font-bold border transition-colors ${
+                  periodPreset === tab.id
+                    ? 'bg-slate-800 dark:bg-slate-100 border-slate-800 dark:border-slate-100 text-white dark:text-slate-900'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => handleDateFromChange(e.target.value)}
+              className="h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-200 scheme-light dark:scheme-dark"
+              aria-label="시작일"
+            />
+            <span className="text-sm text-slate-400">~</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => handleDateToChange(e.target.value)}
+              className="h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-200 scheme-light dark:scheme-dark"
+              aria-label="종료일"
+            />
+            {(dateFrom || dateTo) && (
+              <span className="text-sm text-slate-500 dark:text-slate-400">접수 {periodJobs.length}건</span>
+            )}
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex gap-1">
@@ -184,7 +295,7 @@ export const WorkHistoryBoard: React.FC = () => {
                 key={id}
                 type="button"
                 onClick={() => setVisibilityFilter(id)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold border ${
+                className={`h-9 px-3 inline-flex items-center rounded-lg text-sm font-bold border ${
                   visibilityFilter === id
                     ? 'bg-blue-600 text-white border-blue-600'
                     : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600'
@@ -197,7 +308,7 @@ export const WorkHistoryBoard: React.FC = () => {
           <select
             value={statusFilter}
             onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-2 py-1 rounded-lg border text-xs bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600"
+            className="h-9 px-3 rounded-lg border text-sm font-bold bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600"
           >
             <option value="all">상태 전체</option>
             {statusOptions.map((key) => (
@@ -210,7 +321,7 @@ export const WorkHistoryBoard: React.FC = () => {
             <select
               value={sortKey}
               onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="px-2 py-1 rounded-lg border text-xs bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600"
+              className="h-9 px-3 rounded-lg border text-sm font-bold bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600"
             >
               <option value="createdAt">등록일</option>
               <option value="updatedAt">수정일</option>
@@ -222,7 +333,7 @@ export const WorkHistoryBoard: React.FC = () => {
             <button
               type="button"
               onClick={toggleSortDir}
-              className="px-2 py-1 rounded-lg border text-xs bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 flex items-center gap-1"
+              className="h-9 px-3 rounded-lg border text-sm font-bold bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 inline-flex items-center gap-1"
               title={sortDir === 'desc' ? '내림차순' : '오름차순'}
             >
               <ArrowUpDown size={12} />

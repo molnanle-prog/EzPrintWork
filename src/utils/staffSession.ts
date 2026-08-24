@@ -143,9 +143,9 @@ export function isWithinSessionClaimGrace(): boolean {
   }
 }
 
-/** 결제·로그인 인수·claim 직후 — 중복로그인 킥/강제로그아웃 금지 */
+/** 이 PC가 로그인/인수 직후일 때만 자기 자신 킥을 막음. 다른 PC 인수는 막지 않음. */
 export function shouldSuppressSessionKick(): boolean {
-  return isPaymentInProgress() || isSessionClaimPending() || isWithinSessionClaimGrace();
+  return isSessionClaimPending() || isWithinSessionClaimGrace();
 }
 
 export function setSessionClaimPending(active: boolean): void {

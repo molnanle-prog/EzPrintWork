@@ -643,6 +643,14 @@ html.dark .booklet-processing-inner-box {
   border-color: #10b981 !important;
 }
 
+/* 다크/트렐로: native date 달력 아이콘 대비 */
+html.dark input[type="date"]::-webkit-calendar-picker-indicator,
+html.trello input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(1.6);
+  opacity: 1;
+  cursor: pointer;
+}
+
 /* 유동 테두리: 배경 위에서도 레이어가 보이도록 */
 [class*="flowing-border"] {
   overflow: visible;

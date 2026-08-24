@@ -983,11 +983,11 @@ export const LoginPage: React.FC = () => {
     };
 
     return (
-        <div className={`h-full min-h-0 w-full bg-slate-950 flex flex-col items-center justify-start overflow-y-auto overflow-x-hidden overscroll-y-contain p-4 sm:p-6 font-sans ${isElectron ? 'pt-14' : 'pt-4'} pb-10`}>
+        <div className="h-full min-h-0 w-full bg-slate-950 flex flex-col font-sans">
             {/* 데스크톱 앱 프레임리스 타이틀바 (Electron 전용 — 모바일/웹에서는 숨김) */}
             {isElectron && (
             <div 
-                className="fixed top-0 left-0 right-0 h-10 bg-slate-950 border-b border-slate-900 flex justify-between items-center select-none z-[100]"
+                className="shrink-0 h-10 bg-slate-950 border-b border-slate-900 flex justify-between items-center select-none z-[100]"
                 style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
             >
                 <div className="flex items-center gap-2 px-4 text-slate-400">
@@ -1050,11 +1050,13 @@ export const LoginPage: React.FC = () => {
                 </div>
             </div>
             )}
+            <div className="relative flex-1 min-h-0 overflow-y-auto overflow-x-hidden overscroll-y-contain">
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
                 <div className="absolute -top-[25%] -left-[10%] w-[70%] h-[70%] bg-blue-600/10 rounded-full blur-[120px]"></div>
                 <div className="absolute -bottom-[25%] -right-[10%] w-[60%] h-[60%] bg-indigo-600/10 rounded-full blur-[100px]"></div>
             </div>
  
+            <div className="relative min-h-full flex flex-col items-center justify-center px-4 sm:px-6 py-8 sm:py-10">
             <div className="max-w-xl w-full z-10 space-y-4 sm:space-y-6 animate-in fade-in zoom-in-95 duration-700">
                 <div className="flex flex-col items-center text-center space-y-2 sm:space-y-3">
                     <div className="w-14 h-14 sm:w-20 sm:h-20 bg-blue-600 rounded-[1.5rem] sm:rounded-[2rem] flex items-center justify-center shadow-2xl shadow-blue-600/20 rotate-3 hover:rotate-0 transition-transform duration-500">
@@ -1541,6 +1543,8 @@ export const LoginPage: React.FC = () => {
                         >ⓓ</span>
                     </p>
                 </footer>
+            </div>
+            </div>
             </div>
         </div>
     );

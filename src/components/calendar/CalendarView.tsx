@@ -10,6 +10,8 @@ import { AdBanner } from '../common/AdBanner';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { isLongProjectJob, isJobBoardHidden } from '../../utils/jobBoardVisibility';
+import { isJobPinnedToManagementCard } from '../../utils/managementCard';
+import { isLegacyCompletedDelivery } from '../../utils/kanbanLayout';
 import { getStaffIdForUser, isJobAssignedToStaffId } from '../../utils/staffMatch';
 import { toast } from 'sonner';
 
@@ -242,7 +244,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
       const viewEndTs = new Date(gridDates[gridDates.length - 1]).getTime() + (24 * 60 * 60 * 1000) - 1;
 
       const visibleJobs = jobs.filter(job => {
-          if (isJobBoardHidden(job)) return false;
+          if (isJobBoardHidden(job) || isJobPinnedToManagementCard(job)) return false;
+          if (job.status === 'COMPLETED' || isLegacyCompletedDelivery(job)) return false;
           const start = new Date(job.createdAt).getTime();
           const end = new Date(job.dueDate).getTime();
           if (!(end >= viewStartTs && start <= viewEndTs && job.status !== 'CANCELED' && job.status !== 'QUOTE')) {

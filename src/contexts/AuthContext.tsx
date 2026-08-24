@@ -38,8 +38,8 @@ import {
   createStaffSessionId,
   setLocalStaffSessionId,
   isRemoteSessionNewerThanLocal,
-  shouldSuppressSessionKick,
   isSessionClaimPending,
+  isWithinSessionClaimGrace,
   releaseStaffSessionOnNas,
   claimStaffSessionOnNas,
 } from '../utils/staffSession';
@@ -1341,8 +1341,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     };
   }, [currentUser, firebaseUser?.uid, firebaseUser?.email]);
 
-  // 다른 기기에서 동일 계정 로그인 시 기존 접속 종료 — 결제 테스트 안정화 전까지
-  // 강제 로그아웃은 shouldSuppressSessionKick 일 때 건너뛰며, 킥 자체도 로그 위주로 완화 가능.
+  // 다른 PC에서 같은 계정으로 로그인하면 이 접속을 즉시 종료한다.
   useEffect(() => {
     const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
     if (!isDesktopApp) return;
@@ -1356,7 +1355,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const checkRemoteSession = async () => {
       try {
         if (sessionKickedRef.current) return;
-        if (shouldSuppressSessionKick()) return;
+        // 이 PC가 방금 로그인/인수한 직후만 건너뜀 — 승자가 자기 자신을 쫓아내지 않음
+        if (isSessionClaimPending() || isWithinSessionClaimGrace()) return;
         const localSid = getLocalStaffSessionId();
         const localClaimedAt = getLocalStaffSessionClaimedAt();
         if (!localSid) return;
@@ -1369,23 +1369,31 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         );
         if (!data || !isRemoteSessionNewerThanLocal(data, localSid, localClaimedAt)) return;
 
-        // 결제/운영 방해 방지: 즉시 로그아웃 대신 경고만 (다른 PC 로그인은 다음 하트비트에서 정리)
-        console.warn('[StaffSession] remote newer session detected — kick suppressed to protect payment flow', {
+        sessionKickedRef.current = true;
+        console.warn('[StaffSession] remote newer session — signing out this PC', {
           remote: data.activeSessionId,
           local: localSid,
         });
-        // sessionKickedRef.current = true;
-        // void logout();
-        // void showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
+        await logout();
+        void showAlert('다른 곳에서 동일 아이디로 로그인되어 이 접속을 종료합니다.');
       } catch (err) {
         console.warn('[StaffSession] session watch failed:', err);
       }
     };
 
     void checkRemoteSession();
-    const intervalId = window.setInterval(() => void checkRemoteSession(), 15_000);
+    const intervalId = window.setInterval(() => void checkRemoteSession(), 5_000);
+    const onResume = () => {
+      void checkRemoteSession();
+    };
+    window.addEventListener('focus', onResume);
+    document.addEventListener('visibilitychange', onResume);
 
-    return () => window.clearInterval(intervalId);
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', onResume);
+      document.removeEventListener('visibilitychange', onResume);
+    };
   }, [firebaseUser?.uid, currentUser?.tenantId, showAlert, logout]);
 
   console.log('AuthProvider State:', { hasFirebaseUser: !!firebaseUser, hasCurrentUser: !!currentUser, loading });

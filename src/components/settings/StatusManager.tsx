@@ -262,8 +262,9 @@ export const StatusManager: React.FC = () => {
         작업 단계(칸반) 관리
       </h3>
       <p className="text-sm text-slate-500 dark:text-slate-400 mb-4">
-        아래 목록에서 단계를 <strong>2개 또는 3개</strong> 고르면, 위에 칸 미리보기가 나옵니다.
-        거기서 <strong>위로 / 아래로</strong>를 눌러 자리를 정한 뒤 저장하세요.
+        처음 설치 기본은 <strong>접수 아래 견적</strong>, <strong>납품 아래 완료</strong>입니다.
+        한 칸으로 풀거나 다른 조합으로 바꾸려면 아래에서 단계를 <strong>2개 또는 3개</strong> 고른 뒤
+        <strong>위로 / 아래로</strong>를 정하고 저장하세요.
       </p>
 
       <div className="mb-6 p-4 rounded-xl border border-indigo-200 dark:border-indigo-900/50 bg-indigo-50/50 dark:bg-indigo-950/20 space-y-4">

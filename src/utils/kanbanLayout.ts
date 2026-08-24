@@ -7,8 +7,15 @@ export const DEFAULT_RECEIVED_QUOTE_PAIR: KanbanSplitPair = {
   bottomCompact: true,
 };
 
+export const DEFAULT_DELIVERY_COMPLETED_PAIR: KanbanSplitPair = {
+  topKey: 'DELIVERY',
+  bottomKey: 'COMPLETED',
+  splitTopPercent: 65,
+  bottomCompact: true,
+};
+
 export const DEFAULT_KANBAN_LAYOUT: KanbanLayoutConfig = {
-  splitPairs: [DEFAULT_RECEIVED_QUOTE_PAIR],
+  splitPairs: [DEFAULT_RECEIVED_QUOTE_PAIR, DEFAULT_DELIVERY_COMPLETED_PAIR],
 };
 
 export function clampSplitTopPercent(value: number): number {
@@ -25,10 +32,12 @@ export function normalizeSplitPair(pair: KanbanSplitPair): KanbanSplitPair {
 }
 
 export function normalizeKanbanLayoutConfig(raw?: Partial<KanbanLayoutConfig> | null): KanbanLayoutConfig {
-  if (raw?.splitPairs?.length) {
+  if (Array.isArray(raw?.splitPairs)) {
     return { splitPairs: raw.splitPairs.map(normalizeSplitPair) };
   }
-  return { splitPairs: [DEFAULT_RECEIVED_QUOTE_PAIR] };
+  return {
+    splitPairs: DEFAULT_KANBAN_LAYOUT.splitPairs.map(normalizeSplitPair),
+  };
 }
 
 export function normalizeStatusDefinition(status: JobStatusDefinition): JobStatusDefinition {

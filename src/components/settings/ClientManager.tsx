@@ -57,6 +57,7 @@ export const ClientManager: React.FC = () => {
   const { canManageClientMaster, currentUser } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [listFilter, setListFilter] = useState<'all' | 'receivable' | 'prepaid'>('all');
   const [sortKey, setSortKey] = useState<ClientSortKey>('order');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -145,7 +146,15 @@ export const ClientManager: React.FC = () => {
         });
 
     const dir = sortDir === 'asc' ? 1 : -1;
-    filtered.sort((a, b) => {
+    const scoped = listFilter === 'all'
+      ? filtered
+      : filtered.filter((client) => {
+          const name = client.name.trim();
+          if (listFilter === 'prepaid') return normalizePrepaidBalance(client.prepaidBalance) > 0;
+          return (clientListStats.receivableByName.get(name) || 0) > 0;
+        });
+
+    scoped.sort((a, b) => {
       const nameA = a.name.trim();
       const nameB = b.name.trim();
       if (sortKey === 'order') {
@@ -177,8 +186,8 @@ export const ClientManager: React.FC = () => {
       return nameA.localeCompare(nameB, 'ko');
     });
 
-    return filtered;
-  }, [clients, searchQuery, sortKey, sortDir, clientListStats]);
+    return scoped;
+  }, [clients, searchQuery, listFilter, sortKey, sortDir, clientListStats]);
 
   const mergeFilteredClients = useMemo(() => {
     const q = mergeSearchQuery.trim().toLowerCase();
@@ -550,15 +559,35 @@ export const ClientManager: React.FC = () => {
           </div>
       </div>
 
-      <div className="mb-5 flex flex-col sm:flex-row sm:items-center gap-3 shrink-0">
-          <div className="relative flex-1">
-              <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+      <div className="mb-5 grid grid-cols-1 xl:grid-cols-[1fr_auto_1fr] xl:items-center gap-3 shrink-0">
+          <div className="flex flex-wrap gap-2">
+              {([
+                  { id: 'all', label: '전체' },
+                  { id: 'receivable', label: '미수, 후불' },
+                  { id: 'prepaid', label: '선불' },
+              ] as const).map((tab) => (
+                  <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setListFilter(tab.id)}
+                      className={`h-9 px-3 inline-flex items-center rounded-lg text-sm font-bold border transition-colors ${
+                          listFilter === tab.id
+                              ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
+                              : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-300'
+                      }`}
+                  >
+                      {tab.label}
+                  </button>
+              ))}
+          </div>
+          <div className="relative w-full xl:w-[28rem] justify-self-center">
+              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
               <input
                   type="search"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   placeholder="상호명, 담당자, 연락처, 사업자번호 검색..."
-                  className="w-full pl-10 pr-10 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
+                  className={`w-full h-9 pl-9 ${searchQuery ? 'pr-10' : 'pr-3'} rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:ring-2 focus:ring-blue-500 outline-none`}
                   autoComplete="off"
               />
               {searchQuery && (
@@ -572,7 +601,7 @@ export const ClientManager: React.FC = () => {
                   </button>
               )}
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center justify-center xl:justify-end gap-2">
               <select
                   value={sortKey}
                   onChange={(e) => {
@@ -580,7 +609,7 @@ export const ClientManager: React.FC = () => {
                       setSortKey(next);
                       setSortDir(defaultSortDir(next));
                   }}
-                  className="px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
+                  className="h-9 px-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-800 dark:text-slate-100 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500"
                   title="정렬 기준"
               >
                   <option value="order">등록순</option>
@@ -592,14 +621,14 @@ export const ClientManager: React.FC = () => {
               <button
                   type="button"
                   onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
-                  className="inline-flex items-center gap-1.5 px-3 py-2.5 border border-slate-300 dark:border-slate-600 rounded-xl bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors"
+                  className="h-9 inline-flex items-center gap-1.5 px-3 border border-slate-300 dark:border-slate-600 rounded-lg bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-bold hover:bg-slate-50 dark:hover:bg-slate-600 transition-colors"
                   title={sortDir === 'asc' ? '오름차순 (클릭 시 내림차순)' : '내림차순 (클릭 시 오름차순)'}
               >
                   <ArrowUpDown size={16} />
                   {sortDir === 'asc' ? '오름차순' : '내림차순'}
               </button>
               <div className="text-sm text-slate-500 dark:text-slate-400 font-medium px-1">
-                  {searchQuery.trim()
+                  {searchQuery.trim() || listFilter !== 'all'
                       ? `검색 결과 ${filteredClients.length.toLocaleString()}건 / 전체 ${clients.length.toLocaleString()}건`
                       : `전체 ${clients.length.toLocaleString()}건`}
               </div>
@@ -616,7 +645,9 @@ export const ClientManager: React.FC = () => {
       ) : filteredClients.length === 0 ? (
           <div className="text-center py-16 text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-600 rounded-xl">
               <Search size={40} className="mx-auto mb-3 opacity-40" />
-              <p className="font-bold">「{searchQuery}」 검색 결과가 없습니다.</p>
+              <p className="font-bold">
+                {searchQuery.trim() ? `「${searchQuery}」 검색 결과가 없습니다.` : '해당 구분의 거래처가 없습니다.'}
+              </p>
               <p className="text-sm mt-1">다른 검색어를 입력하거나 검색어를 지워 전체 목록을 확인해 주세요.</p>
           </div>
       ) : (

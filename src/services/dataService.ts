@@ -1547,7 +1547,7 @@ export class DataService {
             }
         }
 
-        if (!settingsObj?.kanbanLayout?.splitPairs?.length) {
+        if (!settingsObj?.kanbanLayout || !Array.isArray(settingsObj.kanbanLayout.splitPairs)) {
             settingsObj.kanbanLayout = normalizeKanbanLayoutConfig(settingsObj.kanbanLayout);
             // 메모리 기본값만 — Firestore에 기본 레이아웃 강제 저장하지 않음 (사용자 설정 덮어쓰기 방지)
         }

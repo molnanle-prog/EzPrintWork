@@ -26,10 +26,11 @@ import { toast } from 'sonner';
 import { getJobOutstandingAmount, normalizePrepaidBalance } from '../../utils/prepaidBalance';
 
 type PaymentFilter = 'all' | 'outstanding' | PaymentStatus | 'byClient' | 'prepaidClients';
-type SortKey = 'title' | 'clientName' | 'contactPerson' | 'phone' | 'price' | 'paymentStatus' | 'dueDate';
+type SortKey = 'title' | 'clientName' | 'contactPerson' | 'phone' | 'price' | 'paymentStatus' | 'dueDate' | 'createdAt';
 type ColumnKey = SortKey | 'contact';
 type SortDir = 'asc' | 'desc';
 type ClientSortKey = 'clientName' | 'pendingCount' | 'partialCount' | 'totalOutstanding';
+type PeriodPreset = 'all' | 'month' | 'lastMonth' | 'custom';
 
 const PAYMENT_STATUSES: PaymentStatus[] = ['결제대기', '일부결제', '후불결제', '결제완료', '취소'];
 
@@ -155,6 +156,9 @@ function compareJobs(a: Job, b: Job, sortKey: SortKey, sortDir: SortDir): number
       cmp =
         new Date(a.dueDate || a.createdAt).getTime() - new Date(b.dueDate || b.createdAt).getTime();
       break;
+    case 'createdAt':
+      cmp = new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
+      break;
   }
   return sortDir === 'asc' ? cmp : -cmp;
 }
@@ -183,12 +187,46 @@ function SortIcon({ active, dir }: { active: boolean; dir: SortDir }) {
   return dir === 'asc' ? <ArrowUp size={11} className="shrink-0" /> : <ArrowDown size={11} className="shrink-0" />;
 }
 
+function formatYmd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function toDateKey(iso?: string): string | null {
+  if (!iso) return null;
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  return formatYmd(date);
+}
+
+function isInDateRange(iso: string | undefined, from: string, to: string): boolean {
+  const key = toDateKey(iso);
+  if (!key) return !from && !to;
+  const start = from && to && from > to ? to : from;
+  const end = from && to && from > to ? from : to;
+  if (start && key < start) return false;
+  if (end && key > end) return false;
+  return true;
+}
+
+function getMonthRange(monthOffset = 0): { from: string; to: string } {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth() + monthOffset, 1);
+  const end = new Date(now.getFullYear(), now.getMonth() + monthOffset + 1, 0);
+  return { from: formatYmd(start), to: formatYmd(end) };
+}
+
 export const PaymentReceivableManager: React.FC = () => {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [staff, setStaff] = useState<Staff[]>([]);
   const [filter, setFilter] = useState<PaymentFilter>('all');
   const [search, setSearch] = useState('');
+  const [periodPreset, setPeriodPreset] = useState<PeriodPreset>('all');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [contactingJob, setContactingJob] = useState<Job | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<ColumnKey, number>>(loadColumnWidths);
@@ -218,8 +256,35 @@ export const PaymentReceivableManager: React.FC = () => {
     return db.subscribe(reload);
   }, []);
 
+  const periodJobs = useMemo(() => {
+    if (!dateFrom && !dateTo) return jobs;
+    return jobs.filter((j) => isInDateRange(j.createdAt, dateFrom, dateTo));
+  }, [jobs, dateFrom, dateTo]);
+
+  const applyPeriodPreset = useCallback((preset: PeriodPreset) => {
+    setPeriodPreset(preset);
+    if (preset === 'all') {
+      setDateFrom('');
+      setDateTo('');
+      return;
+    }
+    const range = getMonthRange(preset === 'lastMonth' ? -1 : 0);
+    setDateFrom(range.from);
+    setDateTo(range.to);
+  }, []);
+
+  const handleDateFromChange = (value: string) => {
+    setDateFrom(value);
+    setPeriodPreset('custom');
+  };
+
+  const handleDateToChange = (value: string) => {
+    setDateTo(value);
+    setPeriodPreset('custom');
+  };
+
   const stats = useMemo(() => {
-    const active = jobs.filter((j) => j.paymentStatus !== '취소');
+    const active = periodJobs.filter((j) => j.paymentStatus !== '취소');
     // 미수·미결제 = 완불 전 상태 (결제대기·일부결제·후불결제)
     const outstandingJobs = active.filter((j) => isOutstanding(j.paymentStatus));
     const settledJobs = active.filter((j) => j.paymentStatus === '결제완료');
@@ -239,11 +304,11 @@ export const PaymentReceivableManager: React.FC = () => {
       // 거래처 간 상계가 아님 — 표시용 참고치
       netPosition: totalPrepaid - outstandingAmount,
     };
-  }, [jobs]);
+  }, [periodJobs]);
 
   const filteredJobs = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return jobs
+    return periodJobs
       .filter((j) => {
         if (filter === 'byClient' || filter === 'prepaidClients') return false;
         if (filter === 'outstanding') return isOutstanding(j.paymentStatus);
@@ -262,8 +327,13 @@ export const PaymentReceivableManager: React.FC = () => {
           j.id.toLowerCase().includes(q)
         );
       })
-      .sort((a, b) => compareJobs(a, b, sortKey, sortDir));
-  }, [jobs, filter, search, sortKey, sortDir]);
+      .sort((a, b) => {
+        if (q) {
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        }
+        return compareJobs(a, b, sortKey, sortDir);
+      });
+  }, [periodJobs, filter, search, sortKey, sortDir]);
 
   useEffect(() => {
     const visibleIds = new Set(filteredJobs.map((j) => j.id));
@@ -277,7 +347,7 @@ export const PaymentReceivableManager: React.FC = () => {
     const q = search.trim().toLowerCase();
     const map = new Map<string, ClientSummaryRow>();
 
-    jobs
+    periodJobs
       .filter((j) => isOutstanding(j.paymentStatus))
       .forEach((job) => {
         const name = job.clientName?.trim() || '(미지정)';
@@ -308,10 +378,12 @@ export const PaymentReceivableManager: React.FC = () => {
       })
       .map((row) => ({
         ...row,
-        jobs: [...row.jobs].sort((a, b) => compareJobs(a, b, 'dueDate', 'desc')),
+        jobs: [...row.jobs].sort(
+          (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+        ),
       }))
       .sort((a, b) => compareClientRows(a, b, clientSortKey, clientSortDir));
-  }, [jobs, search, clientSortKey, clientSortDir]);
+  }, [periodJobs, search, clientSortKey, clientSortDir]);
 
   const clientSummaryTotals = useMemo(
     () => ({
@@ -359,7 +431,7 @@ export const PaymentReceivableManager: React.FC = () => {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortKey(key);
-      setSortDir(key === 'dueDate' || key === 'price' ? 'desc' : 'asc');
+      setSortDir(key === 'dueDate' || key === 'price' || key === 'createdAt' ? 'desc' : 'asc');
     }
   };
 
@@ -625,21 +697,14 @@ export const PaymentReceivableManager: React.FC = () => {
   return (
     <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 flex flex-col h-full overflow-hidden">
       <div className="p-4 md:p-6 border-b border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/40 flex-none">
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <div>
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_auto_1fr] xl:items-center gap-2">
+          <div className="shrink-0">
             <h2 className="text-lg md:text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
               <CreditCard size={22} className="text-blue-600" />
               결제 및 미수 관리
             </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
-              {filter === 'byClient'
-                ? '고객사별 미수·일부결제 현황을 종합합니다. 미수 건을 클릭하면 작업 상세를 확인할 수 있습니다.'
-                : filter === 'prepaidClients'
-                ? '선불 잔액이 있는 거래처만 모아 봅니다. 필요 시 연관 작업 상세로 바로 이동할 수 있습니다.'
-                : '작업별 견적 금액·결제 상태를 한곳에서 확인하고 관리합니다. 헤더 클릭 정렬 · 우측 가장자리 드래그로 칸 너비 조절.'}
-            </p>
           </div>
-          <div className="relative w-full md:w-64">
+          <div className="relative w-full xl:w-[28rem] justify-self-center">
             <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
@@ -652,8 +717,52 @@ export const PaymentReceivableManager: React.FC = () => {
                   ? '고객사·담당자·전화번호 검색'
                   : '거래처·작업명 검색 — 선택 시 상세 보기'
               }
-              className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full h-9 pl-9 pr-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm outline-none focus:ring-2 focus:ring-blue-500"
             />
+          </div>
+          <div className="flex flex-wrap items-center justify-center xl:justify-end gap-1.5 min-w-0">
+            <span className="inline-flex items-center gap-1 text-sm font-bold text-slate-600 dark:text-slate-300">
+              <Calendar size={16} className="text-blue-600" />
+              기간
+            </span>
+            {([
+              { id: 'all', label: '전체' },
+              { id: 'month', label: '이번 달' },
+              { id: 'lastMonth', label: '지난 달' },
+            ] as const).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => applyPeriodPreset(tab.id)}
+                className={`h-9 px-3 inline-flex items-center rounded-lg text-sm font-bold border transition-colors ${
+                  periodPreset === tab.id
+                    ? 'bg-slate-800 dark:bg-slate-100 border-slate-800 dark:border-slate-100 text-white dark:text-slate-900'
+                    : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-300'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => handleDateFromChange(e.target.value)}
+              className="h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-200 scheme-light dark:scheme-dark"
+              aria-label="시작일"
+            />
+            <span className="text-sm text-slate-400">~</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={(e) => handleDateToChange(e.target.value)}
+              className="h-9 px-2 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-sm text-slate-700 dark:text-slate-200 scheme-light dark:scheme-dark"
+              aria-label="종료일"
+            />
+            {(dateFrom || dateTo) && (
+              <span className="text-sm text-slate-500 dark:text-slate-400">
+                접수 {periodJobs.length}건
+              </span>
+            )}
           </div>
         </div>
 
@@ -717,7 +826,7 @@ export const PaymentReceivableManager: React.FC = () => {
 
         <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 flex flex-wrap items-center gap-x-4 gap-y-1">
           <span>
-            참고(전체 선불 합 − 전체 미수 합, 거래처 간 상계 아님):{' '}
+            참고(선불 합 − {dateFrom || dateTo ? '기간 ' : '전체 '}미수 합, 거래처 간 상계 아님):{' '}
             <strong
               className={
                 stats.netPosition >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'
@@ -736,7 +845,7 @@ export const PaymentReceivableManager: React.FC = () => {
                 key={tab.id}
                 type="button"
                 onClick={() => setFilter(tab.id)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
+                className={`h-9 px-3 inline-flex items-center rounded-lg text-sm font-bold border transition-colors ${
                   filter === tab.id
                     ? 'bg-blue-600 border-blue-600 text-white shadow-sm'
                     : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-blue-300'
@@ -755,14 +864,14 @@ export const PaymentReceivableManager: React.FC = () => {
               <button
                 type="button"
                 onClick={toggleSelectAllVisible}
-                className="text-xs font-bold px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-blue-300 whitespace-nowrap"
+                className="h-9 text-sm font-bold px-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:border-blue-300 whitespace-nowrap inline-flex items-center"
               >
                 {visibleAllSelected ? '현재 목록 전체 해제' : '현재 목록 전체 선택'}
               </button>
               <select
                 value={bulkPaymentStatus}
                 onChange={(e) => setBulkPaymentStatus(e.target.value as PaymentStatus)}
-                className="text-xs font-bold px-2 py-1.5 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
+                className="h-9 text-sm font-bold px-3 rounded-lg border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-200"
               >
                 {PAYMENT_STATUSES.map((s) => (
                   <option key={s} value={s}>
@@ -774,7 +883,7 @@ export const PaymentReceivableManager: React.FC = () => {
                 type="button"
                 onClick={handleBulkPaymentChange}
                 disabled={selectedCount === 0}
-                className="text-xs font-bold px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white whitespace-nowrap"
+                className="h-9 text-sm font-bold px-3 rounded-lg bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white whitespace-nowrap inline-flex items-center"
               >
                 선택 일괄 변경
               </button>
