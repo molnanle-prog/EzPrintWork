@@ -8,7 +8,6 @@ import { SettingsView } from '../components/settings/SettingsView';
 import { StaffManager } from '../components/staff/StaffManager';
 import { ClientManager } from '../components/settings/ClientManager';
 import { PaperManager } from '../components/settings/PaperManager';
-import { ActionLogPage } from './ActionLogPage';
 import { PaymentReceivableManager } from '../components/payments/PaymentReceivableManager';
 import { ArchiveSetupWizard } from '../components/auth/ArchiveSetupWizard';
 import { db } from '../services/dataService';
@@ -16,7 +15,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { isArchiveSetupDone, markArchiveSetupDone } from '../utils/archiveStorage';
 import { WorkHistoryBoard } from '../components/history/WorkHistoryBoard';
 
-type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'history' | 'logs' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
+type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'history' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
 
 export const MainPage: React.FC = () => {
     const { currentUser, canAccessRootSettings } = useAuth();
@@ -69,7 +68,6 @@ export const MainPage: React.FC = () => {
             case 'staff': return <StaffManager />;
             case 'customers': return <ClientManager />;
             case 'inventory': return <PaperManager />;
-            case 'logs': return <ActionLogPage />;
             case 'settings': return <SettingsView />;
             default: return <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
         }

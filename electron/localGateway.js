@@ -9,6 +9,7 @@ const CHAT_FILE = 'chat-messages.json';
 const CHAT_ARCHIVE_FOLDER = 'chat-archive';
 const HOT_CHAT_LIMIT = 300;
 const PRESENCE_FILE = 'presence-sessions.json';
+const UI_PREFS_FILE = 'ui-prefs.json';
 const AUX_FILES = {
     quotes: 'quotes-live.json',
     papers: 'papers-live.json',
@@ -827,6 +828,86 @@ class LocalGateway {
                             updatedAt: now,
                             count: Object.keys(sessions).length,
                         }));
+                        return;
+                    } catch (error) {
+                        res.writeHead(400, CORS);
+                        res.end(error?.message || 'invalid body');
+                        return;
+                    }
+                }
+
+                if (url.pathname === '/api/v1/ui-prefs' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const tenantId = url.searchParams.get('tenantId') || this.tenantId;
+                    const prefs = this.readJsonFile(UI_PREFS_FILE) || {
+                        version: 1,
+                        tenantId,
+                        updatedAt: new Date().toISOString(),
+                        users: {},
+                    };
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        version: prefs.version ?? 1,
+                        tenantId,
+                        updatedAt: prefs.updatedAt || new Date().toISOString(),
+                        users: prefs.users && typeof prefs.users === 'object' && !Array.isArray(prefs.users)
+                            ? prefs.users
+                            : {},
+                    }));
+                    return;
+                }
+
+                if (url.pathname === '/api/v1/ui-prefs' && req.method === 'POST') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    if (!this.archiveRoot) {
+                        res.writeHead(503, CORS);
+                        res.end('NAS path not configured');
+                        return;
+                    }
+                    try {
+                        const raw = await readRequestBody(req);
+                        const body = JSON.parse(raw || '{}');
+                        const tenantId = body.tenantId || this.tenantId;
+                        const userKey = String(body.userKey || '').trim().toLowerCase();
+                        if (!userKey) {
+                            res.writeHead(400, CORS);
+                            res.end('userKey required');
+                            return;
+                        }
+                        const now = new Date().toISOString();
+                        const existing = this.readJsonFile(UI_PREFS_FILE);
+                        const users = {
+                            ...(existing?.users && typeof existing.users === 'object' && !Array.isArray(existing.users)
+                                ? existing.users
+                                : {}),
+                        };
+                        users[userKey] = {
+                            hiddenBoardStatusKeys: Array.isArray(body.hiddenBoardStatusKeys)
+                                ? body.hiddenBoardStatusKeys.filter((k) => typeof k === 'string')
+                                : [],
+                            updatedAt: now,
+                        };
+                        const payload = {
+                            version: body.version ?? existing?.version ?? 1,
+                            tenantId,
+                            updatedAt: now,
+                            users,
+                        };
+                        if (!this.writeJsonFile(UI_PREFS_FILE, payload)) {
+                            res.writeHead(500, CORS);
+                            res.end('write failed');
+                            return;
+                        }
+                        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: true, updatedAt: now, userKey }));
                         return;
                     } catch (error) {
                         res.writeHead(400, CORS);

@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { Job, Priority, Staff, JobStatusDefinition } from '../../types';
-import { CheckCircle2, User, Calendar, AlertTriangle, Phone, MessageCircle, Layers, Users } from 'lucide-react';
+import { CheckCircle2, User, Calendar, AlertTriangle, Phone, MessageCircle } from 'lucide-react';
 import { useTheme } from '../../contexts/ThemeContext';
 import {
   getJobUrgencyStyles,
@@ -36,11 +36,22 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
 
   const assignedStaff = getAssignedStaffList();
   const currentStepIdx = getStatusStepIndex(job.status);
-  const isDone = job.status === 'DELIVERY';
+  const isDone = job.status === 'DELIVERY' || job.status === 'COMPLETED';
 
-  // Multi-job Detection
-  const subJobCount = job.subJobs ? job.subJobs.length : 1;
-  const isMultiJob = subJobCount > 1;
+  const typeLabels = (() => {
+    if (job.subJobs && job.subJobs.length > 0) {
+      const seen = new Set<string>();
+      const labels: string[] = [];
+      for (const sub of job.subJobs) {
+        const type = (sub.type || '').trim();
+        if (!type || seen.has(type)) continue;
+        seen.add(type);
+        labels.push(type);
+      }
+      if (labels.length > 0) return labels;
+    }
+    return job.type ? [job.type] : [];
+  })();
 
   // Calculate Days Remaining
   const now = new Date();
@@ -62,13 +73,7 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
   const priorityBadgeStyles = getJobUrgencyBadgeStyles(theme, job.priority, daysRemaining);
   const dateTextStyles = getJobUrgencyDateTextStyles(daysRemaining, isDone);
 
-  const stepStyles = [
-    { bg: 'bg-red-500', border: 'border-red-500', text: 'text-red-600 dark:text-red-400' },
-    { bg: 'bg-orange-500', border: 'border-orange-500', text: 'text-orange-600 dark:text-orange-400' },
-    { bg: 'bg-amber-500', border: 'border-amber-500', text: 'text-amber-600 dark:text-amber-400' },
-    { bg: 'bg-emerald-500', border: 'border-emerald-500', text: 'text-emerald-600 dark:text-emerald-400' },
-    { bg: 'bg-blue-600', border: 'border-blue-600', text: 'text-blue-600 dark:text-blue-400' }
-  ];
+  const stepFills = ['#f97316', '#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#ea580c', '#64748b'];
 
   return (
     <div className={containerStyles}>
@@ -76,29 +81,15 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
         {/* Row 1: Horizontal Info (Title, Client, Staff, Phone) */}
         <div className="flex flex-wrap items-center justify-between gap-y-1 gap-x-2">
            
-           {/* Left Group: Title & Badges */}
+           {/* Left Group: Title, Client, Types */}
            <div className="flex items-center gap-2 min-w-0 flex-1">
-              {/* Badges */}
-              <div className="flex items-center gap-1 shrink-0">
-                {(job.priority !== Priority.NORMAL || daysRemaining <= 3) && (
-                  <span className={`text-[10px] font-bold px-1 py-0.5 rounded flex items-center gap-1 ${priorityBadgeStyles}`}>
-                    {job.priority === Priority.VERY_URGENT && <AlertTriangle size={10} />}
-                    {job.priority}
-                  </span>
-                )}
-                {/* Type Badge / Multi Badge */}
-                {isMultiJob ? (
-                    <span className="text-[10px] text-white font-bold bg-slate-600 dark:bg-slate-500 px-1.5 py-0.5 rounded border border-slate-700 dark:border-slate-500 whitespace-nowrap flex items-center gap-1 shadow-sm">
-                        <Layers size={10} /> +{subJobCount}
-                    </span>
-                ) : (
-                    <span className={`text-[10px] font-medium px-1 py-0.5 rounded border whitespace-nowrap ${theme === 'trello' ? 'text-slate-300 bg-[#2c3e56]/50 border-[#384c66]' : 'text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-600 border-slate-200 dark:border-slate-500'}`}>
-                        {job.type}
-                    </span>
-                )}
-              </div>
+              {(job.priority !== Priority.NORMAL || daysRemaining <= 3) && (
+                <span className={`text-[10px] font-bold px-1 py-0.5 rounded flex items-center gap-1 shrink-0 ${priorityBadgeStyles}`}>
+                  {job.priority === Priority.VERY_URGENT && <AlertTriangle size={10} />}
+                  {job.priority}
+                </span>
+              )}
 
-              {/* Title & Client */}
               <div className="flex items-baseline gap-1.5 min-w-0">
                   <h3 className={`text-sm font-bold truncate leading-tight ${theme === 'trello' ? 'text-slate-100' : 'text-slate-800 dark:text-slate-100'}`} title={job.title}>
                     {job.title}
@@ -106,6 +97,19 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
                   <span className={`text-[11px] truncate hidden sm:inline ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>- {job.clientName}</span>
                   <span className={`text-[11px] truncate sm:hidden block ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>{job.clientName}</span>
               </div>
+
+              {typeLabels.length > 0 && (
+                <div className="flex items-center gap-1 shrink-0">
+                  {typeLabels.map((type) => (
+                    <span
+                      key={type}
+                      className={`text-[10px] font-medium px-1 py-0.5 rounded border whitespace-nowrap ${theme === 'trello' ? 'text-slate-300 bg-[#2c3e56]/50 border-[#384c66]' : 'text-slate-500 dark:text-slate-300 bg-slate-100 dark:bg-slate-600 border-slate-200 dark:border-slate-500'}`}
+                    >
+                      {type}
+                    </span>
+                  ))}
+                </div>
+              )}
            </div>
 
            {/* Right Group: Staff, Contact, Date */}
@@ -176,63 +180,39 @@ export const JobStatusItem: React.FC<JobStatusItemProps> = ({ job, staff, status
            </div>
         </div>
 
-        {/* Row 2: Compact Stepper (Bottom Line) */}
-        <div className="relative pt-0.5 px-1">
-          {/* Background Line */}
-          <div className="absolute top-1/2 left-0 w-full h-0.5 bg-slate-100 dark:bg-slate-600 -translate-y-1/2 rounded-full z-0"></div>
-          
-          {/* Progress Line */}
-          <div 
-            className="absolute top-1/2 left-0 h-0.5 -translate-y-1/2 rounded-full z-0 transition-all duration-500"
-            style={{ 
-              width: `${(currentStepIdx / (statusDefinitions.length - 1)) * 100}%`,
-              background: 'linear-gradient(to right, #ef4444, #f97316, #f59e0b, #10b981, #2563eb)'
-            }}
-          ></div>
-
-          {/* Steps */}
-          <div className="relative z-10 flex justify-between">
+        {/* Row 2: Segmented progress bar */}
+        {statusDefinitions.length > 0 && (
+          <div
+            className={`flex h-6 overflow-hidden rounded-md border ${theme === 'trello' ? 'border-[#2c3e56] bg-[#0f1b2d]' : 'border-slate-200 dark:border-slate-600 bg-slate-100 dark:bg-slate-800'}`}
+            title={`현재: ${statusDefinitions[currentStepIdx]?.label || '-'}`}
+          >
             {statusDefinitions.map((step, idx) => {
-              const isCompleted = idx <= currentStepIdx;
+              const fill = stepFills[idx % stepFills.length];
+              const reached = idx < currentStepIdx;
               const isCurrent = idx === currentStepIdx;
-              // Use modulo to cycle through colors if more steps are added
-              const style = stepStyles[idx % stepStyles.length];
-              
+              const divider = theme === 'trello' ? 'border-[#2c3e56]' : 'border-slate-200 dark:border-slate-600';
               return (
-                <div key={step.key} className="flex flex-col items-center gap-1 group cursor-default">
-                  {/* Circle */}
-                  <div className={`
-                    w-4 h-4 sm:w-5 sm:h-5 rounded-full flex items-center justify-center border transition-all duration-300
-                    ${isCompleted 
-                      ? `${style.bg} ${style.border} text-white shadow-sm` 
-                      : 'bg-white dark:bg-slate-600 border-slate-300 dark:border-slate-500 text-slate-300 dark:text-slate-500'}
-                    ${isCurrent && !isDone ? 'ring-2 ring-offset-1 ring-blue-100 dark:ring-slate-700 scale-110' : ''}
-                  `}>
-                    {isCompleted && <CheckCircle2 size={10} className="sm:w-3 sm:h-3" />}
-                  </div>
-                  {/* Label */}
-                  <span className={`
-                    text-[9px] sm:text-[10px] font-bold transition-colors duration-300 whitespace-nowrap
-                    ${isCompleted ? style.text : 'text-slate-300 dark:text-slate-500'}
-                    ${isCurrent ? 'scale-105' : ''}
-                  `}>
-                    {step.label}
-                  </span>
+                <div
+                  key={step.key}
+                  className={`flex-1 min-w-0 flex items-center justify-center border-r last:border-r-0 text-[9px] sm:text-[10px] font-bold whitespace-nowrap px-0.5 ${divider} ${
+                    isCurrent
+                      ? 'text-white z-[1] shadow-[inset_0_0_0_2px_rgba(255,255,255,0.85)]'
+                      : reached
+                        ? 'text-white/90'
+                        : theme === 'trello'
+                          ? 'text-slate-500'
+                          : 'text-slate-400 dark:text-slate-500'
+                  }`}
+                  style={{
+                    backgroundColor: isCurrent ? fill : reached ? fill : 'transparent',
+                    opacity: reached && !isCurrent ? 0.55 : 1,
+                  }}
+                >
+                  {step.label}
                 </div>
               );
             })}
           </div>
-        </div>
-        
-        {/* Multi-job sub-list preview (Optional: show types) */}
-        {isMultiJob && (
-            <div className="mt-1 flex gap-1 flex-wrap">
-                {job.subJobs?.map((sub, idx) => (
-                    <span key={idx} className="text-[10px] bg-slate-50 dark:bg-slate-600 text-slate-500 dark:text-slate-300 px-1.5 rounded border border-slate-100 dark:border-slate-500">
-                        {sub.type}
-                    </span>
-                ))}
-            </div>
         )}
       </div>
     </div>

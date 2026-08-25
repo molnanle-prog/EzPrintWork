@@ -6,6 +6,8 @@ import { AlertCircle, Clock, Plus, Loader2, Tv } from 'lucide-react';
 import { JobStatusItem } from './JobStatusItem';
 import { isJobAssignedToUser } from '../../utils/staffMatch';
 import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
+import { isBoardStatusHidden } from '../../utils/boardStatusFilter';
+import { useBoardStatusFilter } from '../../utils/useBoardStatusFilter';
 import { InstructionPanel } from './InstructionPanel';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
@@ -32,6 +34,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     return localStorage.getItem('ezprint_tv_mode') === 'true';
   });
+  const { hiddenStatusKeys, boardStatusDefs, toggleBoardStatus } = useBoardStatusFilter(
+    currentUser?.tenantId,
+    currentUser,
+    staff,
+    statusDefinitions
+  );
 
   const [draggedJobId, setDraggedJobId] = useState<string | null>(null);
   const [dragOverJobId, setDragOverJobId] = useState<string | null>(null);
@@ -173,7 +181,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   };
 
   // Helper: Sort jobs by Order first, then fallback to Created Date
-  const sortedJobs = [...jobs].sort((a, b) => {
+  const sortedJobs = [...jobs]
+    .filter((job) => !isBoardStatusHidden(job, hiddenStatusKeys))
+    .sort((a, b) => {
     if (a.order !== b.order) return a.order - b.order;
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
@@ -211,24 +221,46 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
       <div className={`flex-1 flex flex-col min-w-0 rounded-xl shadow-sm border overflow-hidden transition-colors ${theme === 'trello' ? 'bg-[#152238] border-[#2c3e56]' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
         {/* Header */}
         {!isTvMode && (
-        <div className={`p-2 lg:p-3 border-b flex justify-between items-center flex-none ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850'}`}>
-          <div className="flex items-center gap-4">
-            <div>
-              <h2 className={`text-base lg:text-lg font-bold flex items-center gap-2 ${theme === 'trello' ? 'text-slate-300' : 'text-slate-800 dark:text-slate-100'}`}>
-                <span className="w-2 lg:w-2.5 h-5 lg:h-7 bg-gradient-to-b from-red-500 to-blue-600 rounded-sm"></span>
-                실시간 작업 상황판
-              </h2>
+        <div className={`px-2 lg:px-3 py-1.5 border-b flex items-center gap-2 flex-none whitespace-nowrap ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-850'}`}>
+          <h2 className={`text-sm lg:text-base font-bold flex items-center gap-2 shrink-0 ${theme === 'trello' ? 'text-slate-300' : 'text-slate-800 dark:text-slate-100'}`}>
+            <span className="w-2 h-5 bg-gradient-to-b from-red-500 to-blue-600 rounded-sm shrink-0"></span>
+            실시간 작업 상황판
+          </h2>
+          {boardStatusDefs.length > 0 ? (
+            <div className="flex-1 min-w-0 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className={`flex items-center justify-center gap-x-2.5 w-max min-w-full text-[11px] lg:text-xs ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                {boardStatusDefs.map((status) => {
+                  const checked = !hiddenStatusKeys.includes(status.key);
+                  return (
+                    <label
+                      key={status.key}
+                      className="flex items-center gap-1 cursor-pointer select-none shrink-0"
+                      title={checked ? `${status.label} 숨기기` : `${status.label} 보기`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleBoardStatus(status.key)}
+                        className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 shrink-0"
+                      />
+                      <span className={checked ? '' : 'opacity-50'}>{status.label}</span>
+                    </label>
+                  );
+                })}
+              </div>
             </div>
-          </div>
-          <div className="flex gap-1.5 items-center">
-             <div className="hidden sm:flex gap-1.5 text-[11px] lg:text-xs font-bold mr-1">
-               <div className={`flex items-center gap-1 px-2 py-0.5 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border border-red-100 dark:border-red-800'}`}>
+          ) : (
+            <div className="flex-1 min-w-0" />
+          )}
+          <div className="flex gap-1.5 items-center shrink-0 h-8">
+             <div className="hidden sm:flex gap-1.5 h-8">
+               <div className={`h-8 inline-flex items-center gap-1 px-2.5 rounded-lg text-xs font-bold border box-border ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-100 dark:border-red-800'}`}>
                   <AlertCircle size={12} />
-                  <span>긴급: {jobs.filter(j => j.priority !== Priority.NORMAL).length}</span>
+                  <span>긴급: {sortedJobs.filter(j => j.priority !== Priority.NORMAL).length}</span>
                </div>
-               <div className={`flex items-center gap-1 px-2 py-0.5 rounded-lg border transition-colors ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border border-blue-100 dark:border-blue-800'}`}>
+               <div className={`h-8 inline-flex items-center gap-1 px-2.5 rounded-lg text-xs font-bold border box-border ${theme === 'trello' ? 'bg-[#2c3e56] text-slate-300 border-[#384c66]' : 'bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-100 dark:border-blue-800'}`}>
                   <Clock size={12} />
-                  <span>진행: {jobs.filter(j => j.status !== 'DELIVERY').length}</span>
+                  <span>진행: {sortedJobs.filter(j => j.status !== 'DELIVERY').length}</span>
                </div>
              </div>
 
@@ -253,7 +285,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
                    }
                  }
                }}
-               className={`hidden md:flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold transition-all border select-none hover:scale-105 active:scale-95 shadow-md
+               className={`hidden md:inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-bold transition-all border box-border select-none hover:scale-105 active:scale-95 shadow-md
                  ${isTvMode 
                    ? 'bg-purple-600 border-purple-500 text-white shadow-lg shadow-purple-500/40 hover:bg-purple-700' 
                    : 'bg-purple-900 dark:bg-purple-950 border-purple-800 dark:border-purple-900 text-white hover:bg-purple-800 dark:hover:bg-purple-900 hover:border-purple-500'}`}
@@ -266,9 +298,9 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
              <button 
                onClick={() => setIsCreatingJob(true)}
                title="새로운 작업을 등록합니다"
-               className="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm transition-all hover:scale-105 active:scale-95"
+               className="h-8 inline-flex items-center gap-1 bg-blue-600 hover:bg-blue-700 text-white px-2.5 rounded-lg text-xs font-bold shadow-sm box-border transition-all hover:scale-105 active:scale-95"
              >
-               <Plus size={16} />
+               <Plus size={14} />
                <span className="hidden sm:inline">작업 등록</span>
                <span className="sm:hidden">등록</span>
              </button>
