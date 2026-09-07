@@ -12,6 +12,7 @@ import { useTheme, Theme } from '../../contexts/ThemeContext';
 import { isLongProjectJob, isJobBoardHidden } from '../../utils/jobBoardVisibility';
 import { isJobPinnedToManagementCard } from '../../utils/managementCard';
 import { getStaffIdForUser, isJobAssignedToStaffId } from '../../utils/staffMatch';
+import { canManageLeave } from '../../utils/leaveOverlap';
 import { isBoardStatusHidden } from '../../utils/boardStatusFilter';
 import { useBoardStatusFilter } from '../../utils/useBoardStatusFilter';
 import { toast } from 'sonner';
@@ -117,8 +118,8 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
   const [isCreatingJob, setIsCreatingJob] = useState(false);
-  const { showConfirm } = useDialog();
-  const { showsAds, currentUser } = useAuth();
+  const { showConfirm, showAlert } = useDialog();
+  const { showsAds, currentUser, canAccessAdminSettings } = useAuth();
   const { theme } = useTheme();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
@@ -385,9 +386,17 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
     }
   };
 
+  const canDeleteThisLeave = (leave: StaffLeave) =>
+    canManageLeave(leave, currentUser, staff, canAccessAdminSettings);
+
   const handleDeleteLeave = async (id: string, name: string) => {
+    const leave = leaves.find((item) => item.id === id);
+    if (!leave || !canManageLeave(leave, currentUser, staff, canAccessAdminSettings)) {
+      await showAlert('휴가 삭제는 등록 본인 또는 관리자만 할 수 있습니다.');
+      return;
+    }
     if (await showConfirm(`${name}의 휴가 일정을 삭제하시겠습니까?`)) {
-        db.deleteLeave(id);
+        await db.deleteLeave(id);
         loadData();
     }
   };
@@ -493,7 +502,16 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                     {dayLeaves.map(leave => (
                         <div key={leave.id} className="mx-1 mb-0.5 flex items-center bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-200 px-1.5 py-0.5 rounded border border-purple-200 dark:border-purple-800 text-[10px] font-bold truncate">
                             <span className="truncate flex-1">🌴 {getStaffName(leave.staffId)}</span>
-                            <button onClick={(e) => {e.stopPropagation(); handleDeleteLeave(leave.id, getStaffName(leave.staffId));}} className="ml-1 hover:text-red-600"><Trash2 size={10} /></button>
+                            {canDeleteThisLeave(leave) && (
+                              <button
+                                type="button"
+                                onClick={(e) => {e.stopPropagation(); handleDeleteLeave(leave.id, getStaffName(leave.staffId));}}
+                                className="ml-1 hover:text-red-600"
+                                title="휴가 삭제"
+                              >
+                                <Trash2 size={10} />
+                              </button>
+                            )}
                         </div>
                     ))}
 

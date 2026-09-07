@@ -142,13 +142,15 @@ export const getErrorMessage = (error: any): string => {
     const code = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
     const webGatewayMessages: Record<string, string> = {
         'web-readonly-jobs':
-            '웹(태블릿/휴대폰)은 조회 전용입니다. 작업 수정은 매장 PC 앱에서 진행해 주세요.',
+            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
+        'web-gateway-offline':
+            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
         'web-gateway-batch-save-failed':
-            '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
+            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
         'web-gateway-job-save-failed':
-            '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
+            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
         'web-gateway-job-add-failed':
-            '매장 PC에 저장하지 못했습니다. 매장 PC 앱이 켜져 있고 인터넷에 연결되어 있는지 확인해 주세요.',
+            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
     };
     if (code && webGatewayMessages[code]) return webGatewayMessages[code];
 
@@ -2127,6 +2129,25 @@ export class DataService {
         ) {
             this.lastPublishedGatewayUrls = lanUrls;
         }
+    }
+
+    /** 웹·태블릿 — 매장 PC 게이트웨이로 작업 저장 (PC 앱이 꺼져 있으면 실패) */
+    private async persistWebJobsToStoreGateway(
+        jobs: Job[],
+        deletedJobs: Array<{ id: string; deletedAt: string }> = []
+    ): Promise<void> {
+        if (!this.tenantId) throw new Error('web-gateway-offline');
+        this.syncGatewaySecretFromSettings();
+        const urls = await this.getOrderedStoreGatewayUrls();
+        if (urls.length === 0) throw new Error('web-gateway-offline');
+        const { isStoreGatewayReachable, postJobsPartialViaGateway } = await import('./gatewayBridge');
+        const reachable = await isStoreGatewayReachable(urls, this.tenantId);
+        if (!reachable) throw new Error('web-gateway-offline');
+        for (const base of urls) {
+            const result = await postJobsPartialViaGateway(base, this.tenantId, jobs, deletedJobs);
+            if (result.ok) return;
+        }
+        throw new Error('web-gateway-offline');
     }
 
     /** 회사 NAS 경로를 서비스하는 게이트웨이만 반환 (불일치면 null) */
@@ -4886,7 +4907,8 @@ export class DataService {
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
-                throw new Error('web-readonly-jobs');
+                await this.persistWebJobsToStoreGateway([newEntity as Job]);
+                return;
             }
             if (!this.canPersistToCloud(col)) {
                 if (col === 'clients') {
@@ -4997,7 +5019,8 @@ export class DataService {
             return;
         }
         if (col === 'jobs' && this.tenantId && this.isWebMirrorMode()) {
-            throw new Error('web-readonly-jobs');
+            await this.persistWebJobsToStoreGateway([updated as Job]);
+            return;
         }
         if (!this.canPersistToCloud(col)) {
             if (col === 'clients') {
@@ -5095,6 +5118,7 @@ export class DataService {
             boardHiddenAt: pinnedAt,
             boardHiddenReason: 'management_card',
         });
+        if (this.isWebMirrorMode()) return;
         const ok = await this.flushLiveMirrorPushNow();
         if (!ok) {
             throw new Error(
@@ -5114,6 +5138,7 @@ export class DataService {
                 ? jobVisibilityClearPatch(['boardHiddenAt', 'boardHiddenBy', 'boardHiddenReason'])
                 : {}),
         });
+        if (this.isWebMirrorMode()) return;
         const ok = await this.flushLiveMirrorPushNow();
         if (!ok) {
             throw new Error(
@@ -5194,7 +5219,11 @@ export class DataService {
                 return;
             }
             if (col === 'jobs' && this.isWebMirrorMode()) {
-                throw new Error('web-readonly-jobs');
+                await this.persistWebJobsToStoreGateway([], [{
+                    id,
+                    deletedAt: new Date().toISOString(),
+                }]);
+                return;
             }
             if (!this.canPersistToCloud(col)) {
                 if (col === 'jobs') {
@@ -5353,9 +5382,54 @@ export class DataService {
 
     // --- Public Business Methods ---
     async addJob(job: Job) {
-        await this.addEntity('jobs', job);
+        const prepaidResult = resolvePrepaidOnJobUpdate(
+            {
+                ...job,
+                paymentStatus: '결제대기',
+                prepaidAppliedAmount: 0,
+                paidAmount: 0,
+                price: 0,
+            },
+            job,
+            this.getClients()
+        );
+        const jobToSave = prepaidResult.job;
+
+        for (const clientUpdate of prepaidResult.clientUpdates) {
+            const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+            if (!client) continue;
+            if (
+                clientUpdate.expectedBalanceBefore !== undefined &&
+                normalizePrepaidBalance(client.prepaidBalance) !== clientUpdate.expectedBalanceBefore
+            ) {
+                throw new Error(
+                    '선수금이 다른 작업에서 변경되었습니다. 화면을 새로고침한 뒤 다시 저장해 주세요.'
+                );
+            }
+        }
+
+        for (const clientUpdate of prepaidResult.clientUpdates) {
+            const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+            if (!client) continue;
+            const ledger = clientUpdate.ledgerEntry
+                ? appendPrepaidLedger(client, clientUpdate.ledgerEntry)
+                : client.prepaidLedger;
+            await this.updateClient({
+                ...client,
+                prepaidBalance: clientUpdate.prepaidBalance,
+                prepaidLedger: ledger,
+            });
+        }
+
+        if (prepaidResult.warning) {
+            toast.warning(prepaidResult.warning, { duration: 6000 });
+        } else if (prepaidResult.notice) {
+            toast.success(prepaidResult.notice, { duration: 5000 });
+        }
+
+        await this.addEntity('jobs', jobToSave);
         this.ensureQuotesSync();
-        await this.ensureQuoteForJob(job);
+        await this.ensureQuoteForJob(jobToSave);
     }
     async updateJob(job: Job) {
         const oldJob = this.getAllJobs().find((row) => row.id === job.id);
@@ -5612,10 +5686,6 @@ export class DataService {
     }
 
     async saveJobsPartial(jobs: Job[]) {
-        if (this.isWebMirrorMode()) {
-            throw new Error('web-readonly-jobs');
-        }
-
         const updates: { id: string; updated: Job }[] = [];
 
         for (const job of jobs) {
@@ -5628,6 +5698,20 @@ export class DataService {
         if (updates.length === 0) return;
 
         this.notify();
+
+        if (this.isWebMirrorMode()) {
+            await this.persistWebJobsToStoreGateway(updates.map((u) => u.updated));
+            await Promise.all(
+                updates.map(async ({ updated }) => {
+                    try {
+                        await this.syncQuoteFromJob(updated);
+                    } catch (e) {
+                        console.error('[saveJobsPartial] quote sync failed (jobs saved):', e);
+                    }
+                })
+            );
+            return;
+        }
 
         await Promise.all(
             updates.map(({ id, updated }) =>

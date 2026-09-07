@@ -24,7 +24,7 @@ import {
   DragEndEvent,
   MeasuringStrategy,
 } from '@dnd-kit/core';
-import { isTouchPrimaryDevice } from '../../utils/touchDevice';
+import { isTouchPrimaryDevice, isMobileWebClient } from '../../utils/touchDevice';
 import { kanbanCollisionDetection, resolveKanbanDropTarget, computeKanbanInsertIndex, getDragPointerY } from './kanbanCollisionDetection';
 import {
   isJobAssignedToUser,
@@ -47,7 +47,6 @@ interface KanbanBoardProps {
 }
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) => {
-  const isWebReadOnly = db.isWebMirrorMode();
   const [displayJobs, setDisplayJobs] = useState<Job[]>([]);
   const [activeJobsStats, setActiveJobsStats] = useState<Job[]>([]); 
   const [staff, setStaff] = useState<Staff[]>([]);
@@ -105,7 +104,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const sensors = useSensors(
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, {
-      activationConstraint: { delay: touchPrimary ? 320 : 250, tolerance: 8 },
+      activationConstraint: isMobileWebClient()
+        ? { delay: 160, tolerance: 14 }
+        : { delay: touchPrimary ? 320 : 250, tolerance: 8 },
     }),
     useSensor(KeyboardSensor)
   );
@@ -237,10 +238,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const handleJobDrop = async (draggedJobId: string, newStatusKey: string, insertIndex?: number) => {
-    if (isWebReadOnly) {
-      showAlert('웹(태블릿/휴대폰)은 조회 전용입니다. 작업 수정은 매장 PC 앱에서 진행해 주세요.');
-      return;
-    }
     const allJobs = db.getAllJobs(); 
     const draggedJob = allJobs.find(j => j.id === draggedJobId);
     if (!draggedJob || !currentUser) return;
@@ -338,10 +335,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   };
 
   const handleDragEnd = (event: DragEndEvent) => {
-    if (isWebReadOnly) {
-      setActiveDragJobId(null);
-      return;
-    }
     setActiveDragJobId(null);
     justDraggedRef.current = true;
     setTimeout(() => {
@@ -406,10 +399,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   }, []);
 
   const handleCreateJob = async (newJob: Job) => {
-    if (isWebReadOnly) {
-      showAlert('웹(태블릿/휴대폰)은 조회 전용입니다. 작업 등록은 매장 PC 앱에서 진행해 주세요.');
-      return;
-    }
     try {
         const allJobs = db.getAllJobs();
         const columnJobs = allJobs.filter(j => j.status === newJob.status);
@@ -427,7 +416,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     }
   };
   const handleHideFromBoard = async (job: Job) => {
-    if (isWebReadOnly) return;
     try {
       await db.hideJobFromBoard(job.id, currentUser?.id);
       toast.success('완료 카드를 보드에서 내렸습니다.');
@@ -537,13 +525,31 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     [allStatusDefinitions, kanbanLayout, hiddenStatusKeys]
   );
 
-  /** lg 미만: 세로 1칸 / 가로 2칸 페이지. lg+: 0 = 전체 표시 */
+  /** PC 앱: 기존 규칙 유지. 태블릿·휴대폰 웹만 화면 너비에 맞춰 칸 수 */
   const [compactPageSize, setCompactPageSize] = useState(0);
   const [columnPage, setColumnPage] = useState(0);
   const swipeStartX = useRef<number | null>(null);
 
   useEffect(() => {
     const updateCompactLayout = () => {
+      if (db.getIsElectron()) {
+        const desktop = window.matchMedia('(min-width: 1024px)').matches;
+        if (desktop || isTvMode) {
+          setCompactPageSize(0);
+          return;
+        }
+        const landscape =
+          window.matchMedia('(orientation: landscape)').matches ||
+          window.innerWidth > window.innerHeight;
+        setCompactPageSize(landscape ? 2 : 1);
+        return;
+      }
+      if (isMobileWebClient()) {
+        const colW = window.innerWidth >= 900 ? 300 : 260;
+        const fitted = Math.max(1, Math.min(3, Math.floor(window.innerWidth / colW)));
+        setCompactPageSize(fitted);
+        return;
+      }
       const desktop = window.matchMedia('(min-width: 1024px)').matches;
       if (desktop || isTvMode) {
         setCompactPageSize(0);
@@ -612,7 +618,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         getStaffName={getStaffName}
         onSelectJob={handleSelectJob}
         onRightClickJob={handleRightClickJob}
-        onStatusChange={isWebReadOnly ? () => {} : updateJobStatus}
+        onStatusChange={updateJobStatus}
         currentUserId={currentStaffId ?? currentUser?.id}
         resolveIsMyJob={resolveIsMyJob}
         isCompact={false}
@@ -840,8 +846,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           <button 
             onClick={() => setIsCreatingJob(true)}
             title="새로운 작업을 등록합니다"
-            disabled={isWebReadOnly}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-3.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 shadow-md shadow-blue-500/20 transition-all hover:scale-105 active:scale-95"
           >
             <Plus size={16} />
             <span>작업 등록</span>
@@ -872,32 +877,13 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         sensors={sensors}
         collisionDetection={kanbanCollisionDetection}
         measuring={{ droppable: { strategy: MeasuringStrategy.WhileDragging } }}
-        onDragStart={isWebReadOnly ? undefined : handleDragStart}
-        onDragEnd={isWebReadOnly ? undefined : handleDragEnd}
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
       >
       <div
         className={`flex-1 h-full min-h-0 flex flex-col ${
           compactPageSize > 0 ? 'overflow-hidden' : 'overflow-x-auto custom-scrollbar touch-pan-x'
         }`}
-        onTouchStart={
-          compactPageSize > 0
-            ? (e) => {
-                swipeStartX.current = e.touches[0]?.clientX ?? null;
-              }
-            : undefined
-        }
-        onTouchEnd={
-          compactPageSize > 0
-            ? (e) => {
-                if (swipeStartX.current == null) return;
-                const endX = e.changedTouches[0]?.clientX ?? swipeStartX.current;
-                const dx = endX - swipeStartX.current;
-                swipeStartX.current = null;
-                if (Math.abs(dx) < 56) return;
-                goColumnPage(dx < 0 ? 1 : -1);
-              }
-            : undefined
-        }
       >
         {compactPageSize > 0 && (
           <div
@@ -906,6 +892,17 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 ? 'border-[#22334b] bg-[#152238]/80 text-white'
                 : 'border-slate-200 dark:border-slate-700 bg-white/90 dark:bg-slate-900/80'
             }`}
+            onTouchStart={(e) => {
+              swipeStartX.current = e.touches[0]?.clientX ?? null;
+            }}
+            onTouchEnd={(e) => {
+              if (swipeStartX.current == null) return;
+              const endX = e.changedTouches[0]?.clientX ?? swipeStartX.current;
+              const dx = endX - swipeStartX.current;
+              swipeStartX.current = null;
+              if (Math.abs(dx) < 48) return;
+              goColumnPage(dx < 0 ? 1 : -1);
+            }}
           >
             <button
               type="button"
@@ -932,9 +929,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
               <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
                 {columnPage + 1} / {compactPageCount}
                 <span className="mx-1.5">·</span>
-                {compactPageSize === 1 ? '세로 · 1칸' : '가로 · 2칸'}
+                {compactPageSize === 1 ? '1칸' : `${compactPageSize}칸`}
                 <span className="mx-1.5">·</span>
-                좌우로 넘기기
+                위 막대를 밀어 넘기기
               </p>
             </div>
             <button
@@ -980,7 +977,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                   getStaffName={getStaffName}
                   onSelectJob={handleSelectJob}
                   onRightClickJob={handleRightClickJob}
-                  onStatusChange={isWebReadOnly ? () => {} : updateJobStatus}
+                  onStatusChange={updateJobStatus}
                   currentUserId={currentStaffId ?? currentUser?.id}
                   resolveIsMyJob={resolveIsMyJob}
                   isTvMode={isTvMode}
@@ -1032,10 +1029,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           initialViewMode={jobModalViewMode}
           onClose={() => setSelectedJob(null)} 
           onUpdate={async (updated) => {
-             if (isWebReadOnly) {
-                showAlert('웹(태블릿/휴대폰)은 조회 전용입니다. 작업 수정은 매장 PC 앱에서 진행해 주세요.');
-                return;
-             }
              try {
                 await db.updateJob(updated);
                 setSelectedJob(null);

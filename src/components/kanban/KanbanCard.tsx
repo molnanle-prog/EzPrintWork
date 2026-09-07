@@ -6,7 +6,7 @@ import {
   FolderOpen, Play, CheckCircle, ShieldAlert, ArrowBigUp, ArrowBigDown, ClipboardList,
   MessageSquare
 } from 'lucide-react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { toast } from 'sonner';
@@ -18,6 +18,7 @@ import {
   getJobReceiverName,
 } from '../../utils/staffMatch';
 import { applyAssignmentNoticePatch } from '../../utils/assignmentNotice';
+import { getStaffLeaveAssignment } from '../../utils/leaveOverlap';
 import { hasCompleteSmsSent } from '../../utils/jobSms';
 import { useSortable } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
@@ -49,6 +50,12 @@ interface KanbanCardProps {
   isManagementPanel?: boolean;
   /** 관리카드 — 이 건의 선불 처리 뱃지 */
   managementPrepaidBadge?: ManagementPrepaidBadge;
+  /** 같은 칸 호버 펼침 시 다른 카드 높이 고정값 */
+  lockedSlotHeight?: number;
+  /** 호버 시작/종료 — 칸에서 이웃 카드 높이를 고정할 때 사용 */
+  onHoverSlotChange?: (jobId: string | null) => void;
+  /** 칸이 호버 대상을 직접 고를 때 — 접힘/펼침을 한 프레임에 바꿈 */
+  isSlotHovered?: boolean;
 }
 
 type SortableBinding = Pick<
@@ -85,13 +92,16 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   isCompactTray = false,
   onHideFromBoard: _onHideFromBoard,  isManagementPanel = false,
   managementPrepaidBadge,
+  lockedSlotHeight,
+  onHoverSlotChange,
+  isSlotHovered,
   sortable,
 }) => {
   const { theme } = useTheme();
   const { currentUser } = useAuth();
-  const [isHovered, setIsHovered] = useState(false);
+  const [internalHovered, setInternalHovered] = useState(false);
+  const isHovered = isSlotHovered !== undefined ? isSlotHovered : internalHovered;
   const isTrayView = isCompactTray;
-  const isWebReadOnly = db.isWebMirrorMode();
 
   const {
     attributes,
@@ -114,30 +124,22 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
 
   const handleMoveToManagementCard = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isWebReadOnly) {
-      toast.error('웹(태블릿)은 조회 전용입니다. 관리카드 이동은 매장 PC에서 해 주세요.');
-      return;
-    }
     try {
       await db.pinJobToManagementCard(job.id);
       toast.success('관리카드로 올렸습니다. 칸반에서는 숨겨집니다.');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '관리카드로 올리기에 실패했습니다.';
+      const msg = err instanceof Error ? getErrorMessage(err) : '관리카드로 올리기에 실패했습니다.';
       toast.error(msg);
     }
   };
 
   const handleMoveToKanban = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (isWebReadOnly) {
-      toast.error('웹(태블릿)은 조회 전용입니다. 칸반 이동은 매장 PC에서 해 주세요.');
-      return;
-    }
     try {
       await db.unpinJobFromManagementCard(job.id);
       toast.success('칸반으로 내렸습니다. 다른 PC에도 곧 반영됩니다.');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : '칸반으로 내리기에 실패했습니다.';
+      const msg = err instanceof Error ? getErrorMessage(err) : '칸반으로 내리기에 실패했습니다.';
       toast.error(msg);
     }
   };
@@ -187,13 +189,36 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
     </span>
   );
 
+  const handleSlotMouseEnter = () => {
+    onHoverSlotChange?.(job.id);
+    if (isSlotHovered === undefined) setInternalHovered(true);
+  };
+
+  const handleSlotMouseLeave = () => {
+    onHoverSlotChange?.(null);
+    if (isSlotHovered === undefined) setInternalHovered(false);
+  };
+
+  const slotLockStyle: React.CSSProperties =
+    lockedSlotHeight != null && !(isHovered || isTvMode)
+      ? {
+          height: lockedSlotHeight,
+          minHeight: lockedSlotHeight,
+          maxHeight: lockedSlotHeight,
+          flexShrink: 0,
+        }
+      : isHovered || isTvMode
+        ? { flexShrink: 0 }
+        : {};
+
   const sortableStyle: React.CSSProperties = isDragOverlay
-    ? {}
+    ? { ...slotLockStyle }
     : {
         transform: CSS.Transform.toString(transform),
         transition,
         opacity: isDragging ? 0.35 : 1,
         touchAction: sortableTouchAction,
+        ...slotLockStyle,
       };
 
   const sortableProps = isDragOverlay || isManagementPanel ? {} : { ...attributes, ...listeners };
@@ -284,10 +309,25 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
 
         const staffList = db.getStaff();
         const isAssignedToMe = isJobAssignedToUser(job, currentUser, staffList);
+        const assignStaffId = getStaffIdForUser(staffList, currentUser);
+
+        if (!isAssignedToMe && assignStaffId) {
+          const leaveAssignment = getStaffLeaveAssignment(
+            staffList,
+            db.getLeaves(),
+            assignStaffId,
+            job.createdAt,
+            job.dueDate
+          );
+          if (leaveAssignment?.kind === 'full') {
+            toast.error(leaveAssignment.detail, { duration: 7000 });
+            return;
+          }
+        }
+
         const assignedStaffIds = isAssignedToMe
           ? removeUserFromJobAssignees(job, currentUser, staffList)
           : addUserToJobAssignees(job, currentUser, staffList);
-        const assignStaffId = getStaffIdForUser(staffList, currentUser);
 
         const noticePatch = applyAssignmentNoticePatch(job, assignedStaffIds, assignStaffId);
         const updatedJob = {
@@ -308,7 +348,23 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
 
         try {
           await db.updateJob(updatedJob);
-          toast.success(isAssignedToMe ? '담당 지정이 해제되었습니다.' : '본인이 담당자로 지정되었습니다.');
+          if (isAssignedToMe) {
+            toast.success('담당 지정이 해제되었습니다.');
+          } else {
+            const leaveAssignment = assignStaffId
+              ? getStaffLeaveAssignment(
+                  staffList,
+                  db.getLeaves(),
+                  assignStaffId,
+                  job.createdAt,
+                  job.dueDate
+                )
+              : null;
+            toast.success('본인이 담당자로 지정되었습니다.');
+            if (leaveAssignment?.kind === 'partial') {
+              toast.warning(`${leaveAssignment.title} — ${leaveAssignment.detail}`, { duration: 8000 });
+            }
+          }
         } catch (err) {
           toast.error('담당자 변경 중 오류 발생');
         }
@@ -525,9 +581,9 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
-        className={`kanban-card kanban-tray-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-all cursor-grab active:cursor-grabbing group ${cardSurfaceClass} ${
+        onMouseEnter={handleSlotMouseEnter}
+        onMouseLeave={handleSlotMouseLeave}
+        className={`kanban-card kanban-tray-card quote-tray-tile relative px-1.5 py-1 rounded-md border transition-colors duration-200 cursor-grab active:cursor-grabbing group ${cardSurfaceClass} ${
           isHovered ? 'z-30 shadow-lg ring-2 ring-indigo-400/80' : 'z-0 shadow-sm'
         } ${
           theme === 'trello'
@@ -598,7 +654,11 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         data-job-id={job.id}
         style={sortableStyle}
         {...sortableProps}
-        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-all cursor-grab active:cursor-grabbing flex items-center gap-1.5 group overflow-hidden min-h-[1.75rem] ${cardSurfaceClass} ${
+        onMouseEnter={handleSlotMouseEnter}
+        onMouseLeave={handleSlotMouseLeave}
+        className={`kanban-card kanban-tray-card px-2 py-1.5 rounded-lg shadow-sm border transition-colors duration-200 cursor-grab active:cursor-grabbing flex items-center gap-1.5 group overflow-hidden min-h-[1.75rem] ${
+          isHovered ? 'shrink-0' : 'shrink'
+        } ${cardSurfaceClass} ${
           theme === 'trello'
             ? 'bg-[#24364e] border-[#384c66] hover:border-indigo-400'
             : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-indigo-400 dark:hover:border-indigo-500'
@@ -614,7 +674,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           <div className="kanban-card-title text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate shrink-0" title={job.title}>
             {job.title}
           </div>
-          <div className="kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate shrink min-h-0 overflow-hidden">
+          <div className={`kanban-card-subtitle text-[10px] text-slate-500 dark:text-slate-400 truncate overflow-hidden ${isHovered ? 'shrink-0' : 'shrink min-h-0'}`}>
             {renderClientName('')}
           </div>
         </div>
@@ -879,15 +939,16 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       data-job-id={job.id}
       style={sortableStyle}
       {...sortableProps}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
+      onMouseEnter={handleSlotMouseEnter}
+      onMouseLeave={handleSlotMouseLeave}
       className={`
-        kanban-card p-3 rounded-xl shadow-sm border transition-all duration-300 group flex flex-col gap-2 relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
+        kanban-card rounded-xl shadow-sm border transition-colors duration-200 group flex flex-col justify-start relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
+        px-3 py-2 gap-0
         ${isManagementPanel ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
         ${cardStyleClass}
         ${completedOutstandingClass}
         ${isManagementPanel ? 'hover:shadow-md' : 'active:rotate-1 active:scale-[1.02] active:shadow-2xl active:z-50'}
-        ${showDetails ? 'shrink-0 z-20' : 'min-h-[2.75rem]'}
+        ${showDetails ? 'shrink-0 z-20' : 'min-h-[4.75rem] shrink'}
       `}
       onClick={handleCardClick}
       onContextMenu={handleCardContextMenu}
@@ -909,8 +970,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         }
       `}</style>
 
-      {/* 1. Header: Badges & Gripper — 카드가 줄어들 때 여기부터 잘림 (제목 우선) */}
-      <div className={`flex justify-between items-center pointer-events-none min-h-0 overflow-hidden ${showDetails ? 'shrink-0' : 'shrink'}`}>
+      {/* 1. Header: Badges & Gripper — 카드가 줄어들 때 배지부터 잘림 (제목·거래처명은 유지) */}
+      <div className={`flex justify-between pointer-events-none min-h-0 overflow-hidden ${showDetails ? 'items-center shrink-0 mb-0' : 'items-start shrink mb-1'}`}>
         <div className="flex gap-1.5 flex-wrap items-center min-w-0 flex-1">
            {!isDone && (
              <span className={ddayBadgeClass} title="납기 D-Day">
@@ -1010,7 +1071,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         </div>
       </div>
       
-      {/* 2. Main Title — 카드가 줄어들어도 제목은 유지, 거래처명은 여유 있을 때만 */}
+      {/* 2. 제목 + 거래처명 — 한 덩어리로 유지해서 아래 여유가 있어도 이름이 잘리지 않게 */}
       <div className="pointer-events-none flex flex-col gap-0.5 shrink-0 min-w-0">
         {isManagementPanel && managementPrepaidBadge && (
           <div className="flex justify-end -mb-0.5">
@@ -1039,23 +1100,20 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         <h4 className="kanban-card-title font-medium text-[15px] lg:text-[16px] leading-snug truncate text-slate-800 dark:text-slate-100" title={job.title}>
           {job.title}
         </h4>
+        <p className="kanban-card-subtitle text-xs leading-tight truncate text-slate-500 dark:text-slate-400 min-w-0">
+          {renderClientName('')}
+        </p>
       </div>
-      <p
-        className={`kanban-card-subtitle text-xs truncate text-slate-500 dark:text-slate-400 pointer-events-none min-h-0 overflow-hidden ${
-          showDetails ? 'shrink-0' : 'shrink'
+
+      {/* 3. 상세 — 펼침만 부드럽게. 접힘은 이웃 높이 고정이라 즉시 닫힘 */}
+      <div
+        className={`grid transition-[grid-template-rows] duration-200 ease-out ${
+          showDetails ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
         }`}
       >
-        {renderClientName('')}
-      </p>
-
-      {/* 3. 상세 정보 컨테이너 (스펙 그리드, 품목 배지, 담당자/D-day 푸터 통합 아코디언) */}
+        <div className={`min-h-0 overflow-hidden ${showDetails ? '' : 'pointer-events-none'}`}>
       <div 
-        className={`
-          flex flex-col gap-2.5 transition-all duration-300 ease-in-out
-          ${showDetails 
-            ? 'max-h-[350px] opacity-100 mt-2 translate-y-0 visible' 
-            : 'max-h-0 opacity-0 overflow-hidden mt-0 -translate-y-2 invisible pointer-events-none'}
-        `}
+        className="flex flex-col gap-2.5 mt-2"
       >
         {/* 3-A. 인쇄소 특화 프리미엄 사양(Spec) 그리드 */}
         <div className="grid grid-cols-2 gap-2 bg-slate-50/70 dark:bg-slate-900/40 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 text-slate-700 dark:text-slate-200 font-normal leading-tight pointer-events-none">
@@ -1087,6 +1145,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
               {ddayLabel}
             </span>
           )}
+        </div>
+      </div>
         </div>
       </div>
     </div>

@@ -223,22 +223,32 @@ export function shouldUsePrepaidForJob(job: Job): boolean {
   return job.usePrepaidForPayment !== false;
 }
 
-/** 미수 금액 = 작업가 − 선불차감 − 별도수납. 취소만 0. 결제완료여도 잔여가 있으면 미수로 남김 */
-export function getJobOutstandingAmount(job: Job): number {
-  if (job.paymentStatus === '취소') return 0;
-  const price = job.price || 0;
-  const applied = job.prepaidAppliedAmount || 0;
-  const paid = Math.max(0, Math.round(job.paidAmount || 0));
-  return Math.max(0, price - applied - paid);
+/** 아직 완납·취소가 아닌 미수 상태 */
+export function isReceivablePaymentStatus(status?: PaymentStatus): boolean {
+  return status === '결제대기' || status === '일부결제' || status === '후불결제';
 }
 
-/** 같은 거래처의 다른 작업 미수 합계 (현재 작업 제외) */
+/**
+ * 미수 = 작업가 − 이미 뺀 선불.
+ * - 결제완료·취소: 0
+ * - 대기·후불·일부: 별도수납(paidAmount)은 제외.
+ *   paidAmount는 결제완료 때 나머지를 받은 것으로 기록하는 값이라,
+ *   후불/대기로 바꾼 뒤에도 남아 있으면 미수가 0으로 보이는 원인이 됨.
+ */
+export function getJobOutstandingAmount(job: Job): number {
+  if (!isReceivablePaymentStatus(job.paymentStatus)) return 0;
+  const price = job.price || 0;
+  const applied = job.prepaidAppliedAmount || 0;
+  return Math.max(0, price - applied);
+}
+
+/** 같은 거래처의 다른 미수 작업 합계 (현재 작업·완납·취소 제외) */
 export function getPreviousClientOutstandingAmount(
   clientJobs: Job[],
   currentJobId: string
 ): number {
   return clientJobs
-    .filter((j) => j.id !== currentJobId)
+    .filter((j) => j.id !== currentJobId && isReceivablePaymentStatus(j.paymentStatus))
     .reduce((sum, j) => sum + getJobOutstandingAmount(j), 0);
 }
 
@@ -430,8 +440,22 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
     shouldUsePrepaidForJob(newJob) &&
     (newJob.prepaidAppliedAmount || 0) === 0 &&
     (newJob.price || 0) > 0;
+  const incomingPaid = Math.max(0, Math.round(newJob.paidAmount || 0));
+  const hasStalePaidAmount =
+    newJob.paymentStatus !== '결제완료' && incomingPaid > 0;
+  const needsCompletePaidFill =
+    newJob.paymentStatus === '결제완료' &&
+    Math.max(0, (newJob.price || 0) - (newJob.prepaidAppliedAmount || 0) - incomingPaid) > 0;
 
-  if (!paymentChanged && !priceChanged && !clientChanged && !usePrepaidChanged && !needsPrepaidApply) {
+  if (
+    !paymentChanged &&
+    !priceChanged &&
+    !clientChanged &&
+    !usePrepaidChanged &&
+    !needsPrepaidApply &&
+    !hasStalePaidAmount &&
+    !needsCompletePaidFill
+  ) {
     return { job: newJob, clientUpdates: [] };
   }
 
@@ -439,7 +463,8 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
   let job: Job = {
     ...newJob,
     prepaidAppliedAmount: 0,
-    paidAmount: Math.max(0, Math.round(newJob.paidAmount || 0)),
+    /** 별도수납은 결제완료에서만 확정. 대기·후불·일부에 남은 값은 미수 0의 원인 */
+    paidAmount: newJob.paymentStatus === '결제완료' ? incomingPaid : 0,
   };
   let notice: string | undefined;
   let warning: string | undefined;

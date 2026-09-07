@@ -23,7 +23,7 @@ import { JobDetailModal } from '../common/JobDetailModal';
 import { PastJobSearchResults } from '../common/PastJobSearchResults';
 import { ClientContactModal } from '../common/ClientContactModal';
 import { toast } from 'sonner';
-import { getJobOutstandingAmount, normalizePrepaidBalance } from '../../utils/prepaidBalance';
+import { getJobOutstandingAmount, isReceivablePaymentStatus, normalizePrepaidBalance } from '../../utils/prepaidBalance';
 
 type PaymentFilter = 'all' | 'outstanding' | PaymentStatus | 'byClient' | 'prepaidClients';
 type SortKey = 'title' | 'clientName' | 'contactPerson' | 'phone' | 'price' | 'paymentStatus' | 'dueDate' | 'createdAt';
@@ -84,7 +84,7 @@ function paymentBadgeClass(status: PaymentStatus): string {
 }
 
 function isOutstanding(status?: PaymentStatus): boolean {
-  return status === '결제대기' || status === '일부결제' || status === '후불결제';
+  return isReceivablePaymentStatus(status);
 }
 
 function paymentStatusOrder(status?: PaymentStatus): number {

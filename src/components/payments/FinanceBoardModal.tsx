@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { X, Search, ArrowBigUp, LayoutGrid, Building2 } from 'lucide-react';
 import { db } from '../../services/dataService';
 import { Job, JobHistoryLog, Staff } from '../../types';
-import { getJobOutstandingAmount, findClientByName, normalizePrepaidBalance, buildPrepaidBoardRunByClient, summarizePrepaidBoardRun, getClientPrepaidFormula, buildPrepaidFlowLabel, getManagementPrepaidBadge } from '../../utils/prepaidBalance';
+import { getJobOutstandingAmount, isReceivablePaymentStatus, findClientByName, normalizePrepaidBalance, buildPrepaidBoardRunByClient, summarizePrepaidBoardRun, getClientPrepaidFormula, buildPrepaidFlowLabel, getManagementPrepaidBadge } from '../../utils/prepaidBalance';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { KanbanCard } from '../kanban/KanbanCard';
 import { useAuth } from '../../contexts/AuthContext';
@@ -88,7 +88,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
   const q = query.trim().toLowerCase();
   const filteredJobs = useMemo(() => {
     return jobs.filter((job) => {
-      if (filter === 'receivable' && !(job.paymentStatus === '결제대기' || job.paymentStatus === '일부결제' || job.paymentStatus === '후불결제')) {
+      if (filter === 'receivable' && !isReceivablePaymentStatus(job.paymentStatus)) {
         return false;
       }
       if (filter === 'prepaid') {
@@ -115,9 +115,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
     return Array.from(map.entries())
       .sort(([a], [b]) => a.localeCompare(b, 'ko'))
       .map(([clientName, clientJobs]) => {
-        const receivable = clientJobs.filter(
-          (j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제' || j.paymentStatus === '후불결제'
-        );
+        const receivable = clientJobs.filter((j) => isReceivablePaymentStatus(j.paymentStatus));
         const receivableTotal = receivable.reduce((sum, job) => sum + getJobOutstandingAmount(job), 0);
         const jobMap = prepaidBoardRun.get(clientName);
         const clientRecord = findClientByName(clients, clientName);
@@ -138,7 +136,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
   }, [filteredJobs, clients, prepaidBoardRun]);
 
   const summary = useMemo(() => {
-    const receivable = jobs.filter((j) => j.paymentStatus === '결제대기' || j.paymentStatus === '일부결제' || j.paymentStatus === '후불결제');
+    const receivable = jobs.filter((j) => isReceivablePaymentStatus(j.paymentStatus));
     const totalReceivable = receivable.reduce((sum, job) => sum + getJobOutstandingAmount(job), 0);
     const prepaidSummary = summarizePrepaidBoardRun(jobs, clients);
     return {

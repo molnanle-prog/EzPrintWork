@@ -1,12 +1,12 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { Job, Priority, Staff, PaymentStatus, Client, ClientContact, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec } from '../../types';
+import { Job, Priority, Staff, PaymentStatus, Client, ClientContact, JobItem, JobSpecs, JobTypeDefinition, JobStatusDefinition, JobHistoryLog, InnerPageSpec, StaffLeave } from '../../types';
 import { db, formatPhoneNumber, getErrorMessage, formatJobNumber, isBookletProductType } from '../../services/dataService';
 import { findClientByName, normalizePrepaidBalance, getJobPrepaidBreakdown, getPrepaidSlotForJob } from '../../utils/prepaidBalance';
 import { JobNotebookModal } from './JobNotebookModal';
 import { notebookHasContent } from '../../utils/jobNotebook';
-import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, CheckCircle2, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown, NotebookPen } from 'lucide-react';
+import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, CheckCircle2, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown, NotebookPen, Palmtree } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
 import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
@@ -20,6 +20,7 @@ import { findQuoteForJob } from '../../utils/quoteJobSync';
 import { openQuotePreviewWindow } from '../../utils/quotePreviewStorage';
 import { getStaffIdForUser, resolveHistoryActorName } from '../../utils/staffMatch';
 import { ackAssignmentNoticeIfNeeded, applyAssignmentNoticePatch } from '../../utils/assignmentNotice';
+import { buildStaffLeaveNotices, filterAssignableStaffIds, getStaffLeaveAssignment } from '../../utils/leaveOverlap';
 import { toast } from 'sonner';
 import { normalizeSizeLabel, sizesMatch } from '../../utils/sizeLabel';
 
@@ -252,6 +253,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   /** 이번 선택에서만 최근 이력 패널을 접음. 거래처가 바뀌면 다시 표시 */
   const [pastJobsDismissed, setPastJobsDismissed] = useState(false);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
+  const [leaves, setLeaves] = useState<StaffLeave[]>([]);
   const [showQuoteCalculator, setShowQuoteCalculator] = useState(false);
   const [calcLineQuotes, setCalcLineQuotes] = useState<Record<string, number>>({});
   const [calcVatIncluded, setCalcVatIncluded] = useState(false);
@@ -281,10 +283,12 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
     setProductDefs(db.getProductDefinitions());
     setProcessingOptions(db.getProcessingDefinitions());
     setReceptionAssistEnabled(db.isReceptionAssistEnabled());
+    setLeaves(db.getLeaves());
     const unsubscribe = db.subscribe(() => {
         setProductDefs(db.getProductDefinitions());
         setProcessingOptions(db.getProcessingDefinitions());
         setReceptionAssistEnabled(db.isReceptionAssistEnabled());
+        setLeaves(db.getLeaves());
     });
     return () => unsubscribe();
   }, []);
@@ -566,7 +570,21 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
       if (currentIds.includes(id)) {
           newIds = currentIds.filter(sid => sid !== id);
       } else {
+          const leaveAssignment = getStaffLeaveAssignment(
+            staff,
+            leaves,
+            id,
+            editedJob.createdAt,
+            editedJob.dueDate
+          );
+          if (leaveAssignment?.kind === 'full') {
+            toast.error(leaveAssignment.detail, { duration: 7000 });
+            return;
+          }
           newIds = [...currentIds, id];
+          if (leaveAssignment?.kind === 'partial') {
+            toast.warning(`${leaveAssignment.title} — ${leaveAssignment.detail}`, { duration: 8000 });
+          }
       }
       const primaryId = newIds.length > 0 ? newIds[0] : undefined;
       setEditedJob({ ...editedJob, assignedStaffIds: newIds, assignedStaffId: primaryId });
@@ -698,8 +716,26 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
           : {}),
     };
     if (editedJob.assignedStaffIds && editedJob.assignedStaffIds.length > 0) {
-        finalJob.assignedStaffId = editedJob.assignedStaffIds[0];
-        finalJob.assignedStaffIds = editedJob.assignedStaffIds;
+        const { kept, removed } = filterAssignableStaffIds(
+            staff,
+            leaves,
+            editedJob.assignedStaffIds,
+            editedJob.createdAt,
+            editedJob.dueDate
+        );
+        if (removed.length > 0) {
+            toast.warning(
+                `${removed.map((item) => item.staffName).join(', ')}님은 휴가 기간과 작업이 모두 겹쳐 담당에서 제외되었습니다.`,
+                { duration: 7000 }
+            );
+        }
+        if (kept.length > 0) {
+            finalJob.assignedStaffId = kept[0];
+            finalJob.assignedStaffIds = kept;
+        } else {
+            delete finalJob.assignedStaffId;
+            finalJob.assignedStaffIds = [];
+        }
     } else {
         delete finalJob.assignedStaffId;
         finalJob.assignedStaffIds = [];
@@ -1070,28 +1106,53 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
     return `${String(roundedH).padStart(2, '0')}:${roundedM}`;
   };
 
+  const applyJobDates = (patch: Pick<Job, 'createdAt' | 'dueDate'> | { createdAt?: string; dueDate?: string }) => {
+    const nextCreatedAt = patch.createdAt ?? editedJob.createdAt;
+    const nextDueDate = patch.dueDate ?? editedJob.dueDate;
+    const currentIds = editedJob.assignedStaffIds || [];
+    const { kept, removed } = filterAssignableStaffIds(
+      staff,
+      leaves,
+      currentIds,
+      nextCreatedAt,
+      nextDueDate
+    );
+    if (removed.length > 0) {
+      toast.warning(
+        `${removed.map((item) => item.staffName).join(', ')}님은 휴가 기간과 작업이 모두 겹쳐 담당에서 제외되었습니다.`,
+        { duration: 7000 }
+      );
+    }
+    setEditedJob({
+      ...editedJob,
+      ...patch,
+      assignedStaffIds: kept,
+      assignedStaffId: kept[0],
+    });
+  };
+
   const handleDateChange = (dateStr: string) => {
     const current = new Date(editedJob.dueDate);
     const timeStr = `${String(current.getHours()).padStart(2,'0')}:${String(current.getMinutes()).padStart(2,'0')}`;
-    setEditedJob({...editedJob, dueDate: new Date(`${dateStr}T${timeStr}`).toISOString()});
+    applyJobDates({ dueDate: new Date(`${dateStr}T${timeStr}`).toISOString() });
   };
 
   const handleTimeChange = (timeStr: string) => {
     const current = new Date(editedJob.dueDate);
     const dateStr = current.toISOString().split('T')[0];
-    setEditedJob({...editedJob, dueDate: new Date(`${dateStr}T${timeStr}`).toISOString()});
+    applyJobDates({ dueDate: new Date(`${dateStr}T${timeStr}`).toISOString() });
   };
 
   const handleCreatedAtDateChange = (dateStr: string) => {
     const current = new Date(editedJob.createdAt);
     const timeStr = `${String(current.getHours()).padStart(2,'0')}:${String(current.getMinutes()).padStart(2,'0')}`;
-    setEditedJob({...editedJob, createdAt: new Date(`${dateStr}T${timeStr}`).toISOString()});
+    applyJobDates({ createdAt: new Date(`${dateStr}T${timeStr}`).toISOString() });
   };
 
   const handleCreatedAtTimeChange = (timeStr: string) => {
     const current = new Date(editedJob.createdAt);
     const dateStr = current.toISOString().split('T')[0];
-    setEditedJob({...editedJob, createdAt: new Date(`${dateStr}T${timeStr}`).toISOString()});
+    applyJobDates({ createdAt: new Date(`${dateStr}T${timeStr}`).toISOString() });
   };
 
   const datePart = new Date(editedJob.dueDate).toISOString().split('T')[0];
@@ -1103,6 +1164,10 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   const sidebarInputClass = "w-full p-1.5 bg-slate-50 border border-slate-200 rounded text-sm text-slate-700 focus:ring-1 focus:ring-blue-500";
   const availableStaff = staff.filter(s => !s.isDeleted && s.active);
   const selectedStaffIds = editedJob.assignedStaffIds || [];
+  const selectedLeaveNotices = useMemo(
+    () => buildStaffLeaveNotices(staff, leaves, selectedStaffIds, editedJob.createdAt, editedJob.dueDate),
+    [staff, leaves, selectedStaffIds, editedJob.createdAt, editedJob.dueDate]
+  );
   const shouldWrapTabs = (editedJob.subJobs || []).length > 4;
   
   return createPortal(
@@ -1156,6 +1221,16 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                     return s ? <span key={id} className="bg-slate-100 text-slate-700 text-xs px-2 py-1 rounded-md font-medium border border-slate-200">{s.name}</span> : null;
                                 }) : <span className="text-slate-400 text-sm">미배정</span>}
                             </div>
+                            {selectedLeaveNotices.length > 0 && (
+                              <div className="mt-2 space-y-1.5 rounded-lg border border-purple-200 bg-purple-50 px-2.5 py-2">
+                                {selectedLeaveNotices.map((notice) => (
+                                  <p key={`${notice.staffId}-${notice.leaveId}`} className="text-[11px] leading-relaxed text-purple-800">
+                                    <span className="font-bold">{notice.title}</span>
+                                    <span className="block mt-0.5">{notice.detail}</span>
+                                  </p>
+                                ))}
+                              </div>
+                            )}
                         </div>
                         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                             <h3 className="text-xs font-bold text-slate-400 mb-3 flex items-center gap-1"><FolderOpen size={14}/> 파일 및 금액</h3>
@@ -1807,19 +1882,45 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                               ) : (
                                   availableStaff.map(s => {
                                       const isSelected = selectedStaffIds.includes(s.id);
+                                      const leaveAssignment = getStaffLeaveAssignment(
+                                        staff,
+                                        leaves,
+                                        s.id,
+                                        editedJob.createdAt,
+                                        editedJob.dueDate
+                                      );
+                                      const isFullyOnLeave = leaveAssignment?.kind === 'full';
+                                      const isPartialLeave = leaveAssignment?.kind === 'partial';
                                       return (
                                           <button 
                                               type="button"
                                               key={s.id} 
                                               onClick={() => toggleStaff(s.id)}
+                                              disabled={isFullyOnLeave && !isSelected}
+                                              title={
+                                                isFullyOnLeave
+                                                  ? leaveAssignment.detail
+                                                  : isPartialLeave
+                                                    ? leaveAssignment.detail
+                                                    : undefined
+                                              }
                                               className={`px-2 py-0.5 rounded-lg text-xs font-bold border transition-all flex items-center gap-0.5 ${
                                                   isSelected 
                                                   ? 'bg-blue-600 border-blue-600 text-white shadow-sm hover:bg-blue-700' 
-                                                  : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-800'
+                                                  : isFullyOnLeave
+                                                    ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                                                    : isPartialLeave
+                                                    ? 'bg-purple-50 border-purple-200 text-purple-800 hover:bg-purple-100'
+                                                    : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-800'
                                               }`}
                                           >
                                               {isSelected && <Check size={10} />}
                                               <span>{s.name}</span>
+                                              {leaveAssignment && (
+                                                <span className={`text-[9px] font-bold ${isSelected ? 'text-purple-100' : isFullyOnLeave ? 'text-slate-400' : 'text-purple-600'}`}>
+                                                  {isFullyOnLeave ? '휴가중' : '일부휴가'}
+                                                </span>
+                                              )}
                                               <span className={`text-[9px] font-normal ${isSelected ? 'text-blue-200' : 'text-slate-400'}`}>
                                                   ({s.role})
                                               </span>
@@ -1828,6 +1929,19 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                   })
                               )}
                           </div>
+                          {selectedLeaveNotices.length > 0 && (
+                            <div className="mt-1.5 space-y-1 rounded-md border border-purple-200 bg-purple-50 px-2 py-1.5">
+                              <p className="text-[10px] font-bold text-purple-800 flex items-center gap-1">
+                                <Palmtree size={11} /> 휴가 기간은 업무가 불가능합니다. 출근일만 담당으로 지정됩니다.
+                              </p>
+                              {selectedLeaveNotices.map((notice) => (
+                                <p key={`${notice.staffId}-${notice.leaveId}`} className="text-[10px] leading-relaxed text-purple-800">
+                                  <span className="font-bold">{notice.title}</span>
+                                  <span className="block">{notice.detail}</span>
+                                </p>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         {/* 작업 원본 파일 경로 (로컬 PC) */}

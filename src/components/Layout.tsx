@@ -6,6 +6,7 @@ import { ChatWidget } from './common/ChatWidget';
 import { CompanyNasBanner } from './common/CompanyNasBanner';
 import { CloudDegradedBanner } from './common/CloudDegradedBanner';
 import { WebMirrorBanner } from './common/WebMirrorBanner';
+import { PwaInstallBanner } from './common/PwaInstallBanner';
 import { CompletedJobSearchModal } from './kanban/CompletedJobSearchModal';
 import { JobDetailModal } from './common/JobDetailModal';
 import { UpgradeModal } from './common/UpgradeModal';
@@ -17,6 +18,7 @@ import { Job, Staff } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { toast } from 'sonner';
+import { isMobileWebClient } from '../utils/touchDevice';
 import { useInstalledAppVersion } from '../hooks/useInstalledAppVersion';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import {
@@ -93,9 +95,9 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
     const mirrorLabel = formatMirrorTime(lastMirrorAt);
     const receivedLabel = formatMirrorTime(lastReceivedAt);
     const webReadOnlyTitle = canAccessAdminSettings
-        ? '웹 — 작업·칸반은 조회 전용. 관리자는 상품·설정 저장 가능'
-        : '웹·태블릿 조회 전용 — 수정은 매장 PC 앱에서';
-    const webReadOnlyLabel = canAccessAdminSettings ? '작업 조회 전용' : '조회 전용';
+        ? '웹 — 매장 PC에서 프로그램이 켜져 있으면 작업을 저장할 수 있습니다. 상품·설정은 관리자가 저장할 수 있습니다.'
+        : '웹·태블릿 — 매장 PC에서 EzPrintWork가 켜져 있으면 작업을 저장할 수 있습니다.';
+    const webReadOnlyLabel = canAccessAdminSettings ? 'PC 켜져 있으면 저장' : 'PC 켜져 있으면 저장';
 
     if (condensed) {
         return (
@@ -315,6 +317,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
   }, []);
   const [companyName, setCompanyName] = useState('EzPrintWork');
   const [isElectron, setIsElectron] = useState(false);
+  const isMobileWeb = useMemo(() => isMobileWebClient(), []);
   const [showDownloadBanner, setShowDownloadBanner] = useState(() => {
     if (typeof window !== 'undefined') {
       return !localStorage.getItem('hide-desktop-banner') && !localStorage.getItem('desktop-app-installed');
@@ -476,7 +479,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
       
       {/* Title Bar */}
       <div 
-        className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors bg-slate-900 dark:bg-slate-950 ${isTvMode ? 'hidden' : ''}`}
+        className={`h-8 lg:h-10 flex justify-between items-center select-none z-[60] shrink-0 border-b border-slate-800 transition-colors bg-slate-900 dark:bg-slate-950 ${isTvMode || isMobileWeb ? 'hidden' : ''}`}
         style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
       >
           <div className="flex items-center gap-2 px-3 text-slate-300">
@@ -570,6 +573,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
 
       <CloudDegradedBanner />
       <WebMirrorBanner />
+      <PwaInstallBanner />
       <CompanyNasBanner />
 
       <div className="flex-1 flex overflow-hidden relative">
@@ -887,7 +891,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             )}
             
             {/* 데스크톱 앱 다운로드 유도 프리미엄 배너 (웹 브라우저 접속 시 상단 노출) */}
-            {!isElectron && showDownloadBanner && !isTvMode && (
+            {!isElectron && showDownloadBanner && !isTvMode && !isMobileWeb && (
                 <div className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-700 text-white px-4 py-3 flex items-center justify-between gap-3 shadow-md shrink-0 animate-in slide-in-from-top duration-300">
                     <div className="flex items-center gap-3">
                         <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center shrink-0">

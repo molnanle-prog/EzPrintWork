@@ -10,6 +10,13 @@ export function isTouchPrimaryDevice(): boolean {
     return 'ontouchstart' in window && (navigator.maxTouchPoints ?? 0) > 0;
 }
 
+/** 태블릿·휴대폰 웹 (PC 설치 앱 제외) */
+export function isMobileWebClient(): boolean {
+    if (typeof window === 'undefined') return false;
+    if (window.electron) return false;
+    return isTouchPrimaryDevice();
+}
+
 export function isMousePrimaryDevice(): boolean {
     return !isTouchPrimaryDevice();
 }

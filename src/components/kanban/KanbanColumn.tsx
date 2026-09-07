@@ -1,5 +1,5 @@
 
-import React from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Job, JobStatusDefinition } from '../../types';
 import { KanbanCard } from './KanbanCard';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -23,6 +23,72 @@ const getStatusDotColor = (statusKey: string) => {
     default: return 'bg-slate-500';
   }
 };
+
+function useKanbanHoverSlotLock(enabled: boolean) {
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const frozenHeightsRef = useRef<Record<string, number>>({});
+  const hoverClearTimerRef = useRef<number | null>(null);
+  const [frozenHeights, setFrozenHeights] = useState<Record<string, number>>({});
+  const [hoveredJobId, setHoveredJobId] = useState<string | null>(null);
+
+  const snapshotCardHeights = useCallback(() => {
+    const list = listRef.current;
+    if (!list) return {};
+    const next: Record<string, number> = {};
+    list.querySelectorAll<HTMLElement>('[data-job-id]').forEach((node) => {
+      const id = node.dataset.jobId;
+      if (id) next[id] = node.getBoundingClientRect().height;
+    });
+    return next;
+  }, []);
+
+  const handleHoverSlotChange = useCallback(
+    (jobId: string | null) => {
+      if (!enabled) return;
+      if (jobId) {
+        if (hoverClearTimerRef.current != null) {
+          window.clearTimeout(hoverClearTimerRef.current);
+          hoverClearTimerRef.current = null;
+        }
+        if (Object.keys(frozenHeightsRef.current).length === 0) {
+          const snap = snapshotCardHeights();
+          frozenHeightsRef.current = snap;
+          setFrozenHeights(snap);
+        }
+        setHoveredJobId(jobId);
+        return;
+      }
+      hoverClearTimerRef.current = window.setTimeout(() => {
+        frozenHeightsRef.current = {};
+        setFrozenHeights({});
+        setHoveredJobId(null);
+        hoverClearTimerRef.current = null;
+      }, 50);
+    },
+    [enabled, snapshotCardHeights]
+  );
+
+  useEffect(() => {
+    return () => {
+      if (hoverClearTimerRef.current != null) {
+        window.clearTimeout(hoverClearTimerRef.current);
+      }
+    };
+  }, []);
+
+  const hasFrozenSlots = Object.keys(frozenHeights).length > 0;
+
+  return {
+    listRef,
+    setListRef: (node: HTMLDivElement | null) => {
+      listRef.current = node;
+    },
+    frozenHeights,
+    hoveredJobId,
+    hasFrozenSlots,
+    handleHoverSlotChange: enabled ? handleHoverSlotChange : undefined,
+  };
+}
 
 export interface CompactTraySectionProps {
   statusDef: JobStatusDefinition;
@@ -67,8 +133,14 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
   });
   const jobIds = sortedJobs.map((job) => job.id);
   const isQuoteTray = statusDef.key === 'QUOTE';
+  const { setListRef, frozenHeights, hoveredJobId, hasFrozenSlots, handleHoverSlotChange } = useKanbanHoverSlotLock(!isTvMode);
   // 하단 묶음 칸은 어떤 단계로 연결되더라도 일반 컬럼과 같은 헤더 가독성을 유지한다.
   const useLargeHeader = true;
+
+  const setTrayRef = (node: HTMLDivElement | null) => {
+    setNodeRef(node);
+    setListRef(node);
+  };
 
   return (
     <div className={`flex flex-col ${fillHeight ? 'h-full min-h-0' : 'flex-none'}`}>
@@ -118,9 +190,9 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
       )}
 
       <div
-        ref={setNodeRef}
+        ref={setTrayRef}
         data-kanban-column={statusDef.key}
-        className={`${fillHeight ? 'flex-1 min-h-0' : isQuoteTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} overflow-y-auto custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors kanban-tray-zone ${
+        className={`${fillHeight ? 'flex-1 min-h-0' : isQuoteTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} kanban-card-scroll custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors kanban-tray-zone ${
           isQuoteTray ? 'overflow-x-hidden' : 'flex flex-col gap-1.5'
         } ${
           isOver
@@ -131,6 +203,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
               ? 'border-[#384c66] bg-[#152238]/50'
               : 'border-slate-300 dark:border-slate-600 bg-white/50 dark:bg-slate-900/40'
         }`}
+        style={hasFrozenSlots ? { overflowAnchor: 'none' } : undefined}
       >
         <SortableContext items={jobIds} strategy={isQuoteTray ? rectSortingStrategy : verticalListSortingStrategy}>
           {sortedJobs.length === 0 ? (
@@ -140,7 +213,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
                 : `${statusDef.label} 작업을 여기로 끌어다 놓으세요`}
             </div>
           ) : (
-            <div className={isQuoteTray ? 'grid grid-cols-2 lg:grid-cols-3 gap-1.5 auto-rows-min' : 'flex flex-col gap-1.5'}>
+            <div className={isQuoteTray ? 'grid grid-cols-2 lg:grid-cols-3 gap-1.5 auto-rows-min' : `flex flex-col gap-1.5 ${fillHeight ? 'h-full' : ''}`}>
               {sortedJobs.map((job) => (
                 <KanbanCard
                   key={job.id}
@@ -156,6 +229,11 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
                   isCompactTray={!isQuoteTray}
                   isQuoteTray={isQuoteTray}
                   onHideFromBoard={onHideFromBoard}
+                  lockedSlotHeight={
+                    frozenHeights[job.id] != null ? frozenHeights[job.id] : undefined
+                  }
+                  onHoverSlotChange={handleHoverSlotChange}
+                  isSlotHovered={handleHoverSlotChange ? hoveredJobId === job.id : undefined}
                 />
               ))}
             </div>
@@ -225,6 +303,9 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   });
 
   const jobIds = sortedJobs.map(job => job.id);
+  const { listRef, frozenHeights, hoveredJobId, hasFrozenSlots, handleHoverSlotChange } = useKanbanHoverSlotLock(
+    !isCompact && !isTvMode
+  );
 
   return (
     <div 
@@ -272,7 +353,11 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
         className={`flex-1 min-h-0 flex flex-col ${isOver ? 'ring-2 ring-inset ring-blue-400/60 rounded-b-xl' : ''}`}
       >
         <SortableContext items={jobIds} strategy={verticalListSortingStrategy}>
-          <div className={`p-1 lg:p-1.5 flex-1 min-h-0 overflow-y-auto flex flex-col gap-1.5 custom-scrollbar ${embedded ? 'min-h-[80px]' : 'min-h-[160px]'}`}>
+          <div
+            ref={listRef}
+            className={`p-1 lg:p-1.5 flex-1 min-h-0 kanban-card-scroll flex flex-col gap-1.5 custom-scrollbar ${embedded ? 'min-h-[80px]' : 'min-h-[160px]'}`}
+            style={hasFrozenSlots ? { overflowAnchor: 'none' } : undefined}
+          >
             {jobs.length === 0 && statusDef.key === 'COMPLETED' && (
               <div className="text-center text-slate-400 text-xs py-4">
                 해당 날짜의 완료 내역이 없습니다.
@@ -292,10 +377,18 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
                 currentUserId={currentUserId}
                 isTvMode={isTvMode}
                 onHideFromBoard={onHideFromBoard}
+                lockedSlotHeight={
+                  frozenHeights[job.id] != null ? frozenHeights[job.id] : undefined
+                }
+                onHoverSlotChange={handleHoverSlotChange}
+                isSlotHovered={handleHoverSlotChange ? hoveredJobId === job.id : undefined}
               />
             ))}
 
-            <div className="flex-1 min-h-[72px] shrink-0 rounded-lg border border-dashed border-transparent pointer-events-none" aria-hidden />
+            <div
+              className={`${hasFrozenSlots ? 'flex-1 min-h-0' : 'flex-1 min-h-[72px] shrink-0'} rounded-lg border border-dashed border-transparent pointer-events-none`}
+              aria-hidden
+            />
 
             {isOver && (
               <div className="h-12 shrink-0 rounded-lg border-2 border-dashed border-blue-400 bg-blue-50/40 dark:bg-blue-900/20 flex items-center justify-center pointer-events-none">

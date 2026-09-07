@@ -195,14 +195,15 @@ export async function resolveTrustedStoreGatewayUrl(
     return null;
 }
 
-/** @deprecated 웹은 조회 전용 — 저장 경로 사용 금지 */
+/** 웹·태블릿 — 매장 PC 게이트웨이로 작업 부분 저장 */
 export async function postJobsPartialViaGateway(
     gatewayBaseUrl: string,
     tenantId: string,
-    jobs: unknown[]
+    jobs: unknown[],
+    deletedJobs: unknown[] = []
 ): Promise<{ ok: boolean; updatedAt?: string }> {
     const base = normalizeGatewayBase(gatewayBaseUrl);
-    if (!base || !tenantId || jobs.length === 0) return { ok: false };
+    if (!base || !tenantId || (jobs.length === 0 && deletedJobs.length === 0)) return { ok: false };
     try {
         const res = await fetchWithTimeout(
             `${base}/api/v1/jobs/partial`,
@@ -213,7 +214,7 @@ export async function postJobsPartialViaGateway(
                     'Content-Type': 'application/json',
                     ...gatewayHeaders(tenantId),
                 },
-                body: JSON.stringify({ tenantId, jobs }),
+                body: JSON.stringify({ tenantId, jobs, deletedJobs }),
             },
             DEFAULT_LAN_FETCH_TIMEOUT_MS
         );

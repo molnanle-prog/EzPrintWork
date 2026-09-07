@@ -469,7 +469,8 @@ class LocalGateway {
                         const raw = await readRequestBody(req);
                         const body = JSON.parse(raw || '{}');
                         const jobs = Array.isArray(body.jobs) ? body.jobs : [];
-                        if (jobs.length === 0) {
+                        const deletedIncoming = Array.isArray(body.deletedJobs) ? body.deletedJobs : [];
+                        if (jobs.length === 0 && deletedIncoming.length === 0) {
                             res.writeHead(400, CORS);
                             res.end('jobs required');
                             return;
@@ -481,7 +482,12 @@ class LocalGateway {
                         const tombstones = this.buildTombstoneMap([
                             ...(situation?.deletedJobs || []),
                             ...(archive?.deletedJobs || []),
+                            ...deletedIncoming,
                         ]);
+                        const deletedJobs = [...tombstones.entries()].map(([id, ms]) => ({
+                            id,
+                            deletedAt: new Date(ms).toISOString(),
+                        }));
                         const merged = this.filterJobsByTombstones(
                             this.mergeJobs(archive?.jobs, jobs),
                             tombstones
@@ -491,6 +497,7 @@ class LocalGateway {
                             tenantId,
                             updatedAt: now,
                             jobs: merged,
+                            deletedJobs,
                         };
                         if (!this.writeJsonFile(ARCHIVE_FILE, archivePayload)) {
                             res.writeHead(500, CORS);
@@ -507,6 +514,7 @@ class LocalGateway {
                                 tenantId,
                                 updatedAt: now,
                                 jobs: sitMerged,
+                                deletedJobs,
                             });
                         }
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });

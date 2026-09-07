@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
 import { Staff, StaffLeave } from '../../types';
 import { db, getErrorMessage } from '../../services/dataService';
-import { X, Calendar as CalendarIcon, User, Save, Palmtree } from 'lucide-react';
+import { X, Calendar as CalendarIcon, User, Save, Palmtree, AlertTriangle } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { findStaffForUser } from '../../utils/staffMatch';
+import { listAssignedJobsOverlappingLeave } from '../../utils/leaveOverlap';
 import { useDialog } from '../../contexts/DialogContext';
 
 interface LeaveModalProps {
@@ -36,6 +37,19 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const targetStaffId = canAccessAdminSettings ? formData.staffId : myStaff?.id || '';
+  const handoverJobs = useMemo(
+    () =>
+      listAssignedJobsOverlappingLeave(
+        db.getActiveJobs(),
+        staffList,
+        targetStaffId || '',
+        formData.startDate || '',
+        formData.endDate || ''
+      ),
+    [staffList, targetStaffId, formData.startDate, formData.endDate]
+  );
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -61,6 +75,17 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
       return;
     }
 
+    if (handoverJobs.length > 0) {
+      const preview = handoverJobs
+        .slice(0, 8)
+        .map((job) => `• ${job.clientName ? `${job.clientName} / ` : ''}${job.title} (${job.dateLabel})`)
+        .join('\n');
+      const extra = handoverJobs.length > 8 ? `\n외 ${handoverJobs.length - 8}건` : '';
+      await showAlert(
+        `담당 작업 ${handoverJobs.length}건이 휴가와 겹칩니다.\n휴가 기간 업무는 다른 담당자에게 인계해 주세요.\n\n${preview}${extra}`
+      );
+    }
+
     const newLeave: StaffLeave = {
       id: Date.now().toString(),
       staffId,
@@ -83,7 +108,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
 
   return (
     <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden flex flex-col max-h-[90vh]">
         <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-purple-50">
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <Palmtree className="text-purple-600" />
@@ -94,7 +119,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 overflow-y-auto">
           <div>
             <label className="text-sm font-bold text-slate-600 mb-1 flex items-center gap-1">
               <User size={16} /> 직원 선택
@@ -167,6 +192,27 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
               />
             </div>
           </div>
+
+          {handoverJobs.length > 0 && (
+            <div className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2.5 space-y-1.5">
+              <p className="text-xs font-bold text-amber-900 flex items-center gap-1.5">
+                <AlertTriangle size={14} className="shrink-0" />
+                담당 작업 {handoverJobs.length}건이 휴가와 겹칩니다
+              </p>
+              <p className="text-[11px] leading-relaxed text-amber-800">
+                휴가는 등록할 수 있습니다. 휴가 기간 업무는 작업 상세에서 담당자를 바꾼 뒤 다른 사람에게 인계해 주세요.
+              </p>
+              <ul className="max-h-28 overflow-y-auto space-y-1 pr-1">
+                {handoverJobs.map((job) => (
+                  <li key={job.id} className="text-[11px] text-amber-900 leading-snug">
+                    <span className="font-bold">{job.clientName || job.title}</span>
+                    {job.clientName ? ` / ${job.title}` : ''}
+                    <span className="block text-amber-700">{job.dateLabel}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <div>
             <label className="text-sm font-bold text-slate-600 mb-1 block">사유 (선택)</label>

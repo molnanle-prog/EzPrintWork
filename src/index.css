@@ -41,6 +41,12 @@ body {
 .custom-scrollbar::-webkit-scrollbar-track { background: #f1f5f9; }
 .dark .custom-scrollbar::-webkit-scrollbar-track { background: #1e293b; }
 
+/* 칸반 카드 호버 펼침 때 스크롤바가 생겼다 없어지며 칸 너비가 흔들리지 않게 */
+.kanban-card-scroll {
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
 @layer utilities {
   .animate-in {
     animation: fade-in 0.2s ease-out;
