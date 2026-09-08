@@ -200,14 +200,14 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   };
 
   const slotLockStyle: React.CSSProperties =
-    lockedSlotHeight != null && !(isHovered || isTvMode)
+    lockedSlotHeight != null && !isHovered && !isTvMode
       ? {
           height: lockedSlotHeight,
           minHeight: lockedSlotHeight,
           maxHeight: lockedSlotHeight,
           flexShrink: 0,
         }
-      : isHovered || isTvMode
+      : isHovered && !isTvMode
         ? { flexShrink: 0 }
         : {};
 
@@ -797,7 +797,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         style={sortableStyle}
         {...sortableProps}
         className={`
-          kanban-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden min-h-[2.75rem] backdrop-blur-premium ${cardSurfaceClass}
+          kanban-card kanban-tv-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden min-h-[2.75rem] shrink backdrop-blur-premium ${cardSurfaceClass}
           ${cardStyleClass}
           ${completedOutstandingClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
@@ -811,8 +811,8 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           }
         `}</style>
 
-        {/* 1. Header: Badges — 카드가 많으면 접힘, 제목은 유지 */}
-        <div className="flex justify-between items-start pointer-events-none shrink min-h-0 overflow-hidden">
+        {/* 풀 내용 — 칸이 부족하면 먼저 접힘 (배지·사양·푸터) */}
+        <div className="kanban-tv-full flex justify-between items-start pointer-events-none min-h-0 overflow-hidden">
           <div className="flex gap-2 flex-wrap items-center">
              {!isDone && (
                <span className={ddayBadgeClass} title="납기 D-Day">
@@ -821,18 +821,12 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
                </span>
              )}
              {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
-             
-             {/* Priority Badge */}
              <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-normal shadow-sm`}>
               {job.priority}
              </span>
-
-             {/* Payment Badge */}
              <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-medium shadow-sm`}>
                {job.paymentStatus || '결제대기'}
              </span>
-
-             {/* Smart File Badge */}
              {job.filePath ? (
                <span className="kanban-badge kanban-badge-file-ok text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-medium shadow-sm">
                  <FileText size={12} />
@@ -844,35 +838,38 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
                  <span>파일없음</span>
                </span>
              )}
-
-             {/* 작업 종류 (Sub-Jobs) 배지 - 모니터링 모드용 가독성 최적화 */}
-             {subJobsList.map((sub, idx) => (
-               <span
-                 key={sub.id || idx}
-                 onClick={(e) => handleToggleSubJob(e, idx)}
-                 className={`
-                   kanban-badge text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
-                   ${sub.completed 
-                     ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
-                     : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
-                 title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
-               >
-                 {sub.type}
-               </span>
-             ))}
           </div>
         </div>
 
-        {/* 2. Title — 한 줄까지는 항상 유지 / 거래처명은 여유 있을 때만 */}
-        <h4 className="kanban-card-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide truncate shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none" title={job.title}>
-          {job.title}
-        </h4>
-        <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400 truncate pointer-events-none shrink min-h-0 overflow-hidden">
-          {renderClientName('')}
-        </p>
+        {/* 3줄(종목·제목·거래처) — 풀이 접힌 뒤에도 유지, 더 부족하면 제목만 남김 */}
+        <div className="kanban-tv-core flex flex-col gap-1 min-h-[1.875rem] min-w-0 overflow-hidden">
+          {subJobsList.length > 0 && (
+            <div className="kanban-tv-meta flex gap-2 flex-wrap items-center min-h-0 overflow-hidden">
+              {subJobsList.map((sub, idx) => (
+                <span
+                  key={sub.id || idx}
+                  onClick={(e) => handleToggleSubJob(e, idx)}
+                  className={`
+                    kanban-badge text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                    ${sub.completed 
+                      ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
+                      : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
+                  title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
+                >
+                  {sub.type}
+                </span>
+              ))}
+            </div>
+          )}
+          <h4 className="kanban-card-title kanban-tv-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide truncate shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none" title={job.title}>
+            {job.title}
+          </h4>
+          <p className="kanban-card-subtitle kanban-tv-meta text-xs leading-tight text-slate-500 dark:text-slate-400 truncate pointer-events-none min-h-0 overflow-hidden">
+            {renderClientName('')}
+          </p>
+        </div>
 
-        {/* 3. Specs & Giant Quantity Box — 카드가 많으면 접힘 */}
-        <div className="flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none shrink min-h-0 overflow-hidden">
+        <div className="kanban-tv-full flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none min-h-0 overflow-hidden">
           <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-normal flex-1 min-w-0 leading-tight">
              <div className="truncate flex items-center gap-1.5">
                 <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📄</span>
@@ -891,8 +888,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           </div>
         </div>
 
-        {/* 4. Footer: 접수자(좌) · 담당자 · D-Day — 카드가 많으면 접힘 */}
-        <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none shrink min-h-0 overflow-hidden">
+        <div className="kanban-tv-full flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none min-h-0 overflow-hidden">
           {renderReceiverAssigneeFooter({ iconSize: 14, textClass: 'text-[12px]' })}
           {!isDone && (
             <span className={ddayBadgeClass} title="납기 D-Day">

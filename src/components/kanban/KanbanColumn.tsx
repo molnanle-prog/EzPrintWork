@@ -386,7 +386,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
             ))}
 
             <div
-              className={`${hasFrozenSlots ? 'flex-1 min-h-0' : 'flex-1 min-h-[72px] shrink-0'} rounded-lg border border-dashed border-transparent pointer-events-none`}
+              className={`${hasFrozenSlots || isTvMode ? 'flex-1 min-h-0' : 'flex-1 min-h-[72px] shrink-0'} rounded-lg border border-dashed border-transparent pointer-events-none`}
               aria-hidden
             />
 
