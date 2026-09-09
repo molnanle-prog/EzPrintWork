@@ -1,7 +1,7 @@
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Job, JobStatusDefinition } from '../../types';
-import { KanbanCard } from './KanbanCard';
+import { KanbanCard, type TvCardDensity } from './KanbanCard';
 import { useTheme } from '../../contexts/ThemeContext';
 import { AdBanner } from '../common/AdBanner';
 import { useDroppable } from '@dnd-kit/core';
@@ -88,6 +88,82 @@ function useKanbanHoverSlotLock(enabled: boolean) {
     hasFrozenSlots,
     handleHoverSlotChange: enabled ? handleHoverSlotChange : undefined,
   };
+}
+
+const TV_CARD_GAP = 6;
+const TV_DENSITY_ORDER: TvCardDensity[] = ['full', 'triple', 'double', 'title'];
+const TV_CARD_HEIGHT: Record<TvCardDensity, number> = {
+  full: 228,
+  triple: 104,
+  double: 72,
+  title: 48,
+};
+
+function pickTvDensity(
+  availablePx: number,
+  jobCount: number,
+  measured: Partial<Record<TvCardDensity, number>>
+): TvCardDensity {
+  if (jobCount <= 0 || availablePx < 40) return 'full';
+  const heightOf = (level: TvCardDensity) => measured[level] ?? TV_CARD_HEIGHT[level];
+  const pack = (level: TvCardDensity) =>
+    jobCount * heightOf(level) + Math.max(0, jobCount - 1) * TV_CARD_GAP;
+  if (pack('full') <= availablePx) return 'full';
+  if (pack('triple') <= availablePx) return 'triple';
+  if (pack('double') <= availablePx) return 'double';
+  return 'title';
+}
+
+function stepTvDensityDown(current: TvCardDensity): TvCardDensity {
+  const index = TV_DENSITY_ORDER.indexOf(current);
+  return TV_DENSITY_ORDER[Math.min(index + 1, TV_DENSITY_ORDER.length - 1)];
+}
+
+function useTvColumnDensity(
+  enabled: boolean,
+  jobCount: number,
+  listRef: React.RefObject<HTMLDivElement | null>
+) {
+  const [density, setDensity] = useState<TvCardDensity>('full');
+  const measuredRef = useRef<Partial<Record<TvCardDensity, number>>>({});
+
+  useLayoutEffect(() => {
+    if (!enabled) {
+      setDensity('full');
+      measuredRef.current = {};
+      return;
+    }
+    const el = listRef.current;
+    if (!el) return;
+
+    const update = () => {
+      const style = window.getComputedStyle(el);
+      const pad = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
+      const available = el.clientHeight - pad;
+      const cards = el.querySelectorAll<HTMLElement>('[data-job-id]');
+      if (cards.length > 0) {
+        let packed = 0;
+        cards.forEach((card) => {
+          packed += card.getBoundingClientRect().height;
+        });
+        packed += Math.max(0, cards.length - 1) * TV_CARD_GAP;
+        const avg = (packed - Math.max(0, cards.length - 1) * TV_CARD_GAP) / cards.length;
+        measuredRef.current[density] = avg;
+        if (packed > available + 4) {
+          setDensity((current) => stepTvDensityDown(current));
+          return;
+        }
+      }
+      setDensity(pickTvDensity(available, jobCount, measuredRef.current));
+    };
+
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [enabled, jobCount, listRef, density]);
+
+  return density;
 }
 
 export interface CompactTraySectionProps {
@@ -306,6 +382,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
   const { listRef, frozenHeights, hoveredJobId, hasFrozenSlots, handleHoverSlotChange } = useKanbanHoverSlotLock(
     !isCompact && !isTvMode
   );
+  const tvDensity = useTvColumnDensity(isTvMode && !isCompact, sortedJobs.length, listRef);
 
   return (
     <div 
@@ -376,6 +453,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
                 isCompact={isCompact}
                 currentUserId={currentUserId}
                 isTvMode={isTvMode}
+                tvDensity={isTvMode ? tvDensity : undefined}
                 onHideFromBoard={onHideFromBoard}
                 lockedSlotHeight={
                   frozenHeights[job.id] != null ? frozenHeights[job.id] : undefined

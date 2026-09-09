@@ -56,7 +56,11 @@ interface KanbanCardProps {
   onHoverSlotChange?: (jobId: string | null) => void;
   /** 칸이 호버 대상을 직접 고를 때 — 접힘/펼침을 한 프레임에 바꿈 */
   isSlotHovered?: boolean;
+  /** 모니터링 칸 밀도: 풀 / 3줄 / 2줄 / 1줄 */
+  tvDensity?: TvCardDensity;
 }
+
+export type TvCardDensity = 'full' | 'triple' | 'double' | 'title';
 
 type SortableBinding = Pick<
   ReturnType<typeof useSortable>,
@@ -95,6 +99,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
   lockedSlotHeight,
   onHoverSlotChange,
   isSlotHovered,
+  tvDensity = 'full',
   sortable,
 }) => {
   const { theme } = useTheme();
@@ -790,14 +795,42 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       return color.replace(/\([^)]*\)/g, '').trim(); // 괄호 부분 제거 등 간소화
     };
 
+    const showFull = tvDensity === 'full';
+    const showTriple = tvDensity === 'triple';
+    const showClient = tvDensity === 'triple' || tvDensity === 'double';
+    const showQuantityOnTitle = tvDensity === 'triple';
+    const quantityLabel = job.specs.quantity || '미지정';
+
+    const renderSubJobBadges = () =>
+      subJobsList.length > 0 ? (
+        <div className="flex gap-2 flex-wrap items-center shrink-0">
+          {subJobsList.map((sub, idx) => (
+            <span
+              key={sub.id || idx}
+              onClick={(e) => handleToggleSubJob(e, idx)}
+              className={`
+                kanban-badge text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                ${sub.completed
+                  ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30'
+                  : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
+              title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
+            >
+              {sub.type}
+            </span>
+          ))}
+        </div>
+      ) : null;
+
     return (
       <div 
         ref={setNodeRef}
         data-job-id={job.id}
+        data-tv-density={tvDensity}
         style={sortableStyle}
         {...sortableProps}
         className={`
-          kanban-card kanban-tv-card py-2 px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col gap-1.5 relative overflow-hidden min-h-[2.75rem] shrink backdrop-blur-premium ${cardSurfaceClass}
+          kanban-card kanban-tv-card px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col relative overflow-hidden shrink-0 backdrop-blur-premium ${cardSurfaceClass}
+          ${showFull ? 'py-2 gap-1.5' : 'py-1.5 gap-1'}
           ${cardStyleClass}
           ${completedOutstandingClass}
           active:rotate-1 active:scale-[1.04] active:shadow-2xl active:z-50
@@ -811,91 +844,88 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
           }
         `}</style>
 
-        {/* 풀 내용 — 칸이 부족하면 먼저 접힘 (배지·사양·푸터) */}
-        <div className="kanban-tv-full flex justify-between items-start pointer-events-none min-h-0 overflow-hidden">
-          <div className="flex gap-2 flex-wrap items-center">
-             {!isDone && (
-               <span className={ddayBadgeClass} title="납기 D-Day">
-                 {job.priority === Priority.VERY_URGENT && <AlertTriangle size={10} className="inline mr-0.5 -mt-px" />}
-                 {ddayLabel}
+        {showFull && (
+          <div className="flex justify-between items-start pointer-events-none shrink-0">
+            <div className="flex gap-2 flex-wrap items-center">
+               {!isDone && (
+                 <span className={ddayBadgeClass} title="납기 D-Day">
+                   {job.priority === Priority.VERY_URGENT && <AlertTriangle size={10} className="inline mr-0.5 -mt-px" />}
+                   {ddayLabel}
+                 </span>
+               )}
+               {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
+               <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-normal shadow-sm`}>
+                {job.priority}
                </span>
-             )}
-             {isMyJob && <span className="text-[11px] px-2 py-0.5 rounded-md bg-blue-600 text-white font-medium shadow-sm tracking-wide">MY</span>}
-             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPriorityColor(job.priority)} font-normal shadow-sm`}>
-              {job.priority}
-             </span>
-             <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-medium shadow-sm`}>
-               {job.paymentStatus || '결제대기'}
-             </span>
-             {job.filePath ? (
-               <span className="kanban-badge kanban-badge-file-ok text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-medium shadow-sm">
-                 <FileText size={12} />
-                 <span>파일</span>
+               <span className={`text-[11px] px-2 py-0.5 rounded-md border ${getPaymentColor(job.paymentStatus || '결제대기')} font-medium shadow-sm`}>
+                 {job.paymentStatus || '결제대기'}
                </span>
-             ) : (
-               <span className="kanban-badge kanban-badge-file-missing text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm">
-                 <ShieldAlert size={12} />
-                 <span>파일없음</span>
-               </span>
-             )}
-          </div>
-        </div>
-
-        {/* 3줄(종목·제목·거래처) — 풀이 접힌 뒤에도 유지, 더 부족하면 제목만 남김 */}
-        <div className="kanban-tv-core flex flex-col gap-1 min-h-[1.875rem] min-w-0 overflow-hidden">
-          {subJobsList.length > 0 && (
-            <div className="kanban-tv-meta flex gap-2 flex-wrap items-center min-h-0 overflow-hidden">
-              {subJobsList.map((sub, idx) => (
-                <span
-                  key={sub.id || idx}
-                  onClick={(e) => handleToggleSubJob(e, idx)}
-                  className={`
-                    kanban-badge text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
-                    ${sub.completed 
-                      ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
-                      : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
-                  title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
-                >
-                  {sub.type}
-                </span>
-              ))}
+               {job.filePath ? (
+                 <span className="kanban-badge kanban-badge-file-ok text-[11px] px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/20 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 flex items-center gap-0.5 font-medium shadow-sm">
+                   <FileText size={12} />
+                   <span>파일</span>
+                 </span>
+               ) : (
+                 <span className="kanban-badge kanban-badge-file-missing text-[11px] px-2 py-0.5 rounded-md bg-rose-50 dark:bg-rose-950/20 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800 flex items-center gap-0.5 font-medium shadow-sm">
+                   <ShieldAlert size={12} />
+                   <span>파일없음</span>
+                 </span>
+               )}
+               {renderSubJobBadges()}
             </div>
-          )}
-          <h4 className="kanban-card-title kanban-tv-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide truncate shrink-0 text-slate-800 dark:text-slate-100 pointer-events-none" title={job.title}>
+          </div>
+        )}
+
+        {showTriple && renderSubJobBadges()}
+
+        <div className="flex items-center gap-2 min-w-0 shrink-0">
+          <h4 className="kanban-card-title font-medium text-[20px] lg:text-[22px] leading-snug tracking-wide truncate min-w-0 flex-1 text-slate-800 dark:text-slate-100 pointer-events-none" title={job.title}>
             {job.title}
           </h4>
-          <p className="kanban-card-subtitle kanban-tv-meta text-xs leading-tight text-slate-500 dark:text-slate-400 truncate pointer-events-none min-h-0 overflow-hidden">
-            {renderClientName('')}
-          </p>
-        </div>
-
-        <div className="kanban-tv-full flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none min-h-0 overflow-hidden">
-          <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-normal flex-1 min-w-0 leading-tight">
-             <div className="truncate flex items-center gap-1.5">
-                <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📄</span>
-                <span className="truncate">{job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}</span>
-             </div>
-             <div className="truncate flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
-                <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📏</span>
-                <span className="truncate">{job.specs.size || '규격 미지정'} ({getSimpleColor(job.specs.printColor)})</span>
-             </div>
-          </div>
-          <div className="shrink-0 flex flex-col items-center justify-center bg-blue-50 dark:bg-blue-950/30 px-2.5 py-1.5 rounded-lg border border-blue-100 dark:border-blue-900/40 shadow-sm text-center min-w-[70px]">
-             <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase tracking-widest font-medium mb-0.5 leading-none">수량</span>
-             <span className="text-[20px] lg:text-[22px] text-blue-700 dark:text-blue-300 font-medium leading-none whitespace-nowrap">
-                {job.specs.quantity || '미지정'}
-             </span>
-          </div>
-        </div>
-
-        <div className="kanban-tv-full flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none min-h-0 overflow-hidden">
-          {renderReceiverAssigneeFooter({ iconSize: 14, textClass: 'text-[12px]' })}
-          {!isDone && (
-            <span className={ddayBadgeClass} title="납기 D-Day">
-              {ddayLabel}
+          {showQuantityOnTitle && (
+            <span className="shrink-0 text-[16px] lg:text-[18px] font-medium leading-none text-blue-700 dark:text-blue-300 tabular-nums" title="수량">
+              {quantityLabel}
             </span>
           )}
         </div>
+
+        {showClient && (
+          <p className="kanban-card-subtitle text-xs leading-tight text-slate-500 dark:text-slate-400 truncate pointer-events-none shrink-0">
+            {renderClientName('')}
+          </p>
+        )}
+
+        {showFull && (
+          <div className="flex gap-2 justify-between items-center bg-slate-50/70 dark:bg-slate-900/40 py-1.5 px-2.5 rounded-xl border border-slate-100 dark:border-slate-800/80 pointer-events-none shrink-0">
+            <div className="flex flex-col gap-0.5 text-[14px] lg:text-[15px] text-slate-800 dark:text-slate-100 font-normal flex-1 min-w-0 leading-tight">
+               <div className="truncate flex items-center gap-1.5">
+                  <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📄</span>
+                  <span className="truncate">{job.specs.paperType ? `${job.specs.paperType} ${job.specs.paperWeight}` : '용지 미지정'}</span>
+               </div>
+               <div className="truncate flex items-center gap-1.5 text-slate-700 dark:text-slate-300">
+                  <span className="w-5 shrink-0 text-center text-[15px] lg:text-[16px]">📏</span>
+                  <span className="truncate">{job.specs.size || '규격 미지정'} ({getSimpleColor(job.specs.printColor)})</span>
+               </div>
+            </div>
+            <div className="shrink-0 flex flex-col items-center justify-center bg-blue-50 dark:bg-blue-950/30 px-2.5 py-1.5 rounded-lg border border-blue-100 dark:border-blue-900/40 shadow-sm text-center min-w-[70px]">
+               <span className="text-[9px] text-blue-500 dark:text-blue-400 uppercase tracking-widest font-medium mb-0.5 leading-none">수량</span>
+               <span className="text-[20px] lg:text-[22px] text-blue-700 dark:text-blue-300 font-medium leading-none whitespace-nowrap">
+                  {quantityLabel}
+               </span>
+            </div>
+          </div>
+        )}
+
+        {showFull && (
+          <div className="flex items-center justify-between pt-1.5 border-t border-slate-100 dark:border-slate-800/80 mt-0.5 pointer-events-none shrink-0">
+            {renderReceiverAssigneeFooter({ iconSize: 14, textClass: 'text-[12px]' })}
+            {!isDone && (
+              <span className={ddayBadgeClass} title="납기 D-Day">
+                {ddayLabel}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     );
   }

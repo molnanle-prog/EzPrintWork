@@ -47,29 +47,6 @@ body {
   scrollbar-gutter: stable;
 }
 
-/* 모니터링: 풀 내용 → 3줄(종목·제목·거래처) → 제목줄 → 그다음 스크롤 */
-.kanban-tv-card {
-  flex-shrink: 1;
-}
-.kanban-tv-full {
-  flex: 0 8 auto;
-  min-height: 0;
-  overflow: hidden;
-}
-.kanban-tv-core {
-  flex: 0 1 auto;
-  min-height: 1.875rem;
-  overflow: hidden;
-}
-.kanban-tv-meta {
-  flex: 0 1 auto;
-  min-height: 0;
-  overflow: hidden;
-}
-.kanban-tv-title {
-  flex-shrink: 0;
-}
-
 @layer utilities {
   .animate-in {
     animation: fade-in 0.2s ease-out;
