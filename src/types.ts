@@ -5,12 +5,17 @@ export interface JobStatusDefinition {
   isVisible?: boolean; // 칸반 보드 표시 여부 (기본값 true)
 }
 
+/** 합친 칸 하단 모양 — 견적형(격자) / 한줄형(리스트) */
+export type KanbanBottomStyle = 'grid' | 'line';
+
 /** 한 칸(가로 1슬롯) 안에서 위·아래로 쌓는 두 단계 */
 export interface KanbanSplitPair {
   topKey: string;
   bottomKey: string;
   splitTopPercent?: number; // 상단 비율 (35~85, 기본 65)
-  bottomCompact?: boolean;  // 하단을 견적상자형 컴팩트로 (기본 true)
+  /** @deprecated bottomStyle 사용 */
+  bottomCompact?: boolean;
+  bottomStyle?: KanbanBottomStyle;
 }
 
 /** 칸반 보드 레이아웃 (관리자 설정) */

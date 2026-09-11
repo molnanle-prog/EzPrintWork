@@ -32,7 +32,7 @@ import {
   getStaffIdForUser,
 } from '../../utils/staffMatch';
 import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
-import { buildKanbanColumnSlots, getKeysInKanbanSlots } from '../../utils/kanbanLayout';
+import { buildKanbanColumnSlots, getKeysInKanbanSlots, resolveBottomStyle } from '../../utils/kanbanLayout';
 import {
   applyKanbanSplitPercents,
   getKanbanSplitStorageKey,
@@ -138,11 +138,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     const slots = buildKanbanColumnSlots(statuses, layout, hiddenStatusKeys);
     const slotKeys = getKeysInKanbanSlots(slots);
     setVisibleStatusDefinitions(statuses.filter((s) => slotKeys.includes(s.key)));
-    const quoteInSplitTray = layout.splitPairs.some((p) => p.bottomKey === 'QUOTE');
     const filteredJobs = filterJobsForOperationalBoard(allJobs, {
       selectedDate,
       includeCanceled: filterCanceled,
-      includeStatusKeys: quoteInSplitTray ? ['QUOTE'] : [],
+      includeStatusKeys: slotKeys.includes('QUOTE') ? ['QUOTE'] : [],
     });
 
     setDisplayJobs(filteredJobs);
@@ -970,7 +969,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                   topJobs={getJobsForStatus(slot.topKey)}
                   bottomJobs={getJobsForStatus(slot.bottomKey)}
                   splitTopPercent={slot.splitTopPercent}
-                  bottomCompact={slot.bottomCompact}
+                  bottomStyle={slot.bottomStyle}
                   onSplitTopPercentCommit={(percent) =>
                     handleSplitTopPercentCommit(slot.topKey, slot.bottomKey, percent)
                   }
@@ -993,11 +992,10 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
         {activeDragJobId ? (() => {
           const dragJob = db.getAllJobs().find((j) => j.id === activeDragJobId);
           if (!dragJob) return null;
-          const dragCompactTray =
-            dragJob.status === 'QUOTE' ||
-            kanbanLayout.splitPairs.some(
-              (p) => p.bottomKey === dragJob.status && p.bottomCompact !== false
-            );
+          const bottomPair = kanbanLayout.splitPairs.find((p) => p.bottomKey === dragJob.status);
+          const bottomStyle = bottomPair ? resolveBottomStyle(bottomPair) : null;
+          const dragGridTray = bottomStyle === 'grid';
+          const dragCompactTray = bottomStyle === 'line';
           return (
             <div className="opacity-90 rotate-2 scale-105 shadow-2xl pointer-events-none w-[280px]">
               <KanbanCard
@@ -1008,8 +1006,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
                 onStatusChange={() => {}}
                 isMyJob={resolveIsMyJob(dragJob)}
                 isCompact={false}
-                isCompactTray={dragCompactTray && dragJob.status !== 'QUOTE'}
-                isQuoteTray={dragJob.status === 'QUOTE'}
+                isCompactTray={dragCompactTray}
+                isQuoteTray={dragGridTray}
                 currentUserId={currentStaffId ?? currentUser?.id}
                 isTvMode={isTvMode}
                 isDragOverlay

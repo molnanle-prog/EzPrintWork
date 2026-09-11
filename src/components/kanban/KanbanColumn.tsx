@@ -183,6 +183,8 @@ export interface CompactTraySectionProps {
     title?: string;
   };
   onHideFromBoard?: (job: Job) => void;
+  /** 합친 칸 하단 모양: 견적형 격자 / 한줄 리스트 */
+  trayStyle?: 'grid' | 'line';
 }
 
 export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
@@ -198,6 +200,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
   fillHeight = false,
   resizeHandle,
   onHideFromBoard,
+  trayStyle = 'line',
 }) => {
   const { theme } = useTheme();
   const droppableId = `${COLUMN_DROPPABLE_PREFIX}${statusDef.key}`;
@@ -208,7 +211,7 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
     return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
   });
   const jobIds = sortedJobs.map((job) => job.id);
-  const isQuoteTray = statusDef.key === 'QUOTE';
+  const isGridTray = trayStyle === 'grid';
   const { setListRef, frozenHeights, hoveredJobId, hasFrozenSlots, handleHoverSlotChange } = useKanbanHoverSlotLock(!isTvMode);
   // 하단 묶음 칸은 어떤 단계로 연결되더라도 일반 컬럼과 같은 헤더 가독성을 유지한다.
   const useLargeHeader = true;
@@ -268,8 +271,8 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
       <div
         ref={setTrayRef}
         data-kanban-column={statusDef.key}
-        className={`${fillHeight ? 'flex-1 min-h-0' : isQuoteTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} kanban-card-scroll custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors kanban-tray-zone ${
-          isQuoteTray ? 'overflow-x-hidden' : 'flex flex-col gap-1.5'
+        className={`${fillHeight ? 'flex-1 min-h-0' : isGridTray ? 'min-h-[100px] max-h-none' : 'min-h-[88px] max-h-[220px]'} kanban-card-scroll custom-scrollbar rounded-lg border border-dashed p-1.5 transition-colors kanban-tray-zone ${
+          isGridTray ? 'overflow-x-hidden' : 'flex flex-col gap-1.5'
         } ${
           isOver
             ? theme === 'trello'
@@ -281,15 +284,13 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
         }`}
         style={hasFrozenSlots ? { overflowAnchor: 'none' } : undefined}
       >
-        <SortableContext items={jobIds} strategy={isQuoteTray ? rectSortingStrategy : verticalListSortingStrategy}>
+        <SortableContext items={jobIds} strategy={isGridTray ? rectSortingStrategy : verticalListSortingStrategy}>
           {sortedJobs.length === 0 ? (
-            <div className={`kanban-tray-empty flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2 ${isQuoteTray ? 'min-h-[72px]' : 'flex-1'}`}>
-              {statusDef.key === 'QUOTE'
-                ? '견적 문의를 여기로 끌어다 놓으세요'
-                : `${statusDef.label} 작업을 여기로 끌어다 놓으세요`}
+            <div className={`kanban-tray-empty flex items-center justify-center text-[10px] text-slate-400 dark:text-slate-500 py-4 pointer-events-none text-center px-2 ${isGridTray ? 'min-h-[72px]' : 'flex-1'}`}>
+              {`${statusDef.label} 작업을 여기로 끌어다 놓으세요`}
             </div>
           ) : (
-            <div className={isQuoteTray ? 'grid grid-cols-2 lg:grid-cols-3 gap-1.5 auto-rows-min' : `flex flex-col gap-1.5 ${fillHeight ? 'h-full' : ''}`}>
+            <div className={isGridTray ? 'grid grid-cols-2 lg:grid-cols-3 gap-1.5 auto-rows-min' : `flex flex-col gap-1.5 ${fillHeight ? 'h-full' : ''}`}>
               {sortedJobs.map((job) => (
                 <KanbanCard
                   key={job.id}
@@ -302,8 +303,8 @@ export const CompactTraySection: React.FC<CompactTraySectionProps> = ({
                   isMyJob={resolveIsMyJob ? resolveIsMyJob(job) : false}
                   currentUserId={currentUserId}
                   isTvMode={isTvMode}
-                  isCompactTray={!isQuoteTray}
-                  isQuoteTray={isQuoteTray}
+                  isCompactTray={!isGridTray}
+                  isQuoteTray={isGridTray}
                   onHideFromBoard={onHideFromBoard}
                   lockedSlotHeight={
                     frozenHeights[job.id] != null ? frozenHeights[job.id] : undefined

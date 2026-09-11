@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Job, JobStatusDefinition } from '../../types';
+import { Job, JobStatusDefinition, KanbanBottomStyle } from '../../types';
 import { KanbanColumn } from './KanbanColumn';
 import { CompactTraySection } from './KanbanColumn';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -11,7 +11,7 @@ interface KanbanSplitColumnProps {
   topJobs: Job[];
   bottomJobs: Job[];
   splitTopPercent: number;
-  bottomCompact: boolean;
+  bottomStyle: KanbanBottomStyle;
   onSplitTopPercentChange?: (percent: number) => void;
   onSplitTopPercentCommit?: (percent: number) => void;
   getStaffName: (job?: Job) => string;
@@ -30,7 +30,7 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
   topJobs,
   bottomJobs,
   splitTopPercent,
-  bottomCompact,
+  bottomStyle,
   onSplitTopPercentChange,
   onSplitTopPercentCommit,
   getStaffName,
@@ -121,45 +121,25 @@ export const KanbanSplitColumn: React.FC<KanbanSplitColumnProps> = ({
       </div>
 
       <div className="min-h-0 flex flex-col p-1" style={{ flex: `${bottomPercent} 1 0%` }}>
-        {bottomCompact ? (
-          <CompactTraySection
-            statusDef={bottomDef}
-            jobs={bottomJobs}
-            getStaffName={getStaffName}
-            onSelectJob={onSelectJob}
-            onRightClickJob={onRightClickJob}
-            onStatusChange={onStatusChange}
-            currentUserId={currentUserId}
-            resolveIsMyJob={resolveIsMyJob}
-            isTvMode={isTvMode}
-            fillHeight
-            resizeHandle={{
-              dragging,
-              onPointerDown: handlePointerDown,
-              title: '드래그하여 상·하 비율 조절',
-            }}
-            onHideFromBoard={onHideFromBoard}
-          />
-        ) : (
-          <KanbanColumn
-            statusDef={bottomDef}
-            jobs={bottomJobs}
-            getStaffName={getStaffName}
-            onSelectJob={onSelectJob}
-            onRightClickJob={onRightClickJob}
-            onStatusChange={onStatusChange}
-            currentUserId={currentUserId}
-            resolveIsMyJob={resolveIsMyJob}
-            isTvMode={isTvMode}
-            embedded
-            resizeHandle={{
-              dragging,
-              onPointerDown: handlePointerDown,
-              title: '드래그하여 상·하 비율 조절',
-            }}
-            onHideFromBoard={onHideFromBoard}
-          />
-        )}
+        <CompactTraySection
+          statusDef={bottomDef}
+          jobs={bottomJobs}
+          getStaffName={getStaffName}
+          onSelectJob={onSelectJob}
+          onRightClickJob={onRightClickJob}
+          onStatusChange={onStatusChange}
+          currentUserId={currentUserId}
+          resolveIsMyJob={resolveIsMyJob}
+          isTvMode={isTvMode}
+          fillHeight
+          trayStyle={bottomStyle}
+          resizeHandle={{
+            dragging,
+            onPointerDown: handlePointerDown,
+            title: '드래그하여 상·하 비율 조절',
+          }}
+          onHideFromBoard={onHideFromBoard}
+        />
       </div>
     </div>
   );

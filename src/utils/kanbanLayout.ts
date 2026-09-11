@@ -1,17 +1,17 @@
-import { JobStatusDefinition, KanbanLayoutConfig, KanbanSplitPair } from '../types';
+import { JobStatusDefinition, KanbanBottomStyle, KanbanLayoutConfig, KanbanSplitPair } from '../types';
 
 export const DEFAULT_RECEIVED_QUOTE_PAIR: KanbanSplitPair = {
   topKey: 'RECEIVED',
   bottomKey: 'QUOTE',
   splitTopPercent: 65,
-  bottomCompact: true,
+  bottomStyle: 'grid',
 };
 
 export const DEFAULT_DELIVERY_COMPLETED_PAIR: KanbanSplitPair = {
   topKey: 'DELIVERY',
   bottomKey: 'COMPLETED',
   splitTopPercent: 65,
-  bottomCompact: true,
+  bottomStyle: 'line',
 };
 
 export const DEFAULT_KANBAN_LAYOUT: KanbanLayoutConfig = {
@@ -22,12 +22,22 @@ export function clampSplitTopPercent(value: number): number {
   return Math.min(85, Math.max(35, Math.round(value)));
 }
 
+/** 저장된 값·예전 bottomCompact·기본 견적 하단을 모양으로 맞춤 */
+export function resolveBottomStyle(pair: Pick<KanbanSplitPair, 'bottomKey' | 'bottomStyle' | 'bottomCompact'>): KanbanBottomStyle {
+  if (pair.bottomStyle === 'grid' || pair.bottomStyle === 'line') return pair.bottomStyle;
+  if (pair.bottomCompact === false) return 'line';
+  if (pair.bottomKey === 'QUOTE') return 'grid';
+  return 'line';
+}
+
 export function normalizeSplitPair(pair: KanbanSplitPair): KanbanSplitPair {
+  const bottomStyle = resolveBottomStyle(pair);
   return {
     topKey: pair.topKey,
     bottomKey: pair.bottomKey,
     splitTopPercent: clampSplitTopPercent(pair.splitTopPercent ?? 65),
-    bottomCompact: pair.bottomCompact !== false,
+    bottomStyle,
+    bottomCompact: bottomStyle === 'grid',
   };
 }
 
@@ -54,10 +64,10 @@ export type KanbanColumnSlot =
       topKey: string;
       bottomKey: string;
       splitTopPercent: number;
-      bottomCompact: boolean;
+      bottomStyle: KanbanBottomStyle;
     };
 
-/** 파이프라인 순서대로 칸반 슬롯 구성 (한 슬롯 = 가로 1칸) */
+/** 보이는 단계는 모두 칸에 넣는다. 합친 쌍만 한 슬롯으로 묶는다. */
 export function buildKanbanColumnSlots(
   definitions: JobStatusDefinition[],
   layout: KanbanLayoutConfig,
@@ -68,8 +78,15 @@ export function buildKanbanColumnSlots(
   const consumed = new Set<string>();
   const slots: KanbanColumnSlot[] = [];
 
-  const pairByTop = new Map(layout.splitPairs.map((p) => [p.topKey, normalizeSplitPair(p)]));
-  const bottomKeys = new Set(layout.splitPairs.map((p) => p.bottomKey));
+  const pairs = layout.splitPairs.map(normalizeSplitPair);
+  const pairByTop = new Map(pairs.map((p) => [p.topKey, p]));
+
+  const activeSplitBottoms = new Set<string>();
+  for (const pair of pairs) {
+    const topOk = visible.some((s) => s.key === pair.topKey) && !hidden.has(pair.topKey);
+    const bottomOk = visible.some((s) => s.key === pair.bottomKey) && !hidden.has(pair.bottomKey);
+    if (topOk && bottomOk) activeSplitBottoms.add(pair.bottomKey);
+  }
 
   for (const status of visible) {
     if (consumed.has(status.key) || hidden.has(status.key)) continue;
@@ -84,7 +101,7 @@ export function buildKanbanColumnSlots(
           topKey: normalized.topKey,
           bottomKey: normalized.bottomKey,
           splitTopPercent: normalized.splitTopPercent!,
-          bottomCompact: normalized.bottomCompact!,
+          bottomStyle: normalized.bottomStyle!,
         });
         consumed.add(pair.topKey);
         consumed.add(pair.bottomKey);
@@ -92,11 +109,7 @@ export function buildKanbanColumnSlots(
       }
     }
 
-    if (bottomKeys.has(status.key) && !pairByTop.has(status.key)) {
-      continue;
-    }
-
-    if (status.key === 'QUOTE' && !bottomKeys.has('QUOTE')) continue;
+    if (activeSplitBottoms.has(status.key)) continue;
 
     slots.push({ type: 'single', statusKey: status.key });
     consumed.add(status.key);
@@ -114,6 +127,53 @@ export function getKeysInKanbanSlots(slots: KanbanColumnSlot[]): string[] {
     }
   }
   return keys;
+}
+
+export function slotSortId(slot: KanbanColumnSlot): string {
+  return slot.type === 'single' ? `single:${slot.statusKey}` : `split:${slot.topKey}:${slot.bottomKey}`;
+}
+
+export function stageSortId(statusKey: string): string {
+  return `stage:${statusKey}`;
+}
+
+export function parseStageSortId(id: string): string | null {
+  return id.startsWith('stage:') ? id.slice('stage:'.length) : null;
+}
+
+export function slotContainsStatus(slot: KanbanColumnSlot, statusKey: string): boolean {
+  if (slot.type === 'single') return slot.statusKey === statusKey;
+  return slot.topKey === statusKey || slot.bottomKey === statusKey;
+}
+
+/** 미리보기에서 칸을 좌우로 옮긴 뒤, 칸반에 쓰는 단계 배열 순서로 맞춘다. */
+export function reorderDefinitionsBySlots(
+  definitions: JobStatusDefinition[],
+  orderedSlots: KanbanColumnSlot[]
+): JobStatusDefinition[] {
+  const byKey = new Map(definitions.map((d) => [d.key, d]));
+  const seen = new Set<string>();
+  const next: JobStatusDefinition[] = [];
+
+  for (const slot of orderedSlots) {
+    const keys = slot.type === 'single' ? [slot.statusKey] : [slot.topKey, slot.bottomKey];
+    for (const key of keys) {
+      const def = byKey.get(key);
+      if (def && !seen.has(key)) {
+        next.push(def);
+        seen.add(key);
+      }
+    }
+  }
+
+  for (const def of definitions) {
+    if (!seen.has(def.key)) {
+      next.push(def);
+      seen.add(def.key);
+    }
+  }
+
+  return next;
 }
 
 export function findPairForKey(layout: KanbanLayoutConfig, key: string): KanbanSplitPair | undefined {
@@ -137,17 +197,17 @@ export function orderedPairKeysFromSelection(
 }
 
 export function swapSplitPair(layout: KanbanLayoutConfig, pair: KanbanSplitPair): KanbanLayoutConfig {
-  return upsertSplitPair(layout, pair.bottomKey, pair.topKey);
+  return upsertSplitPair(layout, pair.bottomKey, pair.topKey, resolveBottomStyle(pair));
 }
 
 export function upsertSplitPair(
   layout: KanbanLayoutConfig,
   topKey: string,
-  bottomKey: string
+  bottomKey: string,
+  bottomStyle?: KanbanBottomStyle
 ): KanbanLayoutConfig {
   const existing = findPairForKey(layout, topKey) || findPairForKey(layout, bottomKey);
-  const bottomCompact =
-    bottomKey === 'QUOTE' || bottomKey === 'COMPLETED' ? true : existing?.bottomCompact !== false;
+  const style = bottomStyle ?? (existing ? resolveBottomStyle(existing) : 'line');
 
   const withoutOverlap = layout.splitPairs.filter(
     (p) =>
@@ -164,7 +224,7 @@ export function upsertSplitPair(
         topKey,
         bottomKey,
         splitTopPercent: existing?.splitTopPercent ?? 65,
-        bottomCompact,
+        bottomStyle: style,
       }),
     ],
   };
