@@ -39,11 +39,22 @@ function githubGet(apiPath) {
   });
 }
 
-function fetchRaw(url, redirects = 0) {
+function fetchReleaseAsset(asset, redirects = 0, redirectUrl = null) {
   return new Promise((resolve, reject) => {
-    https.get(url, { headers: { 'User-Agent': 'EzPrintWork-DownloadMeta' } }, (res) => {
+    const token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN;
+    const isApiRequest = !redirectUrl;
+    const url = redirectUrl ||
+      `https://api.github.com/repos/${OWNER}/${REPO}/releases/assets/${asset.id}`;
+    const headers = {
+      Accept: 'application/octet-stream',
+      'User-Agent': 'EzPrintWork-DownloadMeta',
+      'Cache-Control': 'no-cache',
+    };
+    if (isApiRequest && token) headers.Authorization = `Bearer ${token}`;
+
+    https.get(url, { headers }, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects < 5) {
-        fetchRaw(res.headers.location, redirects + 1).then(resolve, reject);
+        fetchReleaseAsset(asset, redirects + 1, res.headers.location).then(resolve, reject);
         return;
       }
       let data = '';
@@ -110,9 +121,20 @@ export async function writeDownloadMetaFromRelease(release, downloadsDir) {
 
   let yml;
   if (ymlAsset) {
-    yml = await fetchRaw(ymlAsset.browser_download_url);
+    // 같은 태그의 자산을 교체하면 browser_download_url CDN에 이전 파일이 남을 수 있다.
+    // 매번 고유한 asset ID API를 거쳐 현재 latest.yml을 받는다.
+    yml = await fetchReleaseAsset(ymlAsset);
     yml = yml.replace(/^path: .+$/m, `path: ${SETUP_EXE}`);
     yml = yml.replace(/^(\s+- url: ).+$/m, `$1${githubVersionUrl}`);
+    const ymlSize = Number(yml.match(/^\s*size:\s*(\d+)\s*$/m)?.[1]);
+    if (!/sha512:\s+\S+/.test(yml)) {
+      throw new Error(`Release ${tag}의 latest.yml에 sha512가 없습니다`);
+    }
+    if (!Number.isFinite(ymlSize) || ymlSize !== exeAsset.size) {
+      throw new Error(
+        `Release ${tag} 메타 불일치: latest.yml=${ymlSize || '없음'}, exe=${exeAsset.size} bytes`
+      );
+    }
   } else {
     throw new Error(`Release ${tag}에 latest.yml 없음 — electron-builder Release 자산 확인 필요`);
   }
