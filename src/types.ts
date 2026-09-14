@@ -211,8 +211,11 @@ export interface QuoteLine {
 }
 
 export interface QuoteTemplateSettings {
-  /** Firebase Storage URL — 테넌트당 1장, 견적 문서마다 복사하지 않음 */
+  /** 회사 NAS 파일명 (quote-header.png 등) — 견적 문서마다 복사하지 않음 */
+  headerImageFile?: string;
+  /** 레거시 Firebase URL. NAS 파일이 있으면 사용하지 않음 */
   headerImageUrl?: string;
+  headerImageUpdatedAt?: string;
   headerHeightMm?: number;
 }
 
@@ -436,7 +439,10 @@ export interface ElectronUpdaterStatus {
 
 export interface IElectronAPI {
   saveFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
+  saveFileBase64?: (path: string, data: string) => Promise<{ success: boolean; error?: string }>;
   readFile: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string; mtime?: number }>;
+  readFileBase64?: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string; mtime?: number }>;
+  deleteFile?: (path: string) => Promise<{ success: boolean; error?: string }>;
   checkPath: (path: string) => Promise<boolean>;
   checkFileExists: (path: string) => Promise<boolean>; 
   exists: (path: string) => Promise<boolean>;

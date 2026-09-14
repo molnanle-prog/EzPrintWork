@@ -45,24 +45,38 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
     const cached = readCachedCompanyInfoForPreview(quote.id);
     return cached?.name ? cached : db.getCompanyInfo();
   });
+  const [headerImageSrc, setHeaderImageSrc] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const cached = readCachedCompanyInfoForPreview(quote.id);
     if (cached?.name) setCompany(cached);
+
+    const refreshHeader = () => {
+      void db.resolveQuoteHeaderImageSrc().then((src) => {
+        if (!cancelled) setHeaderImageSrc(src);
+      });
+    };
 
     void db.ensureCompanyInfoForDocuments().then((info) => {
       if (info?.name) setCompany(info);
     });
+    refreshHeader();
 
     const unsubscribe = db.subscribe(() => {
       const next = db.getCompanyInfo();
       if (next?.name) setCompany(next);
+      refreshHeader();
     });
-    return unsubscribe;
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, [quote.id]);
 
   const template = db.getQuoteTemplate();
   const headerHeightMm = template.headerHeightMm ?? 17;
+  const useCustomHeader = !!headerImageSrc;
   const jobs = db.getAllJobs();
   const linkedJob = resolveQuoteJob(quote, jobs);
   const clientLabel = formatQuoteClientLabel(quote, jobs);
@@ -255,17 +269,18 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
                 height: '297mm',
                 minHeight: '297mm',
                 boxSizing: 'border-box',
-                padding: template.headerImageUrl && isFirst ? '0' : '10mm',
+                padding: useCustomHeader && isFirst ? '0' : '10mm',
                 pageBreakAfter: pageIndex < totalPages - 1 ? 'always' : 'auto',
                 breakAfter: pageIndex < totalPages - 1 ? 'page' : 'auto',
               }}
             >
-              {isFirst && template.headerImageUrl ? (
+              {isFirst && useCustomHeader ? (
                 <div className="shrink-0" style={{ width: '210mm', height: `${headerHeightMm}mm`, overflow: 'hidden' }}>
                   <img
-                    src={template.headerImageUrl}
+                    src={headerImageSrc || ''}
                     alt="견적서 헤더"
                     style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'top center', display: 'block' }}
+                    onError={() => setHeaderImageSrc(null)}
                   />
                 </div>
               ) : isFirst ? (
@@ -317,14 +332,14 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
               <div
                 className="flex flex-col flex-1 min-h-0"
                 style={{
-                  paddingTop: template.headerImageUrl && isFirst ? '3mm' : 0,
-                  paddingLeft: template.headerImageUrl && isFirst ? '10mm' : 0,
-                  paddingRight: template.headerImageUrl && isFirst ? '10mm' : 0,
-                  paddingBottom: isLast ? (template.headerImageUrl && isFirst ? '55mm' : '48mm') : '14mm',
+                  paddingTop: useCustomHeader && isFirst ? '3mm' : 0,
+                  paddingLeft: useCustomHeader && isFirst ? '10mm' : 0,
+                  paddingRight: useCustomHeader && isFirst ? '10mm' : 0,
+                  paddingBottom: isLast ? (useCustomHeader && isFirst ? '55mm' : '48mm') : '14mm',
                   minHeight: 0,
                 }}
               >
-                {isFirst && template.headerImageUrl && (
+                {isFirst && useCustomHeader && (
                   <div className="shrink-0 flex justify-end gap-6 text-sm text-slate-600 mb-4">
                     <span><span className="lift-text">작업번호: </span><strong className="lift-text">{jobNo}</strong></span>
                     <span><span className="lift-text">발행일: </span><strong className="lift-text">{today}</strong></span>
@@ -432,9 +447,9 @@ export const QuoteDocument: React.FC<QuoteDocumentProps> = ({ quote, documentTyp
               <div
                 className="absolute flex flex-col"
                 style={{
-                  left: template.headerImageUrl && isFirst ? '10mm' : 0,
-                  right: template.headerImageUrl && isFirst ? '10mm' : 0,
-                  bottom: template.headerImageUrl && isFirst ? '8mm' : 0,
+                  left: useCustomHeader && isFirst ? '10mm' : 0,
+                  right: useCustomHeader && isFirst ? '10mm' : 0,
+                  bottom: useCustomHeader && isFirst ? '8mm' : 0,
                 }}
               >
                 {isLast && renderTotalsAndNotes()}

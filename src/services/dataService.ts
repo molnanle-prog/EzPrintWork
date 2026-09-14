@@ -11,8 +11,7 @@ import {
     query, where, limit, getDocs, getDoc, updateDoc, getDocFromCache, getDocFromServer,
     deleteField
 } from 'firebase/firestore';
-import { ref, uploadBytes, getDownloadURL } from 'firebase/storage';
-import { db as firestore, auth, storage } from './firebase';
+import { db as firestore, auth } from './firebase';
 import { signOut } from 'firebase/auth';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
@@ -34,7 +33,21 @@ import {
     type AuxCollectionName,
 } from './auxCollectionMirrorService';
 import { refreshLocalGateway } from './gatewayBridge';
-import { setCachedGatewaySecret, getCachedGatewaySecret } from '../utils/gatewayToken';
+import { setCachedGatewaySecret, getCachedGatewaySecret, getGatewayAuthToken } from '../utils/gatewayToken';
+import { fetchWithTimeout } from '../utils/fetchWithTimeout';
+import {
+    arrayBufferToBase64,
+    blobToDataUrl,
+    hasQuoteHeaderConfigured,
+    isRemoteHeaderUrl,
+    joinArchiveFile,
+    mimeFromQuoteHeaderExt,
+    normalizeQuoteHeaderExt,
+    QUOTE_HEADER_EXTS,
+    QUOTE_HEADER_MAX_BYTES,
+    quoteHeaderCandidateNames,
+    quoteHeaderFileName,
+} from '../utils/quoteHeaderImage';
 
 export type WebMirrorLinkStatus = 'idle' | 'connecting' | 'ready' | 'failed';
 import {
@@ -602,6 +615,7 @@ export class DataService {
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
+    private quoteHeaderSrcCache: { key: string; src: string } | null = null;
     private lastWriteErrorToastAt = 0;
     private lastWriteErrorToastKey = '';
     /** 관리자 세션 시작 보고를 런타임당 1회로 제한 */
@@ -1377,6 +1391,7 @@ export class DataService {
         this.mirrorCompanyName = null;
         this.lastSyncError = null;
         this.quotesBootstrappedForTenant = null;
+        this.quoteHeaderSrcCache = null;
         this.operationalJobs = [];
         this.kanbanCompletedJobs = [];
         this.supplementaryJobs = [];
@@ -1450,6 +1465,7 @@ export class DataService {
         this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
         this.webMirrorNextPollAt = 0;
         this.quotesBootstrappedForTenant = null;
+        this.quoteHeaderSrcCache = null;
         this.settingsMergePersisting = false;
         this.quotesBootstrapInProgress = false;
         this.operationalJobs = [];
@@ -6243,8 +6259,129 @@ export class DataService {
         return this.getSettingsObj()['quoteTemplate'] || { headerHeightMm: 17 };
     }
 
+    hasQuoteHeaderImage(): boolean {
+        return hasQuoteHeaderConfigured(this.getQuoteTemplate());
+    }
+
+    private getQuoteHeaderArchiveRoot(): string | null {
+        return this.getTenantArchiveRootPath()?.trim() || getEffectiveArchiveRootPath()?.trim() || null;
+    }
+
+    private quoteHeaderCacheKey(fileName: string, template: QuoteTemplateSettings): string {
+        return [
+            this.getQuoteHeaderArchiveRoot() || '',
+            fileName,
+            template.headerImageUpdatedAt || '',
+        ].join('|');
+    }
+
+    private async deleteQuoteHeaderFiles(root: string, keepPath?: string): Promise<void> {
+        const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
+        if (!electronApi?.deleteFile) return;
+        const keep = keepPath ? keepPath.replace(/\//g, '\\').toLowerCase() : '';
+        for (const ext of QUOTE_HEADER_EXTS) {
+            const target = joinArchiveFile(root, quoteHeaderFileName(ext));
+            if (keep && target.replace(/\//g, '\\').toLowerCase() === keep) continue;
+            try {
+                await electronApi.deleteFile(target);
+            } catch {
+                /* 없는 파일은 무시 */
+            }
+        }
+    }
+
+    private async readQuoteHeaderFileAsDataUrl(filePath: string, ext: string): Promise<string | null> {
+        const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
+        if (!electronApi?.readFileBase64) return null;
+        const result = await electronApi.readFileBase64(filePath);
+        if (!result.success || !result.data) return null;
+        return `data:${mimeFromQuoteHeaderExt(ext)};base64,${result.data}`;
+    }
+
+    private async loadQuoteHeaderImageViaGateway(): Promise<string | null> {
+        const urls = this.getStoreGatewayUrls();
+        if (!urls.length) return null;
+        const token = getCachedGatewaySecret() || getGatewayAuthToken(this.tenantId);
+        for (const base of urls) {
+            try {
+                const resp = await fetchWithTimeout(
+                    `${String(base).replace(/\/$/, '')}/api/v1/quote-header`,
+                    { headers: token ? { 'X-Ezpw-Gateway-Token': token } : {} }
+                );
+                if (!resp.ok) continue;
+                const blob = await resp.blob();
+                if (!blob || blob.size === 0) continue;
+                const dataUrl = await blobToDataUrl(blob);
+                if (dataUrl.startsWith('data:image/')) return dataUrl;
+            } catch {
+                /* 다음 게이트웨이 */
+            }
+        }
+        return null;
+    }
+
+    async resolveQuoteHeaderImageSrc(): Promise<string | null> {
+        const template = this.getQuoteTemplate();
+        const fileName = template.headerImageFile?.trim() || '';
+        if (!fileName && isRemoteHeaderUrl(template.headerImageUrl)) {
+            return null;
+        }
+        if (!fileName && !hasQuoteHeaderConfigured(template)) {
+            return null;
+        }
+
+        const cacheName = fileName || quoteHeaderCandidateNames(template)[0] || '';
+        const cacheKey = this.quoteHeaderCacheKey(cacheName, template);
+        if (this.quoteHeaderSrcCache?.key === cacheKey) {
+            return this.quoteHeaderSrcCache.src;
+        }
+
+        const root = this.getQuoteHeaderArchiveRoot();
+        const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
+        if (root && electronApi?.readFileBase64) {
+            for (const name of quoteHeaderCandidateNames(template)) {
+                const ext = (name.split('.').pop() || 'png').toLowerCase();
+                const src = await this.readQuoteHeaderFileAsDataUrl(joinArchiveFile(root, name), ext);
+                if (src) {
+                    this.quoteHeaderSrcCache = { key: cacheKey, src };
+                    return src;
+                }
+            }
+        }
+
+        if (this.isWebMirrorMode()) {
+            const src = await this.loadQuoteHeaderImageViaGateway();
+            if (src) {
+                this.quoteHeaderSrcCache = { key: cacheKey, src };
+                return src;
+            }
+        }
+
+        return null;
+    }
+
     async saveQuoteTemplate(template: QuoteTemplateSettings) {
-        await this.updateSetting('quoteTemplate', template);
+        const next: QuoteTemplateSettings = {
+            headerHeightMm: template.headerHeightMm ?? 17,
+        };
+        if (template.headerImageFile?.trim()) {
+            next.headerImageFile = template.headerImageFile.trim();
+        }
+        if (template.headerImageUpdatedAt?.trim()) {
+            next.headerImageUpdatedAt = template.headerImageUpdatedAt.trim();
+        }
+        await this.updateSetting('quoteTemplate', next);
+        this.quoteHeaderSrcCache = null;
+    }
+
+    async clearQuoteHeaderImage(): Promise<void> {
+        const root = this.getQuoteHeaderArchiveRoot();
+        if (root) {
+            await this.deleteQuoteHeaderFiles(root);
+        }
+        const current = this.getQuoteTemplate();
+        await this.saveQuoteTemplate({ headerHeightMm: current.headerHeightMm ?? 17 });
+        this.quoteHeaderSrcCache = null;
     }
 
     /** 매장 NAS 경로 — Firestore settings에 저장해 모든 PC가 동일 UNC 경로 사용 */
@@ -6402,12 +6539,60 @@ export class DataService {
 
     async uploadQuoteHeaderImage(file: File): Promise<string> {
         if (!this.tenantId) throw new Error('테넌트 정보가 없습니다.');
-        const ext = (file.name.split('.').pop() || 'png').toLowerCase();
-        const safeExt = ['png', 'jpg', 'jpeg', 'webp'].includes(ext) ? ext : 'png';
-        const objectPath = `tenants/${this.tenantId}/quote-header.${safeExt}`;
-        const storageRef = ref(storage, objectPath);
-        await uploadBytes(storageRef, file);
-        return getDownloadURL(storageRef);
+        if (this.isWebMirrorMode()) {
+            throw new Error('헤더 이미지는 매장 PC 앱에서 회사 NAS에 저장됩니다.');
+        }
+        if (!file.type.startsWith('image/')) {
+            throw new Error('이미지 파일만 업로드할 수 있습니다.');
+        }
+        if (file.size > QUOTE_HEADER_MAX_BYTES) {
+            throw new Error('헤더 이미지는 12MB 이하만 저장할 수 있습니다.');
+        }
+
+        const root = this.getQuoteHeaderArchiveRoot();
+        if (!root) {
+            throw new Error('회사 NAS 경로가 없습니다. 설정에서 NAS 폴더를 지정한 뒤 다시 올려 주세요.');
+        }
+
+        const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
+        if (!electronApi?.copyFile && !electronApi?.saveFileBase64) {
+            throw new Error('PC 앱에서만 헤더 이미지를 NAS에 저장할 수 있습니다.');
+        }
+
+        const ext = normalizeQuoteHeaderExt(file);
+        const fileName = quoteHeaderFileName(ext);
+        const dest = joinArchiveFile(root, fileName);
+        const localPath = (file as File & { path?: string }).path;
+
+        if (localPath && electronApi.copyFile) {
+            const copied = await electronApi.copyFile(localPath, dest);
+            if (!copied.success) {
+                throw new Error(copied.error || 'NAS에 헤더 이미지를 저장하지 못했습니다.');
+            }
+        } else if (electronApi.saveFileBase64) {
+            const base64 = arrayBufferToBase64(await file.arrayBuffer());
+            const saved = await electronApi.saveFileBase64(dest, base64);
+            if (!saved.success) {
+                throw new Error(saved.error || 'NAS에 헤더 이미지를 저장하지 못했습니다.');
+            }
+        } else {
+            throw new Error('PC 앱에서만 헤더 이미지를 NAS에 저장할 수 있습니다.');
+        }
+
+        await this.deleteQuoteHeaderFiles(root, dest);
+
+        const current = this.getQuoteTemplate();
+        await this.saveQuoteTemplate({
+            headerHeightMm: current.headerHeightMm ?? 17,
+            headerImageFile: fileName,
+            headerImageUpdatedAt: new Date().toISOString(),
+        });
+
+        const src = await this.resolveQuoteHeaderImageSrc();
+        if (!src) {
+            throw new Error('NAS에 저장은 되었지만 헤더 이미지를 다시 읽지 못했습니다.');
+        }
+        return src;
     }
     
     async upgradeTenantPlan(tenantId: string, plan: 'free' | 'pro', staffCount?: number) {

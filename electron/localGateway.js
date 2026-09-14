@@ -425,6 +425,39 @@ class LocalGateway {
                     return;
                 }
 
+                if (url.pathname === '/api/v1/quote-header' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    if (!this.archiveRoot) {
+                        res.writeHead(503, CORS);
+                        res.end('NAS path not configured');
+                        return;
+                    }
+                    const names = ['quote-header.png', 'quote-header.jpg', 'quote-header.jpeg', 'quote-header.webp'];
+                    let found = null;
+                    for (const name of names) {
+                        const filePath = path.join(this.archiveRoot, name);
+                        if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
+                            found = filePath;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        res.writeHead(404, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'not-found' }));
+                        return;
+                    }
+                    const ext = path.extname(found).toLowerCase();
+                    const mime = ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp' : 'image/jpeg';
+                    const buf = fs.readFileSync(found);
+                    res.writeHead(200, { ...CORS, 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+                    res.end(buf);
+                    return;
+                }
+
                 if (url.pathname === '/api/v1/mirror' && req.method === 'GET') {
                     if (!this.isAuthorized(req, url)) {
                         res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });

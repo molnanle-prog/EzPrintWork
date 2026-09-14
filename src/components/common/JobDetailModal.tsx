@@ -1719,7 +1719,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                   type="date" 
                                   value={createdAtDatePart} 
                                   onChange={(e) => handleCreatedAtDateChange(e.target.value)} 
-                                  className="w-full py-0.5 pl-1 pr-0 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 focus:ring-1 focus:ring-blue-500 flex-1 outline-none min-w-0" 
+                                  className="date-scheme-light w-full py-0.5 pl-1 pr-0 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 focus:ring-1 focus:ring-blue-500 flex-1 outline-none min-w-0" 
                                   style={{ colorScheme: 'light' }} 
                               />
                               <select 
@@ -1859,7 +1859,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                   type="date" 
                                   value={datePart} 
                                   onChange={(e) => handleDateChange(e.target.value)} 
-                                  className="w-full py-0.5 pl-1 pr-0 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 focus:ring-1 focus:ring-blue-500 flex-1 outline-none min-w-0" 
+                                  className="date-scheme-light w-full py-0.5 pl-1 pr-0 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 focus:ring-1 focus:ring-blue-500 flex-1 outline-none min-w-0" 
                                   style={{ colorScheme: 'light' }} 
                               />
                               <select 

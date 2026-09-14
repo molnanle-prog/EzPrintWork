@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { db, formatPhoneNumber, formatBusinessNumber } from '../../services/dataService';
+import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
+import { hasQuoteHeaderConfigured } from '../../utils/quoteHeaderImage';
 import { CompanyInfo, QuoteTemplateSettings } from '../../types';
 import { Building, Save, Check, Copy, History, Search, Image, Upload, ClipboardPaste } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
@@ -10,6 +11,8 @@ export const CompanyInfoManager: React.FC = () => {
   const [info, setInfo] = useState<CompanyInfo>({ name: '' });
   const [quoteTemplate, setQuoteTemplate] = useState<QuoteTemplateSettings>({ headerHeightMm: 17 });
   const [isUploadingHeader, setIsUploadingHeader] = useState(false);
+  const [isRevertingHeader, setIsRevertingHeader] = useState(false);
+  const [headerPreviewSrc, setHeaderPreviewSrc] = useState<string | null>(null);
   const headerInputRef = useRef<HTMLInputElement>(null);
   const { showAlert } = useDialog();
   const { currentUser } = useAuth();
@@ -20,6 +23,7 @@ export const CompanyInfoManager: React.FC = () => {
     setInfo(db.getCompanyInfo());
     setQuoteTemplate(db.getQuoteTemplate());
     setReceptionAssistEnabled(db.isReceptionAssistEnabled());
+    void db.resolveQuoteHeaderImageSrc().then(setHeaderPreviewSrc);
   }, []);
 
   const handleToggleReceptionAssist = async (enabled: boolean) => {
@@ -49,6 +53,7 @@ export const CompanyInfoManager: React.FC = () => {
     try {
         await db.saveCompanyInfo(info);
         await db.saveQuoteTemplate(quoteTemplate);
+        setQuoteTemplate(db.getQuoteTemplate());
         await showAlert('회사 정보가 저장되었습니다.\n화면 상단의 상호명이 업데이트됩니다.');
     } catch (error) {
         await showAlert('저장 중 오류가 발생했습니다.');
@@ -62,15 +67,36 @@ export const CompanyInfoManager: React.FC = () => {
     }
     setIsUploadingHeader(true);
     try {
-      const url = await db.uploadQuoteHeaderImage(file);
-      const next = { ...quoteTemplate, headerImageUrl: url };
-      setQuoteTemplate(next);
-      await db.saveQuoteTemplate(next);
-      await showAlert('견적서 헤더 이미지가 업로드되었습니다.\n견적 문서마다 저장되지 않고 설정에서 불러옵니다.');
+      const src = await db.uploadQuoteHeaderImage(file);
+      setQuoteTemplate(db.getQuoteTemplate());
+      setHeaderPreviewSrc(src);
+      await showAlert('견적서 헤더 이미지를 회사 NAS에 저장했습니다.\n견적서를 열 때 이 파일을 불러와 사용합니다.');
     } catch (error) {
-      await showAlert('헤더 이미지 업로드에 실패했습니다.');
+      const current = db.getQuoteTemplate();
+      const src = await db.resolveQuoteHeaderImageSrc();
+      setQuoteTemplate(current);
+      setHeaderPreviewSrc(src);
+      await showAlert(
+        src
+          ? `헤더 이미지 업로드에 실패했습니다.\n이전 NAS 이미지를 그대로 사용합니다.\n\n${getErrorMessage(error)}`
+          : `헤더 이미지 업로드에 실패했습니다.\n기본 견적서 헤더를 사용합니다.\n\n${getErrorMessage(error)}`
+      );
     } finally {
       setIsUploadingHeader(false);
+    }
+  };
+
+  const handleRevertDefaultHeader = async () => {
+    setIsRevertingHeader(true);
+    try {
+      await db.clearQuoteHeaderImage();
+      setQuoteTemplate(db.getQuoteTemplate());
+      setHeaderPreviewSrc(null);
+      await showAlert('기본 견적서 헤더로 되돌렸습니다.');
+    } catch (error) {
+      await showAlert(`기본 견적서로 되돌리지 못했습니다.\n\n${getErrorMessage(error)}`);
+    } finally {
+      setIsRevertingHeader(false);
     }
   };
 
@@ -318,19 +344,26 @@ export const CompanyInfoManager: React.FC = () => {
                 업로드 후 견적서에서 잘리면 아래 <strong>헤더 높이(mm)</strong>를 17~35mm 사이에서 조절하세요.
               </p>
               <p className="text-slate-500 dark:text-slate-400">
-                이미지는 회사 설정에 <strong>1장만</strong> 저장되며, 견적 문서마다 복사되지 않습니다.
+                이미지는 회사 NAS에 <strong>1장만</strong> 저장되며, 견적서를 열 때 그 파일을 불러옵니다.
+                업로드에 실패하거나 헤더를 쓰지 않으면 <strong>기본 견적서</strong>로 돌아갑니다.
               </p>
             </div>
 
-            {quoteTemplate.headerImageUrl && (
+            {headerPreviewSrc ? (
               <div className="border border-slate-200 dark:border-slate-700 rounded-lg overflow-hidden bg-white">
                 <img
-                  src={quoteTemplate.headerImageUrl}
+                  src={headerPreviewSrc}
                   alt="견적서 헤더 미리보기"
                   className="w-full max-h-32 object-cover object-top"
+                  onError={() => setHeaderPreviewSrc(null)}
                 />
               </div>
-            )}
+            ) : hasQuoteHeaderConfigured(quoteTemplate) ? (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                저장된 헤더 이미지를 불러오지 못해 기본 견적서 헤더를 사용합니다.
+                「기본 견적서로 되돌리기」를 누르면 설정도 정리됩니다.
+              </p>
+            ) : null}
 
             <div className="flex flex-wrap items-center gap-3">
               <input
@@ -353,13 +386,14 @@ export const CompanyInfoManager: React.FC = () => {
                 <Upload size={16} />
                 {isUploadingHeader ? '업로드 중…' : '헤더 이미지 업로드'}
               </button>
-              {quoteTemplate.headerImageUrl && (
+              {hasQuoteHeaderConfigured(quoteTemplate) && (
                 <button
                   type="button"
-                  onClick={() => setQuoteTemplate((prev) => ({ ...prev, headerImageUrl: undefined }))}
-                  className="px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-bold text-slate-600 dark:text-slate-300"
+                  onClick={() => void handleRevertDefaultHeader()}
+                  disabled={isUploadingHeader || isRevertingHeader}
+                  className="px-4 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm font-bold text-slate-600 dark:text-slate-300 disabled:opacity-60"
                 >
-                  헤더 제거
+                  {isRevertingHeader ? '되돌리는 중…' : '기본 견적서로 되돌리기'}
                 </button>
               )}
               <label className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">

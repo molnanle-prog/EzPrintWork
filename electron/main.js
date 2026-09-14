@@ -627,6 +627,40 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
     }
 });
 
+ipcMain.handle('save-file-base64', async (_event, { path: filePath, data }) => {
+    try {
+        const dir = path.dirname(filePath);
+        await fs.promises.mkdir(dir, { recursive: true });
+        await fs.promises.writeFile(filePath, Buffer.from(String(data || ''), 'base64'));
+        return { success: true };
+    } catch (e) {
+        console.error('바이너리 파일 저장 중 오류 발생:', e);
+        const errMsg = e instanceof Error ? e.message : (typeof e === 'string' ? e : JSON.stringify(e));
+        return { success: false, error: errMsg || '알 수 없는 파일 저장 오류' };
+    }
+});
+
+ipcMain.handle('read-file-base64', async (_event, filePath) => {
+    try {
+        const stats = await fs.promises.stat(filePath);
+        const buf = await fs.promises.readFile(filePath);
+        return { success: true, data: buf.toString('base64'), mtime: stats.mtimeMs };
+    } catch (e) {
+        const code = e && typeof e === 'object' && 'code' in e ? e.code : null;
+        return { success: false, error: code === 'ENOENT' ? 'ENOENT' : e.message };
+    }
+});
+
+ipcMain.handle('delete-file', async (_event, filePath) => {
+    try {
+        if (!filePath) return { success: false, error: '경로가 비어 있습니다.' };
+        if (fs.existsSync(filePath)) await fs.promises.unlink(filePath);
+        return { success: true };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
 // 5. 파일 읽기 (비동기)
 ipcMain.handle('read-file', async (event, filePath) => {
     try {
