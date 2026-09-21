@@ -414,7 +414,8 @@ export const StaffModal: React.FC<StaffModalProps> = ({ staff, onClose, onSave, 
                   type="date" 
                   value={formData.joinDate || ''}
                   onChange={(e) => setFormData({...formData, joinDate: e.target.value})}
-                  className="flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
+                  className="date-scheme-light flex-1 p-2 border border-slate-300 rounded text-sm focus:outline-none focus:border-blue-500 bg-white text-slate-900"
+                  style={{ colorScheme: 'light' }}
                 />
             </div>
           </div>

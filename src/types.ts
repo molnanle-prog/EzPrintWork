@@ -360,6 +360,48 @@ export interface SmsConfig {
   sendOnComplete?: boolean;
 }
 
+export type SmsPrepaidLedgerType = 'charge' | 'debit' | 'refund' | 'adjust';
+
+export interface SmsPrepaidLedgerEntry {
+  id: string;
+  at: string;
+  type: SmsPrepaidLedgerType;
+  amount: number;
+  balanceAfter: number;
+  note?: string;
+}
+
+export interface SmsPrepaidPending {
+  id: string;
+  amount: number;
+  createdAt: string;
+  status: 'pending' | 'confirmed' | 'cancelled';
+  depositor?: string;
+  matchedAt?: string;
+  note?: string;
+}
+
+export interface SmsPrepaidUnmatched {
+  id: string;
+  at: string;
+  text: string;
+  reason: string;
+}
+
+/** 매장 선불 문자 크레딧 — smsConfig와 분리 (저장 시 키 유실 방지). 기본 꺼짐. */
+export interface SmsPrepaidState {
+  enabled: boolean;
+  balance: number;
+  depositName: string;
+  bankName: string;
+  accountNo: string;
+  accountHolder: string;
+  ledger: SmsPrepaidLedgerEntry[];
+  pending: SmsPrepaidPending[];
+  unmatched: SmsPrepaidUnmatched[];
+  updatedAt?: string;
+}
+
 /** 신규 접수 시 문자·통화 글자로 칸 채우기 */
 export interface ReceptionAssistConfig {
   enabled: boolean;
@@ -420,6 +462,7 @@ export type ElectronUpdaterPhase =
   | 'none'
   | 'downloading'
   | 'downloaded'
+  | 'flushing'
   | 'installing'
   | 'error';
 
@@ -447,7 +490,7 @@ export interface IElectronAPI {
   checkFileExists: (path: string) => Promise<boolean>; 
   exists: (path: string) => Promise<boolean>;
   selectDirectory: () => Promise<string | null>; 
-  selectFileOrFolder: () => Promise<string | null>;
+  selectFileOrFolder: (defaultPath?: string) => Promise<string | null>;
   selectFiles?: (options?: {
     filters?: { name: string; extensions: string[] }[];
     defaultPath?: string;
@@ -500,6 +543,10 @@ export interface IElectronAPI {
   }>;
   updaterInstall?: () => Promise<{ ok: boolean; busy?: boolean }>;
   onUpdaterStatus?: (callback: (payload: ElectronUpdaterStatus) => void) => () => void;
+  onUpdaterBeforeInstall?: (
+    callback: (payload: { requestId: string }) => void
+  ) => () => void;
+  notifyUpdaterFlushReady?: (requestId: string, ok: boolean) => void;
   createDesktopShortcut?: () => Promise<{ ok: boolean; path?: string; paths?: string[]; error?: string }>;
   getOpenAtLogin?: () => Promise<{ ok: boolean; enabled: boolean; supported?: boolean; error?: string }>;
   setOpenAtLogin?: (enabled: boolean) => Promise<{ ok: boolean; enabled: boolean; supported?: boolean; error?: string }>;
@@ -521,6 +568,11 @@ export interface IElectronAPI {
   localDbDeleteJob?: (tenantId: string, jobId: string) => Promise<{ success: boolean }>;
   localDbSaveClients?: (tenantId: string, clients: unknown[]) => Promise<{ success: boolean }>;
   localDbUpsertClient?: (tenantId: string, client: unknown) => Promise<{ success: boolean }>;
+  localDbUpsertJobAndClients?: (
+    tenantId: string,
+    job: unknown,
+    clients: unknown[]
+  ) => Promise<{ success: boolean; error?: string }>;
   localDbDeleteClient?: (tenantId: string, clientId: string) => Promise<{ success: boolean }>;
   localDbSaveSettings?: (tenantId: string, settings: Record<string, unknown>) => Promise<{ success: boolean }>;
   localDbSaveAux?: (
@@ -538,12 +590,28 @@ export interface IElectronAPI {
     collection: string,
     id: string
   ) => Promise<{ success: boolean }>;
-  gatewaySetConfig?: (config: {
+  localDbAppendAudit?: (
+    tenantId: string,
+    auditEvent: {
+      action: string;
+      entityType?: string;
+      entityId?: string;
+      data?: Record<string, unknown>;
+    }
+  ) => Promise<{ success: boolean; error?: string }>;
+    gatewaySetConfig?: (config: {
     archiveRoot: string | null;
     tenantId: string | null;
     gatewayToken?: string | null;
   }) => Promise<{ ok: boolean }>;
-  gatewayGetInfo?: () => Promise<{ port: number; baseUrl: string; lanUrls: string[] }>;
+  gatewayGetInfo?: () => Promise<{
+    port: number;
+    baseUrl: string;
+    lanUrls: string[];
+    remoteUrl?: string;
+  }>;
+  gatewaySetHubTunnel?: (enabled: boolean) => Promise<{ ok: boolean; remoteUrl?: string | null }>;
+  onRemoteTunnelReady?: (callback: (url: string | null) => void) => () => void;
   /** 문서 인쇄 (단면 simplex 강제) */
   printDocument?: () => Promise<{ success: boolean; error?: string }>;
   /** 문서 PDF 저장 — 인쇄와 동일 Chromium 렌더 (printToPDF) */

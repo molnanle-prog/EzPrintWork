@@ -83,7 +83,7 @@ export function resolveAppRoleFromStaff(
 }
 
 /** 메인 관리자 전용 설정 (요금제·아카이브·백업) */
-export const ROOT_SETTINGS_TAB_IDS = ['plan', 'archive', 'backup'] as const;
+export const ROOT_SETTINGS_TAB_IDS = ['plan', 'archive', 'backup', 'lab'] as const;
 
 export type RootSettingsTabId = (typeof ROOT_SETTINGS_TAB_IDS)[number];
 

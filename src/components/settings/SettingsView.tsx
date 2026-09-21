@@ -13,9 +13,11 @@ import { SmsManager } from './SmsManager'; // Added
 import { ProfileManager } from './ProfileManager';
 import { ProcessingManager } from './ProcessingManager';
 import { PlanManager } from './PlanManager';
-import { Users, ScrollText, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown, Archive, Info } from 'lucide-react';
+import { Users, ScrollText, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown, Archive, Info, Beaker } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { isRootSettingsTab, isStaffOperationsSettingsTab } from '../../utils/adminAccess';
+import { FeatureLabPanel } from '../features/FeatureLabPanel';
+import { isFeatureLabUnlocked } from '../../features/featureFlags';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -60,6 +62,7 @@ export const SettingsView: React.FC = () => {
         case 'sms': return isAdmin ? <SmsManager /> : null; // Added
         case 'archive': return canAccessRootSettings ? <ArchiveManager /> : null;
         case 'backup': return canAccessRootSettings ? <BackupManager /> : null;
+        case 'lab': return canAccessRootSettings ? <FeatureLabPanel /> : null;
         default: return isAdmin ? <StaffManager /> : <ProfileManager />;
     }
   };
@@ -77,9 +80,13 @@ export const SettingsView: React.FC = () => {
     { id: 'sms', label: '문자 설정', icon: MessageSquare, adminOnly: true, staffAllowed: false, rootOnly: false, tooltip: '문자 연동키·발신 정보 설정' },
     { id: 'archive', label: '이력 아카이브', icon: Archive, adminOnly: true, staffAllowed: false, rootOnly: true, tooltip: '자동 운영: 1년 초과 이력 보관 경로/NAS 설정' },
     { id: 'backup', label: '재난 백업/복구', icon: Database, adminOnly: true, staffAllowed: false, rootOnly: true, tooltip: '수동 운영: 포맷·장애 대비 백업/복원' },
+    { id: 'lab', label: '실험 기능', icon: Beaker, adminOnly: true, staffAllowed: false, rootOnly: true, tooltip: '기본 OFF. 이 PC에서만 새 기능을 켜고 미리보기' },
   ];
 
   const visibleMenuItems = allMenuItems.filter((item) => {
+    if (item.id === 'lab') {
+      return canAccessRootSettings && (isFeatureLabUnlocked() || import.meta.env.DEV);
+    }
     if (item.rootOnly) return canAccessRootSettings;
     if (item.id === 'staff') return canManageStaff;
     if (item.staffAllowed) return canAccessStaffOperationsSettings;

@@ -1,7 +1,7 @@
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
     JobStatusDefinition, KanbanLayoutConfig, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
-    JoinRequest, ProductProcessingSets, QuoteTemplateSettings
+    JoinRequest, ProductProcessingSets, QuoteTemplateSettings, SmsPrepaidState
 } from '../types';
 import { normalizeKanbanLayoutConfig, normalizeStatusDefinition } from '../utils/kanbanLayout';
 import { dedupeSizeLabels, normalizeSizeLabel, sizesMatch } from '../utils/sizeLabel';
@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 import { db as firestore, auth } from './firebase';
 import { signOut } from 'firebase/auth';
+import { createTenantSecure, searchTenantsPublic } from './membershipService';
 import { jobArchiveService } from './jobArchiveService';
 import { situationMirrorService } from './situationMirrorService';
 import {
@@ -32,9 +33,17 @@ import {
     mergeAuxItemsById,
     type AuxCollectionName,
 } from './auxCollectionMirrorService';
-import { refreshLocalGateway } from './gatewayBridge';
+import { refreshLocalGateway, getLocalGatewayInfo } from './gatewayBridge';
 import { setCachedGatewaySecret, getCachedGatewaySecret, getGatewayAuthToken } from '../utils/gatewayToken';
 import { fetchWithTimeout } from '../utils/fetchWithTimeout';
+import {
+    depositorsMatch,
+    estimateSmsCost,
+    isPrepaidChargeAmount,
+    newPrepaidId,
+    normalizeSmsPrepaid,
+    parseBankDepositSms,
+} from '../utils/smsPrepaid';
 import {
     arrayBufferToBase64,
     blobToDataUrl,
@@ -51,7 +60,10 @@ import {
 
 export type WebMirrorLinkStatus = 'idle' | 'connecting' | 'ready' | 'failed';
 import {
+    collectPublishedGatewayUrls,
     collectStoreGatewayUrlsFromSettings,
+    isLanGatewayUrl,
+    normalizeGatewayBase,
     normalizeStoreGatewayUrls,
     orderStoreGatewayUrls,
 } from '../utils/storeGatewayUrls';
@@ -155,15 +167,15 @@ export const getErrorMessage = (error: any): string => {
     const code = error instanceof Error ? error.message : typeof error === 'string' ? error : '';
     const webGatewayMessages: Record<string, string> = {
         'web-readonly-jobs':
-            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
+            '지금은 확인만 됩니다. 수정은 매장 PC에서 해 주세요.',
         'web-gateway-offline':
-            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
+            '지금은 확인만 됩니다. 수정은 매장 PC에서 해 주세요.',
         'web-gateway-batch-save-failed':
-            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
+            '지금은 확인만 됩니다. 수정은 매장 PC에서 해 주세요.',
         'web-gateway-job-save-failed':
-            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
+            '지금은 확인만 됩니다. 수정은 매장 PC에서 해 주세요.',
         'web-gateway-job-add-failed':
-            '매장 PC에서 EzPrintWork가 실행 중이지 않아 저장할 수 없습니다. 매장 PC에서 프로그램을 켠 뒤, 같은 Wi-Fi에서 다시 시도해 주세요.',
+            '지금은 확인만 됩니다. 수정은 매장 PC에서 해 주세요.',
     };
     if (code && webGatewayMessages[code]) return webGatewayMessages[code];
 
@@ -362,8 +374,6 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
 ];
 
 const LEGACY_CATALOG_TYPE_NAMES = ['카탈로그/브로셔', '카탈로그/책자', '카달로그/책자', '카달로그/브로셔'];
-/** 기존 매장 품목 목록에 없으면 한 번 넣어 줄 신규 기본 품목 (삭제된 옛 기본 품목은 되살리지 않음) */
-const ENSURE_NEW_DEFAULT_PRODUCTS = new Set(['복사']);
 /** 작업(jobs) type 레거시 보정용 — 해당 품목명이 마스터에 없을 때만 적용 */
 const LEGACY_JOB_SIGNAGE_TYPE_NAMES = ['현수막/배너', '현수막'];
 
@@ -453,11 +463,8 @@ export function mergeAllProductDefinitionsWithInitial(
             if (!productDefinitionFieldsEqual(merged, existing)) changed = true;
             result.push(merged);
             byName.delete(template.name);
-        } else if (ENSURE_NEW_DEFAULT_PRODUCTS.has(template.name)) {
-            result.push({ ...template });
-            changed = true;
         }
-        // 삭제된 기본 품목은 merge로 되살리지 않음 (신규 테넌트는 INITIAL 전체로 초기화)
+        // 삭제된 기본 품목(복사 포함)은 merge로 되살리지 않음 (신규 테넌트는 INITIAL 전체로 초기화)
     }
 
     for (const custom of byName.values()) {
@@ -612,6 +619,7 @@ export class DataService {
     private unsubscribeList: (() => void)[] = [];
     private syncPulseUnsub: (() => void) | null = null;
     private lastPublishedGatewayUrls: string[] = [];
+    private remoteTunnelListenerBound = false;
     private quotesBootstrappedForTenant: string | null = null;
     private settingsMergePersisting = false;
     private quotesBootstrapInProgress = false;
@@ -697,10 +705,13 @@ export class DataService {
     /** 짧은 NAS 끊김 유예 — 이 시간 지나야 전원 작업 잠금 */
     private static readonly NAS_GRACE_MS = 45_000;
     private static readonly NAS_MONITOR_MS = 12_000;
+    private static readonly LOCAL_NAS_PROBE_MS = 3_000;
     private nasUnhealthySince: number | null = null;
     private nasHealthMonitorTimer: ReturnType<typeof setInterval> | null = null;
     /** local = PC→NAS 직접, gateway = 허브 PC LAN(같은 NAS 파일) */
     private companyNasChannel: 'local' | 'gateway' | null = null;
+    /** 설치된 앱이 매장 밖 — 매장 PC 화면만 보고 수정은 막음 */
+    private outsideViewerMode = false;
     /** 채팅 NAS 쓰기 — UI 블로킹 방지용 디바운스 큐 */
     private chatPersistTimer: ReturnType<typeof setTimeout> | null = null;
     private chatPersistInFlight: Promise<void> | null = null;
@@ -719,14 +730,24 @@ export class DataService {
     getLastSyncError() { return this.lastSyncError; }
     isCloudDegraded() { return this.cloudDegraded; }
     hasLocalOperationalData() { return this.localOperationalReady; }
-    /** Electron — 업무 DB는 SQLite, Firestore는 회원·직원만 */
+    /** Electron — 업무 DB는 SQLite, Firestore는 회원·직원만. 밖 조회 모드는 제외 */
     isLocalPrimaryMode(): boolean {
-        return this.getIsElectron() && localDbBridge.isAvailable();
+        return this.getIsElectron() && localDbBridge.isAvailable() && !this.outsideViewerMode;
     }
 
     /** 브라우저(웹·태블릿·PC 웹) — jobs는 NAS 미러(게이트웨이/Storage)만, Firestore jobs 미사용 */
     isWebMirrorMode(): boolean {
         return !this.getIsElectron();
+    }
+
+    /** 설치 프로그램이 매장 밖에서 매장 PC 화면만 보는 중 */
+    isOutsideViewerMode(): boolean {
+        return this.getIsElectron() && this.outsideViewerMode;
+    }
+
+    /** 웹·태블릿·밖 노트북 — 게이트웨이에서 작업판만 읽음 */
+    private shouldUseWebMirrorClient(): boolean {
+        return this.isWebMirrorMode() || this.isOutsideViewerMode();
     }
 
     /**
@@ -872,6 +893,9 @@ export class DataService {
 
     private assertOperationalWriteAllowed(col: string): void {
         if (!this.isOperationalCollection(col)) return;
+        if (this.isOutsideViewerMode()) {
+            throw new Error('web-readonly-jobs');
+        }
         if (!this.getIsElectron()) return;
         if (this.pendingArchiveReconnect) {
             throw new Error(
@@ -885,8 +909,9 @@ export class DataService {
         }
     }
 
-    /** UI — 경로 재연결 대기 중에는 작업 불가 */
+    /** UI — 경로 재연결 대기 중에는 작업 불가. 밖 조회는 잠그지 않고 수정만 막음 */
     isOperationalWorkLocked(): boolean {
+        if (this.isOutsideViewerMode()) return false;
         return this.getIsElectron() && (this.pendingArchiveReconnect || this.companyNasHealthy === false);
     }
 
@@ -907,12 +932,19 @@ export class DataService {
 
     private markCompanyNasOk(channel: 'local' | 'gateway', path: string | null) {
         const wasLocked = this.companyNasHealthy === false;
+        const wasOutside = this.outsideViewerMode;
+        this.outsideViewerMode = false;
         this.companyNasHealthy = true;
         this.companyNasHealthError = null;
         this.companyNasHealthPath = path;
         this.companyNasChannel = channel;
         this.nasUnhealthySince = null;
         this.notify();
+        if (channel === 'local') {
+            void this.refreshStoreGateway();
+        } else {
+            void this.setHubRemoteTunnelEnabled(false);
+        }
         if (wasLocked && !this.pendingArchiveReconnect) {
             void this.pollNasOperationalSync();
             this.chatHistoryReady = false;
@@ -924,6 +956,8 @@ export class DataService {
                     ? '사내 게이트웨이로 NAS에 다시 연결되었습니다.'
                     : '회사 NAS 연결이 복구되었습니다.'
             );
+        } else if (wasOutside && channel === 'local') {
+            void this.pollNasOperationalSync();
         }
     }
 
@@ -992,37 +1026,78 @@ export class DataService {
             return this.markCompanyNasFail('회사 NAS 경로를 적용하지 못했습니다.', null);
         }
 
-        // 1) PC → NAS 직접
-        try {
-            const probe = await jobArchiveService.ensureArchiveFolderReady(this.tenantId);
-            if (probe.ok) {
-                this.markCompanyNasOk('local', path);
-                return true;
-            }
-        } catch (e) {
-            console.warn('[DataService] local NAS probe failed:', e);
+        if (this.pendingArchiveReconnect) {
+            return this.markCompanyNasFail('회사 NAS 경로가 변경되어 다시 연결해야 합니다.', path);
         }
 
-        // 2) 허브 PC 게이트웨이 — 회사 archiveRootPath 와 같은 폴더만 허용
         const gw = this.getStoreGatewayUrls();
-        if (gw.length > 0) {
+        const lanUrls = gw.filter((url) => isLanGatewayUrl(url));
+        const remoteUrls = gw.filter((url) => !isLanGatewayUrl(url));
+        const looksLikePublishedHub = await this.thisPcLooksLikePublishedHub();
+        const skipLocalNasProbe = this.outsideViewerMode && !looksLikePublishedHub;
+
+        // 1) 매장 허브 PC → NAS 직접. 밖 노트북은 UNC를 건드리지 않음(지연·오탐 방지)
+        if (!skipLocalNasProbe) {
             try {
-                const { isStoreGatewayServingCompanyPath } = await import('./gatewayBridge');
-                const servesCompany = await isStoreGatewayServingCompanyPath(gw, path, this.tenantId);
+                const localOk = await this.probeLocalCompanyNas();
+                if (localOk) {
+                    this.markCompanyNasOk('local', path);
+                    return true;
+                }
+            } catch (e) {
+                console.warn('[DataService] local NAS probe failed:', e);
+            }
+        }
+
+        // 2) 매장 안 — 허브 PC LAN
+        if (lanUrls.length > 0) {
+            try {
+                const { isStoreGatewayServingCompanyPath, isStoreGatewayReachable } = await import(
+                    './gatewayBridge'
+                );
+                const servesCompany = await isStoreGatewayServingCompanyPath(
+                    lanUrls,
+                    path,
+                    this.tenantId
+                );
                 if (servesCompany) {
-                    const mirror = await situationMirrorService.readViaGatewayOnly(this.tenantId, gw);
+                    const mirror = await situationMirrorService.readViaGatewayOnly(
+                        this.tenantId,
+                        lanUrls
+                    );
                     if (mirror) {
                         this.markCompanyNasOk('gateway', path);
                         return true;
                     }
-                } else if (await (await import('./gatewayBridge')).isStoreGatewayReachable(gw, this.tenantId)) {
+                } else if (await isStoreGatewayReachable(lanUrls, this.tenantId)) {
                     console.warn(
-                        '[DataService] gateway reachable but archiveRoot ≠ company path — ignored to prevent split'
+                        '[DataService] LAN gateway reachable but archiveRoot ≠ company path — ignored'
                     );
                 }
             } catch (e) {
-                console.warn('[DataService] gateway NAS probe failed:', e);
+                console.warn('[DataService] LAN gateway probe failed:', e);
             }
+        }
+
+        // 3) 매장 밖 — 매장 PC 원격 주소만. 이 PC는 허브가 아님
+        if (remoteUrls.length > 0) {
+            try {
+                const mirror = await situationMirrorService.readViaGatewayOnly(
+                    this.tenantId,
+                    remoteUrls
+                );
+                if (mirror) {
+                    this.enterOutsideViewerMode(mirror);
+                    return true;
+                }
+            } catch (e) {
+                console.warn('[DataService] remote viewer probe failed:', e);
+            }
+        }
+
+        if (!looksLikePublishedHub && gw.length > 0) {
+            this.enterOutsideViewerMode(null);
+            return false;
         }
 
         return this.markCompanyNasFail(
@@ -1031,6 +1106,78 @@ export class DataService {
                 : 'NAS 폴더 접근 실패 (게이트웨이 URL 없음)',
             path
         );
+    }
+
+    private async probeLocalCompanyNas(): Promise<boolean> {
+        if (!this.tenantId) return false;
+        try {
+            const probe = await Promise.race([
+                jobArchiveService.ensureArchiveFolderReady(this.tenantId),
+                new Promise<{ ok: false }>((resolve) => {
+                    window.setTimeout(
+                        () => resolve({ ok: false }),
+                        DataService.LOCAL_NAS_PROBE_MS
+                    );
+                }),
+            ]);
+            return !!probe?.ok;
+        } catch {
+            return false;
+        }
+    }
+
+    /** 게시된 매장 LAN 주소가 이 PC가 아니면 밖·다른 PC */
+    private async thisPcLooksLikePublishedHub(): Promise<boolean> {
+        const publishedLan = this.getStoreGatewayUrls()
+            .filter((url) => isLanGatewayUrl(url))
+            .map((url) => normalizeGatewayBase(url))
+            .filter((url): url is string => !!url);
+        if (publishedLan.length === 0) return false;
+        try {
+            const info = await window.electron?.gatewayGetInfo?.();
+            const mine = new Set(
+                (info?.lanUrls || [])
+                    .map((url) => normalizeGatewayBase(url))
+                    .filter((url): url is string => !!url)
+            );
+            if (mine.size === 0) return false;
+            return publishedLan.some((url) => mine.has(url));
+        } catch {
+            return false;
+        }
+    }
+
+    private async setHubRemoteTunnelEnabled(enabled: boolean): Promise<string | null> {
+        if (!this.getIsElectron() || !window.electron?.gatewaySetHubTunnel) return null;
+        try {
+            const result = await window.electron.gatewaySetHubTunnel(enabled);
+            return result?.remoteUrl || null;
+        } catch (e) {
+            console.warn('[DataService] hub tunnel toggle failed:', e);
+            return null;
+        }
+    }
+
+    private enterOutsideViewerMode(mirror: SituationMirrorPayload | null) {
+        this.outsideViewerMode = true;
+        this.companyNasHealthy = false;
+        this.companyNasHealthError = null;
+        this.companyNasChannel = null;
+        this.nasUnhealthySince = null;
+        void this.setHubRemoteTunnelEnabled(false);
+        if (mirror) {
+            this.operationalJobs = [];
+            this.kanbanCompletedJobs = [];
+            this.supplementaryJobs = [];
+            this.applyImportedJobs([]);
+            this.applyMirrorPayload(mirror);
+            this.markWebMirrorReady();
+        } else if (this.webMirrorLinkStatus !== 'ready') {
+            this.webMirrorLinkStatus = 'connecting';
+            void this.hydrateWebMirrorInBackground();
+        }
+        this.startNasMirrorPolling();
+        this.notify();
     }
 
     /** 경로 변경 알림에서 ‘지금 연결’ — 회사 경로 재적용 + 미러 재로드 */
@@ -1097,7 +1244,7 @@ export class DataService {
 
     /** 웹/탭 — 미러 연결 실패 여부 (빈 보드와 구분) */
     isWebMirrorFailed(): boolean {
-        return this.isWebMirrorMode() && this.webMirrorLinkStatus === 'failed';
+        return this.isWebViewOnly() && this.webMirrorLinkStatus === 'failed';
     }
 
     getWebMirrorLinkStatus(): WebMirrorLinkStatus {
@@ -1118,7 +1265,7 @@ export class DataService {
     }
 
     isWebViewOnly(): boolean {
-        return !this.getIsElectron();
+        return !this.getIsElectron() || this.outsideViewerMode;
     }
 
     /** settings.main.storeGatewaySecret → 런타임 캐시 (미러 요청 전 필수) */
@@ -1151,7 +1298,7 @@ export class DataService {
     }
 
     private async fetchWebMirrorPayload(): Promise<SituationMirrorPayload | null> {
-        if (!this.tenantId || this.getIsElectron()) return null;
+        if (!this.tenantId || !this.shouldUseWebMirrorClient()) return null;
         this.syncGatewaySecretFromSettings();
         if (this.webMirrorLinkStatus === 'idle' || this.webMirrorLinkStatus === 'failed') {
             this.webMirrorLinkStatus = 'connecting';
@@ -1213,7 +1360,7 @@ export class DataService {
     }
 
     private async hydrateWebMirrorInBackground(): Promise<void> {
-        if (!this.tenantId || this.getIsElectron()) return;
+        if (!this.tenantId || !this.shouldUseWebMirrorClient()) return;
         this.syncGatewaySecretFromSettings();
         const ok = await this.tryHydrateFromWebMirror(1);
         if (ok) {
@@ -1228,22 +1375,11 @@ export class DataService {
     }
 
     private describeWebMirrorFailure(): string {
-        const gateway = this.getStoreGatewayUrls();
-        if (gateway.length === 0) {
-            return '매장 PC NAS 연동(게이트웨이 URL)이 없습니다. 관리자 PC에서 NAS 경로를 저장해 주세요.';
-        }
-        const gw = situationMirrorService.getLastGatewayStatus();
-        if (gw === 'unauthorized') {
-            return '매장 게이트웨이 인증 실패. 같은 Wi‑Fi인지, 매장 PC가 켜져 있는지 확인해 주세요.';
-        }
-        if (gw === 'unreachable') {
-            return '매장 게이트웨이에 연결하지 못했습니다. 같은 Wi‑Fi·PC 전원을 확인해 주세요.';
-        }
-        return '회사 작업판 미러를 불러오지 못했습니다. (Firestore 작업 목록은 사용하지 않습니다)';
+        return '매장 PC에서 프로그램이 켜져 있으면 작업판이 보입니다.';
     }
 
     private async tryHydrateFromWebMirror(maxAttempts = 1): Promise<boolean> {
-        if (!this.tenantId || this.getIsElectron()) return false;
+        if (!this.tenantId || !this.shouldUseWebMirrorClient()) return false;
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             try {
                 const situation = await this.fetchWebMirrorPayload();
@@ -1271,11 +1407,11 @@ export class DataService {
     }
 
     private async retryWebMirrorHydrateInBackground(): Promise<void> {
-        if (!this.tenantId || this.getIsElectron()) return;
+        if (!this.tenantId || !this.shouldUseWebMirrorClient()) return;
         for (let i = 0; i < 5; i++) {
             const wait = Math.min(2000 * (i + 1), this.webMirrorBackoffMs || 5000);
             await new Promise((r) => setTimeout(r, wait));
-            if (!this.tenantId || this.getIsElectron()) return;
+            if (!this.tenantId || !this.shouldUseWebMirrorClient()) return;
             if (this.webMirrorReady) return;
             const ok = await this.tryHydrateFromWebMirror(1);
             if (ok) {
@@ -1422,6 +1558,7 @@ export class DataService {
         this.companyNasHealthy = null;
         this.companyNasHealthError = null;
         this.companyNasHealthPath = null;
+        this.outsideViewerMode = false;
         this.pendingArchiveReconnect = false;
         this.pendingArchiveReconnectPath = null;
         this.lastAppliedArchiveRootPath = null;
@@ -1485,6 +1622,7 @@ export class DataService {
         this.companyNasHealthy = null;
         this.companyNasHealthError = null;
         this.companyNasHealthPath = null;
+        this.outsideViewerMode = false;
         this.pendingArchiveReconnect = false;
         this.pendingArchiveReconnectPath = null;
         this.lastAppliedArchiveRootPath = null;
@@ -1749,6 +1887,10 @@ export class DataService {
     /** 웹/태블릿·검색 화면 — 콜드(1년+) 이력 로드 보장 */
     async ensureColdArchiveLoaded(): Promise<void> {
         if (this.archiveLoaded) return;
+        if (this.shouldUseWebMirrorClient()) {
+            this.archiveLoaded = true;
+            return;
+        }
         await this.loadArchivedJobs();
         this.notify();
     }
@@ -2092,6 +2234,14 @@ export class DataService {
 
     private async refreshStoreGateway() {
         if (!this.getIsElectron() || !this.tenantId) return;
+        if (
+            this.outsideViewerMode ||
+            this.companyNasHealthy !== true ||
+            this.companyNasChannel !== 'local'
+        ) {
+            await this.setHubRemoteTunnelEnabled(false);
+            return;
+        }
         // 회사 경로만 게이트웨이에 바인딩 — 다른 폴더 서비스 금지
         const root =
             getTenantArchiveRootFromSettings(this.getSettingsObj())?.trim() ||
@@ -2104,6 +2254,7 @@ export class DataService {
         }
 
         if (!root) {
+            await this.setHubRemoteTunnelEnabled(false);
             await refreshLocalGateway(null, this.tenantId, getCachedGatewaySecret() || existingSecret);
             return;
         }
@@ -2112,6 +2263,7 @@ export class DataService {
             this.tenantId,
             getCachedGatewaySecret() || existingSecret
         );
+        const remoteUrl = await this.setHubRemoteTunnelEnabled(true);
         const activeSecret = getCachedGatewaySecret();
         if (activeSecret.length >= 16 && activeSecret !== existingSecret) {
             try {
@@ -2121,8 +2273,11 @@ export class DataService {
             }
         }
 
-        const lanUrls = normalizeStoreGatewayUrls(info?.lanUrls || []);
-        if (lanUrls.length === 0) return;
+        const publishedUrls = collectPublishedGatewayUrls({
+            lanUrls: info?.lanUrls,
+            remoteUrl: remoteUrl || info?.remoteUrl,
+        });
+        if (publishedUrls.length === 0) return;
         // 게이트웨이가 회사 경로를 서비스할 때만 Firestore에 허브 URL 게시
         if (info?.archiveRoot && !this.pathsEqualIgnoreSlash(info.archiveRoot, root)) {
             console.warn('[DataService] skip storeGatewayUrl publish — gateway root ≠ company path');
@@ -2131,19 +2286,19 @@ export class DataService {
 
         const currentUrls = this.getStoreGatewayUrls();
         const urlsChanged =
-            lanUrls.length !== currentUrls.length ||
-            lanUrls.some((url, index) => url !== currentUrls[index]);
+            publishedUrls.length !== currentUrls.length ||
+            publishedUrls.some((url, index) => url !== currentUrls[index]);
 
         if (urlsChanged) {
-            this.lastPublishedGatewayUrls = lanUrls;
-            await this.saveStoreGatewayUrls(lanUrls).catch((e) =>
+            this.lastPublishedGatewayUrls = publishedUrls;
+            await this.saveStoreGatewayUrls(publishedUrls).catch((e) =>
                 console.warn('[DataService] auto storeGatewayUrl save failed:', e)
             );
         } else if (
-            lanUrls.length !== this.lastPublishedGatewayUrls.length ||
-            lanUrls.some((url, index) => url !== this.lastPublishedGatewayUrls[index])
+            publishedUrls.length !== this.lastPublishedGatewayUrls.length ||
+            publishedUrls.some((url, index) => url !== this.lastPublishedGatewayUrls[index])
         ) {
-            this.lastPublishedGatewayUrls = lanUrls;
+            this.lastPublishedGatewayUrls = publishedUrls;
         }
     }
 
@@ -2314,7 +2469,7 @@ export class DataService {
 
     private async tryHydrateFromMirrors(): Promise<boolean> {
         if (!this.tenantId) return false;
-        if (!this.getIsElectron()) {
+        if (this.shouldUseWebMirrorClient()) {
             return this.tryHydrateFromWebMirror();
         }
         try {
@@ -2372,12 +2527,12 @@ export class DataService {
         if (!this.tenantId) return;
         this.stopNasMirrorPolling();
         this.nasPollInFlight = false;
-        if (!this.getIsElectron()) {
+        if (this.shouldUseWebMirrorClient()) {
             this.webMirrorBackoffMs = WEB_MIRROR_POLL_MS;
             this.webMirrorNextPollAt = 0;
             this.syncGatewaySecretFromSettings();
         }
-        const pollMs = this.getIsElectron() ? APP_MIRROR_POLL_MS : WEB_MIRROR_POLL_MS;
+        const pollMs = this.shouldUseWebMirrorClient() ? WEB_MIRROR_POLL_MS : APP_MIRROR_POLL_MS;
         this.nasPollTimer = window.setInterval(() => {
             void this.pollNasOperationalSync();
         }, pollMs);
@@ -2404,6 +2559,7 @@ export class DataService {
         'roles',
         'companyInfo',
         'smsConfig',
+        'smsPrepaid',
         'quoteTemplate',
         'receptionAssist',
     ] as const;
@@ -3059,7 +3215,7 @@ export class DataService {
     private async pollNasOperationalSync() {
         if (!this.tenantId || document.visibilityState !== 'visible') return;
         if (this.nasPollInFlight) return;
-        if (!this.getIsElectron() && Date.now() < this.webMirrorNextPollAt) return;
+        if (this.shouldUseWebMirrorClient() && Date.now() < this.webMirrorNextPollAt) return;
 
         this.nasPollInFlight = true;
         try {
@@ -3067,8 +3223,14 @@ export class DataService {
             let mergedJobs: Job[] | null = null;
 
             const takeJobs = () => mergedJobs ?? this.getAllJobs();
+            const viewerClient = this.shouldUseWebMirrorClient();
+            const localHub =
+                this.getIsElectron() &&
+                !viewerClient &&
+                this.companyNasHealthy === true &&
+                this.companyNasChannel === 'local';
 
-            const archiveSnap = this.getIsElectron()
+            const archiveSnap = localHub
                 ? await jobArchiveService.readNasArchiveSnapshot(this.tenantId)
                 : null;
 
@@ -3087,7 +3249,9 @@ export class DataService {
                 }
             }
 
-            const situation = this.getIsElectron()
+            const situation = viewerClient
+                ? await this.fetchWebMirrorPayload()
+                : localHub
                 ? (await situationMirrorService.readFromNas(this.tenantId)) ||
                   (await (async () => {
                       const gw = await this.getTrustedStoreGatewayUrl();
@@ -3095,9 +3259,14 @@ export class DataService {
                           ? situationMirrorService.readViaGatewayOnly(this.tenantId!, gw)
                           : null;
                   })())
-                : await this.fetchWebMirrorPayload();
+                : await (async () => {
+                      const gw = this.getStoreGatewayUrls();
+                      return gw.length
+                          ? situationMirrorService.readViaGatewayOnly(this.tenantId!, gw)
+                          : null;
+                  })();
 
-            if (!this.getIsElectron()) {
+            if (viewerClient) {
                 if (situation) {
                     this.markWebMirrorReady();
                 } else if (!this.webMirrorReady) {
@@ -3136,7 +3305,7 @@ export class DataService {
                     mergedJobs = nextJobs;
                     changed = true;
                 }
-            } else if (situation?.updatedAt && !this.getIsElectron()) {
+            } else if (situation?.updatedAt && viewerClient) {
                 // 유효 미러·작업 0건 — 연결 성공으로 간주 (웹 notify만, 로컬 DB 없음)
                 changed = true;
             }
@@ -3146,7 +3315,7 @@ export class DataService {
             }
 
             if (changed) {
-                if (!this.getIsElectron()) {
+                if (viewerClient) {
                     this.lastMirrorReceivedAt = new Date().toISOString();
                 }
                 if (this.isLocalPrimaryMode()) {
@@ -3169,7 +3338,7 @@ export class DataService {
             if (auxChanged) this.notify();
         } catch (e) {
             console.warn('[DataService] NAS operational poll skipped:', e);
-            if (!this.getIsElectron() && !this.webMirrorReady) {
+            if (this.shouldUseWebMirrorClient() && !this.webMirrorReady) {
                 this.markWebMirrorFailed(this.describeWebMirrorFailure());
                 this.notify();
             }
@@ -3205,6 +3374,20 @@ export class DataService {
             const ok = await localDbBridge.upsertAuxEntity(this.tenantId, col, entity);
             if (!ok) throw new Error(`local-db-${col}-upsert-failed`);
         }
+    }
+
+    private recordLocalAudit(action: string, col: string, id: string, entity?: any): void {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) return;
+        void localDbBridge.appendAudit(this.tenantId, {
+            action,
+            entityType: col,
+            entityId: id,
+            data: {
+                updatedAt: entity?.updatedAt || new Date().toISOString(),
+                rev: entity?.rev,
+                status: entity?.status,
+            },
+        }).catch((error) => console.warn('[Audit] append failed:', error));
     }
 
     private async persistAuxCollectionToNas(col: AuxCollectionName): Promise<boolean> {
@@ -3601,11 +3784,17 @@ export class DataService {
     private async hydrateAuxCollectionFromNas(col: AuxCollectionName): Promise<void> {
         if (!this.tenantId) return;
         try {
-            const payload = await auxCollectionMirrorService.readBest(
-                this.tenantId,
-                col,
-                this.getStoreGatewayUrls()
-            );
+            const payload = this.shouldUseWebMirrorClient()
+                ? await auxCollectionMirrorService.readViaGateway(
+                      this.tenantId,
+                      col,
+                      this.getStoreGatewayUrls()
+                  )
+                : await auxCollectionMirrorService.readBest(
+                      this.tenantId,
+                      col,
+                      this.getStoreGatewayUrls()
+                  );
             if (!payload) return;
             if (payload.deletedItems?.length) {
                 if (applyAuxTombstonesFromList(this.auxTombstones[col], payload.deletedItems)) {
@@ -3869,9 +4058,9 @@ export class DataService {
             try {
                 // 콜드 스타트: 캐시 무시하고 핫 파일 로드
                 chatMirrorService.invalidateCache();
-                const payload = this.getIsElectron()
-                    ? await chatMirrorService.readFromNas()
-                    : await chatMirrorService.readRemote(this.tenantId!, this.getStoreGatewayUrls());
+                const payload = this.shouldUseWebMirrorClient()
+                    ? await chatMirrorService.readRemote(this.tenantId!, this.getStoreGatewayUrls())
+                    : await chatMirrorService.readFromNas();
 
                 if (payload?.reads) {
                     this.chatReads = mergeChatReads({}, payload.reads);
@@ -3884,6 +4073,7 @@ export class DataService {
                     // 거대 핫 파일이면 백그라운드에서 월별 아카이브로 분리
                     if (
                         this.getIsElectron() &&
+                        !this.shouldUseWebMirrorClient() &&
                         payload.messages.length > HOT_CHAT_LIMIT
                     ) {
                         void chatMirrorService
@@ -3901,7 +4091,8 @@ export class DataService {
 
                 if (
                     ((this.data['messages'] || []) as ChatMessage[]).length === 0 &&
-                    localStorage.getItem(this.chatMigratedKey()) !== '1'
+                    localStorage.getItem(this.chatMigratedKey()) !== '1' &&
+                    !this.shouldUseWebMirrorClient()
                 ) {
                     await this.migrateMessagesFromFirestoreOnce();
                 }
@@ -4037,10 +4228,10 @@ export class DataService {
     private async pollChatMirror(): Promise<boolean> {
         if (!this.tenantId) return false;
         try {
-            let payload = this.getIsElectron()
-                ? await chatMirrorService.readFromNas()
-                : await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrls());
-            if (!payload?.messages && this.getIsElectron()) {
+            let payload = this.shouldUseWebMirrorClient()
+                ? await chatMirrorService.readRemote(this.tenantId, this.getStoreGatewayUrls())
+                : await chatMirrorService.readFromNas();
+            if (!payload?.messages && this.getIsElectron() && !this.shouldUseWebMirrorClient()) {
                 const gw = await this.getTrustedStoreGatewayUrl();
                 if (gw) {
                     payload = await chatMirrorService.readViaGatewayOnly(this.tenantId, gw);
@@ -4348,8 +4539,25 @@ export class DataService {
         this.notify();
     }
 
+    private bindRemoteTunnelListener() {
+        if (this.remoteTunnelListenerBound) return;
+        if (typeof window === 'undefined' || !window.electron?.onRemoteTunnelReady) return;
+        this.remoteTunnelListenerBound = true;
+        window.electron.onRemoteTunnelReady(() => {
+            if (
+                this.outsideViewerMode ||
+                this.companyNasHealthy !== true ||
+                this.companyNasChannel !== 'local'
+            ) {
+                return;
+            }
+            void this.refreshStoreGateway();
+        });
+    }
+
     private async startSyncing() {
         if (!this.tenantId) return;
+        this.bindRemoteTunnelListener();
 
         if (!auth.currentUser) {
             this.lastSyncError = 'auth-not-ready';
@@ -4427,7 +4635,22 @@ export class DataService {
         try {
             await this.pullCloudConfigDocs(localPrimary && this.localOperationalReady);
 
-            if (localPrimary && this.localOperationalReady) {
+            if (this.getIsElectron()) {
+                const ok = await this.checkCompanyNasHealth(true);
+                if (
+                    !ok &&
+                    !this.outsideViewerMode &&
+                    getTenantArchiveRootFromSettings(this.getSettingsObj())
+                ) {
+                    toast.error(
+                        '회사 NAS에 연결하지 못했습니다. 경로·Z:·사내 게이트웨이를 확인하세요.',
+                        { duration: 10000 }
+                    );
+                }
+                this.startNasHealthMonitor();
+            }
+
+            if (localPrimary && this.localOperationalReady && !this.outsideViewerMode) {
                 this.syncStatus = 'synced';
                 this.isReady = true;
                 this.notify();
@@ -4437,13 +4660,15 @@ export class DataService {
             await this.pullJoinRequests();
             this.subscribeSyncPulse();
 
-            if (!localPrimary) {
-                // 웹·태블릿 — Firebase 설정만 받으면 연결됨 표시, 미러는 백그라운드
+            if (!localPrimary || this.outsideViewerMode) {
+                // 웹·태블릿·밖 노트북 — 매장 PC 화면만 백그라운드로
                 this.isReady = true;
                 this.syncStatus = 'synced';
                 this.notify();
-                this.startNasMirrorPolling();
-                void this.hydrateWebMirrorInBackground();
+                if (!this.outsideViewerMode) {
+                    this.startNasMirrorPolling();
+                    void this.hydrateWebMirrorInBackground();
+                }
             } else if (!this.localOperationalReady) {
                 try {
                     await this.pullOperationalCloudData();
@@ -4461,7 +4686,7 @@ export class DataService {
                 }
             }
 
-            if (localPrimary) {
+            if (localPrimary && !this.outsideViewerMode) {
                 this.startNasMirrorPolling();
                 void this.migrateAuxCollectionsFromFirestoreIfNeeded();
             }
@@ -4472,25 +4697,15 @@ export class DataService {
             this.chatReads = {};
             void this.hydrateMessagesFromMirrorOnce();
 
-            // 회사 NAS 헬스체크 — 실패 시 전원 동일하게 쓰기 차단 (유예 후 잠금, 게이트웨이 보조)
-            if (this.getIsElectron()) {
-                void this.checkCompanyNasHealth(true).then((ok) => {
-                    if (!ok && getTenantArchiveRootFromSettings(this.getSettingsObj())) {
-                        toast.error(
-                            '회사 NAS에 연결하지 못했습니다. 경로·Z:·사내 게이트웨이를 확인하세요.',
-                            { duration: 10000 }
-                        );
-                    }
-                });
-                this.startNasHealthMonitor();
-            }
-
-            if (!localPrimary && !this.webMirrorReady && this.getAllJobs().length === 0) {
-                // hydrateWebMirrorInBackground 가 처리 — 여기서는 게이트웨이 URL 없을 때만 안내
+            if (
+                this.shouldUseWebMirrorClient() &&
+                !this.webMirrorReady &&
+                this.getAllJobs().length === 0
+            ) {
                 const gateway = this.getStoreGatewayUrls();
                 if (gateway.length === 0) {
                     toast.warning(
-                        '웹/태블릿은 매장 PC NAS 연동이 필요합니다. 관리자 PC에서 NAS 경로 저장 후, 같은 Wi‑Fi에서 접속해 주세요.',
+                        '매장 PC에서 프로그램이 켜져 있으면 작업판이 보입니다.',
                         { duration: 8000 }
                     );
                 }
@@ -4590,78 +4805,28 @@ export class DataService {
             throw new Error('회사 입장 코드는 6자 이상이어야 합니다.');
         }
 
-        const tenantRef = doc(collection(firestore, 'tenants'));
-        const tenantId = tenantRef.id;
-        const now = new Date().toISOString();
-        const ownerName = user.displayName || user.email?.split('@')[0] || '대표';
-        const ownerEmail = user.email || '';
         const ownerPhoneFormatted = formatPhoneNumber(String(ownerPhone || '').trim());
         if (!ownerPhoneFormatted || !isValidPhoneNumber(ownerPhoneFormatted)) {
             throw new Error('관리자 연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
         }
 
-        const staffCount = Math.max(1, Math.min(999, initialStaffCount));
-        const plan = staffCountToPlanCode(Math.min(staffCount, AD_TIER_MAX), 'ad');
-        const paymentStatus = tierToPaymentStatus('ad');
-
-        const tenantData: Tenant = {
-            id: tenantId,
+        void initialStaffCount;
+        const tenantId = await createTenantSecure({
             name: name.trim(),
-            ownerId: ownerUid,
-            plan: plan as Tenant['plan'],
-            createdAt: now,
             businessNumber: businessNumber?.trim() || '',
             joinCode: joinCode.trim(),
             ownerPhone: ownerPhoneFormatted,
-            contactPhone: ownerPhoneFormatted,
-        };
-
+        });
         const defaultSettings = this.getDefaultSettings(name.trim());
         if (businessNumber?.trim()) {
             defaultSettings.companyInfo.businessNumber = businessNumber.trim();
         }
         defaultSettings.companyInfo.phone = ownerPhoneFormatted;
-
-        const batch = writeBatch(firestore);
-        batch.set(tenantRef, {
-            ...tenantData,
-            paymentStatus,
-            maxStaff: Math.min(staffCount, AD_TIER_MAX),
-            lastActiveAt: now,
-            appVersion: APP_VERSION,
-            lastAppVersion: APP_VERSION,
-        });
-        batch.set(doc(firestore, 'users', ownerUid), {
-            uid: ownerUid,
-            id: ownerUid,
-            email: ownerEmail,
-            displayName: ownerName,
-            name: ownerName,
-            photoURL: user.photoURL || '',
-            avatarUrl: user.photoURL || '',
-            contactInfo: ownerPhoneFormatted,
-            tenantId,
-            role: 'admin',
-            createdAt: now,
-        }, { merge: true });
-        await batch.commit();
-
-        // 2단계: users에 tenantId 반영 후 staff/settings 생성 (동일 배치 시 rules에서 isMember 미충족)
-        const batch2 = writeBatch(firestore);
-        batch2.set(doc(firestore, 'tenants', tenantId, 'settings', 'main'), defaultSettings);
-        batch2.set(doc(firestore, 'tenants', tenantId, 'staff', ownerUid), {
-            id: ownerUid,
-            uid: ownerUid,
-            name: ownerName,
-            role: '관리자',
-            phone: ownerPhoneFormatted,
-            avatarUrl: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${encodeURIComponent(ownerName)}`,
-            active: true,
-            email: ownerEmail,
-            loginId: ownerEmail.toLowerCase(),
-            joinDate: now,
-        });
-        await batch2.commit();
+        await setDoc(
+            doc(firestore, 'tenants', tenantId, 'settings', 'main'),
+            defaultSettings,
+            { merge: true }
+        );
         this.setTenant(tenantId);
         return tenantId;
     }
@@ -4689,49 +4854,7 @@ export class DataService {
     private async searchTenantsOnce(nameQuery: string): Promise<Tenant[]> {
         const term = nameQuery.trim();
         if (!term) return [];
-
-        const mapTenant = (d: any) => ({ id: d.id, ...d.data() } as Tenant);
-        const tenantsCol = collection(firestore, 'tenants');
-        const lower = term.toLowerCase();
-        const dedupeById = (rows: Tenant[]) => {
-            const seen = new Set<string>();
-            return rows.filter((t) => {
-                if (!t.id || seen.has(t.id)) return false;
-                seen.add(t.id);
-                return true;
-            });
-        };
-
-        // 1) 정확히 일치
-        const exactSnap = await getDocs(
-            query(tenantsCol, where('name', '==', term), limit(10))
-        );
-        if (!exactSnap.empty) {
-            return dedupeById(exactSnap.docs.map(mapTenant));
-        }
-
-        // 2) 접두사 검색 — "상록" → "상록인쇄" 등
-        try {
-            const prefixSnap = await getDocs(
-                query(
-                    tenantsCol,
-                    where('name', '>=', term),
-                    where('name', '<=', term + '\uf8ff'),
-                    limit(25)
-                )
-            );
-            const prefixMatches = dedupeById(prefixSnap.docs.map(mapTenant)).filter((t) =>
-                (t.name || '').toLowerCase().includes(lower)
-            );
-            if (prefixMatches.length > 0) {
-                return prefixMatches;
-            }
-        } catch (e) {
-            console.warn('[searchTenants] prefix query failed:', e);
-        }
-
-        // 비필터 tenants dump는 보안상 금지 — 접두사/정확 일치만 사용
-        return [];
+        return (await searchTenantsPublic(term)) as Tenant[];
     }
 
     // --- CRUD Methods (Local JSON Based) ---
@@ -4810,6 +4933,24 @@ export class DataService {
             console.error('[LicenseMonitor] Failed to report tenant session start:', e);
             // 다음 기회에 재시도 가능하도록
             this.tenantSessionStartReported = false;
+        }
+    }
+
+    /** 종료·업데이트 직전 디바운스/대기 중인 NAS 저장을 즉시 완료 */
+    async flushPendingOperationalWrites(): Promise<boolean> {
+        if (!this.tenantId) return true;
+        const tenantId = this.tenantId;
+        try {
+            await this.flushPersistMessagesToNas();
+            await jobArchiveService.flushPendingQueue(tenantId);
+            if (!this.isWebMirrorMode()) {
+                const mirrored = await this.flushLiveMirrorPushNow();
+                if (!mirrored && this.isLocalPrimaryMode()) return false;
+            }
+            return true;
+        } catch (error) {
+            console.error('[DataService] pending write flush failed:', error);
+            return false;
         }
     }
 
@@ -4897,6 +5038,7 @@ export class DataService {
         if (this.tenantId) {
             if (this.isLocalPrimaryMode() && this.isLocalOperationalCollection(col)) {
                 await this.persistToLocalCollection(col, newEntity);
+                this.recordLocalAudit('create', col, id, newEntity);
                 if (col === 'clients') {
                     // 거래처 자동 등록은 NAS에 바로 반영해야 미러 폴링에 덮이지 않음
                     this.flushLiveMirrorPushNow();
@@ -5101,6 +5243,7 @@ export class DataService {
 
         try {
             await this.persistEntity(col, id, updated);
+            this.recordLocalAudit('update', col, id, updated);
         } catch (e) {
             throw e;
         }
@@ -5203,6 +5346,7 @@ export class DataService {
             if (this.isLocalPrimaryMode() && col === 'jobs') {
                 const ok = await localDbBridge.deleteJob(this.tenantId, id);
                 if (!ok) throw new Error('local-db-job-delete-failed');
+                this.recordLocalAudit('delete', col, id);
                 try {
                     const docRef = doc(firestore, 'tenants', this.tenantId, col, id);
                     await deleteDoc(docRef);
@@ -5216,12 +5360,14 @@ export class DataService {
             if (this.isLocalPrimaryMode() && col === 'clients') {
                 const ok = await localDbBridge.deleteClient(this.tenantId, id);
                 if (!ok) throw new Error('local-db-client-delete-failed');
+                this.recordLocalAudit('delete', col, id);
                 this.flushLiveMirrorPushNow();
                 return;
             }
             if (this.isLocalPrimaryMode() && this.isAuxCollection(col)) {
                 const okLocal = await localDbBridge.deleteAuxEntity(this.tenantId, col, id);
                 if (!okLocal) throw new Error(`local-db-${col}-delete-failed`);
+                this.recordLocalAudit('delete', col, id);
                 const okNas = await this.persistAuxCollectionToNas(col);
                 if (!okNas) {
                     throw new Error(
@@ -5324,10 +5470,8 @@ export class DataService {
 
         // 상품·후가공: NAS(+로컬 SQLite)만 — Firestore 조각 저장 금지 (옛 클라우드값이 롤백하던 원인)
         if (this.isNasMasterSetting(name)) {
-            if (this.isWebMirrorMode()) {
-                throw new Error(
-                    '상품/후가공은 매장 PC 앱에서 회사 NAS에 저장됩니다. PC 앱에서 수정해 주세요.'
-                );
+            if (this.isWebMirrorMode() || this.isOutsideViewerMode()) {
+                throw new Error('web-readonly-jobs');
             }
             if (this.tenantId && this.isLocalPrimaryMode()) {
                 await localDbBridge.saveSettings(this.tenantId, settings);
@@ -5397,6 +5541,58 @@ export class DataService {
     }
 
     // --- Public Business Methods ---
+    private async commitLocalJobAndClients(
+        job: Job,
+        clients: Client[],
+        previousJob?: Job
+    ): Promise<Job> {
+        if (!this.tenantId || !this.isLocalPrimaryMode()) {
+            throw new Error('local-primary-required');
+        }
+        const now = new Date().toISOString();
+        const jobPayload: Job = {
+            ...job,
+            id: job.id || this.generateId(),
+            createdAt: job.createdAt || now,
+            updatedAt: now,
+            rev: previousJob ? nextJobRev(previousJob) : (job.rev ?? 1),
+        };
+        const clientPayloads = clients.map((client) => {
+            const previous = this.getClients().find((row) => row.id === client.id);
+            return {
+                ...client,
+                updatedAt: now,
+                rev: previous ? nextClientRev(previous) : (client.rev ?? 1),
+            };
+        });
+        const saved = await localDbBridge.upsertJobAndClients(
+            this.tenantId,
+            jobPayload,
+            clientPayloads
+        );
+        if (!saved) {
+            throw new Error('작업과 선수금 원장을 함께 저장하지 못했습니다.');
+        }
+
+        for (const client of clientPayloads) {
+            const list = this.data.clients || [];
+            const index = list.findIndex((row: Client) => row.id === client.id);
+            if (index >= 0) {
+                list[index] = client;
+                this.data.clients = [...list];
+            }
+        }
+        this.placeJobInLocalCache(jobPayload);
+        this.rebuildMergedJobs();
+        this.notify();
+        this.recordLocalAudit(previousJob ? 'update' : 'create', 'jobs', jobPayload.id, jobPayload);
+        for (const client of clientPayloads) {
+            this.recordLocalAudit('update', 'clients', client.id, client);
+        }
+        this.scheduleLiveMirrorPush();
+        return jobPayload;
+    }
+
     async addJob(job: Job) {
         const prepaidResult = resolvePrepaidOnJobUpdate(
             {
@@ -5422,6 +5618,29 @@ export class DataService {
                     '선수금이 다른 작업에서 변경되었습니다. 화면을 새로고침한 뒤 다시 저장해 주세요.'
                 );
             }
+        }
+
+        if (this.isLocalPrimaryMode() && prepaidResult.clientUpdates.length > 0) {
+            const clientPayloads = prepaidResult.clientUpdates.flatMap((clientUpdate) => {
+                const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+                if (!client) return [];
+                return [{
+                    ...client,
+                    prepaidBalance: clientUpdate.prepaidBalance,
+                    prepaidLedger: clientUpdate.ledgerEntry
+                        ? appendPrepaidLedger(client, clientUpdate.ledgerEntry)
+                        : client.prepaidLedger,
+                }];
+            });
+            const savedJob = await this.commitLocalJobAndClients(jobToSave, clientPayloads);
+            if (prepaidResult.warning) {
+                toast.warning(prepaidResult.warning, { duration: 6000 });
+            } else if (prepaidResult.notice) {
+                toast.success(prepaidResult.notice, { duration: 5000 });
+            }
+            this.ensureQuotesSync();
+            await this.ensureQuoteForJob(savedJob);
+            return;
         }
 
         for (const clientUpdate of prepaidResult.clientUpdates) {
@@ -5580,6 +5799,43 @@ export class DataService {
                 return;
             }
 
+            if (this.isLocalPrimaryMode() && prepaidResult.clientUpdates.length > 0) {
+                const prepaidDelta =
+                    (prepaidResult.job.prepaidAppliedAmount || 0) - (oldJob.prepaidAppliedAmount || 0);
+                if (prepaidDelta !== 0) {
+                    const history = [...(jobToSave.history || [])];
+                    history.push({
+                        timestamp: new Date().toISOString(),
+                        staffId: 'system',
+                        action: prepaidDelta > 0 ? '선불 차감' : '선불 복구',
+                        details:
+                            prepaidDelta > 0
+                                ? `선불 ${prepaidDelta.toLocaleString()}원 차감 (잔액 반영)`
+                                : `선불 ${Math.abs(prepaidDelta).toLocaleString()}원 복구`,
+                    });
+                    jobToSave = { ...jobToSave, history };
+                }
+                const clientPayloads = prepaidResult.clientUpdates.flatMap((clientUpdate) => {
+                    const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
+                    if (!client) return [];
+                    return [{
+                        ...client,
+                        prepaidBalance: clientUpdate.prepaidBalance,
+                        prepaidLedger: clientUpdate.ledgerEntry
+                            ? appendPrepaidLedger(client, clientUpdate.ledgerEntry)
+                            : client.prepaidLedger,
+                    }];
+                });
+                jobToSave = await this.commitLocalJobAndClients(jobToSave, clientPayloads, oldJob);
+                if (prepaidResult.warning) {
+                    toast.warning(prepaidResult.warning, { duration: 6000 });
+                } else if (prepaidResult.notice) {
+                    toast.success(prepaidResult.notice, { duration: 5000 });
+                }
+                await this.syncQuoteFromJob(jobToSave);
+                return;
+            }
+
             for (const clientUpdate of prepaidResult.clientUpdates) {
                 const client = this.getClients().find((row) => row.id === clientUpdate.clientId);
                 if (!client) continue;
@@ -5702,6 +5958,7 @@ export class DataService {
     }
 
     async saveJobsPartial(jobs: Job[]) {
+        this.assertOperationalWriteAllowed('jobs');
         const updates: { id: string; updated: Job }[] = [];
 
         for (const job of jobs) {
@@ -6349,7 +6606,7 @@ export class DataService {
             }
         }
 
-        if (this.isWebMirrorMode()) {
+        if (this.isWebMirrorMode() || this.isOutsideViewerMode()) {
             const src = await this.loadQuoteHeaderImageViaGateway();
             if (src) {
                 this.quoteHeaderSrcCache = { key: cacheKey, src };
@@ -6665,7 +6922,213 @@ export class DataService {
         });
         await this.updateSetting('kanbanLayout', layout);
     }
-    async saveSmsConfig(config: any) { await this.updateSetting('smsConfig', config); }
+    async saveSmsConfig(config: any) {
+        const { apiKey: _apiKey, apiSecret: _apiSecret, ...safeConfig } = config || {};
+        await this.updateSetting('smsConfig', {
+            ...safeConfig,
+            apiKey: '',
+            apiSecret: '',
+            secretLocation: 'server',
+        });
+    }
+    getSmsPrepaid(): SmsPrepaidState {
+        return normalizeSmsPrepaid(this.getSettingsObj()['smsPrepaid'], this.getTenantId());
+    }
+    isSmsPrepaidEnabled(): boolean {
+        return this.getSmsPrepaid().enabled === true;
+    }
+    private async persistSmsPrepaid(next: SmsPrepaidState) {
+        const tenantId = this.getTenantId();
+        const normalized = normalizeSmsPrepaid({
+            ...next,
+            updatedAt: new Date().toISOString(),
+        }, tenantId);
+        await this.updateSetting('smsPrepaid', normalized);
+        return normalized;
+    }
+    async saveSmsPrepaid(patch: Partial<SmsPrepaidState>) {
+        const cur = this.getSmsPrepaid();
+        return this.persistSmsPrepaid({ ...cur, ...patch });
+    }
+    async setSmsPrepaidEnabled(enabled: boolean) {
+        return this.saveSmsPrepaid({ enabled });
+    }
+    async requestSmsPrepaidCharge(amount: number, depositorName?: string) {
+        const won = Math.floor(Number(amount) || 0);
+        if (!isPrepaidChargeAmount(won)) {
+            throw new Error('충전 금액은 1만원부터 5만원까지입니다.');
+        }
+        const name = String(depositorName || '').trim().slice(0, 40);
+        if (name.length < 2) throw new Error('입금자명을 입력해 주세요.');
+        const cur = this.getSmsPrepaid();
+        if (!cur.enabled) throw new Error('문자 선불 크레딧이 꺼져 있습니다.');
+        const pending = {
+            id: newPrepaidId('chg'),
+            amount: won,
+            createdAt: new Date().toISOString(),
+            status: 'pending' as const,
+            depositor: name,
+        };
+        const nextPending = [...cur.pending.filter((p) => p.status === 'pending'), pending].slice(-80);
+        const saved = await this.persistSmsPrepaid({
+            ...cur,
+            depositName: name,
+            pending: nextPending,
+        });
+        return { prepaid: saved, pending };
+    }
+    async confirmSmsPrepaidPending(pendingId: string, note?: string) {
+        const cur = this.getSmsPrepaid();
+        const item = cur.pending.find((p) => p.id === pendingId);
+        if (!item || item.status !== 'pending') throw new Error('확인할 충전 요청이 없습니다.');
+        const now = new Date().toISOString();
+        const balance = cur.balance + item.amount;
+        const ledger = [
+            ...cur.ledger,
+            {
+                id: newPrepaidId('led'),
+                at: now,
+                type: 'charge' as const,
+                amount: item.amount,
+                balanceAfter: balance,
+                note: note || `${item.amount.toLocaleString('ko-KR')}원 입금 확인`,
+            },
+        ].slice(-200);
+        const pending = cur.pending.map((p) =>
+            p.id === pendingId ? { ...p, status: 'confirmed' as const, matchedAt: now, note } : p
+        );
+        return this.persistSmsPrepaid({ ...cur, balance, ledger, pending });
+    }
+    async cancelSmsPrepaidPending(pendingId: string) {
+        const cur = this.getSmsPrepaid();
+        const pending = cur.pending.map((p) =>
+            p.id === pendingId && p.status === 'pending'
+                ? { ...p, status: 'cancelled' as const, matchedAt: new Date().toISOString() }
+                : p
+        );
+        return this.persistSmsPrepaid({ ...cur, pending });
+    }
+    async ingestSmsPrepaidNotice(text: string, source = 'paste') {
+        const cur = this.getSmsPrepaid();
+        if (!cur.enabled) {
+            return { matched: false as const, reason: '선불 크레딧이 꺼져 있습니다.' };
+        }
+        const parsed = parseBankDepositSms(text);
+        const pushUnmatched = async (reason: string) => {
+            const unmatched = [
+                ...cur.unmatched,
+                {
+                    id: newPrepaidId('um'),
+                    at: new Date().toISOString(),
+                    text: String(text || '').slice(0, 800),
+                    reason,
+                },
+            ].slice(-40);
+            await this.persistSmsPrepaid({ ...cur, unmatched });
+            return { matched: false as const, reason };
+        };
+        if (!parsed) return pushUnmatched('입금 금액·이름을 읽지 못했습니다.');
+        const open = cur.pending.filter((p) => p.status === 'pending');
+        let candidates = open.filter((p) => p.amount === parsed.amount);
+        if (parsed.depositor) {
+            const byName = candidates.filter((p) =>
+                depositorsMatch(parsed.depositor, p.depositor || cur.depositName)
+            );
+            if (byName.length > 0) candidates = byName;
+            else if (candidates.length > 0 && !depositorsMatch(parsed.depositor, cur.depositName)) {
+                return pushUnmatched(`입금자명 불일치 (${parsed.depositor})`);
+            }
+        }
+        if (candidates.length === 0) {
+            return pushUnmatched(`대기 중인 ${parsed.amount.toLocaleString('ko-KR')}원 충전이 없습니다.`);
+        }
+        if (candidates.length > 1) {
+            return pushUnmatched('같은 금액 대기 건이 여러 개라 자동 확인하지 않았습니다.');
+        }
+        await this.confirmSmsPrepaidPending(
+            candidates[0].id,
+            source === 'gateway' ? '관리 폰 알림 자동 확인' : '입금 문자 확인'
+        );
+        return { matched: true as const, amount: parsed.amount, pendingId: candidates[0].id };
+    }
+    async consumeSmsPrepaid(cost: number, note?: string) {
+        const won = Math.floor(Number(cost) || 0);
+        const cur = this.getSmsPrepaid();
+        if (!cur.enabled) return { ok: true as const, deducted: false, cost: 0, balance: cur.balance };
+        if (won <= 0) return { ok: true as const, deducted: false, cost: 0, balance: cur.balance };
+        if (cur.balance < won) {
+            return {
+                ok: false as const,
+                deducted: false,
+                cost: won,
+                balance: cur.balance,
+                message: `문자 크레딧이 부족합니다. 잔액 ${cur.balance.toLocaleString('ko-KR')}원, 필요 ${won.toLocaleString('ko-KR')}원`,
+            };
+        }
+        const balance = cur.balance - won;
+        const ledger = [
+            ...cur.ledger,
+            {
+                id: newPrepaidId('led'),
+                at: new Date().toISOString(),
+                type: 'debit' as const,
+                amount: won,
+                balanceAfter: balance,
+                note: note || `문자 발송 ${won.toLocaleString('ko-KR')}원`,
+            },
+        ].slice(-200);
+        await this.persistSmsPrepaid({ ...cur, balance, ledger });
+        return { ok: true as const, deducted: true, cost: won, balance };
+    }
+    async refundSmsPrepaid(cost: number, note?: string) {
+        const won = Math.floor(Number(cost) || 0);
+        const cur = this.getSmsPrepaid();
+        if (!cur.enabled || won <= 0) return cur;
+        const balance = cur.balance + won;
+        const ledger = [
+            ...cur.ledger,
+            {
+                id: newPrepaidId('led'),
+                at: new Date().toISOString(),
+                type: 'refund' as const,
+                amount: won,
+                balanceAfter: balance,
+                note: note || '발송 실패 환불',
+            },
+        ].slice(-200);
+        return this.persistSmsPrepaid({ ...cur, balance, ledger });
+    }
+    async consumeSmsPrepaidForMessage(text: string) {
+        const cost = estimateSmsCost(text);
+        return this.consumeSmsPrepaid(cost, `문자 발송 (${cost}원)`);
+    }
+    async drainSmsPrepaidGatewayInbox(): Promise<number> {
+        try {
+            const info = await getLocalGatewayInfo();
+            if (!info?.baseUrl) return 0;
+            const tenantId = this.getTenantId();
+            const token = getGatewayAuthToken(tenantId);
+            const url = `${info.baseUrl.replace(/\/$/, '')}/api/v1/sms-prepaid-inbox?drain=1${
+                tenantId ? `&tenantId=${encodeURIComponent(tenantId)}` : ''
+            }`;
+            const res = await fetchWithTimeout(url, {
+                headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+            }, 4000);
+            if (!res.ok) return 0;
+            const json = await res.json().catch(() => null);
+            const items = Array.isArray(json?.items) ? json.items : [];
+            let applied = 0;
+            for (const item of items) {
+                const text = String(item?.text || '').trim();
+                if (!text) continue;
+                await this.ingestSmsPrepaidNotice(text, 'gateway');
+                applied += 1;
+            }
+            return applied;
+        } catch {
+            return 0;
+        }
+    }
     isReceptionAssistEnabled(): boolean {
         const raw = this.getSettingsObj()['receptionAssist'] as { enabled?: boolean } | undefined;
         if (typeof raw?.enabled === 'boolean') return raw.enabled;
@@ -6717,6 +7180,13 @@ export class DataService {
         try {
             const backup = JSON.parse(json);
             if (!backup || typeof backup !== 'object') return false;
+            if (Array.isArray(backup.archivedJobs)) {
+                this.archivedJobs = backup.archivedJobs;
+                this.rebuildArchiveMergedJobs();
+                if (this.tenantId && backup.archivedJobs.length > 0) {
+                    await jobArchiveService.appendJobs(this.tenantId, backup.archivedJobs);
+                }
+            }
             
             const collections = ['jobs', 'staff', 'clients', 'quotes', 'instructions', 'messages', 'leaves', 'papers', 'settings'];
             
@@ -6767,7 +7237,14 @@ export class DataService {
             return false;
         }
     }
-    exportData(): string { return JSON.stringify(this.data); }
+    exportData(): string {
+        return JSON.stringify({
+            schemaVersion: 2,
+            exportedAt: new Date().toISOString(),
+            ...this.data,
+            archivedJobs: this.archivedJobs,
+        });
+    }
 
     // --- Getters (Real-time data access) ---
     getSettingsObj() { return this.data['settings']?.[0] || {}; }
@@ -6908,7 +7385,10 @@ export class DataService {
         };
         return merged;
     }
-    getSmsConfig() { return this.getSettingsObj()['smsConfig'] || {}; }
+    getSmsConfig() {
+        const config = this.getSettingsObj()['smsConfig'] || {};
+        return { ...config, apiKey: '', apiSecret: '', secretLocation: 'server' };
+    }
     getRoles(): string[] {
         const raw = this.getSettingsObj()['roles']?.roles;
         if (!raw?.length) return DEFAULT_STAFF_ROLES;
@@ -7028,7 +7508,12 @@ export class DataService {
             return true;
         }
 
-        const backupData = JSON.stringify(this.data, null, 2);
+        const backupData = JSON.stringify({
+            schemaVersion: 2,
+            exportedAt: new Date().toISOString(),
+            ...this.data,
+            archivedJobs: this.archivedJobs,
+        }, null, 2);
         const fileName = `ezprint_backup_${todayStr}.json`;
         const sep = navigator.platform.toLowerCase().includes('win') ? '\\' : '/';
 

@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MessageCircle, X, Send, User, Bell, Users, Volume2, VolumeX, ArrowLeft, Moon, Sun, MessageSquare, AlertTriangle, Palette, Trello } from 'lucide-react';
-import { db } from '../../services/dataService';
+import { db, getErrorMessage } from '../../services/dataService';
 import { ChatMessage, Staff } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -13,6 +13,7 @@ import {
 } from '../../utils/staffMatch';
 import { presenceSessionService, type PresenceSessionEntry } from '../../services/presenceSessionService';
 import { resolveStaffOnline } from '../../utils/staffSession';
+import { toast } from 'sonner';
 
 function notifyDesktopChat(msg: ChatMessage, senderName: string) {
   if (typeof window === 'undefined' || !window.electron?.chatNotify) return;
@@ -463,7 +464,10 @@ export const ChatWidget: React.FC = () => {
       type: isCall ? 'call' : 'text'
     };
 
-    db.addMessage(msg);
+    void db.addMessage(msg).catch((error) => {
+      toast.error(getErrorMessage(error));
+      setMessages((prev) => prev.filter((item) => item.id !== msg.id));
+    });
     setMessages(prev => [...prev, msg]); // Optimistic update
     // 답장 = 해당 대화 확인 — 읽음 커서도 같이 NAS 반영
     if (myStaff?.id) {

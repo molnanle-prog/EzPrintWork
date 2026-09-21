@@ -1,6 +1,6 @@
 {
   "name": "ezprintwork",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "author": "EzPrintWork",
   "description": "인쇄소 통합 관리 시스템",
   "main": "electron/main.js",
@@ -14,13 +14,16 @@
     "deploy": "node scripts/deploy.js",
     "deploy:app": "node scripts/deploy-app.js",
     "deploy:all": "node scripts/deploy-app.js",
-    "test:smoke": "node scripts/verify_firestore_rules.mjs && npx -y tsx scripts/smoke_admin_access_ts.ts && npm run test:smoke:staff",
+    "test:smoke": "npm run test:rules:emulator && npx -y tsx scripts/smoke_admin_access_ts.ts && npm run test:smoke:staff",
+    "test:rules:emulator": "firebase emulators:exec --only firestore \"node scripts/verify_firestore_rules.mjs\"",
     "publish:release": "node scripts/publish-github-release.js",
     "release:all": "node scripts/release-and-sync.mjs",
     "sync:downloads": "node scripts/sync-github-latest-yml.mjs",
     "sync:downloads:github": "node scripts/github-download-meta.mjs latest",
     "setup:home": "node scripts/home-setup.mjs",
-    "test:smoke:staff": "npx -y tsx scripts/smoke_staff_match.ts && npx -y tsx scripts/smoke_staff_seats.ts && npx -y tsx scripts/smoke_staff_login_recovery.ts"
+    "test:smoke:staff": "npx -y tsx scripts/smoke_staff_match.ts && npx -y tsx scripts/smoke_staff_seats.ts && npx -y tsx scripts/smoke_staff_login_recovery.ts",
+    "test:smoke:local": "npx -y tsx scripts/smoke_legacy_accounts.ts && npx -y tsx scripts/smoke_feature_suite.ts && node scripts/smoke_subscription_state.mjs && npm run test:smoke:staff",
+    "test:local": "npm run lint && npm run test:smoke:local"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.1.0",
@@ -42,12 +45,11 @@
     "papaparse": "^5.5.3",
     "react": "^19.2.3",
     "react-dom": "^19.2.3",
-    "react-router-dom": "^7.13.1",
+    "react-router-dom": "^7.18.4",
     "react-to-print": "^3.2.0",
     "recharts": "^3.6.0",
     "sonner": "^2.0.7",
-    "tesseract.js": "^5.0.4",
-    "xlsx": "^0.18.5"
+    "tesseract.js": "^5.0.4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

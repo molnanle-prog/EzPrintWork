@@ -11,6 +11,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { LocalGateway } = require('../electron/localGateway.js');
+const SMOKE_TOKEN = 'smoke-token-at-least-16-chars';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ezpw-presence-'));
 const gateway = new LocalGateway();
@@ -26,7 +27,7 @@ async function main() {
   gateway.setConfig({
     archiveRoot: tmpRoot,
     tenantId: 'tenant-smoke',
-    gatewayToken: 'smoke-token',
+    gatewayToken: SMOKE_TOKEN,
   });
 
   const info = await gateway.start();
@@ -36,7 +37,7 @@ async function main() {
 
   const headers = {
     'Content-Type': 'application/json',
-    'X-Ezpw-Gateway-Token': 'smoke-token',
+    'X-Ezpw-Gateway-Token': SMOKE_TOKEN,
   };
 
   // GET empty

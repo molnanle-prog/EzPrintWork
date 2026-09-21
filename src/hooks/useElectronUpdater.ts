@@ -138,6 +138,7 @@ export function useElectronUpdater() {
                     break;
 
                 case 'downloaded':
+                case 'flushing':
                 case 'installing':
                     // 메인이 이미 quitAndInstall 함 — 렌더러에서 중복 설치 호출하지 않음
                     isDownloadingRef.current = false;
@@ -152,6 +153,8 @@ export function useElectronUpdater() {
                             status.message ||
                             (status.phase === 'downloaded'
                                 ? '다운로드 완료 — 설치 프로그램을 실행합니다.'
+                                : status.phase === 'flushing'
+                                  ? '저장 중인 작업을 안전하게 마무리하고 있습니다.'
                                 : '설치 프로그램을 실행합니다.'),
                     });
                     break;

@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { Client, ClientContact, PrepaidLedgerEntry, JobNotebook } from '../../types';
-import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History, ArrowUpDown, NotebookPen } from 'lucide-react';
+import { Plus, Trash2, Building2, Phone, User, Edit2, X, Save, ScanLine, Loader2, Camera, Briefcase, Mail, Hash, Smartphone, Search, GitMerge, ArrowRight, CheckCircle2, Wallet, History, ArrowUpDown, NotebookPen, MessageSquare } from 'lucide-react';
 import { createWorker } from 'tesseract.js';
 import { useDialog } from '../../contexts/DialogContext';
 import {
@@ -16,6 +16,7 @@ import { getClientMergePreview, mergeClients } from '../../utils/clientMerge';
 import { normalizePrepaidBalance, canDeletePrepaidLedgerEntry, getJobOutstandingAmount } from '../../utils/prepaidBalance';
 import { useAuth } from '../../contexts/AuthContext';
 import { ClientNotebookModal } from '../common/ClientNotebookModal';
+import { ClientGroupSmsModal } from './ClientGroupSmsModal';
 import { notebookHasContent } from '../../utils/jobNotebook';
 import { toast } from 'sonner';
 
@@ -80,6 +81,7 @@ export const ClientManager: React.FC = () => {
   const [showPrepaidHistoryModal, setShowPrepaidHistoryModal] = useState(false);
   const [deletingPrepaidEntryId, setDeletingPrepaidEntryId] = useState<string | null>(null);
   const [isNotebookOpen, setIsNotebookOpen] = useState(false);
+  const [isGroupSmsOpen, setIsGroupSmsOpen] = useState(false);
   const [formData, setFormData] = useState<Partial<Client>>({
       name: '', 
       businessRegistrationNumber: '',
@@ -539,6 +541,14 @@ export const ClientManager: React.FC = () => {
             거래처 관리
           </h3>
           <div className="flex flex-wrap gap-2">
+          <button
+            onClick={() => setIsGroupSmsOpen(true)}
+            disabled={clients.length === 0}
+            title="거래처를 골라 휴대폰 담당자에게 단체 문자를 보냅니다"
+            className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 shadow-sm flex items-center gap-2 font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+             <MessageSquare size={18} /> 단체문자
+          </button>
           {canManageClientMaster && (
           <button 
             onClick={openMergeModal}
@@ -780,7 +790,7 @@ export const ClientManager: React.FC = () => {
                       )}
                       
                       {client.contacts && client.contacts.length > 2 && (
-                          <div className="text-sm text-slate-400 pl-6 italic">
+                          <div className="text-sm text-slate-400 italic">
                               + 외 {client.contacts.length - 2}명
                           </div>
                       )}
@@ -1553,6 +1563,12 @@ export const ClientManager: React.FC = () => {
               showAlert(getErrorMessage(error));
             }
           }}
+        />
+      )}
+      {isGroupSmsOpen && (
+        <ClientGroupSmsModal
+          clients={clients}
+          onClose={() => setIsGroupSmsOpen(false)}
         />
       )}
     </div>

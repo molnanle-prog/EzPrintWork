@@ -1307,11 +1307,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     const electronApi = typeof window !== 'undefined' ? window.electron : undefined;
     if (electronApi?.onAppSessionEnding && electronApi.notifyAppSessionEnded) {
-      return electronApi.onAppSessionEnding(() => {
+      const unsubscribeEnd = electronApi.onAppSessionEnding(() => {
         void (async () => {
           try {
             const opts = buildEndOpts();
             if (opts) {
+              await dataService.flushPendingOperationalWrites();
               stopPresenceSession();
               stopPresenceHeartbeat();
               await flushAppSessionEnd(opts);
@@ -1321,6 +1322,26 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           }
         })();
       });
+      const unsubscribeUpdate = electronApi.onUpdaterBeforeInstall?.(({ requestId }) => {
+        void (async () => {
+          let ok = false;
+          try {
+            ok = await dataService.flushPendingOperationalWrites();
+            const opts = buildEndOpts();
+            if (ok && opts) {
+              stopPresenceSession();
+              stopPresenceHeartbeat();
+              await flushAppSessionEnd(opts);
+            }
+          } finally {
+            electronApi.notifyUpdaterFlushReady?.(requestId, ok);
+          }
+        })();
+      });
+      return () => {
+        unsubscribeEnd();
+        unsubscribeUpdate?.();
+      };
     }
 
     if (!currentUser?.tenantId || !firebaseUser?.uid) return;

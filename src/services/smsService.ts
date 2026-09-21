@@ -1,5 +1,6 @@
 import { Job, SmsConfig } from '../types';
 import { db } from './dataService';
+import { estimateSmsCost, smsTypeLabel } from '../utils/smsPrepaid';
 
 /**
  * Web Crypto API를 사용한 HMAC-SHA256 시그니처 생성기 (의존성 없음)
@@ -59,39 +60,20 @@ export interface SolapiBalanceInfo {
 export const fetchSolapiBalance = async (
   config: SmsConfig
 ): Promise<{ success: boolean; data?: SolapiBalanceInfo; message?: string }> => {
-  const apiKey = config.apiKey;
-  const apiSecret = config.apiSecret;
-
-  if (!apiKey || !apiSecret) {
-    return { success: false, message: 'API Key와 Secret Key를 입력해 주세요.' };
-  }
-
-  try {
-    const authHeaders = await buildSolapiAuthHeaders(apiKey, apiSecret);
-    const response = await fetch('https://api.solapi.com/cash/v1/balance', {
-      method: 'GET',
-      headers: authHeaders,
-    });
-    const result = await response.json();
-
-    if (!response.ok) {
-      throw new Error(result.errorMessage || result.message || `HTTP Error ${response.status}`);
-    }
-
+  void config;
+  if (import.meta.env.VITE_SMS_TEST_MODE === 'true') {
     return {
       success: true,
       data: {
-        balance: Number(result.balance) || 0,
-        balanceOnly: result.balanceOnly != null ? Number(result.balanceOnly) : undefined,
-        deposit: result.deposit != null ? Number(result.deposit) : undefined,
-        point: Number(result.point) || 0,
+        balance: 0,
+        balanceOnly: 0,
+        deposit: 0,
+        point: 0,
       },
+      message: '로컬 모의 잔액입니다.',
     };
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : '잔액 조회 실패';
-    console.error('Solapi balance fetch failed:', err);
-    return { success: false, message };
   }
+  return { success: false, message: 'SMS 비밀키는 서버에만 설정할 수 있습니다.' };
 };
 
 export const sendSmsViaSolapi = async (
@@ -99,14 +81,12 @@ export const sendSmsViaSolapi = async (
   text: string,
   config: SmsConfig
 ): Promise<{ success: boolean; message: string }> => {
-  const apiKey = config.apiKey;
-  const apiSecret = config.apiSecret;
   const senderNumber = config.senderNumber;
 
-  if (!apiKey || !apiSecret || !senderNumber) {
+  if (!senderNumber) {
     return {
       success: false,
-      message: '솔라피 API Key, API Secret Key, 발신번호를 모두 입력해 주세요.'
+      message: '발신번호를 입력해 주세요.'
     };
   }
 
@@ -117,40 +97,54 @@ export const sendSmsViaSolapi = async (
     return { success: false, message: '수신인 연락처가 유효하지 않습니다.' };
   }
 
+  void cleanFrom;
+  const prepaid = await db.consumeSmsPrepaidForMessage(text);
+  if (!prepaid.ok) {
+    return { success: false, message: prepaid.message || '문자 크레딧이 부족합니다.' };
+  }
+
+  const sendResult = async (): Promise<{ success: boolean; message: string }> => {
+    if (import.meta.env.VITE_SMS_TEST_MODE === 'true') {
+      console.info(`[SMS MOCK] ${cleanTo}`);
+      const kind = smsTypeLabel(text);
+      const extra = prepaid.deducted
+        ? ` 선불 ${estimateSmsCost(text)}원(${kind}) 차감, 잔액 ${prepaid.balance.toLocaleString('ko-KR')}원`
+        : '';
+      return { success: true, message: `모의 문자 발송 완료 — 실제 솔라피 비용은 없습니다.${extra}` };
+    }
+    return { success: false, message: 'SMS 서버 비밀 설정이 없어 실제 발송하지 않았습니다.' };
+  };
+
+  const result = await sendResult();
+  if (!result.success && prepaid.deducted) {
+    await db.refundSmsPrepaid(prepaid.cost, '발송 실패 환불');
+  }
+  return result;
+};
+
+/** 작업 완료 문자와 같은 경로 — API 또는 휴대폰 문자창 */
+export const sendPlainSms = async (
+  to: string,
+  text: string,
+  config: SmsConfig
+): Promise<{ success: boolean; message: string }> => {
+  const cleanTo = to.replace(/\D/g, '');
+  const body = text.trim();
+  if (!cleanTo) return { success: false, message: '수신 번호가 없습니다.' };
+  if (!body) return { success: false, message: '문자 내용을 입력해 주세요.' };
+
+  if (config.mode === 'api') {
+    return sendSmsViaSolapi(cleanTo, body, config);
+  }
+
   try {
-    const authHeaders = await buildSolapiAuthHeaders(apiKey, apiSecret);
-    const response = await fetch('https://api.solapi.com/messages/v4/send-many', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...authHeaders,
-      },
-      body: JSON.stringify({
-        messages: [
-          {
-            to: cleanTo,
-            from: cleanFrom,
-            text: text
-          }
-        ]
-      })
-    });
-
-    const result = await response.json();
-
-    if (!response.ok) {
-      throw new Error(result.errorMessage || `HTTP Error ${response.status}`);
+    if (navigator.clipboard) {
+      await navigator.clipboard.writeText(body);
     }
-
-    if (result.failedMessageCount > 0) {
-      const errorMsg = result.failedList?.[0]?.errorMessage || '발송 실패';
-      throw new Error(errorMsg);
-    }
-
-    return { success: true, message: '문자가 성공적으로 전송되었습니다!' };
-  } catch (err: any) {
-    console.error('Solapi SMS sending failed:', err);
-    return { success: false, message: `문자 발송 실패: ${err.message}` };
+    window.open(`sms:${cleanTo}?body=${encodeURIComponent(body)}`, '_blank');
+    return { success: true, message: '휴대폰 문자창을 열었습니다.' };
+  } catch (e: any) {
+    return { success: false, message: e?.message || '문자창을 열지 못했습니다.' };
   }
 };
 

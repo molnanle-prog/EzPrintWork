@@ -55,13 +55,14 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
   const [clients, setClients] = useState(() => db.getClients());
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
-  const readOnly = db.isWebMirrorMode();
+  const [readOnly, setReadOnly] = useState(() => db.isWebViewOnly());
 
   useEffect(() => {
     const refresh = () => {
       setJobs(db.getManagementCardJobs());
       setStaff(db.getStaff());
       setClients(db.getClients());
+      setReadOnly(db.isWebViewOnly());
     };
     void db.cleanupExpiredManagementCardPins().then(refresh);
     const unsub = db.subscribe(refresh);

@@ -8,6 +8,8 @@ let installScheduled = false;
 let pendingUpdateVersion = null;
 let downloadCompleteFallbackTimer = null;
 let checkInFlight = null;
+let updateDownloadedReady = false;
+let flushRequestSequence = 0;
 
 function parseVersionParts(v) {
     return String(v || '')
@@ -35,19 +37,6 @@ function clearDownloadCompleteFallback() {
     }
 }
 
-/** progress 100%인데 update-downloaded가 누락될 때 설치 강제 진행 */
-function scheduleDownloadCompleteFallback(version) {
-    if (installScheduled || !isUpdateDownloadActive) return;
-    clearDownloadCompleteFallback();
-    downloadCompleteFallbackTimer = setTimeout(() => {
-        if (installScheduled || !isUpdateDownloadActive) return;
-        console.warn('[AutoUpdater] update-downloaded 미수신 — 설치 강제 진행');
-        isUpdateDownloadActive = false;
-        sendUpdaterStatus({ phase: 'downloaded', version });
-        runQuitAndInstall(version);
-    }, 6000);
-}
-
 function sendUpdaterStatus(payload) {
     if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('updater-status', payload);
@@ -67,10 +56,56 @@ function closeAllWindowsForInstall() {
     }
 }
 
-function runQuitAndInstall(version) {
+function requestRendererFlush(timeoutMs = 8000) {
+    if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(true);
+    const requestId = `update-${Date.now()}-${++flushRequestSequence}`;
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            ipcMain.removeListener('updater-flush-ack', onAck);
+            resolve(ok);
+        };
+        const onAck = (event, payload = {}) => {
+            if (event.sender !== mainWindow.webContents || payload.requestId !== requestId) return;
+            finish(payload.ok === true);
+        };
+        const timer = setTimeout(() => finish(false), timeoutMs);
+        ipcMain.on('updater-flush-ack', onAck);
+        mainWindow.webContents.send('updater-before-install', { requestId });
+    });
+}
+
+async function runQuitAndInstall(version) {
     if (installScheduled) return;
+    if (!updateDownloadedReady) {
+        sendUpdaterStatus({
+            phase: 'error',
+            message: '업데이트 파일 검증이 끝나지 않았습니다. 다운로드 완료 후 다시 시도해 주세요.',
+            silent: false,
+        });
+        return;
+    }
     installScheduled = true;
 
+    sendUpdaterStatus({
+        phase: 'flushing',
+        version,
+        currentVersion: app.getVersion(),
+        message: '저장 중인 작업을 안전하게 마무리하고 있습니다.',
+    });
+    const flushed = await requestRendererFlush();
+    if (!flushed) {
+        installScheduled = false;
+        sendUpdaterStatus({
+            phase: 'error',
+            message: '저장 대기 작업을 확인하지 못해 업데이트 설치를 중단했습니다. 다시 시도해 주세요.',
+            silent: false,
+        });
+        return;
+    }
     sendUpdaterStatus({
         phase: 'installing',
         version,
@@ -168,6 +203,7 @@ function setupAutoUpdater(win) {
             silent,
         });
         isUpdateDownloadActive = false;
+        updateDownloadedReady = false;
         // 설치 직전 오류만 롤백 — 이미 quitAndInstall 예정이면 유지
         if (!installScheduled) {
             installScheduled = false;
@@ -185,20 +221,21 @@ function setupAutoUpdater(win) {
             total: progress.total,
         });
         if (progress.percent >= 99.5) {
-            scheduleDownloadCompleteFallback(version || app.getVersion());
+            // 설치는 반드시 update-downloaded 이벤트 이후에만 진행한다.
         }
     });
 
     autoUpdater.on('update-downloaded', (info) => {
         clearDownloadCompleteFallback();
         isUpdateDownloadActive = false;
+        updateDownloadedReady = true;
         pendingUpdateVersion = info.version;
         sendUpdaterStatus({
             phase: 'downloaded',
             version: info.version,
             currentVersion: app.getVersion(),
         });
-        runQuitAndInstall(info.version);
+        void runQuitAndInstall(info.version);
     });
 
     ipcMain.handle('updater-check', async () => {
@@ -254,6 +291,7 @@ function setupAutoUpdater(win) {
         }
 
         isUpdateDownloadActive = true;
+        updateDownloadedReady = false;
         sendUpdaterStatus({
             phase: 'downloading',
             percent: 0,
@@ -308,13 +346,6 @@ function setupAutoUpdater(win) {
                 }
             }
             clearDownloadCompleteFallback();
-            if (!installScheduled) {
-                const version =
-                    autoUpdater.updateInfo?.version || pendingUpdateVersion || app.getVersion();
-                isUpdateDownloadActive = false;
-                sendUpdaterStatus({ phase: 'downloaded', version, currentVersion });
-                runQuitAndInstall(version);
-            }
             return { ok: true };
         } catch (err) {
             clearDownloadCompleteFallback();
@@ -339,7 +370,10 @@ function setupAutoUpdater(win) {
         if (installScheduled) {
             return { ok: true, busy: true };
         }
-        runQuitAndInstall(pendingUpdateVersion || app.getVersion());
+        if (!updateDownloadedReady) {
+            return { ok: false, error: '업데이트 다운로드와 검증이 아직 완료되지 않았습니다.' };
+        }
+        void runQuitAndInstall(pendingUpdateVersion || app.getVersion());
         return { ok: true };
     });
 

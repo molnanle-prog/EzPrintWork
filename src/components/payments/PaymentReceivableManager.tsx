@@ -42,6 +42,7 @@ const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
   price: 168,
   paymentStatus: 100,
   dueDate: 96,
+  createdAt: 96,
   contact: 72,
 };
 

@@ -11,13 +11,18 @@ export const CompanyNasBanner: React.FC = () => {
     const [health, setHealth] = useState(() => db.getCompanyNasHealth());
     const [busy, setBusy] = useState(false);
     const isElectron = typeof window !== 'undefined' && !!window.electron;
+    const [outsideViewer, setOutsideViewer] = useState(() => db.isOutsideViewerMode());
 
     useEffect(() => {
-        const unsub = db.subscribe(() => setHealth(db.getCompanyNasHealth()));
+        const unsub = db.subscribe(() => {
+            setHealth(db.getCompanyNasHealth());
+            setOutsideViewer(db.isOutsideViewerMode());
+        });
         return unsub;
     }, []);
 
     if (!isElectron) return null;
+    if (outsideViewer) return null;
 
     const showPending = health.pendingReconnect && !!health.pendingPath;
     const showLocked = !showPending && health.healthy === false;

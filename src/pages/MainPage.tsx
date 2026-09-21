@@ -14,22 +14,16 @@ import { db } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { isArchiveSetupDone, markArchiveSetupDone } from '../utils/archiveStorage';
 import { WorkHistoryBoard } from '../components/history/WorkHistoryBoard';
+import { FeatureWorkspace } from '../components/features/FeatureLabPanel';
+import { isFeatureEnabled } from '../features/featureFlags';
 
-type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'history' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings';
+type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'history' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings' | 'reports' | 'diagnostics' | 'conflicts' | 'reorder';
 
 export const MainPage: React.FC = () => {
-    const { currentUser, canAccessRootSettings } = useAuth();
+    const { canAccessRootSettings } = useAuth();
     const isElectron = typeof window !== 'undefined' && !!window.electron;
     const [showArchiveWizard, setShowArchiveWizard] = useState(false);
-    const [activeTab, setActiveTab] = useState<ViewType>(() => {
-        const savedTab = localStorage.getItem('ezprint_active_tab') as ViewType;
-        const isStaff = currentUser?.role === 'staff';
-        if (isStaff) {
-            // 직원의 경우, 로그인이나 세션 복구 시점에 settings나 dashboard가 잡혀있다면 kanban으로 시작하게 보장합니다.
-            return (savedTab && savedTab !== 'settings' && savedTab !== 'dashboard') ? savedTab : 'kanban';
-        }
-        return savedTab || 'dashboard';
-    });
+    const [activeTab, setActiveTab] = useState<ViewType>('kanban');
 
     useEffect(() => {
         localStorage.setItem('ezprint_active_tab', activeTab);
@@ -69,6 +63,10 @@ export const MainPage: React.FC = () => {
             case 'customers': return <ClientManager />;
             case 'inventory': return <PaperManager />;
             case 'settings': return <SettingsView />;
+            case 'reports': return isFeatureEnabled('mgmtReports') ? <FeatureWorkspace feature="mgmtReports" /> : <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
+            case 'diagnostics': return isFeatureEnabled('syncDiagnostics') ? <FeatureWorkspace feature="syncDiagnostics" /> : <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
+            case 'conflicts': return isFeatureEnabled('conflictInbox') ? <FeatureWorkspace feature="conflictInbox" /> : <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
+            case 'reorder': return isFeatureEnabled('crmReorder') ? <FeatureWorkspace feature="crmReorder" /> : <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
             default: return <Dashboard onNavigateToQuote={handleNavigateToQuote} />;
         }
     };

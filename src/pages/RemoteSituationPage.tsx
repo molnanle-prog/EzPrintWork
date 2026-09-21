@@ -60,7 +60,7 @@ export const RemoteSituationPage: React.FC = () => {
 
     useEffect(() => {
         void load();
-        const timer = window.setInterval(() => void load(), 2000);
+            const timer = window.setInterval(() => void load(), 10_000);
         const onFocus = () => void load();
         window.addEventListener('focus', onFocus);
         document.addEventListener('visibilitychange', onFocus);

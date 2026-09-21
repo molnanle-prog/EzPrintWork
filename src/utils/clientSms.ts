@@ -42,6 +42,48 @@ export function resolveClientSmsNumber(client: Partial<Client>, fallbackPhone?: 
     return (fallbackPhone || '').trim();
 }
 
+export type GroupSmsRecipient = {
+    id: string;
+    clientId: string;
+    clientName: string;
+    contactName: string;
+    phone: string;
+    digits: string;
+};
+
+/** 선택한 거래처에서 휴대폰 번호가 있는 담당자만 */
+export function collectMobileRecipients(clients: Client[]): GroupSmsRecipient[] {
+    const out: GroupSmsRecipient[] = [];
+    const seen = new Set<string>();
+
+    const push = (client: Client, contactName: string, phone?: string) => {
+        if (!isMobilePhone(phone)) return;
+        const digits = phone!.replace(/\D/g, '');
+        const key = `${client.id}:${digits}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        out.push({
+            id: key,
+            clientId: client.id,
+            clientName: client.name,
+            contactName: (contactName || '').trim() || '담당자',
+            phone: phone!.trim(),
+            digits,
+        });
+    };
+
+    for (const client of clients) {
+        for (const contact of client.contacts || []) {
+            push(client, contact.name || client.contactPerson, contact.phone);
+        }
+        push(client, client.contactPerson, client.phone);
+        if (client.customSmsNumber && isMobilePhone(client.customSmsNumber)) {
+            push(client, client.contactPerson || '문자 수신', client.customSmsNumber);
+        }
+    }
+    return out;
+}
+
 export type SmsReceiveMode = 'mobile' | 'primary' | 'contact' | 'custom';
 
 export function inferSmsReceiveMode(client: Partial<Client>, customSmsNumber?: string): SmsReceiveMode {

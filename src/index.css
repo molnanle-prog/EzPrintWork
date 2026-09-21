@@ -649,16 +649,8 @@ html.dark .booklet-processing-inner-box {
   border-color: #10b981 !important;
 }
 
-/* 다크/트렐로: native date 달력 아이콘 대비 */
-html.dark input[type="date"]::-webkit-calendar-picker-indicator,
-html.trello input[type="date"]::-webkit-calendar-picker-indicator {
-  filter: invert(1) brightness(1.6);
-  opacity: 1;
-  cursor: pointer;
-}
-
-/* 밝은 배경 + 진한 글자 날짜칸: 달력 아이콘을 글자색(slate-700)으로 */
-input[type="date"].date-scheme-light::-webkit-calendar-picker-indicator {
+/* native date 달력 아이콘: 글자색과 맞춤 (라이트/트렐로 흰 칸 = slate-700, 다크 칸 = slate-200) */
+input[type="date"]::-webkit-calendar-picker-indicator {
   opacity: 1 !important;
   cursor: pointer;
   filter: none !important;
@@ -669,6 +661,15 @@ input[type="date"].date-scheme-light::-webkit-calendar-picker-indicator {
   background-repeat: no-repeat;
   background-position: center;
   background-size: 16px 16px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23334755' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'%3E%3C/rect%3E%3Cline x1='16' y1='2' x2='16' y2='6'%3E%3C/line%3E%3Cline x1='8' y1='2' x2='8' y2='6'%3E%3C/line%3E%3Cline x1='3' y1='10' x2='21' y2='10'%3E%3C/line%3E%3C/svg%3E");
+}
+
+html.dark input[type="date"]:not(.date-scheme-light)::-webkit-calendar-picker-indicator {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23e2e8f0' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'%3E%3C/rect%3E%3Cline x1='16' y1='2' x2='16' y2='6'%3E%3C/line%3E%3Cline x1='8' y1='2' x2='8' y2='6'%3E%3C/line%3E%3Cline x1='3' y1='10' x2='21' y2='10'%3E%3C/line%3E%3C/svg%3E");
+}
+
+/* 테마와 무관하게 흰 배경 + 진한 글자 날짜칸 (작업 등록·휴가 모달 등) */
+input[type="date"].date-scheme-light::-webkit-calendar-picker-indicator {
   background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23334755' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='18' rx='2' ry='2'%3E%3C/rect%3E%3Cline x1='16' y1='2' x2='16' y2='6'%3E%3C/line%3E%3Cline x1='8' y1='2' x2='8' y2='6'%3E%3C/line%3E%3Cline x1='3' y1='10' x2='21' y2='10'%3E%3C/line%3E%3C/svg%3E");
 }
 

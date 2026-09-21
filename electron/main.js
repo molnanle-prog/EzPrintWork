@@ -5,6 +5,8 @@ const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
 const localDb = require('./localDb');
 const { LocalGateway } = require('./localGateway');
+const { remoteTunnel } = require('./remoteTunnel');
+const { rendererServer } = require('./rendererServer');
 const { setupMailInboxIpc } = require('./mailInbox');
 const { sendWindowToBack } = require('./windowZorder');
 
@@ -14,10 +16,74 @@ const localGateway = new LocalGateway();
 let paymentNavigationLocked = false;
 let korpayPayWin = null;
 
+function isTrustedRendererUrl(rawUrl) {
+    try {
+        const url = new URL(rawUrl);
+        if (url.protocol === 'file:') {
+            const appRoot = path.resolve(__dirname, '..').toLowerCase();
+            return decodeURIComponent(url.pathname).replace(/^\/([A-Za-z]:)/, '$1')
+                .replace(/\//g, path.sep).toLowerCase().startsWith(appRoot);
+        }
+        return (url.protocol === 'http:' || url.protocol === 'https:') && (
+            url.hostname === 'localhost'
+            || url.hostname === '127.0.0.1'
+            || (url.hostname === 'ez-hub.kr' && url.pathname.startsWith('/ezpw'))
+        );
+    } catch {
+        return false;
+    }
+}
+
+function assertTrustedIpc(event) {
+    const senderUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || '';
+    if (!isTrustedRendererUrl(senderUrl)) {
+        throw new Error('허용되지 않은 화면에서 요청했습니다.');
+    }
+}
+
+function assertSafeFilePath(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.length > 4096 || raw.includes('\0') || !path.isAbsolute(raw)) {
+        throw new Error('올바른 절대 경로가 아닙니다.');
+    }
+    const normalized = path.resolve(raw);
+    const lowered = normalized.toLowerCase();
+    if (
+        lowered.startsWith('\\\\.\\')
+        || lowered.startsWith('\\\\?\\globalroot')
+        || lowered === String(process.env.WINDIR || 'C:\\Windows').toLowerCase()
+        || lowered.startsWith(`${String(process.env.WINDIR || 'C:\\Windows').toLowerCase()}\\`)
+    ) {
+        throw new Error('시스템 경로에는 접근할 수 없습니다.');
+    }
+    return normalized;
+}
+
+async function atomicWriteFile(filePath, content, encoding) {
+    const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
+    let handle;
+    try {
+        handle = await fs.promises.open(tmpPath, 'w');
+        await handle.writeFile(content, encoding);
+        await handle.sync();
+        await handle.close();
+        handle = null;
+        await fs.promises.rename(tmpPath, filePath);
+    } catch (error) {
+        if (handle) await handle.close().catch(() => {});
+        await fs.promises.unlink(tmpPath).catch(() => {});
+        throw error;
+    }
+}
+
 // Windows 토스트가 앱 이름으로 표시되도록 (electron-builder appId와 동일)
 if (process.platform === 'win32') {
     app.setAppUserModelId('com.ezprintwork.app');
 }
+
+// 설치본 화면은 localhost 로 연다 (Firebase 기본 허용 도메인). IPv6(::1)로 안 가게 IPv4로 고정.
+app.commandLine.appendSwitch('host-resolver-rules', 'MAP localhost 127.0.0.1');
 
 /** 메인 창 헬퍼 — 채팅 OS 알림 / 작업표시줄 깜빡임 */
 function getMainWindow() {
@@ -128,7 +194,7 @@ function saveWindowState(win) {
     }
 }
 
-function createWindow() {
+async function createWindow() {
     const state = loadWindowState();
     const winOptions = {
         width: state.width || 1300,
@@ -258,46 +324,33 @@ function createWindow() {
                 return allowNoPreload(520, 740);
             }
         } catch (_) {
-            return allowNoPreload(520, 740);
+            return { action: 'deny' };
         }
 
         shell.openExternal(url).catch(() => {});
         return { action: 'deny' };
     });
 
-    // 결제 중 메인 창이 코페이 returnUrl 등으로 날아가지 않게 잠금
+    // preload가 있는 메인 창은 앱 출처 밖으로 이동하지 못하게 한다.
     const guardMainNavigation = (event, url) => {
-        if (!paymentNavigationLocked) return;
-        try {
-            const u = new URL(url);
-            const appHosts = new Set(['localhost', '127.0.0.1', 'ez-hub.kr']);
-            const ok =
-                appHosts.has(u.hostname) ||
-                u.hostname.endsWith('.korpay.com') ||
-                u.hostname.includes('google.com') ||
-                u.hostname.includes('firebaseapp.com') ||
-                u.hostname.includes('googleapis.com');
-            // localhost 이탈(클라우드 함수·프로덕션 로그인 등) 차단
-            if (u.hostname !== 'localhost' && u.hostname !== '127.0.0.1') {
-                if (u.hostname.includes('cloudfunctions.net') || u.hostname === 'ez-hub.kr') {
-                    console.warn('[PaymentLock] blocked main navigation:', url);
-                    event.preventDefault();
-                }
-            }
-            void ok;
-        } catch (_) {
-            /* ignore */
+        if (isTrustedRendererUrl(url) && !paymentNavigationLocked) return;
+        event.preventDefault();
+        if (/^https:\/\//i.test(String(url || '')) && !paymentNavigationLocked) {
+            shell.openExternal(url).catch(() => {});
         }
     };
     win.webContents.on('will-navigate', guardMainNavigation);
     win.webContents.on('will-redirect', guardMainNavigation);
 
     if (process.env.ELECTRON_START_URL) {
-        win.loadURL(process.env.ELECTRON_START_URL);
+        await win.loadURL(process.env.ELECTRON_START_URL);
     } else if (process.defaultApp || !app.isPackaged) {
-        win.loadURL('http://localhost:5173/');
+        await win.loadURL('http://localhost:5173/');
     } else {
-        win.loadURL('https://ez-hub.kr/ezpw/');
+        // file:// 은 Firebase 구글 로그인이 auth/unauthorized-domain 로 막힘 → 루프백만 사용
+        const distDir = path.join(__dirname, '..', 'dist');
+        const url = await rendererServer.ensure(distDir);
+        await win.loadURL(url);
     }
 
     return win;
@@ -343,9 +396,9 @@ if (!gotTheLock) {
         handleProtocolUrl(commandLine);
     });
 
-    app.whenReady().then(() => {
+    app.whenReady().then(async () => {
         ensureDesktopShortcut();
-        const win = createWindow();
+        const win = await createWindow();
         setupAutoUpdater(win);
         void localGateway.start();
         // 앱이 프로토콜 호출로 처음 켜졌을 때 처리
@@ -354,6 +407,8 @@ if (!gotTheLock) {
 }
 
 app.on('before-quit', () => {
+    remoteTunnel.stop();
+    rendererServer.stop();
     localGateway.stop();
 });
 
@@ -494,10 +549,15 @@ ipcMain.handle('resolve-unc-path', async (_event, inputPath) => {
     };
 });
 
-// 2. 파일 또는 폴더 선택 (작업 등록용) — UNC 강제
-ipcMain.handle('select-file-or-folder', async () => {
+// 2. 경로 선택 (작업 등록용) — Windows에서 openFile+openDirectory 혼합 시 NAS UNC가 막혀 폴더만 선택
+ipcMain.handle('select-file-or-folder', async (_event, options = {}) => {
+    const defaultPath =
+        (typeof options === 'string' ? options : options?.defaultPath || '').trim() || undefined;
     const { canceled, filePaths } = await dialog.showOpenDialog({
-        properties: ['openFile', 'openDirectory']
+        title: '경로 선택',
+        defaultPath,
+        // openFile과 같이 쓰면 「이 위치를 열 수 없습니다」가 NAS에서 자주 발생
+        properties: ['openDirectory'],
     });
     return canceled ? null : resolveUncPath(filePaths[0]);
 });
@@ -533,9 +593,12 @@ ipcMain.handle('select-files', async (_event, options = {}) => {
     return resolved;
 });
 
-ipcMain.handle('copy-file', async (_event, { source, dest }) => {
+ipcMain.handle('copy-file', async (event, { source, dest }) => {
     try {
+        assertTrustedIpc(event);
         if (!source || !dest) return { success: false, error: '경로가 비어 있습니다.' };
+        source = assertSafeFilePath(source);
+        dest = assertSafeFilePath(dest);
         const dir = path.dirname(dest);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         fs.copyFileSync(source, dest);
@@ -545,9 +608,11 @@ ipcMain.handle('copy-file', async (_event, { source, dest }) => {
     }
 });
 
-ipcMain.handle('ensure-dir', async (_event, dirPath) => {
+ipcMain.handle('ensure-dir', async (event, dirPath) => {
     try {
+        assertTrustedIpc(event);
         if (!dirPath) return { success: false, error: '경로가 비어 있습니다.' };
+        dirPath = assertSafeFilePath(dirPath);
         if (!fs.existsSync(dirPath)) fs.mkdirSync(dirPath, { recursive: true });
         return { success: true };
     } catch (e) {
@@ -589,6 +654,8 @@ ipcMain.handle('create-database-file', async (event, content) => {
 ipcMain.handle('open-path', async (event, targetPath) => {
     if (!targetPath) return false;
     try {
+        assertTrustedIpc(event);
+        targetPath = assertSafeFilePath(targetPath);
         await shell.openPath(targetPath);
         return true;
     } catch (e) {
@@ -598,9 +665,11 @@ ipcMain.handle('open-path', async (event, targetPath) => {
 });
 
 /** 파일이면 탐색기에서 해당 위치 선택 표시, 폴더면 폴더 열기 */
-ipcMain.handle('reveal-in-folder', async (_event, targetPath) => {
+ipcMain.handle('reveal-in-folder', async (event, targetPath) => {
     if (!targetPath) return false;
     try {
+        assertTrustedIpc(event);
+        targetPath = assertSafeFilePath(targetPath);
         if (fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
             shell.showItemInFolder(targetPath);
             return true;
@@ -616,9 +685,10 @@ ipcMain.handle('reveal-in-folder', async (_event, targetPath) => {
 // 4. 파일 저장 (비동기 — NAS 동기 I/O로 창 멈춤 방지)
 ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
     try {
+        assertTrustedIpc(event);
+        filePath = assertSafeFilePath(filePath);
         const dir = path.dirname(filePath);
-        await fs.promises.mkdir(dir, { recursive: true });
-        await fs.promises.writeFile(filePath, content, 'utf8');
+        await atomicWriteFile(filePath, content, 'utf8');
         return { success: true };
     } catch (e) {
         console.error("파일 저장 중 오류 발생:", e);
@@ -627,11 +697,12 @@ ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
     }
 });
 
-ipcMain.handle('save-file-base64', async (_event, { path: filePath, data }) => {
+ipcMain.handle('save-file-base64', async (event, { path: filePath, data }) => {
     try {
+        assertTrustedIpc(event);
+        filePath = assertSafeFilePath(filePath);
         const dir = path.dirname(filePath);
-        await fs.promises.mkdir(dir, { recursive: true });
-        await fs.promises.writeFile(filePath, Buffer.from(String(data || ''), 'base64'));
+        await atomicWriteFile(filePath, Buffer.from(String(data || ''), 'base64'));
         return { success: true };
     } catch (e) {
         console.error('바이너리 파일 저장 중 오류 발생:', e);
@@ -640,8 +711,10 @@ ipcMain.handle('save-file-base64', async (_event, { path: filePath, data }) => {
     }
 });
 
-ipcMain.handle('read-file-base64', async (_event, filePath) => {
+ipcMain.handle('read-file-base64', async (event, filePath) => {
     try {
+        assertTrustedIpc(event);
+        filePath = assertSafeFilePath(filePath);
         const stats = await fs.promises.stat(filePath);
         const buf = await fs.promises.readFile(filePath);
         return { success: true, data: buf.toString('base64'), mtime: stats.mtimeMs };
@@ -651,9 +724,11 @@ ipcMain.handle('read-file-base64', async (_event, filePath) => {
     }
 });
 
-ipcMain.handle('delete-file', async (_event, filePath) => {
+ipcMain.handle('delete-file', async (event, filePath) => {
     try {
+        assertTrustedIpc(event);
         if (!filePath) return { success: false, error: '경로가 비어 있습니다.' };
+        filePath = assertSafeFilePath(filePath);
         if (fs.existsSync(filePath)) await fs.promises.unlink(filePath);
         return { success: true };
     } catch (e) {
@@ -664,6 +739,8 @@ ipcMain.handle('delete-file', async (_event, filePath) => {
 // 5. 파일 읽기 (비동기)
 ipcMain.handle('read-file', async (event, filePath) => {
     try {
+        assertTrustedIpc(event);
+        filePath = assertSafeFilePath(filePath);
         try {
             const stats = await fs.promises.stat(filePath);
             const data = await fs.promises.readFile(filePath, 'utf8');
@@ -695,12 +772,14 @@ ipcMain.handle('read-file', async (event, filePath) => {
 
 // 6. 파일 존재 여부 확인
 ipcMain.handle('exists', async (event, filePath) => {
-    return fs.existsSync(filePath);
+    assertTrustedIpc(event);
+    return fs.existsSync(assertSafeFilePath(filePath));
 });
 
 // 6.1. 폴더 존재 및 읽기/쓰기 권한 검사
 ipcMain.handle('check-directory-status', async (event, dirPath) => {
-    return await checkDirectoryStatus(dirPath);
+    assertTrustedIpc(event);
+    return await checkDirectoryStatus(assertSafeFilePath(dirPath));
 });
 
 // 7.0. 앱 사용자 데이터 폴더 (네트워크 장애 시 보관 섀도 복사)
@@ -713,15 +792,29 @@ ipcMain.handle('get-user-data-path', async () => {
     }
 });
 
-ipcMain.handle('gateway-set-config', async (_event, config) => {
+ipcMain.handle('gateway-set-config', async (event, config) => {
+    assertTrustedIpc(event);
+    if (config?.archiveRoot) config.archiveRoot = assertSafeFilePath(config.archiveRoot);
     localGateway.setConfig(config || {});
     await localGateway.start();
     return { ok: true };
 });
 
-ipcMain.handle('gateway-get-info', async () => {
-    await localGateway.start();
-    return localGateway.getInfo();
+ipcMain.handle('gateway-get-info', async (event) => {
+    assertTrustedIpc(event);
+    const info = await localGateway.start();
+    return { ...info, remoteUrl: remoteTunnel.getUrl() || undefined };
+});
+
+ipcMain.handle('gateway-set-hub-tunnel', async (event, enabled) => {
+    assertTrustedIpc(event);
+    if (!enabled) {
+        remoteTunnel.stop();
+        return { ok: true, remoteUrl: null };
+    }
+    const info = await localGateway.start();
+    if (info?.port) await remoteTunnel.ensure(info.port);
+    return { ok: true, remoteUrl: remoteTunnel.getUrl() || null };
 });
 
 // 7. 문서 폴더 경로 가져오기 (백업용)
@@ -831,6 +924,16 @@ ipcMain.handle('local-db-upsert-client', async (_event, { tenantId, client }) =>
     }
 });
 
+ipcMain.handle('local-db-upsert-job-and-clients', async (event, { tenantId, job, clients }) => {
+    try {
+        assertTrustedIpc(event);
+        const ok = localDb.upsertJobAndClients(tenantId, job, clients || []);
+        return { success: !!ok };
+    } catch (e) {
+        return { success: false, error: e.message };
+    }
+});
+
 ipcMain.handle('local-db-delete-client', async (_event, { tenantId, clientId }) => {
     try {
         localDb.deleteClient(tenantId, clientId);
@@ -873,6 +976,15 @@ ipcMain.handle('local-db-delete-aux', async (_event, { tenantId, collection, id 
         return { success: true };
     } catch (e) {
         return { success: false, error: e?.message || String(e) };
+    }
+});
+
+ipcMain.handle('local-db-append-audit', async (event, { tenantId, auditEvent }) => {
+    try {
+        assertTrustedIpc(event);
+        return { success: localDb.appendAuditEvent(tenantId, auditEvent) };
+    } catch (e) {
+        return { success: false, error: e.message };
     }
 });
 
@@ -1434,7 +1546,13 @@ setupMailInboxIpc(ipcMain);
 
 ipcMain.handle('open-external', async (_event, url) => {
     const s = String(url || '');
-    if (!/^https:\/\//i.test(s)) return { ok: false };
+    const allowed =
+        /^https:\/\//i.test(s)
+        || /^ms-settings:/i.test(s)
+        || /^ms-phone:/i.test(s)
+        || /^ms-windows-store:/i.test(s)
+        || /^supertoss:/i.test(s);
+    if (!allowed) return { ok: false };
     try {
         await shell.openExternal(s);
         return { ok: true };

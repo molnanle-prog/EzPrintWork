@@ -124,6 +124,12 @@ exports.korpayCreatePayment = functions
   .region(REGION)
   .https.onCall(async (data, context) => {
     try {
+      if (process.env.ENABLE_KORPAY_PAYMENTS !== 'true') {
+        throw new functions.https.HttpsError(
+          'failed-precondition',
+          '실결제는 비활성화되어 있습니다. 로컬 모의 결제를 사용해 주세요.'
+        );
+      }
       if (!context.auth?.uid) {
         throw new functions.https.HttpsError('unauthenticated', '로그인이 필요합니다.');
       }
@@ -229,6 +235,10 @@ exports.korpayCreatePayment = functions
 exports.korpayConfirm = functions
   .region(REGION)
   .https.onRequest(async (req, res) => {
+    if (process.env.ENABLE_KORPAY_PAYMENTS !== 'true') {
+      res.status(503).send('Payments disabled');
+      return;
+    }
     const origin = String(req.get('Origin') || '');
     const allowedOrigins = new Set([
       'http://localhost:5173',
@@ -415,3 +425,8 @@ exports.korpayConfirm = functions
 
     res.redirect(303, successUrl);
   });
+
+const { registerMembershipFunctions } = require('./membership');
+Object.assign(exports, registerMembershipFunctions(functions, db));
+const { registerSubscriptionFunctions } = require('./subscriptionCore');
+Object.assign(exports, registerSubscriptionFunctions(functions, db));

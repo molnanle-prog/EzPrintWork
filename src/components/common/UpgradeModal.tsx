@@ -7,6 +7,11 @@ import { db } from '../../services/dataService';
 import { AD_TIER_MAX, PRO_MONTHLY_PRICE, countActiveStaffSeats, proMonthlyCharge } from '../../utils/planLimits';
 import { createKorpayPayment, openKorpayCheckout } from '../../services/korpayPayment';
 import { setPaymentInProgress } from '../../utils/staffSession';
+import {
+  isMockBillingEnabled,
+  isRealBillingEnabled,
+  runMockSubscription,
+} from '../../services/subscriptionService';
 
 interface UpgradeModalProps {
   isOpen: boolean;
@@ -90,6 +95,33 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     setPaymentInProgress(true);
 
     try {
+      if (isMockBillingEnabled) {
+        const order = await runMockSubscription({
+          tenantId: currentUser.tenantId,
+          event: 'ACTIVATE',
+          seats: staffCount,
+          amount: chargeTotal,
+          consent: {
+            terms: consents.terms,
+            privacy: consents.privacy,
+            recurring: consents.autoPay,
+            termsVersion: 'draft-2026-09',
+            privacyVersion: 'draft-2026-09',
+            recurringVersion: 'draft-2026-09',
+          },
+        });
+        setPaymentInProgress(false);
+        setIsVerifying(false);
+        window.alert(`모의 결제 완료 (${order.status}) — 실제 카드 청구는 발생하지 않았습니다.`);
+        onUpgradeComplete?.();
+        onClose();
+        return;
+      }
+      if (!isRealBillingEnabled) {
+        throw new Error(
+          '실결제는 현재 비활성화되어 있습니다. 공식 빌링 API와 약관 확정 후에만 활성화할 수 있습니다.'
+        );
+      }
       const { sdkBase, payment } = await createKorpayPayment({
         tenantId: currentUser.tenantId,
         staffCount,

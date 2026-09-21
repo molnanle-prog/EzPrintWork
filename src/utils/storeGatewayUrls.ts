@@ -38,6 +38,31 @@ export function collectStoreGatewayUrlsFromSettings(
     return normalizeStoreGatewayUrls([legacy, ...fromArray]);
 }
 
+export function isLanGatewayUrl(url: string): boolean {
+    try {
+        const parsed = new URL(url);
+        if (parsed.protocol === 'https:') return false;
+        const host = parsed.hostname;
+        return (
+            host === 'localhost'
+            || host === '127.0.0.1'
+            || /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
+        );
+    } catch {
+        return false;
+    }
+}
+
+export function collectPublishedGatewayUrls(info?: {
+    lanUrls?: string[] | null;
+    remoteUrl?: string | null;
+} | null): string[] {
+    return normalizeStoreGatewayUrls([
+        ...(info?.lanUrls || []),
+        info?.remoteUrl || '',
+    ]);
+}
+
 export function extractIpv4FromGatewayUrl(url: string): string | null {
     try {
         const host = new URL(url).hostname;

@@ -16,6 +16,7 @@ import {
 import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
 import {
+    isLanGatewayUrl,
     normalizeGatewayBase,
     orderStoreGatewayUrls,
     resolveStoreGatewayUrlList,
@@ -58,6 +59,8 @@ export type GatewayMirrorStatus = 'ok' | 'unauthorized' | 'unreachable' | 'empty
 export class SituationMirrorService {
     /** 웹 LAN 게이트웨이 마지막 결과 — dataService 백오프/배너용 */
     private lastGatewayStatus: GatewayMirrorStatus = 'idle';
+    private storageCache = new Map<string, SituationMirrorPayload>();
+    private storageNextFetchAt = new Map<string, number>();
 
     getLastGatewayStatus(): GatewayMirrorStatus {
         return this.lastGatewayStatus;
@@ -226,13 +229,19 @@ export class SituationMirrorService {
     /** 웹·태블릿 — Storage 폴백 (매장 PC NAS 직접 접근 불가 시) */
     async readFromStorage(tenantId: string): Promise<SituationMirrorPayload | null> {
         if (!tenantId) return null;
+        const cached = this.storageCache.get(tenantId) || null;
+        if (Date.now() < (this.storageNextFetchAt.get(tenantId) || 0)) return cached;
         try {
             const bytes = await getBytes(ref(storage, this.storageObjectPath(tenantId)));
             const raw = new TextDecoder().decode(bytes);
-            return JSON.parse(raw) as SituationMirrorPayload;
+            const parsed = JSON.parse(raw) as SituationMirrorPayload;
+            this.storageCache.set(tenantId, parsed);
+            this.storageNextFetchAt.set(tenantId, Date.now() + 15_000);
+            return parsed;
         } catch (error) {
+            this.storageNextFetchAt.set(tenantId, Date.now() + 30_000);
             console.warn('[SituationMirror] storage read failed:', error);
-            return null;
+            return cached;
         }
     }
 
@@ -308,7 +317,8 @@ export class SituationMirrorService {
 
     private async fetchGatewayMirrorOne(
         tenantId: string,
-        gatewayBaseUrl: string
+        gatewayBaseUrl: string,
+        timeoutMs = DEFAULT_LAN_FETCH_TIMEOUT_MS
     ): Promise<SituationMirrorPayload | null> {
         const base = normalizeGatewayBase(gatewayBaseUrl);
         if (!base) return null;
@@ -321,7 +331,7 @@ export class SituationMirrorService {
                     cache: 'no-store',
                     headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
                 },
-                DEFAULT_LAN_FETCH_TIMEOUT_MS
+                timeoutMs
             );
             if (res.status === 401 || res.status === 403) {
                 this.lastGatewayStatus = 'unauthorized';
@@ -365,20 +375,29 @@ export class SituationMirrorService {
         }
 
         this.lastGatewayStatus = 'idle';
-        const results = await Promise.all(urls.map((url) => this.fetchGatewayMirrorOne(tenantId, url)));
-        let best: SituationMirrorPayload | null = null;
-        for (const payload of results) {
-            if (!payload) continue;
-            if (
-                !best ||
-                Date.parse(payload.updatedAt) > Date.parse(best.updatedAt) ||
-                (payload.jobs?.length || 0) > (best.jobs?.length || 0)
-            ) {
-                best = payload;
+        const lanUrls = urls.filter((url) => isLanGatewayUrl(url));
+        const remoteUrls = urls.filter((url) => !isLanGatewayUrl(url));
+        if (lanUrls.length > 0) {
+            const lanResults = await Promise.all(
+                lanUrls.map((url) => this.fetchGatewayMirrorOne(tenantId, url, 800))
+            );
+            const lanBest = lanResults.find(Boolean) || null;
+            if (lanBest) {
+                this.lastGatewayStatus = 'ok';
+                return lanBest;
             }
         }
-        if (best) this.lastGatewayStatus = 'ok';
-        return best;
+        if (remoteUrls.length > 0) {
+            const remoteResults = await Promise.all(
+                remoteUrls.map((url) => this.fetchGatewayMirrorOne(tenantId, url, 8000))
+            );
+            const remoteBest = remoteResults.find(Boolean) || null;
+            if (remoteBest) {
+                this.lastGatewayStatus = 'ok';
+                return remoteBest;
+            }
+        }
+        return null;
     }
 
     private mergeGatewayAndStoragePayloads(
@@ -456,7 +475,8 @@ export class SituationMirrorService {
     }
 
     /**
-     * 외부 웹 — LAN 게이트웨이 우선(성공 시 Storage 대기 안 함), 실패 시 Storage 폴백.
+     * 외부 웹 — 매장 PC 게이트웨이만 (LAN 우선, 없으면 원격 터널).
+     * Firebase Storage는 쓰지 않습니다.
      */
     async readRemoteMirror(
         tenantId: string,
@@ -465,12 +485,7 @@ export class SituationMirrorService {
         if (!tenantId) return null;
 
         const gatewayPayload = await this.fetchGatewayMirrorBest(tenantId, gatewayBaseUrl);
-        if (gatewayPayload) {
-            return gatewayPayload;
-        }
-
-        const storagePayload = await this.readFromStorageWithTimeout(tenantId);
-        return storagePayload;
+        return gatewayPayload;
     }
 
     /** @deprecated PC 동기화는 readFromNas 사용. 웹은 readFromStorage / readRemoteMirror */

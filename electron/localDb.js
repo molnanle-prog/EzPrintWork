@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const Database = require('better-sqlite3');
 
 let db = null;
@@ -58,6 +59,20 @@ function getDb() {
             value TEXT NOT NULL,
             PRIMARY KEY (tenant_id, key)
         );
+        CREATE TABLE IF NOT EXISTS audit_log (
+            tenant_id TEXT NOT NULL,
+            id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            action TEXT NOT NULL,
+            entity_type TEXT,
+            entity_id TEXT,
+            previous_hash TEXT,
+            hash TEXT NOT NULL,
+            data TEXT NOT NULL,
+            PRIMARY KEY (tenant_id, id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_audit_tenant_time
+            ON audit_log(tenant_id, created_at);
     `);
     ensureAuxTables(db);
     return db;
@@ -154,6 +169,35 @@ function upsertClient(tenantId, client) {
     return true;
 }
 
+function upsertJobAndClientsInDb(database, tenantId, job, clients) {
+    if (!tenantId || !job?.id) return false;
+    const now = new Date().toISOString();
+    const jobStmt = database.prepare(
+        'INSERT OR REPLACE INTO jobs (tenant_id, id, data, updated_at) VALUES (?, ?, ?, ?)'
+    );
+    const clientStmt = database.prepare(
+        'INSERT OR REPLACE INTO clients (tenant_id, id, data) VALUES (?, ?, ?)'
+    );
+    const tx = database.transaction(() => {
+        for (const client of clients || []) {
+            if (!client?.id) throw new Error('client id required');
+            clientStmt.run(tenantId, client.id, JSON.stringify(client));
+        }
+        jobStmt.run(
+            tenantId,
+            job.id,
+            JSON.stringify(job),
+            job.updatedAt || job.createdAt || now
+        );
+    });
+    tx();
+    return true;
+}
+
+function upsertJobAndClients(tenantId, job, clients) {
+    return upsertJobAndClientsInDb(getDb(), tenantId, job, clients);
+}
+
 function deleteClient(tenantId, clientId) {
     getDb().prepare('DELETE FROM clients WHERE tenant_id = ? AND id = ?').run(tenantId, clientId);
 }
@@ -217,6 +261,32 @@ function setKv(tenantId, key, value) {
         .run(tenantId, key, value);
 }
 
+function appendAuditEvent(tenantId, event) {
+    if (!tenantId || !event?.action) return false;
+    const database = getDb();
+    const previous = database.prepare(
+        'SELECT hash FROM audit_log WHERE tenant_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+    ).get(tenantId);
+    const createdAt = new Date().toISOString();
+    const id = `${Date.now().toString(36)}-${crypto.randomBytes(6).toString('hex')}`;
+    const data = JSON.stringify(event.data || {});
+    const previousHash = previous?.hash || '';
+    const hash = crypto.createHash('sha256').update([
+        tenantId, id, createdAt, event.action, event.entityType || '',
+        event.entityId || '', previousHash, data,
+    ].join('|')).digest('hex');
+    database.prepare(`
+        INSERT INTO audit_log (
+            tenant_id, id, created_at, action, entity_type, entity_id,
+            previous_hash, hash, data
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+        tenantId, id, createdAt, event.action, event.entityType || null,
+        event.entityId || null, previousHash, hash, data
+    );
+    return true;
+}
+
 module.exports = {
     getDbPath,
     closeDb,
@@ -226,6 +296,7 @@ module.exports = {
     deleteJob,
     saveClients,
     upsertClient,
+    upsertJobAndClients,
     deleteClient,
     saveAuxCollection,
     upsertAuxEntity,
@@ -233,4 +304,6 @@ module.exports = {
     saveSettings,
     getKv,
     setKv,
+    upsertJobAndClientsInDb,
+    appendAuditEvent,
 };

@@ -16,13 +16,15 @@ const AUX_FILES = {
     leaves: 'leaves-live.json',
     instructions: 'instructions-live.json',
 };
+const SMS_PREPAID_INBOX_FILE = 'sms-prepaid-inbox.json';
 const DEFAULT_GATEWAY_PORT = 3847;
 
-const CORS = {
-    'Access-Control-Allow-Origin': '*',
+const BASE_CORS = {
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Ezpw-Gateway-Token',
+    'Access-Control-Max-Age': '600',
 };
+const MAX_REQUEST_BODY_BYTES = 12 * 1024 * 1024;
 
 /** 웹과 동일한 규칙 — src/utils/gatewayToken.ts */
 function deriveStoreGatewayToken(tenantId) {
@@ -48,7 +50,7 @@ function readRequestBody(req) {
         let data = '';
         req.on('data', (chunk) => {
             data += chunk;
-            if (data.length > 20 * 1024 * 1024) {
+            if (Buffer.byteLength(data, 'utf8') > MAX_REQUEST_BODY_BYTES) {
                 reject(new Error('body too large'));
             }
         });
@@ -74,6 +76,40 @@ class LocalGateway {
         this.gatewayToken = token.length >= 16 ? token : null;
     }
 
+    corsHeaders(req) {
+        const origin = String(req.headers.origin || '').trim();
+        if (!origin) return BASE_CORS;
+        try {
+            const parsed = new URL(origin);
+            const allowed =
+                parsed.protocol === 'file:'
+                || ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && (
+                    parsed.hostname === 'localhost'
+                    || parsed.hostname === '127.0.0.1'
+                    || parsed.hostname === 'ez-hub.kr'
+                ));
+            return allowed
+                ? { ...BASE_CORS, 'Access-Control-Allow-Origin': origin, Vary: 'Origin' }
+                : BASE_CORS;
+        } catch {
+            return BASE_CORS;
+        }
+    }
+
+    isOriginAllowed(req) {
+        const origin = String(req.headers.origin || '').trim();
+        return !origin || Object.prototype.hasOwnProperty.call(this.corsHeaders(req), 'Access-Control-Allow-Origin');
+    }
+
+    resolveTenantId(requested) {
+        const configured = String(this.tenantId || '').trim();
+        const candidate = String(requested || configured).trim();
+        if (!configured || !candidate || candidate !== configured) {
+            throw new Error('tenant mismatch');
+        }
+        return configured;
+    }
+
     isAuthorized(req, url) {
         const headerToken = req.headers['x-ezpw-gateway-token'];
         const queryToken = url.searchParams.get('token');
@@ -83,8 +119,8 @@ class LocalGateway {
         // 1) 저장된 시크릿 일치
         if (this.gatewayToken && provided === this.gatewayToken) return true;
 
-        // 2) 동일 tenantId 레거시 derive 토큰 — 웹/구버전이 시크릿 전에 붙을 수 있게 호환
-        if (this.tenantId) {
+        // 2) 시크릿이 아직 발급되지 않은 구버전만 계산형 토큰을 임시 허용
+        if (!this.gatewayToken && this.tenantId) {
             const legacy = deriveStoreGatewayToken(this.tenantId);
             if (legacy && provided === legacy) return true;
         }
@@ -109,12 +145,47 @@ class LocalGateway {
         if (!this.archiveRoot) return false;
         const filePath = path.join(this.archiveRoot, name);
         const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+        let fd = null;
         try {
             fs.mkdirSync(path.dirname(filePath), { recursive: true });
-            fs.writeFileSync(tmpPath, JSON.stringify(payload, null, 2), 'utf8');
+            let currentGeneration = 0;
+            if (fs.existsSync(filePath)) {
+                try {
+                    const current = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+                    currentGeneration = Number(current?.generation) || 0;
+                    if (
+                        Number.isFinite(payload?.expectedGeneration)
+                        && Number(payload.expectedGeneration) !== currentGeneration
+                    ) {
+                        const conflictDir = path.join(this.archiveRoot, 'conflicts');
+                        fs.mkdirSync(conflictDir, { recursive: true });
+                        fs.writeFileSync(
+                            path.join(conflictDir, `${name}.${Date.now()}.json`),
+                            JSON.stringify(payload, null, 2),
+                            'utf8'
+                        );
+                        return false;
+                    }
+                } catch {
+                    const conflictDir = path.join(this.archiveRoot, 'conflicts');
+                    fs.mkdirSync(conflictDir, { recursive: true });
+                    fs.copyFileSync(filePath, path.join(conflictDir, `${name}.corrupt.${Date.now()}`));
+                }
+            }
+            const next = {
+                ...payload,
+                generation: currentGeneration + 1,
+            };
+            delete next.expectedGeneration;
+            fd = fs.openSync(tmpPath, 'w');
+            fs.writeFileSync(fd, JSON.stringify(next, null, 2), 'utf8');
+            fs.fsyncSync(fd);
+            fs.closeSync(fd);
+            fd = null;
             fs.renameSync(tmpPath, filePath);
             return true;
         } catch (error) {
+            try { if (fd != null) fs.closeSync(fd); } catch { /* ignore */ }
             try { if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath); } catch { /* ignore */ }
             console.warn('[LocalGateway] write failed:', filePath, error.message);
             return false;
@@ -396,7 +467,13 @@ class LocalGateway {
 
         return new Promise((resolve) => {
             this.server = http.createServer(async (req, res) => {
+                const CORS = this.corsHeaders(req);
                 if (req.method === 'OPTIONS') {
+                    if (!this.isOriginAllowed(req)) {
+                        res.writeHead(403, CORS);
+                        res.end();
+                        return;
+                    }
                     res.writeHead(204, CORS);
                     res.end();
                     return;
@@ -411,6 +488,22 @@ class LocalGateway {
                     return;
                 }
 
+                const queryTenantId = url.searchParams.get('tenantId');
+                if (
+                    queryTenantId
+                    && this.tenantId
+                    && queryTenantId !== this.tenantId
+                ) {
+                    res.writeHead(403, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ ok: false, error: 'tenant-mismatch' }));
+                    return;
+                }
+                if (!this.isOriginAllowed(req)) {
+                    res.writeHead(403, CORS);
+                    res.end('Origin not allowed');
+                    return;
+                }
+
                 if (url.pathname === '/health') {
                     // NAS 경로·tenantId 등 민감 정보는 토큰 있을 때만 노출
                     const info = this.isAuthorized(req, url)
@@ -422,6 +515,82 @@ class LocalGateway {
                         ...info,
                         authRequired: !!this.gatewayToken,
                     }));
+                    return;
+                }
+
+                if (url.pathname === '/api/v1/sms-prepaid-notice' && req.method === 'POST') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    if (!this.archiveRoot) {
+                        res.writeHead(503, CORS);
+                        res.end('NAS path not configured');
+                        return;
+                    }
+                    try {
+                        const rawBody = await readRequestBody(req);
+                        let text = String(url.searchParams.get('text') || '').trim();
+                        if (!text && rawBody) {
+                            try {
+                                const parsed = JSON.parse(rawBody);
+                                text = String(parsed?.text || parsed?.body || parsed?.message || '').trim();
+                            } catch {
+                                text = String(rawBody).trim();
+                            }
+                        }
+                        if (!text) {
+                            res.writeHead(400, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                            res.end(JSON.stringify({ ok: false, error: 'empty text' }));
+                            return;
+                        }
+                        const existing = this.readJsonFile(SMS_PREPAID_INBOX_FILE) || {};
+                        const items = Array.isArray(existing.items) ? existing.items : [];
+                        items.push({
+                            id: `n_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+                            text: text.slice(0, 800),
+                            at: new Date().toISOString(),
+                        });
+                        const ok = this.writeJsonFile(SMS_PREPAID_INBOX_FILE, {
+                            version: 1,
+                            tenantId: this.tenantId,
+                            updatedAt: new Date().toISOString(),
+                            items: items.slice(-50),
+                        });
+                        if (!ok) {
+                            res.writeHead(500, CORS);
+                            res.end('write failed');
+                            return;
+                        }
+                        res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: true }));
+                        return;
+                    } catch (error) {
+                        res.writeHead(400, CORS);
+                        res.end(error?.message || 'invalid body');
+                        return;
+                    }
+                }
+
+                if (url.pathname === '/api/v1/sms-prepaid-inbox' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const existing = this.readJsonFile(SMS_PREPAID_INBOX_FILE) || {};
+                    const items = Array.isArray(existing.items) ? existing.items : [];
+                    if (url.searchParams.get('drain') === '1') {
+                        this.writeJsonFile(SMS_PREPAID_INBOX_FILE, {
+                            version: 1,
+                            tenantId: this.tenantId,
+                            updatedAt: new Date().toISOString(),
+                            items: [],
+                        });
+                    }
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({ ok: true, items }));
                     return;
                 }
 
@@ -508,7 +677,7 @@ class LocalGateway {
                             res.end('jobs required');
                             return;
                         }
-                        const tenantId = body.tenantId || this.tenantId;
+                        const tenantId = this.resolveTenantId(body.tenantId);
                         const now = new Date().toISOString();
                         const archive = this.readJsonFile(ARCHIVE_FILE);
                         const situation = this.readJsonFile(SITUATION_FILE);
@@ -601,7 +770,7 @@ class LocalGateway {
                         const incoming = Array.isArray(body.messages) ? body.messages : [];
                         const incomingReads =
                             body.reads && typeof body.reads === 'object' ? body.reads : {};
-                        const tenantId = body.tenantId || this.tenantId;
+                        const tenantId = this.resolveTenantId(body.tenantId);
                         const existing = this.readJsonFile(CHAT_FILE);
                         const map = new Map();
                         for (const m of existing?.messages || []) {
@@ -704,7 +873,7 @@ class LocalGateway {
                     try {
                         const raw = await readRequestBody(req);
                         const body = JSON.parse(raw || '{}');
-                        const tenantId = body.tenantId || this.tenantId;
+                        const tenantId = this.resolveTenantId(body.tenantId);
                         const now = new Date().toISOString();
                         const existing = this.readJsonFile(SITUATION_FILE);
                         const incomingJobs = Array.isArray(body.jobs) ? body.jobs : [];
@@ -843,7 +1012,7 @@ class LocalGateway {
                     try {
                         const raw = await readRequestBody(req);
                         const body = JSON.parse(raw || '{}');
-                        const tenantId = body.tenantId || this.tenantId;
+                        const tenantId = this.resolveTenantId(body.tenantId);
                         const now = new Date().toISOString();
                         const existing = this.readJsonFile(PRESENCE_FILE);
                         const sessions = {
@@ -916,7 +1085,7 @@ class LocalGateway {
                     try {
                         const raw = await readRequestBody(req);
                         const body = JSON.parse(raw || '{}');
-                        const tenantId = body.tenantId || this.tenantId;
+                        const tenantId = this.resolveTenantId(body.tenantId);
                         const userKey = String(body.userKey || '').trim().toLowerCase();
                         if (!userKey) {
                             res.writeHead(400, CORS);

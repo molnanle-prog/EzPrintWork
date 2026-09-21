@@ -96,6 +96,17 @@ export const localDbBridge = {
         return !!res?.success;
     },
 
+    async upsertJobAndClients(
+        tenantId: string,
+        job: Job,
+        clients: Client[]
+    ): Promise<boolean> {
+        const api = electronApi();
+        if (!api?.localDbUpsertJobAndClients) return false;
+        const res = await api.localDbUpsertJobAndClients(tenantId, job, clients);
+        return !!res?.success;
+    },
+
     async deleteClient(tenantId: string, clientId: string): Promise<boolean> {
         const api = electronApi();
         if (!api?.localDbDeleteClient) return false;
@@ -140,6 +151,21 @@ export const localDbBridge = {
         const api = electronApi();
         if (!api?.localDbDeleteAux) return false;
         const res = await api.localDbDeleteAux(tenantId, collection, id);
+        return !!res?.success;
+    },
+
+    async appendAudit(
+        tenantId: string,
+        auditEvent: {
+            action: string;
+            entityType?: string;
+            entityId?: string;
+            data?: Record<string, unknown>;
+        }
+    ): Promise<boolean> {
+        const api = electronApi();
+        if (!api?.localDbAppendAudit) return false;
+        const res = await api.localDbAppendAudit(tenantId, auditEvent);
         return !!res?.success;
     },
 };

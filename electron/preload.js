@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
     selectDirectory: () => ipcRenderer.invoke('select-directory'),
-    selectFileOrFolder: () => ipcRenderer.invoke('select-file-or-folder'),
+    selectFileOrFolder: (defaultPath) => ipcRenderer.invoke('select-file-or-folder', defaultPath || ''),
     /** 메모장 등 다중 파일 선택 — options: { filters, defaultPath, openSelectedFolderAfter } */
     selectFiles: (options) => ipcRenderer.invoke('select-files', options || {}),
     /** 바이너리 파일 복사 (NAS 첨부용) */
@@ -44,6 +44,13 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.on('updater-status', handler);
         return () => ipcRenderer.removeListener('updater-status', handler);
     },
+    onUpdaterBeforeInstall: (callback) => {
+        const handler = (_event, payload) => callback(payload);
+        ipcRenderer.on('updater-before-install', handler);
+        return () => ipcRenderer.removeListener('updater-before-install', handler);
+    },
+    notifyUpdaterFlushReady: (requestId, ok) =>
+        ipcRenderer.send('updater-flush-ack', { requestId, ok: ok === true }),
     createDesktopShortcut: () => ipcRenderer.invoke('create-desktop-shortcut'),
     getOpenAtLogin: () => ipcRenderer.invoke('get-open-at-login'),
     setOpenAtLogin: (enabled) => ipcRenderer.invoke('set-open-at-login', enabled),
@@ -53,6 +60,8 @@ contextBridge.exposeInMainWorld('electron', {
     localDbDeleteJob: (tenantId, jobId) => ipcRenderer.invoke('local-db-delete-job', { tenantId, jobId }),
     localDbSaveClients: (tenantId, clients) => ipcRenderer.invoke('local-db-save-clients', { tenantId, clients }),
     localDbUpsertClient: (tenantId, client) => ipcRenderer.invoke('local-db-upsert-client', { tenantId, client }),
+    localDbUpsertJobAndClients: (tenantId, job, clients) =>
+        ipcRenderer.invoke('local-db-upsert-job-and-clients', { tenantId, job, clients }),
     localDbDeleteClient: (tenantId, clientId) => ipcRenderer.invoke('local-db-delete-client', { tenantId, clientId }),
     localDbSaveSettings: (tenantId, settings) => ipcRenderer.invoke('local-db-save-settings', { tenantId, settings }),
     localDbSaveAux: (tenantId, collection, items) =>
@@ -61,8 +70,16 @@ contextBridge.exposeInMainWorld('electron', {
         ipcRenderer.invoke('local-db-upsert-aux', { tenantId, collection, entity }),
     localDbDeleteAux: (tenantId, collection, id) =>
         ipcRenderer.invoke('local-db-delete-aux', { tenantId, collection, id }),
+    localDbAppendAudit: (tenantId, auditEvent) =>
+        ipcRenderer.invoke('local-db-append-audit', { tenantId, auditEvent }),
     gatewaySetConfig: (config) => ipcRenderer.invoke('gateway-set-config', config),
     gatewayGetInfo: () => ipcRenderer.invoke('gateway-get-info'),
+    gatewaySetHubTunnel: (enabled) => ipcRenderer.invoke('gateway-set-hub-tunnel', !!enabled),
+    onRemoteTunnelReady: (callback) => {
+        const handler = (_event, url) => callback(url);
+        ipcRenderer.on('remote-tunnel-ready', handler);
+        return () => ipcRenderer.removeListener('remote-tunnel-ready', handler);
+    },
     /** 단면(simplex) 인쇄 — 양면 방지 */
     printDocument: () => ipcRenderer.invoke('print-document'),
     /** 인쇄와 동일 레이아웃으로 PDF 저장 */

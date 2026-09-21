@@ -37,7 +37,7 @@ export const WebMirrorBanner: React.FC = () => {
         role="status"
       >
         <Loader2 size={14} className="shrink-0 animate-spin" />
-        <span>회사 작업판 불러오는 중… (매장 PC NAS 미러)</span>
+        <span>작업판 불러오는 중…</span>
       </div>
     );
   }
@@ -50,7 +50,7 @@ export const WebMirrorBanner: React.FC = () => {
       role="status"
     >
       <WifiOff size={14} className="shrink-0" />
-      <span>{reason || '회사 작업판 미러 연결 실패 — 매장 PC·같은 Wi‑Fi를 확인해 주세요.'}</span>
+      <span>{reason || '매장 PC에서 프로그램이 켜져 있으면 작업판이 보입니다.'}</span>
     </div>
   );
 };

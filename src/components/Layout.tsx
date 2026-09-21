@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, Pin, ChevronsDown, ArrowDownToLine, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu, Bell } from 'lucide-react';
+import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, Search, Minus, Square, X, Pin, ChevronsDown, ArrowDownToLine, Phone, Loader2, AlertTriangle, CheckCircle2, CloudOff, Eye, Crown, Zap, RefreshCw, CreditCard, ArrowBigUp, History, Building2, Menu, Bell, BarChart3, Activity, Inbox, Repeat } from 'lucide-react';
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
@@ -26,6 +26,7 @@ import {
   formatAssigneeNames,
   listUnackedAssignmentJobs,
 } from '../utils/assignmentNotice';
+import { isFeatureEnabled } from '../features/featureFlags';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -95,8 +96,8 @@ const SyncStatusIndicator: React.FC<{ condensed?: boolean }> = ({ condensed }) =
     const mirrorLabel = formatMirrorTime(lastMirrorAt);
     const receivedLabel = formatMirrorTime(lastReceivedAt);
     const webReadOnlyTitle = canAccessAdminSettings
-        ? '웹 — 매장 PC에서 프로그램이 켜져 있으면 작업을 저장할 수 있습니다. 상품·설정은 관리자가 저장할 수 있습니다.'
-        : '웹·태블릿 — 매장 PC에서 EzPrintWork가 켜져 있으면 작업을 저장할 수 있습니다.';
+        ? '웹 — 매장 PC가 켜져 있으면 저장할 수 있습니다.'
+        : '웹·태블릿 — 매장 PC가 켜져 있으면 저장할 수 있습니다.';
     const webReadOnlyLabel = canAccessAdminSettings ? 'PC 켜져 있으면 저장' : 'PC 켜져 있으면 저장';
 
     if (condensed) {
@@ -440,6 +441,10 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     { id: 'customers', label: '거래처관리', icon: Building2 },
     { id: 'quotes', label: '견적서관리', icon: FileText },
     { id: 'payments', label: '결제상황', icon: CreditCard },
+    ...(isFeatureEnabled('mgmtReports') ? [{ id: 'reports', label: '경영리포트', icon: BarChart3 }] : []),
+    ...(isFeatureEnabled('syncDiagnostics') ? [{ id: 'diagnostics', label: '동기화진단', icon: Activity }] : []),
+    ...(isFeatureEnabled('conflictInbox') ? [{ id: 'conflicts', label: '충돌보관함', icon: Inbox }] : []),
+    ...(isFeatureEnabled('crmReorder') ? [{ id: 'reorder', label: '재주문', icon: Repeat }] : []),
   ];
 
   // Window Controls

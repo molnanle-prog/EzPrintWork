@@ -12,6 +12,7 @@ import {
     hasCompanyArchiveRootConfigured,
 } from '../utils/archiveStorage';
 import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
+import { getGatewayAuthToken } from '../utils/gatewayToken';
 import {
     normalizeGatewayBase,
     orderStoreGatewayUrls,
@@ -82,6 +83,9 @@ export function mergeAuxItemsById(
 }
 
 class AuxCollectionMirrorService {
+    private storageCache = new Map<string, AuxMirrorPayload>();
+    private storageNextFetchAt = new Map<string, number>();
+
     private isElectron(): boolean {
         return typeof window !== 'undefined' && !!window.electron;
     }
@@ -277,13 +281,17 @@ class AuxCollectionMirrorService {
     ): Promise<AuxMirrorPayload | null> {
         if (!tenantId) return null;
         const urls = await orderStoreGatewayUrls(resolveStoreGatewayUrlList(gatewayBaseUrl));
+        const token = getGatewayAuthToken(tenantId);
         for (const base of urls) {
             const normalized = normalizeGatewayBase(base);
             if (!normalized) continue;
             try {
                 const res = await fetchWithTimeout(
                     `${normalized}/api/v1/aux/${collection}?tenantId=${encodeURIComponent(tenantId)}`,
-                    { cache: 'no-store' },
+                    {
+                        cache: 'no-store',
+                        headers: token ? { 'X-Ezpw-Gateway-Token': token } : {},
+                    },
                     DEFAULT_LAN_FETCH_TIMEOUT_MS
                 );
                 if (!res.ok) continue;
@@ -301,6 +309,9 @@ class AuxCollectionMirrorService {
         collection: AuxCollectionName
     ): Promise<AuxMirrorPayload | null> {
         if (!tenantId) return null;
+        const cacheKey = `${tenantId}:${collection}`;
+        const cached = this.storageCache.get(cacheKey) || null;
+        if (Date.now() < (this.storageNextFetchAt.get(cacheKey) || 0)) return cached;
         try {
             const bytes = await Promise.race([
                 getBytes(ref(storage, this.storageObjectPath(tenantId, collection))),
@@ -310,11 +321,15 @@ class AuxCollectionMirrorService {
             ]);
             const text = new TextDecoder().decode(bytes);
             const parsed = JSON.parse(text) as AuxMirrorPayload;
-            if (Array.isArray(parsed?.items)) return parsed;
+            if (Array.isArray(parsed?.items)) {
+                this.storageCache.set(cacheKey, parsed);
+                this.storageNextFetchAt.set(cacheKey, Date.now() + 30_000);
+                return parsed;
+            }
         } catch {
-            /* ignore */
+            this.storageNextFetchAt.set(cacheKey, Date.now() + 60_000);
         }
-        return null;
+        return cached;
     }
 
     async readBest(

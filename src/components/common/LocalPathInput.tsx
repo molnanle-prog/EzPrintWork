@@ -64,7 +64,8 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
   const handleSelectPath = async () => {
     const isElectron = typeof window !== 'undefined' && !!window.electron;
     if (isElectron && typeof window.electron.selectFileOrFolder === 'function') {
-        const path = await window.electron.selectFileOrFolder();
+        // 현재 값이 있으면 그 NAS/폴더부터 열어, Windows에서 경로만 고르게 한다
+        const path = await window.electron.selectFileOrFolder((value || '').trim());
         if (path) {
             onChange(path);
         }
@@ -109,7 +110,7 @@ export const LocalPathInput: React.FC<LocalPathInputProps> = ({
         <button 
           onClick={handleSelectPath} 
           className="p-1.5 rounded border bg-blue-600 border-blue-600 text-white hover:bg-blue-700 transition-colors" 
-          title="경로 찾기 (탐색기에서 선택)"
+          title="폴더 경로 선택"
         >
           <FolderOpen size={14} />
         </button>

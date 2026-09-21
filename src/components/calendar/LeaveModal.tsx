@@ -175,7 +175,8 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
                 type="date"
                 value={formData.startDate}
                 onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
-                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-slate-900"
+                className="date-scheme-light w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-slate-900"
+                style={{ colorScheme: 'light' }}
                 required
               />
             </div>
@@ -187,7 +188,8 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
                 type="date"
                 value={formData.endDate}
                 onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
-                className="w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-slate-900"
+                className="date-scheme-light w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-slate-900"
+                style={{ colorScheme: 'light' }}
                 required
               />
             </div>

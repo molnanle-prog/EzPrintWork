@@ -1,165 +1,94 @@
 /**
- * Firestore rules 배포 후 직원 가입/로그인·회사 검색 동작을 검증합니다.
- * 사용법: node scripts/verify_firestore_rules.mjs
+ * 로컬 Firestore Emulator 공격 회귀 테스트.
+ * 실제 프로젝트에는 절대 연결하지 않는다.
  */
 import { initializeApp } from 'firebase/app';
 import {
-  getFirestore,
   collection,
-  query,
-  where,
-  getDocs,
+  connectFirestoreEmulator,
   doc,
   getDoc,
+  getDocs,
+  getFirestore,
   limit,
+  query,
+  setDoc,
+  where,
 } from 'firebase/firestore';
 
-const firebaseConfig = {
-  projectId: 'gen-lang-client-0746903005',
-  appId: '1:19768956246:web:a6cc6b3ca6ffbd53e572f7',
-  apiKey: 'AIzaSyB04AtEe56eeP40C4cDS7-uvvaPZHa3pkQ',
-  authDomain: 'gen-lang-client-0746903005.firebaseapp.com',
-  firestoreDatabaseId: 'ai-studio-9c19ea8d-a769-47dc-b3b1-5cc0b25fe755',
-};
+const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
+if (!emulatorHost) {
+  console.error(
+    'FIRESTORE_EMULATOR_HOST가 없습니다. npm run test:rules:emulator 로 실행해 주세요.'
+  );
+  process.exit(2);
+}
 
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+const [host, portText] = emulatorHost.split(':');
+const databaseId = 'ai-studio-9c19ea8d-a769-47dc-b3b1-5cc0b25fe755';
+const app = initializeApp({
+  projectId: 'gen-lang-client-0746903005',
+  appId: 'rules-emulator-test',
+  apiKey: 'fake-api-key',
+});
+const db = getFirestore(app, databaseId);
+connectFirestoreEmulator(db, host, Number(portText || 8080));
 
 const results = [];
 
-async function test(name, fn) {
+async function expectDenied(name, operation) {
   try {
-    await fn();
-    results.push({ name, ok: true });
-    console.log(`✅ ${name}`);
-  } catch (err) {
-    const code = err?.code || 'unknown';
-    const msg = err?.message || String(err);
-    results.push({ name, ok: false, code, msg });
-    console.log(`❌ ${name} — [${code}] ${msg}`);
+    await operation();
+    results.push({ name, ok: false, message: '요청이 허용됨' });
+    console.error(`✗ ${name}: 요청이 허용됨`);
+  } catch (error) {
+    const code = String(error?.code || '');
+    const ok = code.includes('permission-denied');
+    results.push({ name, ok, message: error?.message || String(error) });
+    console.log(`${ok ? '✓' : '✗'} ${name}${ok ? '' : `: ${code}`}`);
   }
 }
 
-async function expectPermissionDenied(fn) {
-  try {
-    await fn();
-    throw new Error('expected-permission-denied');
-  } catch (err) {
-    if (err?.message === 'expected-permission-denied') throw err;
-    if (err?.code !== 'permission-denied') throw err;
-  }
-}
+await expectDenied('비인증 tenants 전체 목록 차단', () =>
+  getDocs(query(collection(db, 'tenants'), limit(5)))
+);
+await expectDenied('비인증 회사명 검색 차단', () =>
+  getDocs(
+    query(
+      collection(db, 'tenants'),
+      where('name', '>=', '가'),
+      where('name', '<=', '가\uf8ff'),
+      limit(5)
+    )
+  )
+);
+await expectDenied('비인증 tenant 단건 차단', () =>
+  getDoc(doc(db, 'tenants', 'tenant-smoke'))
+);
+await expectDenied('비인증 staff loginId 조회 차단', () =>
+  getDocs(
+    query(
+      collection(db, 'tenants/tenant-smoke/staff'),
+      where('loginId', '==', 'staff'),
+      limit(5)
+    )
+  )
+);
+await expectDenied('비인증 users 생성 차단', () =>
+  setDoc(doc(db, 'users', 'attacker'), {
+    email: 'attacker@example.com',
+    tenantId: 'tenant-smoke',
+    role: 'admin',
+  })
+);
+await expectDenied('비인증 staff 생성 차단', () =>
+  setDoc(doc(db, 'tenants/tenant-smoke/staff', 'attacker'), {
+    name: 'attacker',
+    loginId: 'attacker',
+    active: true,
+  })
+);
 
-async function run() {
-  console.log('=== EzPrintWork Firestore Rules 검증 ===');
-  console.log(`Project: ${firebaseConfig.projectId}`);
-  console.log(`Database: ${firebaseConfig.firestoreDatabaseId}`);
-  console.log('(비인증 클라이언트 기준 — 직원 로그인/가입 흐름)\n');
-
-  let sampleTenantId = null;
-  let sampleTenantName = null;
-  let sampleJoinCode = null;
-
-  await test('1. tenants 비필터 목록은 거부', async () => {
-    await expectPermissionDenied(() => getDocs(query(collection(db, 'tenants'), limit(5))));
-  });
-
-  await test('1b. tenants name 접두사 검색 허용', async () => {
-    // 실제 회사명이 없어도 규칙상 쿼리 자체는 허용되어야 함
-    const snap = await getDocs(
-      query(
-        collection(db, 'tenants'),
-        where('name', '>=', '가'),
-        where('name', '<=', '가\uf8ff'),
-        limit(5)
-      )
-    );
-    if (!snap.empty) {
-      const first = snap.docs[0];
-      sampleTenantId = first.id;
-      sampleTenantName = first.data().name;
-      sampleJoinCode = first.data().joinCode;
-      console.log(`   → 샘플 테넌트: ${sampleTenantName} (${sampleTenantId})`);
-    } else {
-      console.log('   → 결과 없음 (규칙은 통과)');
-    }
-  });
-
-  await test('2. tenant 비로그인 단건 get은 거부', async () => {
-    if (!sampleTenantId) {
-      console.log('   → 스킵 (테넌트 없음)');
-      return;
-    }
-    await expectPermissionDenied(() => getDoc(doc(db, 'tenants', sampleTenantId)));
-  });
-
-  await test('3. name+joinCode 테넌트 쿼리 (직원 가입 1단계)', async () => {
-    if (!sampleTenantName || !sampleJoinCode) {
-      console.log('   → 스킵 (joinCode 없는 테넌트)');
-      return;
-    }
-    const snap = await getDocs(
-      query(
-        collection(db, 'tenants'),
-        where('name', '==', sampleTenantName),
-        where('joinCode', '==', sampleJoinCode),
-        limit(1)
-      )
-    );
-    if (snap.empty) throw new Error('tenant query returned empty');
-    console.log(`   → 일치 테넌트: ${snap.docs[0].id}`);
-  });
-
-  await test('4a. staff loginId 단일 쿼리 (직원 로그인)', async () => {
-    if (!sampleTenantId) {
-      console.log('   → 스킵 (테넌트 없음)');
-      return;
-    }
-    const snap = await getDocs(
-      query(
-        collection(db, `tenants/${sampleTenantId}/staff`),
-        where('loginId', '==', '__nonexistent_test__'),
-        limit(10)
-      )
-    );
-    console.log(`   → 쿼리 허용됨 (결과 ${snap.size}건 — 권한 오류 없음)`);
-  });
-
-  await test('4b. staff 비필터 목록은 거부', async () => {
-    if (!sampleTenantId) {
-      console.log('   → 스킵 (테넌트 없음)');
-      return;
-    }
-    await expectPermissionDenied(() =>
-      getDocs(query(collection(db, `tenants/${sampleTenantId}/staff`), limit(50)))
-    );
-  });
-
-  await test('5. staff loginId 중복 체크 쿼리 (직원 가입)', async () => {
-    if (!sampleTenantId) {
-      console.log('   → 스킵 (테넌트 없음)');
-      return;
-    }
-    const snap = await getDocs(
-      query(
-        collection(db, `tenants/${sampleTenantId}/staff`),
-        where('loginId', '==', '__nonexistent_signup_test__'),
-        limit(10)
-      )
-    );
-    console.log(`   → 쿼리 허용됨 (결과 ${snap.size}건)`);
-  });
-
-  const passed = results.filter(r => r.ok).length;
-  const failed = results.filter(r => !r.ok).length;
-  console.log(`\n=== 결과: ${passed} 통과 / ${failed} 실패 ===`);
-
-  if (failed > 0) {
-    console.log('\n⚠️  firestore.rules 배포가 필요하거나 규칙-앱 불일치가 남아 있습니다.');
-    console.log('   배포: firebase deploy --only firestore:rules,firestore:indexes');
-    process.exit(1);
-  }
-  console.log('\n✅ 비인증 직원 가입/로그인·회사 검색에 필요한 Firestore 규칙이 정상 동작합니다.');
-}
-
-run();
+const failed = results.filter((result) => !result.ok);
+console.log(`\nFirestore Emulator 공격 테스트: ${results.length - failed.length}/${results.length} 통과`);
+if (failed.length) process.exit(1);

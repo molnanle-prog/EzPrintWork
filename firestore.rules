@@ -198,6 +198,29 @@ service cloud.firestore {
         || ('role' in data && 'role' in existing() && data.role != existing().role);
     }
 
+    function isPreTenantSelfCreate(data) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && data.email is string
+        && data.email.lower() == request.auth.token.email.lower()
+        && (!('tenantId' in data) || data.tenantId == null)
+        && (!('role' in data) || data.role == null)
+        && data.keys().size() <= 30;
+    }
+
+    function isSafeSelfProfileUpdate(data) {
+      return isSignedIn()
+        && request.auth.uid == userId
+        && resource != null
+        && data.email is string
+        && data.email.lower() == request.auth.token.email.lower()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName', 'name', 'photoURL', 'avatarUrl', 'contactInfo',
+          'lastActive', 'isOnline', 'online', 'activeSessionId', 'activeSessionAt'
+        ])
+        && isPresenceSessionFields(data);
+    }
+
     function isAdminUpdatingMember(data) {
       return isSignedIn()
         && 'tenantId' in data
@@ -247,18 +270,15 @@ service cloud.firestore {
 
     // 2. User Profiles
     match /users/{userId} {
-      // list·get — 중복체크 쿼리는 비로그인 list + 결과 문서 get 모두 필요
       allow read: if isSuperAdmin()
         || (isSignedIn() && request.auth.uid == userId)
-        || isStaffDuplicateCheckQuery();
-      allow create: if (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()))
-        || (!isSignedIn() && isStaffSelfSignupUser(incoming()))
+        || (isSignedIn() && resource != null && 'tenantId' in resource.data && isAdmin(resource.data.tenantId));
+      allow create: if isPreTenantSelfCreate(incoming())
         || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
         || isAdminProvisioningMember(incoming())
         || isAdminWritingStaffUser();
       allow update: if isSuperAdmin()
-        || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && !privilegeEscalation(incoming()))
-        || (isSignedIn() && request.auth.uid == userId && isValidUser(incoming()) && isOwnerOnboardingUpdate(incoming()))
+        || isSafeSelfProfileUpdate(incoming())
         || (isSignedIn() && request.auth.uid == userId && isStaffLoginProfileUpsert(incoming()))
         || (isSignedIn() && request.auth.uid == userId && isPresenceSelfUpdate(incoming()))
         || isAdminUpdatingMember(incoming())
@@ -332,10 +352,10 @@ service cloud.firestore {
 
     // 3. Tenants
     match /tenants/{tenantId} {
-      // 회사 검색: list 쿼리 허용 + get은 검색 결과 문서 읽기 (로그인 여부 무관)
-      allow list: if isSuperAdmin() || isPublicTenantDiscovery();
-      allow get: if isSuperAdmin() || isMember(tenantId) || isPublicTenantDiscoveryGet();
-      allow create: if isVerified() && isValidTenant(incoming()) && incoming().ownerId == request.auth.uid;
+      allow list: if isSuperAdmin();
+      allow get: if isSuperAdmin() || isMember(tenantId);
+      // 신규 회사는 secureCreateTenant 서버 함수만 생성한다.
+      allow create: if false;
       // 요금/결제/소유자 필드는 슈퍼어드민만 (카드결제 웹훅·Admin SDK 연동 전까지 클라이언트 조작 차단)
       allow update: if isValidTenant(incoming())
         && (
@@ -352,7 +372,7 @@ service cloud.firestore {
       function tenantBillingFieldsUnchanged() {
         // ownerId는 Google UID 마이그레이션 등 기존 복구 경로를 위해 관리자 갱신 허용
         return !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(['plan', 'paymentStatus', 'maxStaff', 'licenseExpiresAt']);
+          .hasAny(['plan', 'paymentStatus', 'maxStaff', 'activeSeatCount', 'licenseExpiresAt']);
       }
 
       function isValidTenant(data) {
@@ -414,17 +434,13 @@ service cloud.firestore {
           );
       }
 
-      // STAFF — 비로그인: loginId·active 쿼리만 (전체 list dump 금지)
+      // STAFF — 로그인 해석·가입은 서버 함수가 처리하며 원문은 멤버에게만 노출
       match /staff/{staffId} {
         allow read: if isSuperAdmin()
-          || isMember(tenantId)
-          || isStaffPreAuthRead()
-          || isStaffEmailAuth();
+          || isMember(tenantId);
         allow create: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
-          || (!isSignedIn() && isValidId(staffId) && isStaffSelfSignupStaff(incoming()))
           || (isTenantOwner(tenantId) && request.auth.uid == staffId && isValidId(staffId) && isValidStaff(incoming()));
         allow update: if (isAdmin(tenantId) && isValidId(staffId) && isValidStaff(incoming()))
-          || (!isSignedIn() && isStaffCredentialMigration(incoming()))
           || (isStaffUidSelfLink(incoming()) && isValidId(staffId))
           || (isStaffPresenceSelfUpdate(staffId, incoming()) && isValidId(staffId));
         allow delete: if isAdmin(tenantId);
@@ -567,6 +583,23 @@ service cloud.firestore {
       // BACKUPS
       match /backups/{backupId} {
         allow read, write: if isAdmin(tenantId) && isValidId(backupId);
+      }
+
+      // BILLING — 클라이언트 쓰기 금지 (서버 함수/Admin SDK만)
+      match /billing/{docId} {
+        allow read: if isAdmin(tenantId) && isValidId(docId);
+        allow write: if false;
+      }
+
+      match /billingOrders/{orderId} {
+        allow read: if isAdmin(tenantId) && isValidId(orderId);
+        allow write: if false;
+      }
+
+      match /auditLogs/{logId} {
+        allow read: if isAdmin(tenantId);
+        allow create: if isMember(tenantId) && isValidId(logId);
+        allow update, delete: if false;
       }
     }
 

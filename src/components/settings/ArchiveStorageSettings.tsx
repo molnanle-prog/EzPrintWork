@@ -6,6 +6,7 @@ import {
 import { db } from '../../services/dataService';
 import { jobArchiveService } from '../../services/jobArchiveService';
 import { getLocalGatewayInfo } from '../../services/gatewayBridge';
+import { collectPublishedGatewayUrls } from '../../utils/storeGatewayUrls';
 import { useAuth } from '../../contexts/AuthContext';
 import { useDialog } from '../../contexts/DialogContext';
 import {
@@ -81,9 +82,12 @@ export const ArchiveStorageSettings: React.FC<ArchiveStorageSettingsProps> = ({
         await db.saveArchiveRootPath(resolved.path);
         setSelectedPath(resolved.path);
         await refreshGatewayInfo();
-        const lanUrls = (await getLocalGatewayInfo())?.lanUrls || [];
-        if (lanUrls.length > 0) {
-            await db.saveStoreGatewayUrls(lanUrls);
+        if (!db.isOutsideViewerMode()) {
+            const info = await getLocalGatewayInfo();
+            const urls = collectPublishedGatewayUrls(info);
+            if (urls.length > 0) {
+                await db.saveStoreGatewayUrls(urls);
+            }
         }
         return resolved;
     };

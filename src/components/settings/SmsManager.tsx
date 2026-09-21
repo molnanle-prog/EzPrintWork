@@ -5,6 +5,8 @@ import { MessageSquare, Save, Smartphone, Server, CheckCircle2, Lock, HelpCircle
 import { useDialog } from '../../contexts/DialogContext';
 import { useAuth } from '../../contexts/AuthContext';
 import { fetchSolapiBalance, sendSmsViaSolapi, SolapiBalanceInfo } from '../../services/smsService';
+import { SmsPrepaidPanel } from './SmsPrepaidPanel';
+import { PHONE_LINK_FALLBACK_URL, PHONE_LINK_SETTINGS_URL } from '../../utils/smsPrepaid';
 
 export const SmsManager: React.FC = () => {
   const [config, setConfig] = useState<SmsConfig>({
@@ -47,8 +49,7 @@ export const SmsManager: React.FC = () => {
     canAccessAdminSettings &&
     config.mode === 'api' &&
     config.provider === 'solapi' &&
-    !!config.apiKey &&
-    !!config.apiSecret;
+    import.meta.env.VITE_SMS_TEST_MODE === 'true';
 
   const loadSolapiBalance = async () => {
     if (!canShowSolapiBalance) return;
@@ -74,7 +75,7 @@ export const SmsManager: React.FC = () => {
       return;
     }
     void loadSolapiBalance();
-  }, [canShowSolapiBalance, config.apiKey, config.apiSecret, config.mode, config.provider]);
+  }, [canShowSolapiBalance, config.mode, config.provider]);
 
   const handleSave = async () => {
     // 권한 체크: 설정은 관리자만 가능
@@ -84,8 +85,8 @@ export const SmsManager: React.FC = () => {
     }
 
     if (config.mode === 'api') {
-      if (!config.apiKey || !config.apiSecret || !config.senderNumber) {
-        await showAlert('API 연동 모드 사용 시 API Key, Secret Key, 발신번호는 필수입니다.');
+      if (!config.senderNumber) {
+        await showAlert('API 연동 모드 사용 시 발신번호는 필수입니다.');
         return;
       }
     }
@@ -105,14 +106,14 @@ export const SmsManager: React.FC = () => {
     }
 
     if (config.mode === 'api' && config.provider === 'solapi') {
-      if (!config.apiKey || !config.apiSecret || !config.senderNumber) {
-        await showAlert('테스트 발송을 위해서는 API 정보를 입력 후 저장해야 합니다.');
+      if (!config.senderNumber) {
+        await showAlert('테스트 발송을 위해서는 발신번호가 필요합니다.');
         return;
       }
 
       setIsTesting(true);
       try {
-        const testContent = `[EzPrintWork] 문자 연동 테스트 발송 성공! 솔라피 API를 통해 실시간으로 정상 전송되었습니다.`;
+        const testContent = `[EzPrintWork] 문자 연동 모의 테스트입니다.`;
         const res = await sendSmsViaSolapi(testNumber, testContent, config);
         
         if (res.success) {
@@ -145,7 +146,7 @@ export const SmsManager: React.FC = () => {
   const inputClass = "w-full p-2.5 border border-slate-300 dark:border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500 bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 placeholder-slate-400 dark:placeholder-slate-500 transition-colors";
 
   return (
-    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 max-w-3xl transition-colors">
+    <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-200 dark:border-slate-700 p-6 max-w-4xl transition-colors">
       <div className="flex justify-between items-center mb-6">
         <h3 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
            <MessageSquare className="text-blue-600 dark:text-blue-400" />
@@ -173,6 +174,8 @@ export const SmsManager: React.FC = () => {
               솔라피 발신번호로도 고객 회신이 들어오지 않습니다. 수신전용 번호를 따로 쓰지 않는 한, 받은 문자 목록을 API로 불러올 수는 없습니다.
             </p>
           </div>
+
+      <SmsPrepaidPanel />
       {canShowSolapiBalance && (
         <div className="mb-6 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/80 dark:bg-emerald-950/20 p-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -279,11 +282,26 @@ export const SmsManager: React.FC = () => {
                 <button onClick={() => setShowPhoneGuide(false)} className="text-xs text-slate-400 hover:text-slate-600">숨기기</button>
               </div>
               <ol className="list-decimal list-inside text-xs text-slate-600 dark:text-slate-400 space-y-2 leading-relaxed">
-                <li><strong>PC 설정:</strong> Windows 시작 단추 누르고 <span className="font-semibold">"휴대폰과 연결" (Phone Link)</span> 앱을 찾아 실행한 뒤 [Android]를 선택합니다.</li>
+                <li><strong>PC 설정:</strong> 아래 「휴대폰과 연결 시작」을 누르거나, Windows 시작에서 <span className="font-semibold">"휴대폰과 연결" (Phone Link)</span> 앱을 실행한 뒤 [Android]를 선택합니다.</li>
                 <li><strong>스마트폰 설정:</strong> 갤럭시폰 상단 바를 내려 <span className="font-semibold">'Windows와 연결'</span>을 꾹 누르고 PC 화면에 생성된 QR코드를 스캔해 연동을 마칩니다.</li>
                 <li><strong>권한 허용:</strong> 스마트폰 화면에 나타나는 연락처, 문자 읽기/보내기 등 필수 권한을 모두 <span className="font-semibold text-blue-600 dark:text-blue-400">'허용'</span>해 줍니다.</li>
                 <li><strong>작동 확인:</strong> [납품/완료] 단계 이동 시 「문자창을 띄울까요?」가 뜨고, 문자창에서 내용을 확인·수정한 뒤 보내기로 전송합니다.</li>
               </ol>
+              <button
+                type="button"
+                onClick={() => {
+                  const open = (url: string) => {
+                    if (window.electron?.openExternal) void window.electron.openExternal(url);
+                    else window.location.href = url;
+                  };
+                  open(PHONE_LINK_SETTINGS_URL);
+                  window.setTimeout(() => open(PHONE_LINK_FALLBACK_URL), 400);
+                }}
+                className="mt-1 inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 text-white text-xs font-bold"
+              >
+                <Smartphone size={14} />
+                휴대폰과 연결 시작
+              </button>
             </div>
           )}
 
@@ -320,25 +338,9 @@ export const SmsManager: React.FC = () => {
                             placeholder="010-0000-0000"
                           />
                       </div>
-                      <div className="space-y-1 md:col-span-2">
-                          <label className="text-xs font-bold text-slate-500 dark:text-slate-400">API Key</label>
-                          <input 
-                            type="text"
-                            value={config.apiKey}
-                            onChange={(e) => handleChange('apiKey', e.target.value)}
-                            className={inputClass}
-                            placeholder="솔라피 등 가입 후 발급받은 API Key 입력"
-                          />
-                      </div>
-                      <div className="space-y-1 md:col-span-2">
-                          <label className="text-xs font-bold text-slate-500 dark:text-slate-400">API Secret Key</label>
-                          <input 
-                            type="password"
-                            value={config.apiSecret}
-                            onChange={(e) => handleChange('apiSecret', e.target.value)}
-                            className={inputClass}
-                            placeholder="API Secret Key 입력"
-                          />
+                      <div className="md:col-span-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                        API Key와 Secret은 앱·NAS·Firestore에 저장하지 않습니다. 현재는 로컬 모의
+                        발송만 가능하며, 실제 발송은 서버 비밀 설정과 비용 승인 후 별도로 연결됩니다.
                       </div>
                   </div>
 

@@ -61,6 +61,7 @@ function run() {
 
   const localClaimed = new Date(Date.now() - 60_000).toISOString();
   const remoteNewer = new Date().toISOString();
+  const remoteMachineId = `remote-${Date.now()}`;
   assert.equal(
     isRemoteSessionNewerThanLocal(
       {
@@ -68,6 +69,8 @@ function run() {
         activeSessionAt: remoteNewer,
         isOnline: true,
         lastActive: remoteNewer,
+        clientType: 'electron',
+        machineId: remoteMachineId,
       },
       localSid,
       localClaimed
@@ -83,6 +86,8 @@ function run() {
         activeSessionAt: localClaimed,
         isOnline: true,
         lastActive: localClaimed,
+        clientType: 'electron',
+        machineId: remoteMachineId,
       },
       localSid,
       remoteNewer

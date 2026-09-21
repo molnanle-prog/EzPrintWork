@@ -7,13 +7,13 @@ import { toast } from 'sonner';
 import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
 import { db, formatPhoneNumber, isValidPhoneNumber } from '../services/dataService';
-import { getMaxStaffForPlan } from '../utils/planLimits';
 import { useInstalledAppVersion } from '../hooks/useInstalledAppVersion';
 import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
 import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { getWindowsStartupEnabled, setWindowsStartupEnabled } from '../utils/windowsStartup';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
-import { normalizeStaffLoginEmail, provisionStaffAuthAccount, MIN_STAFF_PASSWORD_LENGTH } from '../utils/staffAuthProvision';
+import { normalizeStaffLoginEmail, MIN_STAFF_PASSWORD_LENGTH } from '../utils/staffAuthProvision';
+import { resolveStaffLogin, signupStaffSecure } from '../services/membershipService';
 import { signInStaffWithFirebaseAuth } from '../utils/staffFirebaseSignIn';
 import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
@@ -437,7 +437,7 @@ export const LoginPage: React.FC = () => {
         setIsStaffLoggingIn(true);
 
         try {
-            const { collection, query, where, limit, getDocs, doc, getDoc, setDoc } = await import('firebase/firestore');
+            const { doc, getDoc, setDoc } = await import('firebase/firestore');
             const { db: firestoreDb } = await import('../services/firebase');
             const { setPersistence, browserLocalPersistence, browserSessionPersistence } = await import('firebase/auth');
 
@@ -455,36 +455,25 @@ export const LoginPage: React.FC = () => {
                     : browserSessionPersistence
             );
 
-            const staffCol = collection(firestoreDb, `tenants/${selectedTenantId}/staff`);
             const loginNorm = loginId.trim().toLowerCase();
-            const snap = await getDocs(
-                query(staffCol, where('loginId', '==', loginNorm), limit(10))
-            );
-
-            let userDoc: Awaited<ReturnType<typeof getDocs>>['docs'][number] | null = null;
-            let userData: Record<string, any> | null = null;
-
-            // 평문 password 비교 제거 — loginId로 직원 찾고 Firebase Auth로 검증
-            for (const docSnap of snap.docs) {
-                const data = docSnap.data();
-                if (data.isDeleted === true || data.active === false) continue;
-                userDoc = docSnap;
-                userData = data;
-                break;
-            }
-
-            if (!userDoc || !userData) {
+            let resolvedStaff;
+            try {
+                resolvedStaff = await resolveStaffLogin(selectedTenantId, loginNorm);
+            } catch {
                 toast.error('아이디를 찾을 수 없거나 선택한 회사와 일치하지 않습니다.');
                 setIsStaffLoggingIn(false);
                 return;
             }
-
-            // Check if deleted or suspended
-            if (userData.isDeleted === true || userData.active === false) {
-                toast.error('삭제되었거나 비활성화된 직원 계정입니다. 관리자에게 문의하세요.');
-                setIsStaffLoggingIn(false);
-                return;
-            }
+            const userDoc = { id: resolvedStaff.staffDocId };
+            const userData: Record<string, any> = {
+                uid: resolvedStaff.uid,
+                loginId: resolvedStaff.loginId,
+                email: resolvedStaff.authEmail,
+                name: resolvedStaff.name,
+                role: resolvedStaff.role,
+                isCompanyAdmin: resolvedStaff.isCompanyAdmin,
+                avatarUrl: resolvedStaff.avatarUrl || '',
+            };
 
             const tenantId = selectedTenantId; // 서브컬렉션 소속이므로 selectedTenantId가 곧 tenantId가 됩니다.
 
@@ -807,122 +796,18 @@ export const LoginPage: React.FC = () => {
         setIsStaffSigningUp(true);
 
         try {
-            const { collection, query, where, getDocs, doc, setDoc, limit } = await import('firebase/firestore');
-            const { db } = await import('../services/firebase');
-
-            // 1. Query Firestore for the tenant matching companyName & joinCode
-            const tenantQuery = query(
-                collection(db, 'tenants'),
-                where('name', '==', companyName.trim()),
-                where('joinCode', '==', joinCode.trim())
-            );
-            
-            const tenantSnapshot = await getDocs(tenantQuery);
-            if (tenantSnapshot.empty) {
-                toast.error('회사명 또는 회사입장코드가 일치하는 워크스페이스가 없습니다.');
-                setIsStaffSigningUp(false);
-                return;
-            }
-
-            const tenantDoc = tenantSnapshot.docs[0];
-            const tenantId = tenantDoc.id;
-            const tenantData = tenantDoc.data();
-
-            // 1.5 요금제 인원 제한 확인 (대표 1석 + 직원)
-            const maxStaff = getMaxStaffForPlan(
-              tenantData.plan,
-              tenantData.paymentStatus,
-              tenantData.maxStaff
-            );
-            const staffColRef = collection(db, `tenants/${tenantId}/staff`);
-            // 비로그인 전체 list 금지(rules) — active 직원만으로 좌석 추정
-            const staffSnap = await getDocs(
-                query(staffColRef, where('active', '==', true), limit(50))
-            );
-            const staffRows = staffSnap.docs
-              .map((d) => ({ id: d.id, ...d.data() } as import('../types').Staff))
-              .filter((s) => s.isDeleted !== true && s.active !== false);
-            const { countActiveStaffSeats } = await import('../utils/planLimits');
-            const seatsInUse = countActiveStaffSeats(staffRows, tenantData.ownerId);
-            if (seatsInUse >= maxStaff) {
-                toast.error(`요금제 인원 제한(${maxStaff}명)에 도달했습니다. 관리자에게 문의하세요.`);
-                setIsStaffSigningUp(false);
-                return;
-            }
-
-            // 2. 같은 회사 내 loginId 중복 확인 (staff 컬렉션 — 가입 전 조회 허용)
             const normalizedLoginId = loginId.trim().toLowerCase();
-            const normalizedPassword = password.trim().toLowerCase();
-            const staffCheckQuery = query(
-                collection(db, `tenants/${tenantId}/staff`),
-                where('loginId', '==', normalizedLoginId),
-                limit(10)
-            );
-            const staffCheckSnapshot = await getDocs(staffCheckQuery);
-            const duplicateStaff = staffCheckSnapshot.docs.some(d => {
-                const s = d.data();
-                return s.isDeleted !== true && s.active !== false;
-            });
-            if (duplicateStaff) {
-                toast.error('이 아이디는 해당 회사에 이미 등록되어 사용 중입니다.');
-                setIsStaffSigningUp(false);
-                return;
-            }
-
-            // 3. Firebase Auth 계정 선생성 (Secondary App — 로그인 세션 유지 없음)
-            const staffRowsForAuth = staffSnap.docs
-              .map((d) => ({ id: d.id, ...d.data() } as import('../types').Staff))
-              .filter((s) => s.isDeleted !== true && s.active !== false);
-
-            const authProvision = await provisionStaffAuthAccount({
+            await signupStaffSecure({
+                companyName: companyName.trim(),
+                joinCode: joinCode.trim(),
                 loginId: normalizedLoginId,
-                password: normalizedPassword,
-                tenantId,
+                password: password.trim(),
                 staffName: staffName.trim(),
+                staffPhone: formattedPhone,
                 staffRole,
-                existingStaffInTenant: staffRowsForAuth,
             });
 
-            if (!authProvision.ok) {
-                toast.error(authProvision.message);
-                setIsStaffSigningUp(false);
-                return;
-            }
-
-            const firebaseUid = authProvision.uid;
-            const authEmail = normalizeStaffLoginEmail(normalizedLoginId);
-
-            // 4. users / staff — Firebase UID 단일 SSOT
-            await setDoc(doc(db, 'users', firebaseUid), {
-                uid: firebaseUid,
-                id: firebaseUid,
-                email: authEmail,
-                tenantId: tenantId,
-                loginId: normalizedLoginId,
-                role: 'staff',
-                userName: staffName.trim(),
-                name: staffName.trim(),
-                position: staffRole,
-                contactInfo: formattedPhone,
-                createdAt: new Date().toISOString()
-            });
-
-            // 5. tenants/{tenantId}/staff
-            const staffRef = doc(db, `tenants/${tenantId}/staff`, firebaseUid);
-            await setDoc(staffRef, {
-                id: firebaseUid,
-                uid: firebaseUid,
-                name: staffName.trim(),
-                role: staffRole,
-                phone: formattedPhone,
-                avatarUrl: `https://api.dicebear.com/7.x/avataaars/svg?seed=${staffName.trim()}`,
-                active: true,
-                email: authEmail,
-                loginId: normalizedLoginId,
-                joinDate: new Date().toISOString()
-            });
-
-            // 6. 구글 시트로 데이터 전송 (Upsert 로직을 통해 시트와 동기화)
+            // 구글 시트로 데이터 전송 (Upsert 로직을 통해 시트와 동기화)
             try {
                 await fetch(GAS_WEBHOOK_URL, {
                     method: 'POST',
@@ -1519,13 +1404,6 @@ export const LoginPage: React.FC = () => {
                     </div>
 
                     <div className="pt-4 flex flex-col gap-4 text-center">
-                        <a
-                            href="#/remote"
-                            onClick={() => sessionStorage.setItem('ezpw_remote_view', '1')}
-                            className="text-xs text-slate-500 hover:text-blue-400 font-bold transition-colors"
-                        >
-                            밖에서 상황만 보기 (읽기 전용 · Firestore 미사용)
-                        </a>
                         <div className="flex items-center justify-center gap-2 text-slate-600 text-xs font-bold uppercase tracking-widest">
                             <ShieldCheck size={14} className="text-emerald-500" />
                             Enterprise Security Active

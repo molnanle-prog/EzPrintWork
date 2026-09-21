@@ -16,17 +16,21 @@ check(
   'bumpMirrorSyncPulse is no-op',
   /bumpMirrorSyncPulse\(\)\s*\{[\s\S]*?return;\s*\}/.test(data)
 );
-check('startConfigPolling exists', data.includes('startConfigPolling()'));
 check(
-  'local/web uses config poll instead of onSnapshot pulse',
-  /isLocalPrimaryMode\(\)\s*\|\|\s*this\.isWebMirrorMode\(\)[\s\S]{0,160}startConfigPolling/.test(data)
+  'local/web uses onSnapshot sync pulse instead of config polling',
+  data.includes('private subscribeSyncPulse()') &&
+    data.includes('this.syncPulseUnsub = onSnapshot(') &&
+    !data.includes('startConfigPolling()')
 );
 check('presenceSessionService wired in dataService', data.includes('presenceSessionService'));
 
 const firebase = fs.readFileSync('src/services/firebase.ts', 'utf8');
 check('firebase presence uses NAS service', firebase.includes('presenceSessionService'));
 check('firebase presence has no Firestore setDoc', !firebase.includes('setDoc('));
-check('heartbeat skips hidden tab', firebase.includes("visibilityState === 'hidden'"));
+check(
+  'heartbeat continues while hidden for session freshness',
+  !firebase.includes("visibilityState === 'hidden'")
+);
 
 const auth = fs.readFileSync('src/contexts/AuthContext.tsx', 'utf8');
 check('AuthContext session watch uses NAS', auth.includes('presenceSessionService.readEntry'));

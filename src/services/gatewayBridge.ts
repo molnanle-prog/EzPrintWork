@@ -19,6 +19,7 @@ export interface LocalGatewayInfo {
     port: number;
     baseUrl: string;
     lanUrls: string[];
+    remoteUrl?: string | null;
     archiveRoot?: string | null;
     tenantId?: string | null;
 }
