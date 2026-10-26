@@ -2,7 +2,7 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electron', {
-    selectDirectory: () => ipcRenderer.invoke('select-directory'),
+    selectDirectory: (defaultPath) => ipcRenderer.invoke('select-directory', defaultPath || ''),
     selectFileOrFolder: (defaultPath) => ipcRenderer.invoke('select-file-or-folder', defaultPath || ''),
     /** 메모장 등 다중 파일 선택 — options: { filters, defaultPath, openSelectedFolderAfter } */
     selectFiles: (options) => ipcRenderer.invoke('select-files', options || {}),
@@ -12,7 +12,8 @@ contextBridge.exposeInMainWorld('electron', {
     openPath: (path) => ipcRenderer.invoke('open-path', path),
     revealInFolder: (path) => ipcRenderer.invoke('reveal-in-folder', path),
     createDatabaseFile: (defaultPath) => ipcRenderer.invoke('create-database-file', defaultPath),
-    saveFile: (path, content) => ipcRenderer.invoke('save-file', { path, content }),
+    saveFile: (path, content, expectedMtime) =>
+        ipcRenderer.invoke('save-file', { path, content, expectedMtime }),
     saveFileBase64: (path, data) => ipcRenderer.invoke('save-file-base64', { path, data }),
     readFile: (path) => ipcRenderer.invoke('read-file', path),
     readFileBase64: (path) => ipcRenderer.invoke('read-file-base64', path),
@@ -28,6 +29,7 @@ contextBridge.exposeInMainWorld('electron', {
     close: () => ipcRenderer.send('window-close'),
     lower: () => ipcRenderer.send('window-lower'),
     pinToBack: (enabled) => ipcRenderer.invoke('window-pin-back', !!enabled),
+    setMonitoringFullscreen: (enabled) => ipcRenderer.invoke('window-monitoring-fullscreen', !!enabled),
     /** 메인 창 닫기 직전 — 세션 종료 훅 */
     onAppSessionEnding: (callback) => {
         const handler = () => callback();
@@ -36,6 +38,7 @@ contextBridge.exposeInMainWorld('electron', {
     },
     notifyAppSessionEnded: () => ipcRenderer.send('app-session-ended'),
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+    fetchKoreanHolidays: () => ipcRenderer.invoke('fetch-korean-holidays'),
     updaterCheck: () => ipcRenderer.invoke('updater-check'),
     updaterDownload: () => ipcRenderer.invoke('updater-download'),
     updaterInstall: () => ipcRenderer.invoke('updater-install'),

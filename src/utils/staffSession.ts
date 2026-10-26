@@ -180,6 +180,15 @@ export function resolveStaffOnline(
   return Number.isFinite(ts) && Date.now() - ts < staleMs;
 }
 
+/** 같은 PC 재실행·업데이트 직후 구형 기록(machineId 없음) — 다른 매장으로 보지 않음 */
+export function isSameMachineOrLegacyGhost(
+  record: StaffSessionRecord | null | undefined
+): boolean {
+  if (!record) return false;
+  if (!record.machineId) return true;
+  return record.machineId === getOrCreateMachineId();
+}
+
 /** 다른 기기에서 같은 계정으로 활성 접속 중인지 (본인 세션·같은 PC 유령 제외) */
 export function isRemoteStaffSessionActive(
   record: StaffSessionRecord | null | undefined,
@@ -187,13 +196,8 @@ export function isRemoteStaffSessionActive(
 ): boolean {
   if (!record?.activeSessionId) return false;
   if (localSessionId && record.activeSessionId === localSessionId) return false;
-  // 같은 PC에서 Electron을 재실행한 유령 세션 — 다른 곳 로그인으로 보지 않음
-  if (record.machineId && record.machineId === getOrCreateMachineId()) return false;
+  if (isSameMachineOrLegacyGhost(record)) return false;
   if (record.clientType && record.clientType !== 'electron') return false;
-  // machineId 없는 구형 기록: 2분 지나면 유령으로 보고 확인창 생략
-  if (!record.machineId) {
-    return resolveStaffOnline(record, 2 * 60 * 1000);
-  }
   return resolveStaffOnline(record);
 }
 
@@ -207,19 +211,14 @@ export function isRemoteSessionNewerThanLocal(
   if (localSessionId && record.activeSessionId === localSessionId) return false;
   // 예전 브라우저 claim·웹 세션은 Electron을 쫓아내지 않음
   if (record.clientType !== 'electron') return false;
-  // 같은 PC 유령/재시작 — 자기 자신을 킥하지 않음
-  if (record.machineId && record.machineId === getOrCreateMachineId()) return false;
+  // 같은 PC 유령/업데이트 잔여 세션 — 자기 자신을 킥하지 않음
+  if (isSameMachineOrLegacyGhost(record)) return false;
+  // 하트비트 lastActive는 클레임 시각보다 늦게 갱신되므로 킥 비교에 쓰지 않음
+  if (!record.machineId || !record.activeSessionAt || !localClaimedAt) return false;
 
-  const remoteAt = record.activeSessionAt || record.lastActive;
-  if (!localClaimedAt || !remoteAt) {
-    return resolveStaffOnline(record);
-  }
-
-  const remoteTs = new Date(remoteAt).getTime();
+  const remoteTs = new Date(record.activeSessionAt).getTime();
   const localTs = new Date(localClaimedAt).getTime();
-  if (!Number.isFinite(remoteTs) || !Number.isFinite(localTs)) {
-    return resolveStaffOnline(record);
-  }
+  if (!Number.isFinite(remoteTs) || !Number.isFinite(localTs)) return false;
 
   return remoteTs > localTs && resolveStaffOnline(record);
 }

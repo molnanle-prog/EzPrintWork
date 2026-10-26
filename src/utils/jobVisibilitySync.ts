@@ -70,15 +70,27 @@ function pickJobVisibilityFields(job: Job): Partial<Job> {
 export function mergeJobVisibilityFields(base: Job, prev: Job, incoming: Job): Job {
   const prevPinned = !!prev.managementCardPinnedAt;
   const incomingPinned = !!incoming.managementCardPinnedAt;
+  const explicitlyUnpinned =
+    'managementCardPinnedAt' in incoming && incoming.managementCardPinnedAt === null;
 
   let visibility: Partial<Job>;
 
   if (incomingPinned && !prevPinned) {
-    // 다른 PC에서 올림 — 로컬 rev가 더 높아도 핀 수용
-    visibility = pickJobVisibilityFields(incoming);
+    // 다른 PC에서 올림 — 로컬 rev가 더 높아도(옛날 스냅샷이 아니면) 핀 수용
+    const prevClearlyNewer = !isIncomingJobNewer(incoming, prev);
+    const prevExplicitlyUnpinned =
+      'managementCardPinnedAt' in prev && prev.managementCardPinnedAt === null;
+    if (prevClearlyNewer && prevExplicitlyUnpinned) {
+      visibility = pickJobVisibilityFields(prev);
+    } else {
+      visibility = pickJobVisibilityFields(incoming);
+    }
   } else if (!incomingPinned && prevPinned) {
-    // 다른 PC에서 내림 — incoming이 더 최신일 때만 해제
-    visibility = isIncomingJobNewer(incoming, prev) ? {} : pickJobVisibilityFields(prev);
+    // 다른 PC에서 내림 — incoming이 더 최신이거나 명시적 null 클리어가 있으면 해제
+    visibility =
+      isIncomingJobNewer(incoming, prev) || explicitlyUnpinned
+        ? {}
+        : pickJobVisibilityFields(prev);
   } else if (incomingPinned && prevPinned) {
     if (isIncomingJobNewer(incoming, prev)) {
       visibility = pickJobVisibilityFields(incoming);

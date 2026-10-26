@@ -2,7 +2,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { MessageCircle, X, Send, User, Bell, Users, Volume2, VolumeX, ArrowLeft, Moon, Sun, MessageSquare, AlertTriangle, Palette, Trello } from 'lucide-react';
 import { db, getErrorMessage } from '../../services/dataService';
-import { ChatMessage, Staff } from '../../types';
+import { createChatMessageId, isChatReadIdNewer } from '../../services/chatMirrorService';
+import { AppUser, ChatMessage, Staff } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import {
@@ -83,26 +84,139 @@ function resolveLastReadId(staffId: string | undefined, legacyStaffLastRead?: st
 function isMessageUnreadByCursor(msgId: string, lastReadId: string | undefined | null): boolean {
   if (!lastReadId) return true;
   if (msgId === lastReadId) return false;
-  const msgN = Number(msgId);
-  const readN = Number(lastReadId);
-  if (Number.isFinite(msgN) && Number.isFinite(readN)) return msgN > readN;
-  return msgId !== lastReadId;
+  return isChatReadIdNewer(msgId, lastReadId);
 }
 
-/** NAS presence-sessions.json 기준 — 재직(active)과 별개 */
+/** 읽음 커서가 비면 지난 대화의 마지막 글도 '새 메시지'로 뜬다. 하루가 지난 글은 가로막지 않는다. */
+function isStaleChatAlert(iso: string | undefined | null): boolean {
+  if (!iso) return false;
+  const sent = new Date(iso).getTime();
+  if (!Number.isFinite(sent)) return false;
+  return Date.now() - sent > 24 * 60 * 60 * 1000;
+}
+
+function newestAlertMessage(msgs: ChatMessage[]): ChatMessage | null {
+  if (!msgs.length) return null;
+  return msgs.reduce((best, msg) => (isChatReadIdNewer(msg.id, best.id) ? msg : best));
+}
+
+function isChannelWatchingMessage(
+  isOpen: boolean,
+  activeChannel: string | null,
+  msg: ChatMessage,
+  staffNow: Staff[]
+): boolean {
+  if (!isOpen) return false;
+  if (activeChannel === null && !msg.receiverId) return true;
+  return activeChannel !== null && staffIdsEqual(activeChannel, msg.senderId, staffNow);
+}
+
+/** 확인 커서 이후의 안 읽은 글. 커서가 없으면 하루 안쪽만 (옛 기록 전체 팝업 방지). */
+function collectUnreadAlerts(msgs: ChatMessage[], currentUser: AppUser, staffNow: Staff[]): ChatMessage[] {
+  const mine = msgs.filter(
+    (m) =>
+      !!m?.id &&
+      !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
+      (!m.receiverId || isSameLoggedInUser(currentUser, m.receiverId, staffNow))
+  );
+  const currentStaff = findStaffForUser(staffNow, currentUser);
+  const nasLastReadId = resolveLastReadId(currentStaff?.id, currentStaff?.lastReadMsgId);
+  const localLastReadId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
+  const hasCursor = !!(nasLastReadId || localLastReadId);
+  return mine
+    .filter((m) => {
+      if (!isMessageUnreadByCursor(m.id, nasLastReadId) || !isMessageUnreadByCursor(m.id, localLastReadId)) {
+        return false;
+      }
+      if (!hasCursor && isStaleChatAlert(m.timestamp)) return false;
+      return true;
+    })
+    .sort((a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || ''));
+}
+
+function mergeAlertMessages(prev: ChatMessage[], incoming: ChatMessage[]): ChatMessage[] {
+  const map = new Map<string, ChatMessage>();
+  for (const msg of prev) {
+    if (msg?.id) map.set(msg.id, msg);
+  }
+  for (const msg of incoming) {
+    if (msg?.id) map.set(msg.id, msg);
+  }
+  return Array.from(map.values()).sort(
+    (a, b) => Date.parse(a.timestamp || '') - Date.parse(b.timestamp || '')
+  );
+}
+
+function alertTime(msg: ChatMessage): number {
+  const parsed = Date.parse(msg.timestamp || '');
+  if (Number.isFinite(parsed)) return parsed;
+  const idN = Number(msg.id);
+  return Number.isFinite(idN) ? idN : 0;
+}
+
+/** 알림창: 최근 연락한 사람이 위. 같은 사람 글은 보낸 순서. */
+function orderAlertsNewestSenderFirst(msgs: ChatMessage[]): ChatMessage[] {
+  const groups = new Map<string, ChatMessage[]>();
+  for (const msg of msgs) {
+    const key = msg.senderId || msg.senderName || 'unknown';
+    const list = groups.get(key);
+    if (list) list.push(msg);
+    else groups.set(key, [msg]);
+  }
+  const blocks = Array.from(groups.values()).map((list) => {
+    const sorted = [...list].sort((a, b) => alertTime(a) - alertTime(b));
+    const latest = sorted.reduce((max, msg) => Math.max(max, alertTime(msg)), 0);
+    return { sorted, latest };
+  });
+  blocks.sort((a, b) => b.latest - a.latest);
+  return blocks.flatMap((block) => block.sorted);
+}
+
+/** NAS presence-sessions.json 기준 — uid, id, staffDocId, loginId, email, identities 통합 매칭 */
 function isStaffCurrentlyOnline(
   s: Staff,
-  sessions: Record<string, PresenceSessionEntry>
+  sessions: Record<string, PresenceSessionEntry>,
+  identities?: Record<string, string>
 ): boolean {
-  const keys = [s.uid, s.id].filter(Boolean) as string[];
-  for (const key of keys) {
-    const row = sessions[key];
-    if (row && resolveStaffOnline(row)) return true;
-  }
-  for (const row of Object.values(sessions)) {
-    if (row?.staffDocId && (row.staffDocId === s.id || row.staffDocId === s.uid) && resolveStaffOnline(row)) {
+  const rawLoginId = String((s as any).loginId || s.email || '').trim().toLowerCase();
+  const shortLoginId = rawLoginId.includes('@') ? rawLoginId.split('@')[0] : rawLoginId;
+  const emailLower = String(s.email || (shortLoginId ? `${shortLoginId}@ez-hub.kr` : '')).trim().toLowerCase();
+  const staffName = String(s.name || '').trim();
+
+  // 1. 직접 키 및 identities 맵을 통한 매칭
+  const candidateKeys = [
+    s.uid,
+    s.id,
+    rawLoginId,
+    shortLoginId,
+    emailLower,
+  ].map((v) => String(v || '').trim()).filter(Boolean);
+
+  for (const key of candidateKeys) {
+    const directRow = sessions[key] || sessions[key.toLowerCase()];
+    if (directRow && resolveStaffOnline(directRow)) return true;
+
+    const mappedUid = identities?.[key] || identities?.[key.toLowerCase()];
+    if (mappedUid && sessions[mappedUid] && resolveStaffOnline(sessions[mappedUid])) {
       return true;
     }
+  }
+
+  // 2. 세션 엔트리 내부 필드(staffDocId, loginId, email, name) 전수 매칭
+  for (const row of Object.values(sessions)) {
+    if (!row || !resolveStaffOnline(row)) continue;
+    if (row.staffDocId && (row.staffDocId === s.id || row.staffDocId === s.uid)) return true;
+    if (s.uid && row.uid === s.uid) return true;
+
+    const rowLoginId = String(row.loginId || '').trim().toLowerCase();
+    const rowShortLogin = rowLoginId.includes('@') ? rowLoginId.split('@')[0] : rowLoginId;
+    if (shortLoginId && (rowLoginId === shortLoginId || rowShortLogin === shortLoginId)) return true;
+
+    const rowEmail = String(row.email || '').trim().toLowerCase();
+    if (emailLower && rowEmail === emailLower) return true;
+    if (shortLoginId && rowEmail.split('@')[0] === shortLoginId) return true;
+
+    if (staffName && row.name && String(row.name).trim() === staffName) return true;
   }
   return false;
 }
@@ -123,7 +237,7 @@ export const ChatWidget: React.FC = () => {
   // Notification States
   const [hasUnread, setHasUnread] = useState(false);
   const [unreadSenders, setUnreadSenders] = useState<Set<string>>(new Set()); // New: Track which senders have unread messages
-  const [notificationPopup, setNotificationPopup] = useState<ChatMessage | null>(null);
+  const [alertMessages, setAlertMessages] = useState<ChatMessage[]>([]);
   
   const mountTime = useRef(Date.now());
   const { currentUser } = useAuth();
@@ -186,12 +300,12 @@ export const ChatWidget: React.FC = () => {
   useEffect(() => {
     if (!isTvMode) return;
     setIsOpen(false);
-    setNotificationPopup(null);
+    setAlertMessages([]);
     setHasUnread(false);
     clearDesktopChatAttention();
   }, [isTvMode]);
 
-  // 온라인/오프라인 — NAS presence (Firestore 없음). 채팅 열리면 더 자주 갱신
+  // 온라인/오프라인 — NAS presence (Firestore 과금 없음, 완전 무료). 채팅창 열거나 직원 목록 로드 즉시 반영
   useEffect(() => {
     if (!currentUser?.tenantId || isTvMode) return;
     let cancelled = false;
@@ -204,10 +318,14 @@ export const ChatWidget: React.FC = () => {
         );
         if (cancelled) return;
         const sessions = file?.sessions || {};
+        const identities = file?.identities || {};
+        const currentStaffList = staffRef.current.length > 0 ? staffRef.current : db.getStaff();
         const next: Record<string, boolean> = {};
-        for (const s of db.getStaff()) {
+        for (const s of currentStaffList) {
           if (!s?.id) continue;
-          const on = isStaffCurrentlyOnline(s, sessions);
+          const on =
+            isSameLoggedInUser(currentUser, s.id, currentStaffList) ||
+            isStaffCurrentlyOnline(s, sessions, identities);
           next[s.id] = on;
           if (s.uid) next[s.uid] = on;
         }
@@ -218,13 +336,17 @@ export const ChatWidget: React.FC = () => {
     };
 
     void refreshPresence();
-    const ms = isOpen ? 8_000 : 20_000;
+    // 사내 NAS/게이트웨이 통신이므로 비용 0원 -> 열려 있을 때 3초마다 실시간 갱신
+    const ms = isOpen ? 3_000 : 10_000;
     const timer = window.setInterval(() => void refreshPresence(), ms);
+    const onFocus = () => void refreshPresence();
+    window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;
       window.clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
     };
-  }, [currentUser?.tenantId, isOpen, isTvMode]);
+  }, [currentUser?.tenantId, isOpen, isTvMode, staff.length]);
 
   // OS 토스트 클릭 → 창 복원 후 해당 채팅 열기
   useEffect(() => {
@@ -238,7 +360,7 @@ export const ChatWidget: React.FC = () => {
         setActiveChannel(null);
       }
       setIsOpen(true);
-      setNotificationPopup(null);
+      setAlertMessages([]);
       setHasUnread(false);
       clearDesktopChatAttention();
     });
@@ -267,6 +389,10 @@ export const ChatWidget: React.FC = () => {
 
     const unsub = db.subscribe(() => {
       if (db.isChatHistoryReady()) setHistoryReady(true);
+      const latestStaff = db.getStaff();
+      if (latestStaff.length !== staffRef.current.length) {
+        setStaff(latestStaff);
+      }
       setChatReadsTick((n) => n + 1);
     });
 
@@ -275,38 +401,25 @@ export const ChatWidget: React.FC = () => {
     setMessages(db.getMessages());
     setHistoryReady(db.isChatHistoryReady());
 
-    // Check if there are any unread messages from history upon mount
+    // 없는 동안 온 안 읽은 글은 마지막 한 통이 아니라 전부 띄운다.
     const initialMsgs = db.getMessages();
-    if (initialMsgs.length > 0) {
+    if (initialMsgs.length > 0 && localStorage.getItem('ezprint_tv_mode') !== 'true') {
       const staffNow = db.getStaff();
-      const myReceivedMsgs = initialMsgs.filter(
-        (m) =>
-          !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
-          (!m.receiverId || isSameLoggedInUser(currentUser, m.receiverId, staffNow))
-      );
-      if (myReceivedMsgs.length > 0) {
-        const lastMsg = myReceivedMsgs[myReceivedMsgs.length - 1];
-        const currentStaff = findStaffForUser(staffNow, currentUser);
-        const nasLastReadId = resolveLastReadId(currentStaff?.id, currentStaff?.lastReadMsgId);
-        const lastConfirmedId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
-        
-        if (
-          isMessageUnreadByCursor(lastMsg.id, lastConfirmedId) &&
-          isMessageUnreadByCursor(lastMsg.id, nasLastReadId)
-        ) {
-          if (localStorage.getItem('ezprint_tv_mode') === 'true') {
-            // skip
-          } else {
-          setHasUnread(true);
-          setNotificationPopup(lastMsg);
-          const sender = findStaffByAnyId(staffNow, lastMsg.senderId);
-          notifyDesktopChat(lastMsg, sender?.name || lastMsg.senderName || '새 메시지');
-          
-          setTimeout(() => {
-            playSoftChatTone();
-          }, 1000);
-          }
-        }
+      const pending = collectUnreadAlerts(initialMsgs, currentUser, staffNow);
+      if (pending.length > 0) {
+        setHasUnread(true);
+        setAlertMessages(pending);
+        const lastMsg = newestAlertMessage(pending) || pending[pending.length - 1];
+        const sender = findStaffByAnyId(staffNow, lastMsg.senderId);
+        notifyDesktopChat(
+          lastMsg,
+          pending.length > 1
+            ? `새 메시지 ${pending.length}건`
+            : sender?.name || lastMsg.senderName || '새 메시지'
+        );
+        setTimeout(() => {
+          playSoftChatTone();
+        }, 1000);
       }
     }
 
@@ -331,53 +444,44 @@ export const ChatWidget: React.FC = () => {
         
         if (newMsgs.length > 0) {
           const staffNow = db.getStaff();
-          const myNewReceivedMsgs = newMsgs.filter(
-            (m) =>
-              !isSameLoggedInUser(currentUser, m.senderId, staffNow) &&
-              (!m.receiverId || isSameLoggedInUser(currentUser, m.receiverId, staffNow))
-          );
-          
-          if (myNewReceivedMsgs.length > 0) {
-            const lastMsg = myNewReceivedMsgs[myNewReceivedMsgs.length - 1];
-            const currentStaff = findStaffForUser(staffNow, currentUser);
-            const nasLastReadId = resolveLastReadId(currentStaff?.id, currentStaff?.lastReadMsgId);
-            const localLastReadId = localStorage.getItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`);
-            const isAlreadyRead =
-              !isMessageUnreadByCursor(lastMsg.id, nasLastReadId) ||
-              !isMessageUnreadByCursor(lastMsg.id, localLastReadId);
-
-            if (!isAlreadyRead) {
-                if (isTvModeNow) {
-                  // skip
-                } else {
-                const isRelevantChannelOpen = isOpenNow && (
-                    (activeChannelNow === null && !lastMsg.receiverId) || 
-                    (activeChannelNow !== null && staffIdsEqual(activeChannelNow, lastMsg.senderId, staffNow))
-                );
-
-                if (!isRelevantChannelOpen) {
-                     setHasUnread(true);
-                     setNotificationPopup(lastMsg);
-                     const senderStaff = lastMsg.senderId
-                       ? findStaffByAnyId(staffNow, lastMsg.senderId)
-                       : undefined;
-                     notifyDesktopChat(
-                       lastMsg,
-                       senderStaff?.name || lastMsg.senderName || '새 메시지'
-                     );
-                     
-                     if (lastMsg.senderId) {
-                          setUnreadSenders(prevSet => new Set(prevSet).add(senderStaff?.id || lastMsg.senderId));
-                     }
-                } else if (currentStaff?.id) {
-                  void db.updateStaffLastReadMsgId(currentStaff.id, lastMsg.id);
-                  localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, lastMsg.id);
+          const pending = collectUnreadAlerts(newMsgs, currentUser, staffNow);
+          if (pending.length > 0 && !isTvModeNow) {
+            const forPopup = pending.filter(
+              (m) => !isChannelWatchingMessage(isOpenNow, activeChannelNow, m, staffNow)
+            );
+            const seenHere = pending.filter((m) =>
+              isChannelWatchingMessage(isOpenNow, activeChannelNow, m, staffNow)
+            );
+            if (forPopup.length > 0) {
+              setHasUnread(true);
+              setAlertMessages((prevAlerts) => mergeAlertMessages(prevAlerts, forPopup));
+              const lastMsg = newestAlertMessage(forPopup) || forPopup[forPopup.length - 1];
+              const senderStaff = lastMsg.senderId
+                ? findStaffByAnyId(staffNow, lastMsg.senderId)
+                : undefined;
+              notifyDesktopChat(
+                lastMsg,
+                forPopup.length > 1
+                  ? `새 메시지 ${forPopup.length}건`
+                  : senderStaff?.name || lastMsg.senderName || '새 메시지'
+              );
+              setUnreadSenders((prevSet) => {
+                const next = new Set(prevSet);
+                for (const msg of forPopup) {
+                  if (!msg.senderId) continue;
+                  const sender = findStaffByAnyId(staffNow, msg.senderId);
+                  next.add(sender?.id || msg.senderId);
                 }
-                
-                if (soundEnabledNow && !isRelevantChannelOpen) {
-                   playSoftChatTone();
-                }
-                }
+                return next;
+              });
+              if (soundEnabledNow) playSoftChatTone();
+            } else if (seenHere.length > 0) {
+              const currentStaff = findStaffForUser(staffNow, currentUser);
+              const newest = newestAlertMessage(seenHere);
+              if (currentStaff?.id && newest) {
+                void db.updateStaffLastReadMsgId(currentStaff.id, newest.id);
+                localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, newest.id);
+              }
             }
           }
         }
@@ -421,7 +525,7 @@ export const ChatWidget: React.FC = () => {
         // 같은 메시지에 대해 Firestore lastRead 반복 쓰기 방지
         if (lastSyncedReadIdRef.current === lastMsg.id) {
           setHasUnread(false);
-          setNotificationPopup(null);
+          setAlertMessages([]);
           clearDesktopChatAttention();
           return;
         }
@@ -434,7 +538,7 @@ export const ChatWidget: React.FC = () => {
         }
       }
       setHasUnread(false);
-      setNotificationPopup(null);
+      setAlertMessages([]);
       clearDesktopChatAttention();
     }
   }, [isOpen, messages, currentUser, staff]);
@@ -455,7 +559,7 @@ export const ChatWidget: React.FC = () => {
       myStaff?.name || currentUser.name || currentUser.displayName || '';
     
     const msg: ChatMessage = {
-      id: Date.now().toString(),
+      id: createChatMessageId(),
       senderId: currentUser.id,
       senderName: senderName || undefined,
       receiverId: activeChannel || undefined, // undefined for global
@@ -509,6 +613,16 @@ export const ChatWidget: React.FC = () => {
   const formatTime = (isoString: string) => {
     const date = new Date(isoString);
     return date.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatSentDate = (isoString: string) => {
+    const date = new Date(isoString);
+    return date.toLocaleDateString('ko-KR', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      weekday: 'short',
+    });
   };
 
   const isSameDay = (d1Str: string, d2Str: string) => {
@@ -622,90 +736,133 @@ export const ChatWidget: React.FC = () => {
     }
   };
 
-  const handlePopupClick = () => {
-      if (notificationPopup) {
-          if (notificationPopup.receiverId) {
-              const senderStaff = findStaffByAnyId(staff, notificationPopup.senderId);
-              setActiveChannel(senderStaff?.id || notificationPopup.senderId);
-          } else {
-              setActiveChannel(null); 
+  const acknowledgeAlerts = (openChat: boolean) => {
+      const newest = newestAlertMessage(alertMessages);
+      if (!newest) return;
+      if (currentUser) {
+          localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, newest.id);
+          const staffDocId = findStaffForUser(staff, currentUser)?.id;
+          if (staffDocId) {
+            void db.updateStaffLastReadMsgId(staffDocId, newest.id);
           }
-          
-          setIsOpen(true);
-          if (currentUser) {
-              localStorage.setItem(`ezpw_last_confirmed_msg_id_${currentUser.id}`, notificationPopup.id);
-              const staffDocId = findStaffForUser(staff, currentUser)?.id;
-              if (staffDocId) {
-                void db.updateStaffLastReadMsgId(staffDocId, notificationPopup.id);
-              }
-          }
-          setNotificationPopup(null);
-          setHasUnread(false);
-          clearDesktopChatAttention();
       }
+      setAlertMessages([]);
+      setHasUnread(false);
+      clearDesktopChatAttention();
+      if (!openChat) return;
+      if (newest.receiverId) {
+          const senderStaff = findStaffByAnyId(staff, newest.senderId);
+          setActiveChannel(senderStaff?.id || newest.senderId);
+      } else {
+          setActiveChannel(null);
+      }
+      setIsOpen(true);
   };
 
   if (!currentUser) return null;
   // 모니터링(TV) 모드에서는 사내 채팅·팝업·플로팅 버튼 전부 숨김
   if (isTvMode) return null;
 
-  // notificationPopup이 떠 있을 때는 화면 전체를 덮어야 하므로 z-index를 최고 수준(z-[9999])으로 높이고, 
-  // 평소에는 z-50을 유지합니다.
-  const containerZIndex = notificationPopup ? 'z-[9999]' : 'z-50';
+  const containerZIndex = alertMessages.length > 0 ? 'z-[9999]' : 'z-50';
+  const alertSenderCount = new Set(alertMessages.map((m) => m.senderId || m.senderName || 'unknown')).size;
+  const displayAlerts = orderAlertsNewestSenderFirst(alertMessages);
 
   return (
     // Adjusted position for mobile (higher bottom to clear nav)
     <div className={`fixed bottom-20 lg:bottom-6 right-4 lg:right-6 ${containerZIndex} flex flex-col items-end gap-4 pointer-events-none`}>
       
       {/* CRITICAL ALERT MODAL — 크게·눈에 띄게 */}
-      {notificationPopup && !isOpen && (
+      {alertMessages.length > 0 && !isOpen && (
           <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 pointer-events-auto animate-in fade-in duration-300">
-              <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-xl overflow-hidden border-4 border-blue-500 animate-in zoom-in-95 duration-300 relative ring-8 ring-blue-500/40">
+              <div className="bg-white dark:bg-slate-800 rounded-3xl shadow-2xl w-full max-w-xl max-h-[90vh] overflow-hidden border-4 border-blue-500 animate-in zoom-in-95 duration-300 relative ring-8 ring-blue-500/40 flex flex-col">
                   <div className="absolute inset-0 border-4 border-blue-300/40 animate-pulse rounded-3xl pointer-events-none"></div>
                   
-                  <div className="bg-blue-600 p-5 sm:p-6 text-white flex items-center justify-center gap-3">
+                  <div className="bg-blue-600 p-5 sm:p-6 text-white flex items-center justify-center gap-3 shrink-0">
                       <Bell size={32} className="animate-[bounce_1s_infinite] shrink-0" />
-                      <h3 className="text-2xl sm:text-3xl font-black tracking-tight">새 메시지 도착!</h3>
+                      <h3 className="text-2xl sm:text-3xl font-black tracking-tight">
+                          {alertMessages.length > 1 ? `새 메시지 ${alertMessages.length}건` : '새 메시지 도착!'}
+                      </h3>
                   </div>
 
-                  <div className="p-8 sm:p-10 flex flex-col items-center text-center">
-                      <div className="relative mb-5">
-                          <img 
-                            src={getSenderInfo(notificationPopup.senderId, notificationPopup.senderName).avatarUrl} 
-                            className="w-28 h-28 sm:w-32 sm:h-32 rounded-full border-4 border-blue-200 dark:border-blue-800 shadow-lg object-cover" 
-                            alt=""
-                          />
-                          <div className="absolute bottom-0 right-0 bg-blue-600 text-white p-2 rounded-full border-2 border-white dark:border-slate-800 shadow">
-                              <MessageSquare size={20} />
-                          </div>
-                      </div>
-                      
-                      <h4 className="text-3xl font-black text-slate-800 dark:text-slate-100 mb-1">
-                          {getSenderInfo(notificationPopup.senderId, notificationPopup.senderName).name}
-                      </h4>
-                      <p className="text-base text-blue-600 dark:text-blue-400 font-bold mb-5">
-                          {notificationPopup.receiverId ? '1:1 메시지' : '전체 공지 메시지'}
-                      </p>
+                  <div className="p-6 sm:p-8 flex flex-col items-center text-center overflow-y-auto">
+                      {alertMessages.length === 1 ? (
+                          <>
+                              <div className="relative mb-5">
+                                  <img
+                                    src={getSenderInfo(alertMessages[0].senderId, alertMessages[0].senderName).avatarUrl}
+                                    className="w-28 h-28 sm:w-32 sm:h-32 rounded-full border-4 border-blue-200 dark:border-blue-800 shadow-lg object-cover"
+                                    alt=""
+                                  />
+                                  <div className="absolute bottom-0 right-0 bg-blue-600 text-white p-2 rounded-full border-2 border-white dark:border-slate-800 shadow">
+                                      <MessageSquare size={20} />
+                                  </div>
+                              </div>
+                              <h4 className="text-3xl font-black text-slate-800 dark:text-slate-100 mb-1">
+                                  {getSenderInfo(alertMessages[0].senderId, alertMessages[0].senderName).name}
+                              </h4>
+                              <p className="text-base text-blue-600 dark:text-blue-400 font-bold mb-5">
+                                  {alertMessages[0].receiverId ? '1:1 메시지' : '전체 공지 메시지'}
+                              </p>
+                              <div className="bg-slate-100 dark:bg-slate-700/50 p-5 sm:p-6 rounded-2xl w-full mb-7 relative border border-slate-200 dark:border-slate-600">
+                                  <p className="text-slate-800 dark:text-slate-100 text-xl sm:text-2xl font-semibold break-words leading-relaxed">
+                                      "{alertMessages[0].content}"
+                                  </p>
+                                  <p className="text-sm text-slate-400 mt-3 text-right leading-relaxed">
+                                      <span className="block">{formatSentDate(alertMessages[0].timestamp)}</span>
+                                      <span>{formatTime(alertMessages[0].timestamp)}</span>
+                                  </p>
+                              </div>
+                          </>
+                      ) : (
+                          <>
+                              <p className="text-sm font-bold text-blue-600 dark:text-blue-300 mb-4">
+                                  {alertSenderCount}명에게서 온 확인 전 메시지입니다.
+                              </p>
+                              <div className="w-full space-y-3 mb-6 text-left">
+                                  {displayAlerts.map((msg) => {
+                                      const sender = getSenderInfo(msg.senderId, msg.senderName);
+                                      return (
+                                          <div key={msg.id} className="rounded-2xl border border-slate-200 dark:border-slate-600 bg-slate-100 dark:bg-slate-700/50 p-4">
+                                              <div className="flex items-center gap-3 mb-2">
+                                                  <img src={sender.avatarUrl} alt="" className="w-10 h-10 rounded-full object-cover border border-blue-200" />
+                                                  <div className="min-w-0">
+                                                      <p className="font-black text-slate-800 dark:text-slate-100 truncate">{sender.name}</p>
+                                                      <p className="text-[11px] font-bold text-blue-600 dark:text-blue-300">
+                                                          {msg.receiverId ? '1:1 메시지' : '전체 공지'}
+                                                      </p>
+                                                  </div>
+                                              </div>
+                                              <p className="text-base font-semibold text-slate-800 dark:text-slate-100 break-words">"{msg.content}"</p>
+                                              <p className="text-xs text-slate-400 mt-2 text-right leading-relaxed">
+                                                  <span className="block">{formatSentDate(msg.timestamp)}</span>
+                                                  <span>{formatTime(msg.timestamp)}</span>
+                                              </p>
+                                          </div>
+                                      );
+                                  })}
+                              </div>
+                          </>
+                      )}
 
-                      <div className="bg-slate-100 dark:bg-slate-700/50 p-5 sm:p-6 rounded-2xl w-full mb-7 relative border border-slate-200 dark:border-slate-600">
-                          <div className="absolute -top-2 left-1/2 -translate-x-1/2 w-4 h-4 bg-slate-100 dark:bg-slate-700/50 rotate-45 border-l border-t border-slate-200 dark:border-slate-600"></div>
-                          <p className="text-slate-800 dark:text-slate-100 text-xl sm:text-2xl font-semibold break-words leading-relaxed">
-                              "{notificationPopup.content}"
-                          </p>
-                          <p className="text-sm text-slate-400 mt-3 text-right">
-                              {formatTime(notificationPopup.timestamp)}
-                          </p>
+                      <div className="w-full flex flex-col sm:flex-row gap-3 shrink-0">
+                          <button
+                              type="button"
+                              onClick={() => acknowledgeAlerts(false)}
+                              className="flex-1 py-5 bg-slate-200 hover:bg-slate-300 dark:bg-slate-700 dark:hover:bg-slate-600 text-slate-800 dark:text-slate-100 text-xl font-black rounded-2xl transition-all"
+                          >
+                              {alertMessages.length > 1 ? `${alertMessages.length}건 확인` : '확인'}
+                          </button>
+                          <button
+                              type="button"
+                              onClick={() => acknowledgeAlerts(true)}
+                              className="flex-[1.4] py-5 bg-blue-600 hover:bg-blue-700 text-white text-xl font-black rounded-2xl shadow-xl transition-all hover:scale-[1.02] flex items-center justify-center gap-2"
+                          >
+                              <MessageCircle size={24} />
+                              답장
+                          </button>
                       </div>
-
-                      <button 
-                          onClick={handlePopupClick}
-                          className="w-full py-5 bg-blue-600 hover:bg-blue-700 text-white text-xl font-black rounded-2xl shadow-xl transition-all hover:scale-[1.02] flex items-center justify-center gap-2"
-                      >
-                          <MessageCircle size={24} />
-                          확인하고 답장하기
-                      </button>
-                      <p className="text-sm text-slate-400 mt-4 animate-pulse font-medium">
-                          * 메시지를 확인할 때까지 다른 작업이 제한됩니다.
+                      <p className="text-sm text-slate-400 mt-4 font-medium">
+                          확인은 알림만 닫고, 답장은 채팅창으로 이동합니다. 둘 다 이 메시지는 읽은 것으로 처리됩니다.
                       </p>
                   </div>
               </div>

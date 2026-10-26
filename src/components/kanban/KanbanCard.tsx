@@ -378,7 +378,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       // 2. 'P' 키: 결제 상태 퀵 토글
       if (key === 'p') {
         e.preventDefault();
-        const cycle: PaymentStatus[] = ['결제대기', '일부결제', '후불결제', '결제완료'];
+        const cycle: PaymentStatus[] = ['결제대기', '일부결제', '후불결제', '카드결제', '결제완료'];
         const currentIdx = cycle.indexOf(job.paymentStatus || '결제대기');
         const nextIdx = (currentIdx + 1) % cycle.length;
         const nextStatus = cycle[nextIdx];
@@ -550,6 +550,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       case '결제대기': return 'kanban-badge kanban-badge-pay-wait bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300 border-red-200 dark:border-red-800';
       case '일부결제': return 'kanban-badge kanban-badge-pay-partial bg-emerald-100 dark:bg-emerald-900/30 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
       case '후불결제': return 'kanban-badge kanban-badge-pay-postpaid bg-amber-100 dark:bg-amber-900/30 text-amber-800 dark:text-amber-200 border-amber-200 dark:border-amber-800';
+      case '카드결제': return 'kanban-badge kanban-badge-pay-card bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 border-violet-200 dark:border-violet-800';
       case '결제완료': return 'kanban-badge kanban-badge-pay-done bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800';
       default: return 'kanban-badge kanban-badge-pay-default bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-600';
     }
@@ -810,10 +811,11 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
               onClick={(e) => handleToggleSubJob(e, idx)}
               className={`
                 kanban-badge text-[11px] px-2.5 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                ${sub.externalOrder && !sub.externalOrderArrivedAt ? 'external-order-blink' : ''}
                 ${sub.completed
                   ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30'
                   : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
-              title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
+              title={sub.externalOrder && !sub.externalOrderArrivedAt ? '외부 주문 품목' : `클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
             >
               {sub.type}
             </span>
@@ -829,7 +831,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         style={sortableStyle}
         {...sortableProps}
         className={`
-          kanban-card kanban-tv-card px-3.5 rounded-xl shadow-md border transition-all duration-200 cursor-grab active:cursor-grabbing group flex flex-col relative overflow-hidden shrink-0 backdrop-blur-premium ${cardSurfaceClass}
+          kanban-card kanban-tv-card px-3.5 rounded-xl shadow-md border transition-[box-shadow,transform,border-color,background-color] duration-200 cursor-grab active:cursor-grabbing group flex flex-col relative overflow-hidden shrink-0 ${cardSurfaceClass}
           ${showFull ? 'py-2 gap-1.5' : 'py-1.5 gap-1'}
           ${cardStyleClass}
           ${completedOutstandingClass}
@@ -838,12 +840,6 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
         onClick={handleCardClick}
         onContextMenu={handleCardContextMenu}
       >
-        <style>{`
-          .backdrop-blur-premium {
-            backdrop-filter: blur(8px);
-          }
-        `}</style>
-
         {showFull && (
           <div className="flex justify-between items-start pointer-events-none shrink-0">
             <div className="flex gap-2 flex-wrap items-center">
@@ -968,7 +964,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       onMouseEnter={handleSlotMouseEnter}
       onMouseLeave={handleSlotMouseLeave}
       className={`
-        kanban-card rounded-xl shadow-sm border transition-colors duration-200 group flex flex-col justify-start relative overflow-hidden backdrop-blur-premium ${cardSurfaceClass}
+        kanban-card rounded-xl shadow-sm border transition-colors duration-200 group flex flex-col justify-start relative overflow-hidden ${cardSurfaceClass}
         px-3 py-2 gap-0
         ${isManagementPanel ? 'cursor-pointer' : 'cursor-grab active:cursor-grabbing'}
         ${cardStyleClass}
@@ -979,11 +975,7 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
       onClick={handleCardClick}
       onContextMenu={handleCardContextMenu}
     >
-      {/* 프리미엄 블러 효과 인라인 스타일 */}
       <style>{`
-        .backdrop-blur-premium {
-          backdrop-filter: blur(8px);
-        }
         .custom-horizontal-scrollbar::-webkit-scrollbar {
           height: 3px;
         }
@@ -1038,10 +1030,11 @@ const KanbanCardImpl: React.FC<KanbanCardImplProps> = ({
                onClick={(e) => handleToggleSubJob(e, idx)}
                className={`
                  kanban-badge text-[10px] px-2 py-0.5 rounded-md border shadow-sm shrink-0 select-none cursor-pointer pointer-events-auto transition-colors
+                 ${sub.externalOrder && !sub.externalOrderArrivedAt ? 'external-order-blink' : ''}
                  ${sub.completed 
                    ? 'kanban-badge-sub-done bg-emerald-50 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800/60 text-emerald-700 dark:text-emerald-400 hover:bg-emerald-100 dark:hover:bg-emerald-900/30' 
                    : 'kanban-badge-sub-pending bg-slate-100 dark:bg-slate-700 border-slate-200/50 dark:border-slate-600/50 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600'}`}
-               title={`클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
+               title={sub.externalOrder && !sub.externalOrderArrivedAt ? '외부 주문 품목' : `클릭하여 완료 상태 토글 (${sub.completed ? '완료' : '진행중'})`}
              >
                {sub.type}
              </span>

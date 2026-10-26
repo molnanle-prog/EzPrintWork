@@ -30,6 +30,16 @@ export const ProductManager: React.FC = () => {
   const [draftProcessingsCover, setDraftProcessingsCover] = useState<string[]>([]);
   const [draftProcessingsInner, setDraftProcessingsInner] = useState<string[]>([]);
   const [processingsDirty, setProcessingsDirty] = useState(false);
+  const [draftPapers, setDraftPapers] = useState<string[]>([]);
+  const [draftWeights, setDraftWeights] = useState<string[]>([]);
+  const [draftSizes, setDraftSizes] = useState<string[]>([]);
+  const [papersDirty, setPapersDirty] = useState(false);
+  const [weightsDirty, setWeightsDirty] = useState(false);
+  const [sizesDirty, setSizesDirty] = useState(false);
+  const [pendingPapers, setPendingPapers] = useState<string[]>([]);
+  const [pendingWeights, setPendingWeights] = useState<string[]>([]);
+  const [pendingSizes, setPendingSizes] = useState<string[]>([]);
+  const [newProcessing, setNewProcessing] = useState('');
   const [isMergeModalOpen, setIsMergeModalOpen] = useState(false);
   const [mergePickNames, setMergePickNames] = useState<string[]>([]);
   const [mergePrimaryName, setMergePrimaryName] = useState<string | null>(null);
@@ -99,6 +109,142 @@ export const ProductManager: React.FC = () => {
           syncDraftProcessingsFromType(selectedType);
       }
   }, [selectedType?.processings, selectedType?.processingsCover, selectedType?.processingsInner, processingsDirty, selectedType?.name]);
+
+  useEffect(() => {
+      if (!selectedType) {
+          setDraftPapers([]);
+          setDraftWeights([]);
+          setDraftSizes([]);
+          setPapersDirty(false);
+          setWeightsDirty(false);
+          setSizesDirty(false);
+          setPendingPapers([]);
+          setPendingWeights([]);
+          setPendingSizes([]);
+          return;
+      }
+      setDraftPapers([...(selectedType.paperTypes || [])]);
+      setDraftWeights([...(selectedType.paperWeights || [])]);
+      setDraftSizes([...(selectedType.sizes || [])]);
+      setPapersDirty(false);
+      setWeightsDirty(false);
+      setSizesDirty(false);
+      setPendingPapers([]);
+      setPendingWeights([]);
+      setPendingSizes([]);
+  }, [selectedType?.name]);
+
+  const catalogSizes = useMemo(() => {
+      const names: string[] = [];
+      const push = (raw: string) => {
+          const label = normalizeSizeLabel(raw.trim());
+          if (!label || names.some((existing) => sizesMatch(existing, label))) return;
+          names.push(label);
+      };
+      for (const def of definitions) {
+          for (const name of def.sizes || []) push(name);
+      }
+      for (const name of pendingSizes) push(name);
+      return names.sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [definitions, pendingSizes]);
+
+  const catalogPapers = useMemo(() => {
+      const names = new Set<string>(pendingPapers);
+      for (const def of definitions) {
+          for (const name of def.paperTypes || []) {
+              const trimmed = name.trim();
+              if (trimmed) names.add(trimmed);
+          }
+      }
+      return [...names].sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [definitions, pendingPapers]);
+
+  const catalogWeights = useMemo(() => {
+      const names = new Set<string>(pendingWeights);
+      for (const def of definitions) {
+          for (const name of def.paperWeights || []) {
+              const trimmed = name.trim();
+              if (trimmed) names.add(trimmed);
+          }
+      }
+      return [...names].sort((a, b) => a.localeCompare(b, 'ko'));
+  }, [definitions, pendingWeights]);
+
+  const toggleCatalogOption = (option: string, kind: 'size' | 'paper' | 'weight') => {
+      if (kind === 'size') {
+          setDraftSizes((prev) => (
+              prev.some((name) => sizesMatch(name, option))
+                  ? prev.filter((name) => !sizesMatch(name, option))
+                  : [...prev, option]
+          ));
+          setSizesDirty(true);
+          return;
+      }
+      const setter = kind === 'paper' ? setDraftPapers : setDraftWeights;
+      setter((prev) => (prev.includes(option) ? prev.filter((name) => name !== option) : [...prev, option]));
+      if (kind === 'paper') setPapersDirty(true);
+      else setWeightsDirty(true);
+  };
+
+  const handleSaveCatalog = async (kind: 'size' | 'paper' | 'weight') => {
+      if (!selectedType) return;
+      if (!(await ensureCanEdit())) return;
+      const latestDefs = db.getProductDefinitions();
+      const current = latestDefs.find((def) => def.name === selectedType.name);
+      if (!current) return;
+      const nextValues = kind === 'size' ? draftSizes : kind === 'paper' ? draftPapers : draftWeights;
+      const updatedDef = kind === 'size'
+          ? { ...current, sizes: nextValues }
+          : kind === 'paper'
+              ? { ...current, paperTypes: nextValues }
+              : { ...current, paperWeights: nextValues };
+      const newDefs = latestDefs.map((def) => (def.name === selectedType.name ? updatedDef : def));
+      const label = kind === 'size' ? '규격' : kind === 'paper' ? '용지' : '평량';
+      try {
+          await db.saveProductDefinitions(newDefs);
+          setDefinitions(newDefs);
+          setSelectedType(updatedDef);
+          if (kind === 'size') {
+              setSizesDirty(false);
+              setPendingSizes([]);
+          } else if (kind === 'paper') {
+              setPapersDirty(false);
+              setPendingPapers([]);
+          } else {
+              setWeightsDirty(false);
+              setPendingWeights([]);
+          }
+          await showAlert(`'${selectedType.name}' ${label} ${nextValues.length}개가 저장되었습니다.`);
+      } catch {
+          await showAlert(`${label} 저장 중 오류가 발생했습니다.`);
+      }
+  };
+
+  const handleAddCatalogOption = async (kind: 'paper' | 'weight') => {
+      if (!selectedType) return;
+      const raw = (kind === 'paper' ? newPaper : newWeight).trim();
+      if (!raw) {
+          await showAlert(`필수 입력 항목입니다.\n${kind === 'paper' ? '용지' : '평량'} 값을 입력해 주세요.`);
+          focusRequiredInput(kind === 'paper' ? newPaperInputRef.current : newWeightInputRef.current);
+          return;
+      }
+      let finalValue = raw;
+      if (kind === 'weight' && /^\d+$/.test(finalValue)) finalValue += 'g';
+      const catalog = kind === 'paper' ? catalogPapers : catalogWeights;
+      if (!catalog.includes(finalValue)) {
+          if (kind === 'paper') setPendingPapers((prev) => [...prev, finalValue]);
+          else setPendingWeights((prev) => [...prev, finalValue]);
+      }
+      const setter = kind === 'paper' ? setDraftPapers : setDraftWeights;
+      setter((prev) => (prev.includes(finalValue) ? prev : [...prev, finalValue]));
+      if (kind === 'paper') {
+          setPapersDirty(true);
+          setNewPaper('');
+      } else {
+          setWeightsDirty(true);
+          setNewWeight('');
+      }
+  };
 
   const loadData = () => {
       setDefinitions(db.getProductDefinitions());
@@ -171,6 +317,29 @@ export const ProductManager: React.FC = () => {
       } catch {
           showAlert('후가공 설정 저장 중 오류가 발생했습니다.');
       }
+  };
+
+  const handleAddProcessing = async () => {
+      if (!selectedType) return;
+      if (!(await ensureCanEdit())) return;
+      const name = newProcessing.trim();
+      if (!name) {
+          await showAlert('필수 입력 항목입니다.\n후가공 이름을 입력해 주세요.');
+          return;
+      }
+      const current = db.getProcessingDefinitions();
+      if (!current.includes(name)) {
+          try {
+              await db.saveProcessingDefinitions([...current, name]);
+              setAllProcessings(db.getProcessingDefinitions());
+          } catch {
+              await showAlert('후가공 추가 중 오류가 발생했습니다.');
+              return;
+          }
+      }
+      setDraftProcessings((prev) => (prev.includes(name) ? prev : [...prev, name]));
+      setProcessingsDirty(true);
+      setNewProcessing('');
   };
 
   // --- Type Management ---
@@ -329,101 +498,22 @@ export const ProductManager: React.FC = () => {
 
   // --- Option Management ---
 
-  const clearSizeInputs = () => {
+  const handleAddSizeToCatalog = async () => {
+      if (!selectedType) return;
+      const composed = formatSizeFromWidthHeight(newSizeW, newSizeH);
+      if (!composed.trim()) {
+          await showAlert('필수 입력 항목입니다.\n규격 값을 입력해 주세요.');
+          focusRequiredInput(newSizeInputRef.current);
+          return;
+      }
+      const finalValue = normalizeSizeLabel(composed);
+      if (!catalogSizes.some((name) => sizesMatch(name, finalValue))) {
+          setPendingSizes((prev) => [...prev, finalValue]);
+      }
+      setDraftSizes((prev) => (prev.some((name) => sizesMatch(name, finalValue)) ? prev : [...prev, finalValue]));
+      setSizesDirty(true);
       setNewSizeW('');
       setNewSizeH('');
-  };
-
-  const handleAddSize = () => {
-      const composed = formatSizeFromWidthHeight(newSizeW, newSizeH);
-      void handleAddOption('sizes', composed, clearSizeInputs);
-  };
-
-  const getOptionInputRef = (category: 'sizes' | 'paperTypes' | 'paperWeights') => {
-      if (category === 'sizes') return newSizeInputRef;
-      if (category === 'paperTypes') return newPaperInputRef;
-      return newWeightInputRef;
-  };
-
-  const handleAddOption = async (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string, setter: (v: string) => void) => {
-      if (!selectedType) return;
-      if (!(await ensureCanEdit())) return;
-
-      const categoryName = category === 'sizes' ? '규격' : category === 'paperTypes' ? '용지' : '평량';
-      const inputRef = getOptionInputRef(category);
-
-      if (!value.trim()) {
-          await showAlert(`필수 입력 항목입니다.\n${categoryName} 값을 입력해 주세요.`);
-          focusRequiredInput(inputRef.current);
-          return;
-      }
-      
-      let finalValue = value.trim();
-
-      // Auto-append logic
-      if (category === 'sizes') {
-          finalValue = normalizeSizeLabel(finalValue);
-          if (/^\d+(?:\.\d+)?$/.test(finalValue)) {
-              finalValue += 'mm';
-          } else if (/^\d+(?:\.\d+)?\*\d+(?:\.\d+)?$/.test(finalValue)) {
-              finalValue += 'mm';
-          } else if (/^\d+(?:\.\d+)?\s+\d+(?:\.\d+)?$/.test(finalValue)) {
-              const [w, h] = finalValue.split(/\s+/);
-              finalValue = `${w}*${h}mm`;
-          }
-      } else if (category === 'paperWeights') {
-          // If purely numbers (e.g. "250") -> "250g"
-          if (/^\d+$/.test(finalValue)) {
-              finalValue += 'g';
-          }
-      }
-
-      const latestDefs = db.getProductDefinitions();
-      const currentType = latestDefs.find((d) => d.name === selectedType.name);
-      if (!currentType) return;
-
-      if (currentType[category].some((opt) => (category === 'sizes' ? sizesMatch(opt, finalValue) : opt === finalValue))) {
-          await showAlert(`이미 존재하는 ${categoryName}입니다.\n다른 값을 입력해 주세요.`);
-          focusRequiredInput(inputRef.current);
-          return;
-      }
-
-      const updatedDef = { ...currentType, [category]: [...currentType[category], finalValue] };
-      const newDefs = latestDefs.map(d => d.name === selectedType.name ? updatedDef : d);
-      try {
-          await db.saveProductDefinitions(newDefs);
-          const refreshed = db.getProductDefinitions();
-          setDefinitions(refreshed);
-          const nextSelected = refreshed.find((d) => d.name === selectedType.name) || updatedDef;
-          setSelectedType(nextSelected);
-          setter('');
-      } catch (error) {
-          await showAlert('옵션 추가 실패: ' + getErrorMessage(error));
-          focusRequiredInput(inputRef.current);
-      }
-  };
-
-  const handleDeleteOption = async (category: 'sizes' | 'paperTypes' | 'paperWeights', value: string) => {
-      if (!selectedType) return;
-
-      const categoryName = category === 'sizes' ? '규격' : category === 'paperTypes' ? '용지' : '평량';
-
-      if (await showConfirm(`'${value}' ${categoryName} 항목을 삭제하시겠습니까?\n\n확인(삭제)을 누르면 즉시 저장됩니다.`)) {
-          const latestDefs = db.getProductDefinitions();
-          const currentType = latestDefs.find((d) => d.name === selectedType.name);
-          if (!currentType) return;
-
-          const updatedDef = { ...currentType, [category]: currentType[category].filter(v => v !== value) };
-          const newDefs = latestDefs.map(d => d.name === selectedType.name ? updatedDef : d);
-          try {
-              await db.saveProductDefinitions(newDefs);
-              setDefinitions(newDefs);
-              setSelectedType(updatedDef);
-              await showAlert(`'${value}' ${categoryName} 항목이 삭제되었습니다.`);
-          } catch (error) {
-              await showAlert('삭제 실패: ' + getErrorMessage(error));
-          }
-      }
   };
 
   const inputClass = "flex-1 min-w-0 w-full p-2 text-sm border border-slate-300 dark:border-slate-600 rounded focus:ring-2 focus:ring-blue-500 text-slate-800 dark:text-slate-100 bg-white dark:bg-slate-700 placeholder-slate-400";
@@ -530,6 +620,25 @@ export const ProductManager: React.FC = () => {
                               <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <FileBox size={16} className="text-blue-500"/> 규격 (Sizes)
                               </h4>
+                              <p className="flex-none text-[10px] text-slate-400">
+                                  다른 품목에 있는 규격이 모두 나옵니다. 쓸 항목을 체크한 뒤 저장해 주세요.
+                              </p>
+                              <div className="flex-none flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => { setDraftSizes([...catalogSizes]); setSizesDirty(true); }} className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200">전체 선택</button>
+                                  <button type="button" onClick={() => { setDraftSizes([]); setSizesDirty(true); }} className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200">전체 해제</button>
+                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 self-center">선택 {draftSizes.length} / {catalogSizes.length}</span>
+                              </div>
+                              <div className={optionListClass}>
+                                  {catalogSizes.map((opt) => {
+                                      const isChecked = draftSizes.some((name) => sizesMatch(name, opt));
+                                      return (
+                                          <label key={opt} className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer text-sm font-medium transition-all ${isChecked ? 'bg-blue-50 dark:bg-blue-950/40 border-blue-200 dark:border-blue-700 text-blue-800 dark:text-blue-100' : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
+                                              <input type="checkbox" checked={isChecked} onChange={() => toggleCatalogOption(opt, 'size')} className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5" />
+                                              <span>{opt}</span>
+                                          </label>
+                                      );
+                                  })}
+                              </div>
                               <div className="flex-none flex gap-2 w-full min-w-0 items-center">
                                   <div className="flex-1 min-w-0 flex items-center gap-1">
                                       <input
@@ -539,7 +648,7 @@ export const ProductManager: React.FC = () => {
                                           className={inputClass}
                                           placeholder="가로/지름"
                                           inputMode="decimal"
-                                          onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
+                                          onKeyDown={(e) => e.key === 'Enter' && void handleAddSizeToCatalog()}
                                       />
                                       <span className="text-sm font-black text-slate-400 shrink-0">*</span>
                                       <input
@@ -548,26 +657,25 @@ export const ProductManager: React.FC = () => {
                                           className={inputClass}
                                           placeholder="세로"
                                           inputMode="decimal"
-                                          onKeyDown={(e) => e.key === 'Enter' && handleAddSize()}
+                                          onKeyDown={(e) => e.key === 'Enter' && void handleAddSizeToCatalog()}
                                       />
                                   </div>
-                                  <button type="button" onClick={handleAddSize} className={btnClass}>
+                                  <button type="button" onClick={() => void handleAddSizeToCatalog()} className={btnClass}>
                                       <Plus size={16} />
                                   </button>
                               </div>
                               <p className="flex-none text-[10px] text-slate-400 leading-snug">
-                                가로·세로 숫자 → <strong>4000*900mm</strong>. 지름·한 치수는 첫 칸만 (예: 50 → 50mm). 규격외·A4 도 첫 칸.
+                                목록에 없으면 가로·세로를 넣어 추가합니다. 숫자만 넣으면 mm가 붙습니다.
                               </p>
-                              <div className={optionListClass}>
-                                  {selectedType.sizes.map(opt => (
-                                      <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">
-                                          <span>{opt}</span>
-                                          <button onClick={() => handleDeleteOption('sizes', opt)} className="text-slate-300 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                              <X size={14} />
-                                          </button>
-                                      </div>
-                                  ))}
-                              </div>
+                              <button
+                                  type="button"
+                                  onClick={() => void handleSaveCatalog('size')}
+                                  disabled={!sizesDirty}
+                                  className={`flex-none w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors ${sizesDirty ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'}`}
+                              >
+                                  <Save size={16} />
+                                  규격 저장
+                              </button>
                           </div>
 
                           {/* 2. Paper Types */}
@@ -575,29 +683,47 @@ export const ProductManager: React.FC = () => {
                               <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <File size={16} className="text-emerald-500"/> 용지 종류 (Papers)
                               </h4>
+                              <p className="flex-none text-[10px] text-slate-400">
+                                  다른 품목에 있는 용지가 모두 나옵니다. 쓸 항목을 체크한 뒤 저장해 주세요.
+                              </p>
+                              <div className="flex-none flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => { setDraftPapers([...catalogPapers]); setPapersDirty(true); }} className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200">전체 선택</button>
+                                  <button type="button" onClick={() => { setDraftPapers([]); setPapersDirty(true); }} className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200">전체 해제</button>
+                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 self-center">선택 {draftPapers.length} / {catalogPapers.length}</span>
+                              </div>
+                              <div className={optionListClass}>
+                                  {catalogPapers.map((opt) => {
+                                      const isChecked = draftPapers.includes(opt);
+                                      return (
+                                          <label key={opt} className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer text-sm font-medium transition-all ${isChecked ? 'bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-700 text-emerald-800 dark:text-emerald-100' : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
+                                              <input type="checkbox" checked={isChecked} onChange={() => toggleCatalogOption(opt, 'paper')} className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 w-3.5 h-3.5" />
+                                              <span>{opt}</span>
+                                          </label>
+                                      );
+                                  })}
+                              </div>
                               <div className="flex-none flex gap-2 w-full min-w-0 items-center">
-                                  <input 
+                                  <input
                                       ref={newPaperInputRef}
-                                      value={newPaper} 
+                                      value={newPaper}
                                       onChange={(e) => setNewPaper(e.target.value)}
                                       className={inputClass}
-                                      placeholder="새 용지 추가"
-                                      onKeyDown={(e) => e.key === 'Enter' && handleAddOption('paperTypes', newPaper, setNewPaper)}
+                                      placeholder="목록에 없는 용지"
+                                      onKeyDown={(e) => e.key === 'Enter' && void handleAddCatalogOption('paper')}
                                   />
-                                  <button onClick={() => handleAddOption('paperTypes', newPaper, setNewPaper)} className={btnClass}>
+                                  <button type="button" onClick={() => void handleAddCatalogOption('paper')} className={btnClass}>
                                       <Plus size={16} />
                                   </button>
                               </div>
-                              <div className={optionListClass}>
-                                  {selectedType.paperTypes.map(opt => (
-                                      <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">
-                                          <span>{opt}</span>
-                                          <button onClick={() => handleDeleteOption('paperTypes', opt)} className="text-slate-300 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                              <X size={14} />
-                                          </button>
-                                      </div>
-                                  ))}
-                              </div>
+                              <button
+                                  type="button"
+                                  onClick={() => void handleSaveCatalog('paper')}
+                                  disabled={!papersDirty}
+                                  className={`flex-none w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors ${papersDirty ? 'bg-emerald-600 text-white hover:bg-emerald-700' : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'}`}
+                              >
+                                  <Save size={16} />
+                                  용지 저장
+                              </button>
                           </div>
 
                           {/* 3. Weights */}
@@ -605,29 +731,47 @@ export const ProductManager: React.FC = () => {
                               <h4 className="flex-none text-sm font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2">
                                   <Layers size={16} className="text-purple-500"/> 평량/두께 (Weights)
                               </h4>
+                              <p className="flex-none text-[10px] text-slate-400">
+                                  다른 품목에 있는 평량이 모두 나옵니다. 쓸 항목을 체크한 뒤 저장해 주세요.
+                              </p>
+                              <div className="flex-none flex flex-wrap gap-2">
+                                  <button type="button" onClick={() => { setDraftWeights([...catalogWeights]); setWeightsDirty(true); }} className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200">전체 선택</button>
+                                  <button type="button" onClick={() => { setDraftWeights([]); setWeightsDirty(true); }} className="px-2.5 py-1 text-[11px] font-bold rounded border border-slate-200 dark:border-slate-600 bg-white dark:bg-slate-700 text-slate-600 dark:text-slate-200">전체 해제</button>
+                                  <span className="text-[11px] text-slate-500 dark:text-slate-400 self-center">선택 {draftWeights.length} / {catalogWeights.length}</span>
+                              </div>
+                              <div className={optionListClass}>
+                                  {catalogWeights.map((opt) => {
+                                      const isChecked = draftWeights.includes(opt);
+                                      return (
+                                          <label key={opt} className={`flex items-center gap-2 px-3 py-1.5 rounded border cursor-pointer text-sm font-medium transition-all ${isChecked ? 'bg-purple-50 dark:bg-purple-950/40 border-purple-200 dark:border-purple-700 text-purple-800 dark:text-purple-100' : 'bg-white dark:bg-slate-700 border-slate-100 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600'}`}>
+                                              <input type="checkbox" checked={isChecked} onChange={() => toggleCatalogOption(opt, 'weight')} className="rounded border-slate-300 text-purple-600 focus:ring-purple-500 w-3.5 h-3.5" />
+                                              <span>{opt}</span>
+                                          </label>
+                                      );
+                                  })}
+                              </div>
                               <div className="flex-none flex gap-2 w-full min-w-0 items-center">
-                                  <input 
+                                  <input
                                       ref={newWeightInputRef}
-                                      value={newWeight} 
+                                      value={newWeight}
                                       onChange={(e) => setNewWeight(e.target.value)}
                                       className={inputClass}
-                                      placeholder="예: 250 (자동 g)"
-                                      onKeyDown={(e) => e.key === 'Enter' && handleAddOption('paperWeights', newWeight, setNewWeight)}
+                                      placeholder="목록에 없으면 예: 250"
+                                      onKeyDown={(e) => e.key === 'Enter' && void handleAddCatalogOption('weight')}
                                   />
-                                  <button onClick={() => handleAddOption('paperWeights', newWeight, setNewWeight)} className={btnClass}>
+                                  <button type="button" onClick={() => void handleAddCatalogOption('weight')} className={btnClass}>
                                       <Plus size={16} />
                                   </button>
                               </div>
-                              <div className={optionListClass}>
-                                  {selectedType.paperWeights.map(opt => (
-                                      <div key={opt} className="flex justify-between items-center bg-white dark:bg-slate-700 px-3 py-2 rounded border border-slate-100 dark:border-slate-600 shadow-sm text-sm group text-slate-700 dark:text-slate-200 font-medium transition-colors">
-                                          <span>{opt}</span>
-                                          <button onClick={() => handleDeleteOption('paperWeights', opt)} className="text-slate-300 dark:text-slate-500 hover:text-red-500 dark:hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                                              <X size={14} />
-                                          </button>
-                                      </div>
-                                  ))}
-                              </div>
+                              <button
+                                  type="button"
+                                  onClick={() => void handleSaveCatalog('weight')}
+                                  disabled={!weightsDirty}
+                                  className={`flex-none w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold transition-colors ${weightsDirty ? 'bg-purple-600 text-white hover:bg-purple-700' : 'bg-slate-100 dark:bg-slate-700 text-slate-400 cursor-not-allowed'}`}
+                              >
+                                  <Save size={16} />
+                                  평량 저장
+                              </button>
                           </div>
 
                           {/* 4. Processings */}
@@ -636,9 +780,7 @@ export const ProductManager: React.FC = () => {
                                   <Scissors size={16} className="text-blue-500"/> 후가공 설정 (Processings)
                               </h4>
                               <p className="flex-none text-[10px] text-slate-400">
-                                  {isBookletProductType(selectedType.name)
-                                      ? '제본·공통 / 표지 / 내지 후가공을 각각 선택한 뒤 하단 후가공 저장을 눌러 주세요. (목록에 없으면 「후가공 관리」에서 먼저 추가)'
-                                      : '여러 개를 체크한 뒤 하단 후가공 저장을 눌러 주세요. (목록에 없으면 「후가공 관리」에서 먼저 추가)'}
+                                  등록된 후가공이 모두 나옵니다. 체크한 뒤 저장하고, 없는 항목은 아래에서 추가할 수 있습니다.
                               </p>
 
                               {isBookletProductType(selectedType.name) ? (
@@ -754,6 +896,18 @@ export const ProductManager: React.FC = () => {
                                   </>
                               )}
 
+                              <div className="flex-none flex gap-2 w-full min-w-0 items-center">
+                                  <input
+                                      value={newProcessing}
+                                      onChange={(e) => setNewProcessing(e.target.value)}
+                                      className={inputClass}
+                                      placeholder="목록에 없는 후가공"
+                                      onKeyDown={(e) => e.key === 'Enter' && void handleAddProcessing()}
+                                  />
+                                  <button type="button" onClick={() => void handleAddProcessing()} className={btnClass}>
+                                      <Plus size={16} />
+                                  </button>
+                              </div>
                               <button
                                   type="button"
                                   onClick={handleSaveProcessings}

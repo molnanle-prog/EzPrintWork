@@ -1,6 +1,13 @@
 import { Client, Job, PaymentStatus, PrepaidLedgerEntry } from '../types';
 
-const CHARGE_STATUSES: PaymentStatus[] = ['일부결제', '결제완료'];
+const CHARGE_STATUSES: PaymentStatus[] = ['일부결제', '카드결제', '결제완료'];
+
+/** 돈을 받은 상태. 카드결제도 미수가 아니다. */
+export const SETTLED_PAYMENT_STATUSES = ['결제완료', '카드결제'] as const;
+
+export function isSettledPaymentStatus(status?: string | null): boolean {
+  return status === '결제완료' || status === '카드결제';
+}
 const MAX_LEDGER_ENTRIES = 100;
 
 export function normalizePrepaidBalance(value: unknown): number {
@@ -169,7 +176,7 @@ export function getManagementPrepaidBadge(
     if (pending > 0) return { kind: 'pending', amount: pending };
   }
 
-  if (!usePrepaid && job.paymentStatus === '결제완료') {
+  if (!usePrepaid && isSettledPaymentStatus(job.paymentStatus)) {
     return { kind: 'separate' };
   }
 
@@ -230,7 +237,7 @@ export function isReceivablePaymentStatus(status?: PaymentStatus): boolean {
 
 /**
  * 미수 = 작업가 − 이미 뺀 선불.
- * - 결제완료·취소: 0
+ * - 결제완료·카드결제·취소: 0
  * - 대기·후불·일부: 별도수납(paidAmount)은 제외.
  *   paidAmount는 결제완료 때 나머지를 받은 것으로 기록하는 값이라,
  *   후불/대기로 바꾼 뒤에도 남아 있으면 미수가 0으로 보이는 원인이 됨.
@@ -273,7 +280,7 @@ export function buildJobOrderPaymentSummary(
 export function resolvePaidAmountOnComplete(job: Job): number {
   const existing = Math.max(0, Math.round(job.paidAmount || 0));
   if (existing > 0) return existing;
-  if (job.paymentStatus !== '결제완료') return existing;
+  if (!isSettledPaymentStatus(job.paymentStatus)) return existing;
   const price = job.price || 0;
   const applied = job.prepaidAppliedAmount || 0;
   return Math.max(0, price - applied);
@@ -442,9 +449,9 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
     (newJob.price || 0) > 0;
   const incomingPaid = Math.max(0, Math.round(newJob.paidAmount || 0));
   const hasStalePaidAmount =
-    newJob.paymentStatus !== '결제완료' && incomingPaid > 0;
+    !isSettledPaymentStatus(newJob.paymentStatus) && incomingPaid > 0;
   const needsCompletePaidFill =
-    newJob.paymentStatus === '결제완료' &&
+    isSettledPaymentStatus(newJob.paymentStatus) &&
     Math.max(0, (newJob.price || 0) - (newJob.prepaidAppliedAmount || 0) - incomingPaid) > 0;
 
   if (
@@ -463,8 +470,8 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
   let job: Job = {
     ...newJob,
     prepaidAppliedAmount: 0,
-    /** 별도수납은 결제완료에서만 확정. 대기·후불·일부에 남은 값은 미수 0의 원인 */
-    paidAmount: newJob.paymentStatus === '결제완료' ? incomingPaid : 0,
+    /** 별도수납은 결제완료·카드결제에서만 확정. 대기·후불·일부에 남은 값은 미수 0의 원인 */
+    paidAmount: isSettledPaymentStatus(newJob.paymentStatus) ? incomingPaid : 0,
   };
   let notice: string | undefined;
   let warning: string | undefined;
@@ -502,8 +509,8 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
       job.prepaidAppliedAmount = toApply;
 
       const remaining = price - toApply;
-      if (newJob.paymentStatus === '결제완료' && remaining > 0) {
-        // 결제완료 = 잔여를 별도 수납으로 확정 기록 (미수 집계에서 누락되지 않게)
+      if (isSettledPaymentStatus(newJob.paymentStatus) && remaining > 0) {
+        // 결제완료·카드결제 = 잔여를 별도 수납으로 확정 기록 (미수 집계에서 누락되지 않게)
         job.paidAmount = Math.max(job.paidAmount || 0, remaining);
         warning = `선불 ${toApply.toLocaleString()}원 차감. 잔여 ${remaining.toLocaleString()}원은 별도 수금으로 기록됩니다.`;
       } else if (newJob.paymentStatus === '일부결제') {
@@ -525,7 +532,7 @@ export function resolvePrepaidOnJobUpdate(oldJob: Job, newJob: Job, clients: Cli
     notice = '별도 수금으로 처리됩니다. (선불 차감 안 함)';
   }
 
-  if (newJob.paymentStatus === '결제완료') {
+  if (isSettledPaymentStatus(newJob.paymentStatus)) {
     const remainingAfter = Math.max(0, price - (job.prepaidAppliedAmount || 0) - (job.paidAmount || 0));
     if (remainingAfter > 0) {
       job.paidAmount = (job.paidAmount || 0) + remainingAfter;

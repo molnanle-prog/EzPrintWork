@@ -8,6 +8,7 @@ import {
   resolveStaffOnline,
   isRemoteStaffSessionActive,
   isRemoteSessionNewerThanLocal,
+  isSameMachineOrLegacyGhost,
   createStaffSessionId,
 } from '../src/utils/staffSession';
 
@@ -41,9 +42,16 @@ function run() {
   assert.notEqual(localSid, remoteSid);
   ok('createStaffSessionId unique');
 
+  const remoteMachineId = `remote-${Date.now()}`;
   assert.equal(
     isRemoteStaffSessionActive(
-      { activeSessionId: remoteSid, isOnline: true, lastActive: now },
+      {
+        activeSessionId: remoteSid,
+        isOnline: true,
+        lastActive: now,
+        clientType: 'electron',
+        machineId: remoteMachineId,
+      },
       localSid
     ),
     true
@@ -59,9 +67,31 @@ function run() {
   );
   ok('same session not treated as remote');
 
+  assert.equal(
+    isSameMachineOrLegacyGhost({
+      activeSessionId: remoteSid,
+      isOnline: true,
+      lastActive: now,
+      clientType: 'electron',
+    }),
+    true
+  );
+  assert.equal(
+    isRemoteStaffSessionActive(
+      {
+        activeSessionId: remoteSid,
+        isOnline: true,
+        lastActive: now,
+        clientType: 'electron',
+      },
+      localSid
+    ),
+    false
+  );
+  ok('legacy record without machineId is a ghost, not another PC');
+
   const localClaimed = new Date(Date.now() - 60_000).toISOString();
   const remoteNewer = new Date().toISOString();
-  const remoteMachineId = `remote-${Date.now()}`;
   assert.equal(
     isRemoteSessionNewerThanLocal(
       {
@@ -95,6 +125,112 @@ function run() {
     false
   );
   ok('older remote session does not kick');
+
+  const heartbeatNewer = new Date().toISOString();
+  assert.equal(
+    isRemoteSessionNewerThanLocal(
+      {
+        activeSessionId: remoteSid,
+        activeSessionAt: localClaimed,
+        isOnline: true,
+        lastActive: heartbeatNewer,
+        clientType: 'electron',
+        machineId: remoteMachineId,
+      },
+      localSid,
+      localClaimed
+    ),
+    false
+  );
+  ok('heartbeat lastActive alone does not kick');
+
+  assert.equal(
+    isRemoteSessionNewerThanLocal(
+      {
+        activeSessionId: remoteSid,
+        isOnline: true,
+        lastActive: now,
+        clientType: 'electron',
+      },
+      localSid,
+      localClaimed
+    ),
+    false
+  );
+  ok('post-update ghost without machineId does not kick');
+
+  assert.equal(
+    isRemoteSessionNewerThanLocal(
+      {
+        activeSessionId: remoteSid,
+        activeSessionAt: remoteNewer,
+        isOnline: true,
+        lastActive: remoteNewer,
+        clientType: 'electron',
+        machineId: remoteMachineId,
+      },
+      localSid,
+      null
+    ),
+    false
+  );
+  ok('missing local claimedAt does not kick');
+
+  assert.equal(
+    resolveStaffOnline({
+      isOnline: false,
+      online: false,
+      activeSessionId: remoteSid,
+      lastActive: now,
+    }),
+    false
+  );
+  ok('logout leftover with isOnline false is not online');
+
+  assert.equal(
+    isRemoteStaffSessionActive(
+      {
+        activeSessionId: remoteSid,
+        isOnline: false,
+        lastActive: now,
+        clientType: 'electron',
+        machineId: remoteMachineId,
+      },
+      localSid
+    ),
+    false
+  );
+  ok('closed session does not block another PC login');
+
+  assert.equal(
+    isRemoteStaffSessionActive(
+      {
+        activeSessionId: '',
+        isOnline: false,
+        lastActive: now,
+        clientType: 'electron',
+        machineId: remoteMachineId,
+      },
+      localSid
+    ),
+    false
+  );
+  ok('released claim (empty session id) is not treated as remote login');
+
+  assert.equal(
+    isRemoteStaffSessionActive(
+      {
+        activeSessionId: remoteSid,
+        isOnline: true,
+        lastActive: now,
+        clientType: 'electron',
+        machineId: remoteMachineId,
+      },
+      localSid
+    ),
+    true
+  );
+  ok('live session on another PC still blocks same id');
 
   console.log('[smoke] presence/session helpers PASSED\n');
 }

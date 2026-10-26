@@ -18,6 +18,9 @@ import {
 
 const CHAT_VERSION = 1;
 export const CHAT_FILE_NAME = 'chat-messages.json';
+export const CHAT_LIVE_FILE_NAME = 'chat-live.json';
+/** 새 글 신호에 남기는 최근 메시지 수. 전체 대화 파일은 여기 넣지 않는다. */
+export const CHAT_LIVE_LIMIT = 40;
 export const CHAT_ARCHIVE_FOLDER = 'chat-archive';
 /** Storage 폴백 상한 — LAN 성공 시 대기하지 않음 */
 const STORAGE_FETCH_TIMEOUT_MS = 8000;
@@ -43,12 +46,34 @@ export interface ChatMirrorPayload {
     reads?: ChatReadMap;
 }
 
-/** 메시지 id가 Date.now() 기반이므로 숫자 비교로 최신 판별 */
+/** PC와 시각이 겹쳐도 글이 서로 지우지 않도록 시각 + 임의 꼬리 */
+export function createChatMessageId(): string {
+    const tail = Math.random().toString(36).slice(2, 8);
+    return `${Date.now()}-${tail}`;
+}
+
+function chatIdTime(id: string): number {
+    const head = String(id || '').split('-')[0];
+    if (!/^\d{10,}$/.test(head)) return NaN;
+    const n = Number(head);
+    return Number.isFinite(n) ? n : NaN;
+}
+
+/** 읽음 커서. 예전 숫자 id와 새 id(시각-꼬리)를 같은 기준으로 비교 */
 export function isChatReadIdNewer(a: string, b: string): boolean {
-    const na = Number(a);
-    const nb = Number(b);
-    if (Number.isFinite(na) && Number.isFinite(nb)) return na >= nb;
+    const ta = chatIdTime(a);
+    const tb = chatIdTime(b);
+    if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta >= tb;
     return String(a) >= String(b);
+}
+
+export function chatMessagesEqual(a: ChatMessage[] = [], b: ChatMessage[] = []): boolean {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+        if ((a[i]?.id || '') !== (b[i]?.id || '')) return false;
+        if ((a[i]?.content || '') !== (b[i]?.content || '')) return false;
+    }
+    return true;
 }
 
 export function mergeChatReads(a: ChatReadMap = {}, b: ChatReadMap = {}): ChatReadMap {
@@ -181,12 +206,17 @@ export class ChatMirrorService {
         return null;
     }
 
-    private async writeLocalWithRetry(filePath: string, content: string): Promise<boolean> {
+    private async writeLocalWithRetry(
+        filePath: string,
+        content: string,
+        expectedMtime?: number
+    ): Promise<boolean> {
         if (!this.isElectron()) return false;
         for (let attempt = 0; attempt < WRITE_RETRY_DELAYS_MS.length; attempt++) {
             if (attempt > 0) await new Promise((r) => setTimeout(r, WRITE_RETRY_DELAYS_MS[attempt]));
-            const result = await window.electron.saveFile(filePath, content);
+            const result = await window.electron.saveFile(filePath, content, expectedMtime);
             if (result?.success) return true;
+            if (result?.conflict) return false;
         }
         return false;
     }
@@ -265,44 +295,55 @@ export class ChatMirrorService {
         reads: ChatReadMap = {}
     ): Promise<boolean> {
         if (this.isElectron()) {
-            let nasOk = false;
             const root = await this.resolveMirrorRoot();
-            if (root) {
-                const filePath = this.joinPath(root, CHAT_FILE_NAME);
-                let existing: ChatMessage[] = [];
-                let existingReads: ChatReadMap = {};
-                if (this.cachedTenantId === tenantId && this.cachedMessages) {
-                    existing = this.cachedMessages;
-                    existingReads = this.cachedReads || {};
-                } else {
-                    try {
-                        const meta = await this.readLocalWithMeta(filePath);
-                        if (meta?.data) {
-                            const parsed = JSON.parse(meta.data) as ChatMirrorPayload;
-                            if (Array.isArray(parsed?.messages)) existing = parsed.messages;
-                            existingReads = parsed?.reads || {};
-                            this.cachedMtime = meta.mtime;
-                        }
-                    } catch {
-                        existing = [];
-                    }
+            if (!root) return false;
+            const { jobArchiveService } = await import('./jobArchiveService');
+            const foreign = await jobArchiveService.findForeignFolderOwner(root, tenantId);
+            if (foreign) {
+                console.warn('[ChatMirror] refused to overwrite another company folder');
+                return false;
+            }
+            const filePath = this.joinPath(root, CHAT_FILE_NAME);
+            const incoming = messages.filter((m) => !!m?.id);
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const snap = await this.readChatFileForPush(filePath, tenantId);
+                if (snap.status === 'unreadable') {
+                    console.warn('[ChatMirror] chat file unreadable — refused to overwrite');
+                    return false;
                 }
-                // 전체 merge 후 핫만 유지, 넘치면 월별 아카이브
-                const full = mergeChatMessagesUnlimited(existing, messages);
+                const live = await this.readChatLive(tenantId);
+                const baseMessages = snap.status === 'ok' ? snap.messages : [];
+                const baseReads = snap.status === 'ok' ? snap.reads : {};
+                const withLive = mergeChatMessagesUnlimited(baseMessages, live?.messages || []);
+                const full = mergeChatMessagesUnlimited(withLive, incoming);
                 if (full.length > HOT_CHAT_LIMIT) {
                     const overflow = full.slice(0, full.length - HOT_CHAT_LIMIT);
                     void this.archiveOverflow(root, tenantId, overflow);
                 }
                 const hot = takeHotMessages(full);
-                const mergedReads = mergeChatReads(existingReads, reads);
+                const mergedReads = mergeChatReads(mergeChatReads(baseReads, live?.reads || {}), reads);
                 const payload = this.buildPayload(tenantId, hot, mergedReads);
-                const content = JSON.stringify(payload);
-                nasOk = await this.writeLocalWithRetry(filePath, content);
-                if (nasOk) {
-                    this.rememberCache(tenantId, hot, payload.updatedAt, 0, mergedReads);
-                }
+                const expectedMtime = snap.status === 'ok' ? snap.mtime : 0;
+                const wrote = await this.writeLocalWithRetry(
+                    filePath,
+                    JSON.stringify(payload),
+                    expectedMtime
+                );
+                if (!wrote) continue;
+                const verify = await this.readChatFileForPush(filePath, tenantId);
+                const hotIds = new Set(hot.map((m) => m.id));
+                const mustHold = incoming.filter((m) => hotIds.has(m.id));
+                const held =
+                    verify.status === 'ok' &&
+                    mustHold.every((m) => verify.messages.some((row) => row.id === m.id));
+                if (!held) continue;
+                const beforeIds = new Set(baseMessages.map((m) => m.id));
+                const added = incoming.filter((m) => !beforeIds.has(m.id));
+                await this.publishChatLive(tenantId, added, mergedReads);
+                this.rememberCache(tenantId, hot, payload.updatedAt, 0, mergedReads);
+                return true;
             }
-            return nasOk;
+            return false;
         }
 
         const payload = this.buildPayload(tenantId, takeHotMessages(messages), reads);
@@ -317,6 +358,122 @@ export class ChatMirrorService {
         } catch (error) {
             console.warn('[ChatMirror] storage upload failed:', error);
             return false;
+        }
+    }
+
+    private async readChatFileForPush(
+        filePath: string,
+        tenantId: string
+    ): Promise<
+        | { status: 'missing' }
+        | { status: 'ok'; messages: ChatMessage[]; reads: ChatReadMap; mtime: number }
+        | { status: 'unreadable' }
+    > {
+        const exists = await window.electron?.exists?.(filePath);
+        if (exists === false) return { status: 'missing' };
+        const meta = await this.readLocalWithMeta(filePath);
+        if (!meta?.data) {
+            return exists === true ? { status: 'unreadable' } : { status: 'missing' };
+        }
+        try {
+            const parsed = JSON.parse(meta.data) as ChatMirrorPayload;
+            const owner = typeof parsed?.tenantId === 'string' ? parsed.tenantId.trim() : '';
+            if (owner && owner !== tenantId) return { status: 'unreadable' };
+            if (!Array.isArray(parsed?.messages)) return { status: 'unreadable' };
+            return {
+                status: 'ok',
+                messages: parsed.messages,
+                reads: parsed.reads || {},
+                mtime: meta.mtime,
+            };
+        } catch {
+            return { status: 'unreadable' };
+        }
+    }
+
+    async readChatLive(tenantId: string): Promise<{
+        seq: number;
+        messages: ChatMessage[];
+        reads: ChatReadMap;
+        mtime: number;
+    } | null> {
+        if (!tenantId || !this.isElectron()) return null;
+        const root = await this.resolveMirrorRoot();
+        if (!root) return null;
+        const filePath = this.joinPath(root, CHAT_LIVE_FILE_NAME);
+        const result = await window.electron.readFile(filePath);
+        const raw = result?.success && result.data ? result.data : null;
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw) as {
+                seq?: unknown;
+                messages?: unknown;
+                reads?: unknown;
+                tenantId?: unknown;
+            };
+            const owner = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+            if (owner && owner !== tenantId) return null;
+            const seq = typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) ? parsed.seq : 0;
+            const messages = Array.isArray(parsed.messages) ? (parsed.messages as ChatMessage[]) : [];
+            const reads =
+                parsed.reads && typeof parsed.reads === 'object' ? (parsed.reads as ChatReadMap) : {};
+            return { seq, messages, reads, mtime: Number(result.mtime) || 0 };
+        } catch {
+            return null;
+        }
+    }
+
+    /** 방금 보낸 글만 링에 남긴다. 다른 PC는 이 파일만 자주 읽는다. */
+    async publishChatLive(
+        tenantId: string,
+        messages: ChatMessage[],
+        reads: ChatReadMap = {}
+    ): Promise<void> {
+        const incoming = messages.filter((m) => !!m?.id).slice(-CHAT_LIVE_LIMIT);
+        if (!tenantId || (incoming.length === 0 && Object.keys(reads).length === 0) || !this.isElectron()) {
+            return;
+        }
+        const root = await this.resolveMirrorRoot();
+        if (!root) return;
+        const filePath = this.joinPath(root, CHAT_LIVE_FILE_NAME);
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const current = await this.readChatLive(tenantId);
+            const map = new Map<string, ChatMessage>();
+            for (const m of current?.messages || []) {
+                if (m?.id) map.set(m.id, m);
+            }
+            for (const m of incoming) {
+                const prev = map.get(m.id);
+                if (!prev || messageTime(m) >= messageTime(prev)) map.set(m.id, m);
+            }
+            const nextMessages = Array.from(map.values())
+                .sort((a, b) => messageTime(a) - messageTime(b))
+                .slice(-CHAT_LIVE_LIMIT);
+            const nextReads = mergeChatReads(current?.reads || {}, reads);
+            const already =
+                !!current &&
+                chatReadsEqual(current.reads, nextReads) &&
+                chatMessagesEqual(current.messages, nextMessages);
+            if (already) return;
+            const seq = (current?.seq || 0) + 1;
+            const payload = JSON.stringify({
+                version: 1,
+                tenantId,
+                seq,
+                updatedAt: new Date().toISOString(),
+                messages: nextMessages,
+                reads: nextReads,
+            });
+            const ok = await this.writeLocalWithRetry(filePath, payload, current?.mtime ?? 0);
+            if (!ok) continue;
+            const verify = await this.readChatLive(tenantId);
+            const held = incoming.every((m) => verify?.messages.some((row) => row.id === m.id));
+            const readsHeld = Object.entries(reads).every(([staffId, msgId]) => {
+                const row = verify?.reads?.[staffId];
+                return !!row && isChatReadIdNewer(row, msgId);
+            });
+            if (held && readsHeld) return;
         }
     }
 
@@ -479,6 +636,8 @@ export class ChatMirrorService {
         if (!this.isElectron() || !tenantId) return null;
         const root = await this.resolveMirrorRoot();
         if (!root) return null;
+        const { jobArchiveService } = await import('./jobArchiveService');
+        if (await jobArchiveService.findForeignFolderOwner(root, tenantId)) return null;
         const filePath = this.joinPath(root, CHAT_FILE_NAME);
         const meta = await this.readLocalWithMeta(filePath);
         if (!meta?.data) return null;
@@ -499,8 +658,9 @@ export class ChatMirrorService {
         const hot = takeHotMessages(messages);
         await this.archiveOverflow(root, tenantId, overflow);
         const payload = this.buildPayload(tenantId, hot, existingReads);
-        const ok = await this.writeLocalWithRetry(filePath, JSON.stringify(payload));
-        if (ok) this.rememberCache(tenantId, hot, payload.updatedAt, 0, existingReads);
+        const ok = await this.writeLocalWithRetry(filePath, JSON.stringify(payload), meta.mtime);
+        if (!ok) return null;
+        this.rememberCache(tenantId, hot, payload.updatedAt, 0, existingReads);
         return hot;
     }
 

@@ -110,6 +110,30 @@ export function saveLastKnownArchiveRootPath(
   saveLastKnownTenantPlan({ ...prev, archiveRootPath: path });
 }
 
+/** 다른 회사 폴더로 묶인 경로를 이 테넌트 기록에서만 지운다. */
+export function clearLastKnownArchiveRootPath(tenantId: string | null | undefined): void {
+  const id = String(tenantId || '').trim();
+  if (!id || typeof window === 'undefined') return;
+  try {
+    const map = readArchivePathMap();
+    if (map[id]) {
+      delete map[id];
+      localStorage.setItem(ARCHIVE_PATH_KEY, JSON.stringify(map));
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    const all = readAll();
+    const prev = all[id];
+    if (!prev?.archiveRootPath) return;
+    all[id] = { ...prev, archiveRootPath: null, updatedAt: new Date().toISOString() };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(all));
+  } catch {
+    /* ignore */
+  }
+}
+
 export function readLastKnownArchiveRootPath(
   tenantId?: string | null
 ): string | null {

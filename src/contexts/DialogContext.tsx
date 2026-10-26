@@ -1,8 +1,13 @@
 import React, { createContext, useContext, useState, useRef, useCallback } from 'react';
 import { AlertTriangle, Info, Check, X } from 'lucide-react';
 
+interface ConfirmOptions {
+  confirmLabel?: string;
+  tone?: 'danger' | 'default';
+}
+
 interface DialogContextType {
-  showConfirm: (message: string) => Promise<boolean>;
+  showConfirm: (message: string, options?: ConfirmOptions) => Promise<boolean>;
   showAlert: (message: string) => Promise<void>;
 }
 
@@ -12,13 +17,17 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isOpen, setIsOpen] = useState(false);
   const [type, setType] = useState<'confirm' | 'alert'>('alert');
   const [message, setMessage] = useState('');
+  const [confirmLabel, setConfirmLabel] = useState('확인 (삭제)');
+  const [confirmTone, setConfirmTone] = useState<'danger' | 'default'>('danger');
   
   // Store the resolve function of the current promise
   const resolveRef = useRef<((value: any) => void) | null>(null);
 
-  const showConfirm = useCallback((msg: string) => {
+  const showConfirm = useCallback((msg: string, options?: ConfirmOptions) => {
     return new Promise<boolean>((resolve) => {
       setMessage(msg);
+      setConfirmLabel(options?.confirmLabel || '확인 (삭제)');
+      setConfirmTone(options?.tone || 'danger');
       setType('confirm');
       setIsOpen(true);
       resolveRef.current = resolve;
@@ -52,8 +61,8 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-200 border border-slate-200">
             <div className="p-6">
               <div className="flex flex-col items-center text-center gap-4">
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${type === 'confirm' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
-                  {type === 'confirm' ? <AlertTriangle size={24} /> : <Info size={24} />}
+                <div className={`w-12 h-12 rounded-full flex items-center justify-center ${type === 'confirm' && confirmTone === 'danger' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+                  {type === 'confirm' && confirmTone === 'danger' ? <AlertTriangle size={24} /> : <Info size={24} />}
                 </div>
                 <h3 className="text-lg font-bold text-slate-800 whitespace-pre-line">
                   {message}
@@ -72,9 +81,9 @@ export const DialogProvider: React.FC<{ children: React.ReactNode }> = ({ childr
                   </button>
                   <button 
                     onClick={() => handleAction(true)}
-                    className="flex-1 py-3.5 text-red-600 font-bold hover:bg-red-50 transition-colors"
+                    className={`flex-1 py-3.5 font-bold transition-colors ${confirmTone === 'danger' ? 'text-red-600 hover:bg-red-50' : 'text-blue-600 hover:bg-blue-50'}`}
                   >
-                    확인 (삭제)
+                    {confirmLabel}
                   </button>
                 </>
               ) : (

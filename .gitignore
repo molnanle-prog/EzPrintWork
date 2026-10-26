@@ -12,6 +12,7 @@ dist_test/
 temp_dist/
 release/
 release-build/
+release-*/
 build/
 
 # Misc

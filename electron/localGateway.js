@@ -5,7 +5,11 @@ const os = require('os');
 
 const SITUATION_FILE = 'situation-mirror.json';
 const ARCHIVE_FILE = 'jobs-archive.json';
+const BOARD_LIVE_FILE = 'board-live.json';
+const BOARD_LIVE_LIMIT = 25;
 const CHAT_FILE = 'chat-messages.json';
+const CHAT_LIVE_FILE = 'chat-live.json';
+const CHAT_LIVE_LIMIT = 40;
 const CHAT_ARCHIVE_FOLDER = 'chat-archive';
 const HOT_CHAT_LIMIT = 300;
 const PRESENCE_FILE = 'presence-sessions.json';
@@ -139,6 +143,116 @@ class LocalGateway {
             console.warn('[LocalGateway] read failed:', filePath, error.message);
             return null;
         }
+    }
+
+    jobRev(job) {
+        const rev = job && job.rev;
+        return typeof rev === 'number' && Number.isFinite(rev) ? rev : -1;
+    }
+
+    isNewerJob(incoming, prev) {
+        const ri = this.jobRev(incoming);
+        const rp = this.jobRev(prev);
+        if (ri >= 0 || rp >= 0) {
+            if (ri !== rp) return ri > rp;
+        }
+        const ti = Date.parse((incoming && (incoming.updatedAt || incoming.createdAt)) || '') || 0;
+        const tp = Date.parse((prev && (prev.updatedAt || prev.createdAt)) || '') || 0;
+        return ti >= tp;
+    }
+
+    chatTime(message) {
+        return Date.parse((message && (message.timestamp || message.createdAt)) || '') || 0;
+    }
+
+    isChatIdNewer(nextId, prevId) {
+        const head = (value) => {
+            const raw = String(value || '').split('-')[0];
+            return /^\d{10,}$/.test(raw) ? Number(raw) : NaN;
+        };
+        const a = head(nextId);
+        const b = head(prevId);
+        if (Number.isFinite(a) && Number.isFinite(b) && a !== b) return a >= b;
+        return String(nextId || '') >= String(prevId || '');
+    }
+
+    /** 새 글 신호. 전체 대화 대신 최근 글만 남긴다. */
+    publishChatLive(messages, reads) {
+        if (!this.archiveRoot) return false;
+        const incoming = (Array.isArray(messages) ? messages : [])
+            .filter((m) => m && m.id)
+            .slice(-CHAT_LIVE_LIMIT);
+        const incomingReads = reads && typeof reads === 'object' ? reads : {};
+        if (!incoming.length && !Object.keys(incomingReads).length) return false;
+        const filePath = path.join(this.archiveRoot, CHAT_LIVE_FILE);
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const exists = fs.existsSync(filePath);
+            const current = this.readJsonFile(CHAT_LIVE_FILE);
+            if (exists && !current) return false;
+            const base = current || { seq: 0, messages: [], reads: {} };
+            const map = new Map();
+            for (const m of Array.isArray(base.messages) ? base.messages : []) {
+                if (m && m.id) map.set(m.id, m);
+            }
+            for (const m of incoming) {
+                const prev = map.get(m.id);
+                if (!prev || this.chatTime(m) >= this.chatTime(prev)) map.set(m.id, m);
+            }
+            const nextMessages = Array.from(map.values())
+                .sort((a, b) => this.chatTime(a) - this.chatTime(b))
+                .slice(-CHAT_LIVE_LIMIT);
+            const nextReads = { ...(base.reads && typeof base.reads === 'object' ? base.reads : {}) };
+            for (const [staffId, msgId] of Object.entries(incomingReads)) {
+                if (!staffId || !msgId) continue;
+                const prev = nextReads[staffId];
+                if (!prev || this.isChatIdNewer(msgId, prev)) nextReads[staffId] = msgId;
+            }
+            const wrote = this.writeJsonFile(CHAT_LIVE_FILE, {
+                version: 1,
+                tenantId: this.tenantId,
+                seq: (Number(base.seq) || 0) + 1,
+                updatedAt: new Date().toISOString(),
+                messages: nextMessages,
+                reads: nextReads,
+                expectedGeneration: exists ? (Number(base.generation) || 0) : 0,
+            });
+            if (!wrote) continue;
+            const verify = this.readJsonFile(CHAT_LIVE_FILE);
+            const held = incoming.every((m) =>
+                (Array.isArray(verify?.messages) ? verify.messages : []).some((row) => row && row.id === m.id)
+            );
+            const readsHeld = Object.entries(incomingReads).every(([staffId, msgId]) => {
+                const row = verify?.reads?.[staffId];
+                return !!row && this.isChatIdNewer(row, msgId);
+            });
+            if (held && readsHeld) return true;
+        }
+        return false;
+    }
+
+    /** 칸 이동 신호. 전체 목록 대신 바뀐 작업만 남긴다. */
+    publishBoardLive(jobs) {
+        const incoming = (Array.isArray(jobs) ? jobs : []).filter((job) => job && job.id).slice(0, BOARD_LIVE_LIMIT);
+        if (!incoming.length) return false;
+        const current = this.readJsonFile(BOARD_LIVE_FILE) || { seq: 0, changes: [] };
+        const map = new Map();
+        for (const job of Array.isArray(current.changes) ? current.changes : []) {
+            if (job && job.id) map.set(job.id, job);
+        }
+        for (const job of incoming) {
+            const prev = map.get(job.id);
+            if (!prev || this.isNewerJob(job, prev)) map.set(job.id, job);
+        }
+        const changes = Array.from(map.values())
+            .sort((a, b) => Date.parse(a.updatedAt || a.createdAt || '') - Date.parse(b.updatedAt || b.createdAt || ''))
+            .slice(-BOARD_LIVE_LIMIT);
+        return this.writeJsonFile(BOARD_LIVE_FILE, {
+            version: 1,
+            tenantId: this.tenantId,
+            seq: (Number(current.seq) || 0) + 1,
+            updatedAt: new Date().toISOString(),
+            changes,
+        });
     }
 
     writeJsonFile(name, payload) {
@@ -719,6 +833,7 @@ class LocalGateway {
                                 deletedJobs,
                             });
                         }
+                        this.publishBoardLive(jobs);
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                         res.end(JSON.stringify({ ok: true, updatedAt: now, count: jobs.length }));
                         return;
@@ -727,6 +842,52 @@ class LocalGateway {
                         res.end(error?.message || 'invalid body');
                         return;
                     }
+                }
+
+                if (url.pathname === '/api/v1/board-live' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const live = this.readJsonFile(BOARD_LIVE_FILE) || {
+                        version: 1,
+                        tenantId: this.tenantId,
+                        seq: 0,
+                        updatedAt: null,
+                        changes: [],
+                    };
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        seq: Number(live.seq) || 0,
+                        updatedAt: live.updatedAt || null,
+                        changes: Array.isArray(live.changes) ? live.changes : [],
+                    }));
+                    return;
+                }
+
+                if (url.pathname === '/api/v1/chat-live' && req.method === 'GET') {
+                    if (!this.isAuthorized(req, url)) {
+                        res.writeHead(401, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                        res.end(JSON.stringify({ ok: false, error: 'unauthorized' }));
+                        return;
+                    }
+                    const live = this.readJsonFile(CHAT_LIVE_FILE) || {
+                        version: 1,
+                        tenantId: this.tenantId,
+                        seq: 0,
+                        updatedAt: null,
+                        messages: [],
+                        reads: {},
+                    };
+                    res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
+                    res.end(JSON.stringify({
+                        seq: Number(live.seq) || 0,
+                        updatedAt: live.updatedAt || null,
+                        messages: Array.isArray(live.messages) ? live.messages : [],
+                        reads: live.reads && typeof live.reads === 'object' ? live.reads : {},
+                    }));
+                    return;
                 }
 
                 if (url.pathname === '/api/v1/chat' && req.method === 'GET') {
@@ -771,10 +932,21 @@ class LocalGateway {
                         const incomingReads =
                             body.reads && typeof body.reads === 'object' ? body.reads : {};
                         const tenantId = this.resolveTenantId(body.tenantId);
+                        const chatPath = path.join(this.archiveRoot, CHAT_FILE);
+                        const chatExists = fs.existsSync(chatPath);
                         const existing = this.readJsonFile(CHAT_FILE);
+                        if (chatExists && !existing) {
+                            res.writeHead(500, CORS);
+                            res.end('chat file unreadable');
+                            return;
+                        }
+                        const live = this.readJsonFile(CHAT_LIVE_FILE);
                         const map = new Map();
                         for (const m of existing?.messages || []) {
                             if (m?.id) map.set(m.id, m);
+                        }
+                        for (const m of Array.isArray(live?.messages) ? live.messages : []) {
+                            if (m?.id && !map.has(m.id)) map.set(m.id, m);
                         }
                         for (const m of incoming) {
                             if (!m?.id) continue;
@@ -797,17 +969,18 @@ class LocalGateway {
                             this.archiveChatOverflow(tenantId, overflow);
                             messages = messages.slice(messages.length - HOT_CHAT_LIMIT);
                         }
-                        const reads = { ...(existing?.reads || {}) };
+                        const reads = {
+                            ...(existing?.reads || {}),
+                            ...(live?.reads && typeof live.reads === 'object' ? live.reads : {}),
+                        };
+                        for (const [staffId, msgId] of Object.entries(reads)) {
+                            const fromFile = existing?.reads?.[staffId];
+                            if (fromFile && this.isChatIdNewer(fromFile, msgId)) reads[staffId] = fromFile;
+                        }
                         for (const [staffId, msgId] of Object.entries(incomingReads)) {
                             if (!staffId || !msgId) continue;
                             const prev = reads[staffId];
-                            const prevN = Number(prev);
-                            const nextN = Number(msgId);
-                            const newer =
-                                Number.isFinite(prevN) && Number.isFinite(nextN)
-                                    ? nextN >= prevN
-                                    : String(msgId) >= String(prev || '');
-                            if (!prev || newer) reads[staffId] = msgId;
+                            if (!prev || this.isChatIdNewer(msgId, prev)) reads[staffId] = msgId;
                         }
                         const now = new Date().toISOString();
                         const payload = {
@@ -817,11 +990,17 @@ class LocalGateway {
                             messages,
                             reads,
                         };
-                        if (!this.writeJsonFile(CHAT_FILE, payload)) {
+                        if (!this.writeJsonFile(CHAT_FILE, {
+                            ...payload,
+                            expectedGeneration: chatExists ? (Number(existing?.generation) || 0) : 0,
+                        })) {
                             res.writeHead(500, CORS);
                             res.end('write failed');
                             return;
                         }
+                        const beforeIds = new Set((existing?.messages || []).map((m) => m && m.id).filter(Boolean));
+                        const added = incoming.filter((m) => m && m.id && !beforeIds.has(m.id));
+                        this.publishChatLive(added, reads);
                         res.writeHead(200, { ...CORS, 'Content-Type': 'application/json; charset=utf-8' });
                         res.end(JSON.stringify({ ok: true, updatedAt: now, count: messages.length }));
                         return;

@@ -20,9 +20,10 @@ function writeAll(prefs: Record<string, ManagementCardViewMode>): void {
 }
 
 export function loadManagementCardViewMode(userId?: string | null): ManagementCardViewMode {
-  if (!userId) return 'cards';
+  if (!userId) return 'byClient';
   const mode = readAll()[userId];
-  return mode === 'byClient' ? 'byClient' : 'cards';
+  if (mode === 'cards' || mode === 'byClient') return mode;
+  return 'byClient';
 }
 
 export function saveManagementCardViewMode(

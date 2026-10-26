@@ -15,6 +15,7 @@ import {
 } from '../utils/archiveStorage';
 import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 import { fetchWithTimeout, DEFAULT_LAN_FETCH_TIMEOUT_MS } from '../utils/fetchWithTimeout';
+import { jobArchiveService } from './jobArchiveService';
 import {
     isLanGatewayUrl,
     normalizeGatewayBase,
@@ -194,6 +195,11 @@ export class SituationMirrorService {
         if (this.isElectron()) {
             const root = await this.resolveMirrorRoot(tenantId);
             if (root) {
+                const foreign = await jobArchiveService.findForeignFolderOwner(root, tenantId);
+                if (foreign) {
+                    console.warn('[SituationMirror] refused to overwrite another company folder');
+                    return false;
+                }
                 const localPath = this.joinPath(root, SITUATION_FILE_NAME);
                 nasOk = await this.writeLocalWithRetry(localPath, content);
             }
@@ -278,7 +284,10 @@ export class SituationMirrorService {
         const raw = await this.readLocalWithRetry(this.joinPath(root, SITUATION_FILE_NAME));
         if (!raw) return null;
         try {
-            return JSON.parse(raw) as SituationMirrorPayload;
+            const parsed = JSON.parse(raw) as SituationMirrorPayload;
+            const owner = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+            if (owner && owner !== tenantId) return null;
+            return parsed;
         } catch {
             return null;
         }

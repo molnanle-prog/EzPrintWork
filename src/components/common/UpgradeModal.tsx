@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { X, Crown, Users, ShieldCheck, Zap, CreditCard, CheckCircle2, Landmark, ShieldAlert, ChevronRight, AlertCircle, Check, Loader2 } from 'lucide-react';
+import { X, Crown, Users, ShieldCheck, Zap, CheckCircle2, Landmark, ShieldAlert, ChevronRight, AlertCircle, Check, Loader2 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useAuth } from '../../contexts/AuthContext';
 import { db } from '../../services/dataService';
@@ -36,7 +36,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
   const { currentUser, tenantOwnerId } = useAuth();
   const [step, setStep] = useState<ModalStep>(skipPlanStep ? 'PAYMENT_METHOD' : 'PLAN');
   const [selectedPlan, setSelectedPlan] = useState<'free' | 'pro'>('pro');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('CARD');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('BANK');
   const [consents, setConsents] = useState({
     terms: false,
     autoPay: false,
@@ -52,6 +52,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     if (!isOpen) return;
     setStep(skipPlanStep ? 'PAYMENT_METHOD' : 'PLAN');
     setSelectedPlan('pro');
+    setPaymentMethod('BANK');
     setPayError(null);
     setIsVerifying(false);
     if (initialStaffCount != null) {
@@ -84,7 +85,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
     if (paymentMethod === 'BANK') {
       window.alert(
-        '무통장 입금은 입금 확인 후 관리자가 수동으로 PRO를 활성화합니다.\n신청 내용은 저장되지 않으며, 카드 결제를 이용하면 즉시 활성화됩니다.'
+        '계좌 자동이체(CMS)는 가맹 개통 후 매월 출금됩니다.\n지금은 통장에서 금액이 빠지지 않고, 신청 내용도 아직 저장되지 않습니다.\n효성CMS 계약과 API 키가 연결되면 이 화면에서 출금 동의를 받습니다.'
       );
       return;
     }
@@ -271,7 +272,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
 
                     <div className="p-4 bg-blue-50 dark:bg-blue-900/10 border border-blue-100 dark:border-blue-800 rounded-xl">
                         <p className="text-xs text-blue-700 dark:text-blue-300 leading-relaxed">
-                            <span className="font-black">※ 요금 안내:</span> PRO는 <span className="font-black">1인당 월 {PRO_MONTHLY_PRICE.toLocaleString()}원</span>(부가세 별도)입니다. 카드 결제 시 즉시 활성화됩니다.
+                            <span className="font-black">※ 요금 안내:</span> PRO는 <span className="font-black">1인당 월 {PRO_MONTHLY_PRICE.toLocaleString()}원</span>(부가세 별도)입니다. 납부는 계좌 자동이체(CMS)로 진행합니다.
                         </p>
                     </div>
                 </motion.div>
@@ -280,37 +281,22 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
             {step === 'PAYMENT_METHOD' && (
                 <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} className="space-y-6">
                     <div className="text-center mb-8">
-                        <h3 className="text-2xl font-black text-slate-800 dark:text-white">납부 방식 선택</h3>
-                        <p className="text-slate-500 dark:text-slate-400 text-sm">편리한 결제 수단을 선택하세요.</p>
+                        <h3 className="text-2xl font-black text-slate-800 dark:text-white">납부 방식</h3>
+                        <p className="text-slate-500 dark:text-slate-400 text-sm">계좌 자동이체(CMS)로 매월 납부합니다.</p>
                     </div>
 
                     <div className="grid grid-cols-1 gap-3">
                         <div 
-                            onClick={() => setPaymentMethod('CARD')}
-                            className={`flex items-center gap-4 p-5 rounded-2xl border-2 transition-all cursor-pointer ${paymentMethod === 'CARD' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/10' : 'border-slate-100 dark:border-slate-800 hover:border-slate-200'}`}
+                            className="flex items-center gap-4 p-5 rounded-2xl border-2 border-blue-500 bg-blue-50 dark:bg-blue-900/10"
                         >
-                            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${paymentMethod === 'CARD' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                <CreditCard size={24} />
-                            </div>
-                            <div className="flex-1">
-                                <div className="font-bold text-slate-800 dark:text-slate-200">카드 결제 (코페이)</div>
-                                <p className="text-[11px] text-slate-500">안전한 PG 결제창에서 결제합니다. 카드번호는 본 앱에 저장되지 않습니다.</p>
-                            </div>
-                            {paymentMethod === 'CARD' && <CheckCircle2 size={24} className="text-blue-500" />}
-                        </div>
-
-                        <div 
-                            onClick={() => setPaymentMethod('BANK')}
-                            className={`flex items-center gap-4 p-5 rounded-2xl border-2 transition-all cursor-pointer ${paymentMethod === 'BANK' ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/10' : 'border-slate-100 dark:border-slate-800 hover:border-slate-200'}`}
-                        >
-                            <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${paymentMethod === 'BANK' ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>
+                            <div className="w-12 h-12 rounded-xl flex items-center justify-center bg-blue-600 text-white">
                                 <Landmark size={24} />
                             </div>
                             <div className="flex-1">
-                                <div className="font-bold text-slate-800 dark:text-slate-200">무통장 계좌 이체</div>
-                                <p className="text-[11px] text-slate-500">입금 확인 후 수동 활성화 (즉시 반영 아님)</p>
+                                <div className="font-bold text-slate-800 dark:text-slate-200">계좌 자동이체 (CMS)</div>
+                                <p className="text-[11px] text-slate-500">출금 동의 후 매월 지정일에 계좌에서 출금됩니다. 카드 결제는 사용하지 않습니다.</p>
                             </div>
-                            {paymentMethod === 'BANK' && <CheckCircle2 size={24} className="text-blue-500" />}
+                            <CheckCircle2 size={24} className="text-blue-500" />
                         </div>
                     </div>
                 </motion.div>
@@ -372,7 +358,11 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                             />
                             <div className="flex-1">
                                 <label htmlFor="privacy" className="text-sm font-bold text-slate-700 dark:text-slate-300 block mb-0.5 cursor-pointer">개인정보 수집 및 제3자 제공 동의 (필수)</label>
-                                <p className="text-[10px] text-slate-500 leading-relaxed font-medium">결제 처리를 위해 최소한의 개인정보를 PG사(코페이)에 제공하는 것에 동의합니다.</p>
+                                <p className="text-[10px] text-slate-500 leading-relaxed font-medium">
+                                    {paymentMethod === 'CARD'
+                                      ? '결제 처리를 위해 최소한의 개인정보를 PG사(코페이)에 제공하는 것에 동의합니다.'
+                                      : '자동이체 출금 동의를 위해 최소한의 개인정보와 계좌 정보를 CMS 대행사에 제공하는 것에 동의합니다.'}
+                                </p>
                             </div>
                         </div>
                     </div>
@@ -380,7 +370,9 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                     <div className="p-4 bg-amber-50 dark:bg-orange-950/20 border border-amber-200 dark:border-orange-900 rounded-xl flex items-start gap-3 shadow-inner">
                         <ShieldAlert size={18} className="text-orange-500 shrink-0 mt-0.5" />
                         <p className="text-[10px] text-orange-700 dark:text-orange-400 font-bold leading-relaxed">
-                            ※ 카드 정보는 코페이 결제창에서만 입력되며, EzPrintWork 서버에는 저장되지 않습니다.
+                            {paymentMethod === 'CARD'
+                              ? '※ 카드 정보는 코페이 결제창에서만 입력되며, EzPrintWork 서버에는 저장되지 않습니다.'
+                              : '※ 계좌 정보는 CMS 출금 동의 화면에서만 입력합니다. 가맹 개통 전에는 통장에서 출금되지 않습니다.'}
                         </p>
                     </div>
                 </motion.div>
@@ -420,7 +412,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                         </div>
                         <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                             <span className="text-sm font-bold text-slate-500">결제 방식</span>
-                            <span className="font-black text-slate-800 dark:text-slate-100">{paymentMethod === 'CARD' ? '카드 결제 (코페이)' : '계좌 직접송금'}</span>
+                            <span className="font-black text-slate-800 dark:text-slate-100">{paymentMethod === 'CARD' ? '카드 결제 (코페이)' : '계좌 자동이체 (CMS)'}</span>
                         </div>
                         <div className="flex justify-between items-center px-3 pt-2">
                             <span className="text-sm font-bold text-slate-500">이번 결제 금액</span>
@@ -455,9 +447,17 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                                 <AlertCircle size={14} /> 안내
                             </h4>
                             <ul className="text-[11px] font-medium space-y-2 opacity-90 leading-relaxed">
-                                <li>• 카드 결제 성공 시 PRO가 즉시 활성화되고, 라이선스는 약 1개월간 유지됩니다.</li>
-                                <li>• 테스트 MID 사용 중이며, 실제 청구 여부는 코페이 테스트 정책을 따릅니다.</li>
-                                <li>• 무통장 입금 선택 시 별도 확인 후 활성화됩니다.</li>
+                                {paymentMethod === 'CARD' ? (
+                                  <>
+                                    <li>• 카드 결제 성공 시 PRO가 즉시 활성화되고, 라이선스는 약 1개월간 유지됩니다.</li>
+                                    <li>• 테스트 MID 사용 중이며, 실제 청구 여부는 코페이 테스트 정책을 따릅니다.</li>
+                                  </>
+                                ) : (
+                                  <>
+                                    <li>• 계좌 자동이체는 CMS 가맹 개통 후 매월 지정일에 출금됩니다.</li>
+                                    <li>• 지금은 통장에서 금액이 빠지지 않습니다. 출금 동의는 API 연결 후 이 화면에서 받습니다.</li>
+                                  </>
+                                )}
                             </ul>
                         </div>
                         <div className="absolute top-0 right-0 p-4 opacity-10">
@@ -485,7 +485,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                     onClick={handleComplete}
                     className="flex-1 px-6 py-4 rounded-2xl bg-blue-600 text-white font-black hover:bg-blue-700 transition-all shadow-2xl shadow-blue-600/40 flex items-center justify-center gap-2 active:scale-95"
                 >
-                    {paymentMethod === 'CARD' ? '코페이 결제창 열기' : '무통장 안내 확인'} <Check size={20} />
+                    {paymentMethod === 'CARD' ? '코페이 결제창 열기' : '자동이체 안내 확인'} <Check size={20} />
                 </button>
             ) : (
                 <button 

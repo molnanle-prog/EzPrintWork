@@ -83,7 +83,7 @@ export async function prepareDocumentPrint(): Promise<void> {
   if (scrollParent) scrollParent.scrollTop = 0;
 }
 
-/** Electron 단면 인쇄 + 다페이지 body 복제 출력 */
-export async function printDocumentSimplex(): Promise<void> {
+/** Electron 단면 인쇄 + 다페이지 body 복제 출력 (성공 시 true, 인쇄 대화상자 취소 시 false) */
+export async function printDocumentSimplex(): Promise<boolean> {
   return printDocumentSimplexImpl();
 }

@@ -23,7 +23,7 @@ import { JobDetailModal } from '../common/JobDetailModal';
 import { PastJobSearchResults } from '../common/PastJobSearchResults';
 import { ClientContactModal } from '../common/ClientContactModal';
 import { toast } from 'sonner';
-import { getJobOutstandingAmount, isReceivablePaymentStatus, normalizePrepaidBalance } from '../../utils/prepaidBalance';
+import { getJobOutstandingAmount, isReceivablePaymentStatus, isSettledPaymentStatus, normalizePrepaidBalance } from '../../utils/prepaidBalance';
 
 type PaymentFilter = 'all' | 'outstanding' | PaymentStatus | 'byClient' | 'prepaidClients';
 type SortKey = 'title' | 'clientName' | 'contactPerson' | 'phone' | 'price' | 'paymentStatus' | 'dueDate' | 'createdAt';
@@ -32,7 +32,7 @@ type SortDir = 'asc' | 'desc';
 type ClientSortKey = 'clientName' | 'pendingCount' | 'partialCount' | 'totalOutstanding';
 type PeriodPreset = 'all' | 'month' | 'lastMonth' | 'custom';
 
-const PAYMENT_STATUSES: PaymentStatus[] = ['결제대기', '일부결제', '후불결제', '결제완료', '취소'];
+const PAYMENT_STATUSES: PaymentStatus[] = ['결제대기', '일부결제', '후불결제', '카드결제', '결제완료', '취소'];
 
 const DEFAULT_COLUMN_WIDTHS: Record<ColumnKey, number> = {
   title: 210,
@@ -77,6 +77,8 @@ function paymentBadgeClass(status: PaymentStatus): string {
       return 'bg-emerald-100 text-emerald-700 border-emerald-200';
     case '후불결제':
       return 'bg-amber-100 text-amber-800 border-amber-200';
+    case '카드결제':
+      return 'bg-violet-100 text-violet-700 border-violet-200';
     case '취소':
       return 'bg-slate-100 text-slate-600 border-slate-200';
     default:
@@ -96,10 +98,12 @@ function paymentStatusOrder(status?: PaymentStatus): number {
       return 1;
     case '후불결제':
       return 2;
-    case '결제완료':
+    case '카드결제':
       return 3;
-    case '취소':
+    case '결제완료':
       return 4;
+    case '취소':
+      return 5;
     default:
       return 0;
   }
@@ -288,7 +292,7 @@ export const PaymentReceivableManager: React.FC = () => {
     const active = periodJobs.filter((j) => j.paymentStatus !== '취소');
     // 미수·미결제 = 완불 전 상태 (결제대기·일부결제·후불결제)
     const outstandingJobs = active.filter((j) => isOutstanding(j.paymentStatus));
-    const settledJobs = active.filter((j) => j.paymentStatus === '결제완료');
+    const settledJobs = active.filter((j) => isSettledPaymentStatus(j.paymentStatus));
     const totalPrepaid = db.getTotalPrepaidBalance();
     const outstandingAmount = outstandingJobs.reduce((s, j) => s + getJobOutstandingAmount(j), 0);
     const collectedAmount = settledJobs.reduce(
@@ -565,6 +569,7 @@ export const PaymentReceivableManager: React.FC = () => {
     { id: 'outstanding', label: '미수·미결제' },
     { id: '일부결제', label: '일부결제' },
     { id: '후불결제', label: '후불결제' },
+    { id: '카드결제', label: '카드결제' },
     { id: '결제완료', label: '결제완료' },
     { id: 'byClient', label: '고객사별 종합' },
     { id: 'prepaidClients', label: '선불고객' },
@@ -775,6 +780,7 @@ export const PaymentReceivableManager: React.FC = () => {
             filter === 'outstanding' ||
             filter === '일부결제' ||
             filter === '후불결제' ||
+            filter === '카드결제' ||
             filter === '결제완료'
               ? filter
               : undefined

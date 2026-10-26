@@ -14,6 +14,7 @@ import { useDialog } from '../../contexts/DialogContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { ClientContactModal } from '../common/ClientContactModal';
+import { applyMonitoringFullscreen } from '../../utils/monitoringFullscreen';
 
 interface DashboardProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -270,20 +271,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
                  setIsTvMode(nextVal);
                  localStorage.setItem('ezprint_tv_mode', String(nextVal));
                  window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
-                 
-                 if (nextVal) {
-                   if (document.documentElement.requestFullscreen) {
-                     document.documentElement.requestFullscreen().catch((err) => {
-                       console.log("전체화면 진입 실패:", err);
-                     });
-                   }
-                 } else {
-                   if (document.fullscreenElement && document.exitFullscreen) {
-                     document.exitFullscreen().catch((err) => {
-                       console.log("전체화면 해제 실패:", err);
-                     });
-                   }
-                 }
+                 applyMonitoringFullscreen(nextVal);
                }}
                className={`hidden md:inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-bold transition-all border box-border select-none hover:scale-105 active:scale-95 shadow-md
                  ${isTvMode 
@@ -394,12 +382,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
             setIsTvMode(false);
             localStorage.setItem('ezprint_tv_mode', 'false');
             window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
-            
-            if (document.fullscreenElement && document.exitFullscreen) {
-              document.exitFullscreen().catch((err) => {
-                console.log("전체화면 해제 실패:", err);
-              });
-            }
+            applyMonitoringFullscreen(false);
           }}
           className="fixed top-3 right-[10%] md:right-[15%] z-[9999] flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-bold backdrop-blur-md"
           title="일반 화면으로 복원 (모니터링 모드 종료)"

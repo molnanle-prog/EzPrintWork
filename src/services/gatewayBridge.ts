@@ -1,3 +1,4 @@
+import { archivePathsSamePhysicalLocation } from '../utils/archiveStorage';
 import {
     createStoreGatewaySecret,
     getGatewayAuthToken,
@@ -173,7 +174,7 @@ export async function isStoreGatewayServingCompanyPath(
     for (const base of urls) {
         const health = await fetchStoreGatewayHealth(base, tenantId);
         if (!health?.ok || !health.archiveRoot) continue;
-        if (archivePathsMatch(health.archiveRoot, companyArchiveRoot)) return true;
+        if (await archivePathsSamePhysicalLocation(health.archiveRoot, companyArchiveRoot)) return true;
     }
     return false;
 }
@@ -189,7 +190,7 @@ export async function resolveTrustedStoreGatewayUrl(
     for (const base of urls) {
         const health = await fetchStoreGatewayHealth(base, tenantId);
         if (!health?.ok || !health.archiveRoot) continue;
-        if (archivePathsMatch(health.archiveRoot, companyArchiveRoot)) {
+        if (await archivePathsSamePhysicalLocation(health.archiveRoot, companyArchiveRoot)) {
             return base;
         }
     }
@@ -224,6 +225,64 @@ export async function postJobsPartialViaGateway(
         return { ok: true, updatedAt: data.updatedAt };
     } catch {
         return { ok: false };
+    }
+}
+
+/** 새 글 신호만. 전체 대화 목록은 받지 않는다. */
+export async function fetchChatLive(
+    gatewayBaseUrl: string,
+    tenantId: string
+): Promise<{ seq: number; messages: unknown[]; reads: Record<string, string> } | null> {
+    const base = normalizeGatewayBase(gatewayBaseUrl);
+    if (!base || !tenantId) return null;
+    try {
+        const res = await fetchWithTimeout(
+            `${base}/api/v1/chat-live?tenantId=${encodeURIComponent(tenantId)}`,
+            {
+                method: 'GET',
+                cache: 'no-store',
+                headers: gatewayHeaders(tenantId),
+            },
+            2500
+        );
+        if (!res.ok) return null;
+        const data = (await res.json()) as { seq?: unknown; messages?: unknown; reads?: unknown };
+        const seq = typeof data.seq === 'number' && Number.isFinite(data.seq) ? data.seq : 0;
+        const messages = Array.isArray(data.messages) ? data.messages : [];
+        const reads =
+            data.reads && typeof data.reads === 'object'
+                ? (data.reads as Record<string, string>)
+                : {};
+        return { seq, messages, reads };
+    } catch {
+        return null;
+    }
+}
+
+/** 칸 이동 신호만. 전체 작업 목록은 받지 않는다. */
+export async function fetchBoardLive(
+    gatewayBaseUrl: string,
+    tenantId: string
+): Promise<{ seq: number; changes: unknown[] } | null> {
+    const base = normalizeGatewayBase(gatewayBaseUrl);
+    if (!base || !tenantId) return null;
+    try {
+        const res = await fetchWithTimeout(
+            `${base}/api/v1/board-live?tenantId=${encodeURIComponent(tenantId)}`,
+            {
+                method: 'GET',
+                cache: 'no-store',
+                headers: gatewayHeaders(tenantId),
+            },
+            2500
+        );
+        if (!res.ok) return null;
+        const data = (await res.json()) as { seq?: unknown; changes?: unknown };
+        const seq = typeof data.seq === 'number' && Number.isFinite(data.seq) ? data.seq : 0;
+        const changes = Array.isArray(data.changes) ? data.changes : [];
+        return { seq, changes };
+    } catch {
+        return null;
     }
 }
 

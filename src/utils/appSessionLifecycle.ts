@@ -1,5 +1,6 @@
 import { db as dataService } from '../services/dataService';
 import { setPresenceOffline, type PresenceUser } from '../services/firebase';
+import { sendPresenceOffline } from '../services/gasPresencePing';
 import { releaseStaffSessionOnNas } from './staffSession';
 
 export type AppSessionEndReason = 'logout' | 'app_close';
@@ -31,19 +32,10 @@ export async function flushAppSessionEnd(opts: FlushOpts): Promise<void> {
   const timeoutMs = opts.timeoutMs ?? 2500;
   endInFlight = (async () => {
     const work = (async () => {
-      try {
-        await dataService.reportTenantSessionEnd(opts.reason);
-      } catch (err) {
-        console.warn('[AppSession] tenant session end failed:', err);
-      }
-      try {
-        await setPresenceOffline(opts.presenceUser);
-      } catch (err) {
-        console.warn('[AppSession] presence offline failed:', err);
-      }
       const nas = opts.releaseNas;
-      if (nas?.uid && nas.tenantId) {
-        try {
+      // 다음 로그인 차단을 풀려면 NAS 해제가 먼저. Firestore/시트는 닫기 타임아웃에 밀려도 됨.
+      try {
+        if (nas?.uid && nas.tenantId) {
           await releaseStaffSessionOnNas({
             uid: nas.uid,
             tenantId: nas.tenantId,
@@ -52,10 +44,18 @@ export async function flushAppSessionEnd(opts: FlushOpts): Promise<void> {
             onlyIfSessionId: nas.onlyIfSessionId ?? null,
             gatewayBaseUrl: nas.gatewayBaseUrl ?? null,
           });
-        } catch (err) {
-          console.warn('[AppSession] NAS session release failed:', err);
+        } else {
+          await setPresenceOffline(opts.presenceUser);
         }
+      } catch (err) {
+        console.warn('[AppSession] presence offline failed:', err);
       }
+      void sendPresenceOffline(opts.presenceUser || null).catch((err) => {
+        console.warn('[AppSession] sheet presence offline failed:', err);
+      });
+      void dataService.reportTenantSessionEnd(opts.reason).catch((err) => {
+        console.warn('[AppSession] tenant session end failed:', err);
+      });
     })();
 
     await Promise.race([

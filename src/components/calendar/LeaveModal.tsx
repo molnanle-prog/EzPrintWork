@@ -11,9 +11,10 @@ interface LeaveModalProps {
   onClose: () => void;
   onSave: () => void;
   staffList: Staff[];
+  leave?: StaffLeave | null;
 }
 
-export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffList }) => {
+export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffList, leave }) => {
   const { currentUser, canAccessAdminSettings } = useAuth();
   const { showAlert } = useDialog();
   const myStaff = useMemo(
@@ -28,12 +29,20 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
     return [];
   }, [staffList, canAccessAdminSettings, myStaff]);
 
-  const [formData, setFormData] = useState<Partial<StaffLeave>>({
-    staffId: myStaff?.id || '',
-    type: '연차',
-    startDate: new Date().toISOString().split('T')[0],
-    endDate: new Date().toISOString().split('T')[0],
-    reason: '',
+  const [formData, setFormData] = useState<Partial<StaffLeave>>(() => {
+    const today = new Date().toISOString().split('T')[0];
+    if (!leave) {
+      return { staffId: myStaff?.id || '', type: '연차', startDate: today, endDate: today, reason: '' };
+    }
+    const startDate = leave.startDate.slice(0, 10);
+    const endDate = leave.endDate.slice(0, 10);
+    return {
+      staffId: leave.staffId,
+      type: leave.type,
+      startDate,
+      endDate: endDate < startDate ? startDate : endDate,
+      reason: leave.reason || '',
+    };
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -86,21 +95,22 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
       );
     }
 
-    const newLeave: StaffLeave = {
-      id: Date.now().toString(),
+    const nextLeave: StaffLeave = {
+      id: leave?.id || Date.now().toString(),
       staffId,
       type: formData.type as StaffLeave['type'],
       startDate: formData.startDate,
-      endDate: formData.endDate,
+      endDate: formData.endDate < formData.startDate ? formData.startDate : formData.endDate,
       reason: formData.reason,
     };
 
     setIsSubmitting(true);
     try {
-      await db.addLeave(newLeave);
+      if (leave?.id) await db.updateLeave(nextLeave);
+      else await db.addLeave(nextLeave);
       onSave();
     } catch (error) {
-      await showAlert('휴가 등록 실패: ' + getErrorMessage(error));
+      await showAlert((leave?.id ? '휴가 수정 실패: ' : '휴가 등록 실패: ') + getErrorMessage(error));
     } finally {
       setIsSubmitting(false);
     }
@@ -112,7 +122,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
         <div className="p-5 border-b border-slate-200 flex justify-between items-center bg-purple-50">
           <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
             <Palmtree className="text-purple-600" />
-            휴가/일정 등록
+            {leave?.id ? '휴가 수정' : '휴가/일정 등록'}
           </h2>
           <button onClick={onClose} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
             <X size={24} className="text-slate-500" />
@@ -174,7 +184,10 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
               <input
                 type="date"
                 value={formData.startDate}
-                onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                onChange={(e) => {
+                  const startDate = e.target.value;
+                  setFormData({ ...formData, startDate, endDate: startDate });
+                }}
                 className="date-scheme-light w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-slate-900"
                 style={{ colorScheme: 'light' }}
                 required
@@ -187,7 +200,15 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
               <input
                 type="date"
                 value={formData.endDate}
-                onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+                min={formData.startDate}
+                onChange={(e) => {
+                  const endDate = e.target.value;
+                  const startDate = formData.startDate || endDate;
+                  setFormData({
+                    ...formData,
+                    endDate: endDate < startDate ? startDate : endDate,
+                  });
+                }}
                 className="date-scheme-light w-full p-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-purple-500 text-slate-900"
                 style={{ colorScheme: 'light' }}
                 required
@@ -241,7 +262,7 @@ export const LeaveModal: React.FC<LeaveModalProps> = ({ onClose, onSave, staffLi
               className="flex-1 py-3 text-white font-bold bg-purple-600 hover:bg-purple-700 rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
             >
               <Save size={18} />
-              {isSubmitting ? '등록 중...' : '등록하기'}
+              {isSubmitting ? '저장 중...' : leave?.id ? '저장하기' : '등록하기'}
             </button>
           </div>
         </form>

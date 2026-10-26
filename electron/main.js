@@ -1,5 +1,6 @@
 
 const { app, BrowserWindow, ipcMain, dialog, shell, Notification, screen } = require('electron');
+const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const { setupAutoUpdater } = require('./updater');
@@ -97,9 +98,11 @@ function stopChatTaskbarFlash() {
 
 function startChatTaskbarFlash() {
     const win = getMainWindow();
-    if (!win) return;
-    // 이미 포커스된 전면 창이면 깜빡임 불필요
+    if (!win || win.isDestroyed()) return;
+    // 이미 이 창을 보고 있으면 깜빡임 불필요
     if (win.isFocused() && !win.isMinimized()) return;
+    // 새 메시지마다 다시 깜빡임 (한 번 켜 둔 상태는 재시작되지 않음)
+    win.flashFrame(false);
     win.flashFrame(true);
 }
 
@@ -119,6 +122,9 @@ let suppressNextChatNotifyCloseFlash = false;
 let activeChatNotification = null;
 /** 다른 창 작업 중에도 EzPrintWork를 맨 뒤에 유지 */
 let pinToBack = false;
+/** 모니터링 모드 — 브라우저 전체화면이 아니라 이 창을 해당 모니터에 붙인다 */
+let monitoringFullscreen = false;
+let monitoringDisplayId = null;
 
 function getControlWindow() {
     return getMainWindow() || BrowserWindow.getFocusedWindow();
@@ -147,6 +153,14 @@ function windowStatePath() {
     return path.join(app.getPath('userData'), 'window-state.json');
 }
 
+function displayIdForWindow(win) {
+    try {
+        return screen.getDisplayMatching(win.getBounds()).id;
+    } catch {
+        return monitoringDisplayId;
+    }
+}
+
 function loadWindowState() {
     try {
         const raw = JSON.parse(fs.readFileSync(windowStatePath(), 'utf8'));
@@ -154,26 +168,46 @@ function loadWindowState() {
         const height = Math.max(WINDOW_MIN_HEIGHT, Math.round(Number(raw.height) || 0));
         const x = Math.round(Number(raw.x));
         const y = Math.round(Number(raw.y));
+        const displayId = Number(raw.displayId);
+        const hasDisplayId = Number.isFinite(displayId);
+        monitoringFullscreen = !!raw.monitoring;
+        monitoringDisplayId = hasDisplayId ? displayId : null;
         if (!Number.isFinite(width) || !Number.isFinite(height)) {
-            return { width: 1300, height: 900 };
+            return { width: 1300, height: 900, monitoring: monitoringFullscreen };
         }
-        const state = { width, height, isMaximized: !!raw.isMaximized };
+        const state = {
+            width,
+            height,
+            isMaximized: !!raw.isMaximized,
+            monitoring: monitoringFullscreen,
+            displayId: hasDisplayId ? displayId : undefined,
+        };
         if (!Number.isFinite(x) || !Number.isFinite(y)) return state;
 
+        const displays = screen.getAllDisplays();
+        const savedDisplay = hasDisplayId ? displays.find((d) => d.id === displayId) : null;
+        if (hasDisplayId && !savedDisplay) {
+            return { ...state, x, y, displayMissing: true };
+        }
+
         const bounds = { x, y, width, height };
-        const area = screen.getDisplayMatching(bounds).workArea;
+        const area = (savedDisplay || screen.getDisplayMatching(bounds)).workArea;
         const overlapW = Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x);
         const overlapH = Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y);
         if (overlapW < 120 || overlapH < 80) {
             return {
+                ...state,
+                x: area.x,
+                y: area.y,
                 width: Math.min(width, area.width),
                 height: Math.min(height, area.height),
-                isMaximized: !!raw.isMaximized,
             };
         }
-        return { ...bounds, isMaximized: !!raw.isMaximized };
+        return { ...state, ...bounds };
     } catch {
-        return { width: 1300, height: 900 };
+        monitoringFullscreen = false;
+        monitoringDisplayId = null;
+        return { width: 1300, height: 900, monitoring: false };
     }
 }
 
@@ -182,16 +216,121 @@ function saveWindowState(win) {
     try {
         const isMaximized = win.isMaximized();
         const bounds = typeof win.getNormalBounds === 'function' ? win.getNormalBounds() : win.getBounds();
+        const displayId = displayIdForWindow(win);
+        if (displayId != null) monitoringDisplayId = displayId;
         fs.writeFileSync(windowStatePath(), JSON.stringify({
             x: Math.round(bounds.x),
             y: Math.round(bounds.y),
             width: Math.max(WINDOW_MIN_WIDTH, Math.round(bounds.width)),
             height: Math.max(WINDOW_MIN_HEIGHT, Math.round(bounds.height)),
             isMaximized,
+            displayId: monitoringDisplayId,
+            monitoring: monitoringFullscreen,
         }));
     } catch (err) {
         console.warn('[WindowState] save failed:', err);
     }
+}
+
+function applyMonitoringFullscreen(win, enabled) {
+    if (!win || win.isDestroyed()) return;
+    monitoringFullscreen = !!enabled;
+    try {
+        win.webContents.setBackgroundThrottling(!monitoringFullscreen);
+    } catch {
+        /* ignore */
+    }
+    if (monitoringFullscreen) {
+        const displayId = displayIdForWindow(win);
+        if (displayId != null) monitoringDisplayId = displayId;
+        if (!win.isFullScreen()) win.setFullScreen(true);
+    } else if (win.isFullScreen()) {
+        win.setFullScreen(false);
+    }
+    saveWindowState(win);
+}
+
+function revealRestoredWindow(win, state) {
+    if (!win || win.isDestroyed()) return;
+    if (state.monitoring) {
+        monitoringFullscreen = true;
+        try {
+            win.webContents.setBackgroundThrottling(false);
+        } catch {
+            /* ignore */
+        }
+        const displayId = displayIdForWindow(win);
+        if (displayId != null) monitoringDisplayId = displayId;
+        if (!win.isFullScreen()) win.setFullScreen(true);
+    } else if (state.isMaximized) {
+        win.maximize();
+    }
+    win.show();
+    if (!state.monitoring) win.focus();
+}
+
+function placeWindowOnDisplay(win, display, state) {
+    const area = state.monitoring ? display.bounds : display.workArea;
+    win.setBounds({
+        x: area.x,
+        y: area.y,
+        width: Math.min(state.width || area.width, area.width),
+        height: Math.min(state.height || area.height, area.height),
+    });
+}
+
+function showWindowWhenDisplayReady(win, state) {
+    if (!state.displayMissing) {
+        revealRestoredWindow(win, state);
+        return;
+    }
+    const tryAttach = () => {
+        if (win.isDestroyed()) return true;
+        const display = screen.getAllDisplays().find((d) => d.id === state.displayId);
+        if (!display) return false;
+        placeWindowOnDisplay(win, display, state);
+        revealRestoredWindow(win, state);
+        return true;
+    };
+    if (tryAttach()) return;
+
+    const onAdded = () => {
+        if (tryAttach()) cleanup();
+    };
+    const timer = setTimeout(() => {
+        cleanup();
+        if (!win.isDestroyed() && !win.isVisible()) revealRestoredWindow(win, state);
+    }, 20000);
+    function cleanup() {
+        clearTimeout(timer);
+        screen.removeListener('display-added', onAdded);
+    }
+    screen.on('display-added', onAdded);
+}
+
+function watchMonitoringDisplay(win) {
+    const onAdded = (_event, display) => {
+        if (!monitoringFullscreen || win.isDestroyed()) return;
+        if (monitoringDisplayId != null && display.id !== monitoringDisplayId) return;
+        let currentId = null;
+        try {
+            currentId = screen.getDisplayMatching(win.getBounds()).id;
+        } catch {
+            currentId = null;
+        }
+        if (currentId === display.id && win.isFullScreen() && win.isVisible()) return;
+        win.setFullScreen(false);
+        win.setBounds({
+            x: display.bounds.x,
+            y: display.bounds.y,
+            width: display.bounds.width,
+            height: display.bounds.height,
+        });
+        win.setFullScreen(true);
+        if (!win.isVisible()) win.show();
+    };
+    screen.on('display-added', onAdded);
+    win.once('closed', () => screen.removeListener('display-added', onAdded));
 }
 
 async function createWindow() {
@@ -205,7 +344,8 @@ async function createWindow() {
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             nodeIntegration: false,
-            contextIsolation: true
+            contextIsolation: true,
+            backgroundThrottling: !state.monitoring,
         },
         title: "EzPrintWork",
         autoHideMenuBar: true,
@@ -216,11 +356,10 @@ async function createWindow() {
         winOptions.y = state.y;
     }
     const win = new BrowserWindow(winOptions);
+    watchMonitoringDisplay(win);
 
     win.once('ready-to-show', () => {
-        if (state.isMaximized) win.maximize();
-        win.show();
-        win.focus();
+        showWindowWhenDisplayReady(win, state);
     });
 
     let saveTimer = null;
@@ -234,6 +373,7 @@ async function createWindow() {
     win.on('unmaximize', scheduleSaveWindowState);
 
     win.on('blur', () => applyPinToBack(win));
+    win.on('focus', () => stopChatTaskbarFlash());
 
     // 렌더러가 정상 종료 보고(라이선스·NAS presence)를 마칠 때까지 창 닫기 대기
     let sessionEndAllowClose = false;
@@ -349,7 +489,7 @@ async function createWindow() {
     } else {
         // file:// 은 Firebase 구글 로그인이 auth/unauthorized-domain 로 막힘 → 루프백만 사용
         const distDir = path.join(__dirname, '..', 'dist');
-        const url = await rendererServer.ensure(distDir);
+        const url = await rendererServer.ensure(distDir, app.getPath('userData'));
         await win.loadURL(url);
     }
 
@@ -525,10 +665,18 @@ async function checkDirectoryStatus(dirPath) {
 // --- IPC 핸들러 (데스크톱 앱 전용) ---
 
 // 1. 폴더 선택창 열기 (NAS 설정용)
-ipcMain.handle('select-directory', async () => {
-    const { canceled, filePaths } = await dialog.showOpenDialog({
-        properties: ['openDirectory']
-    });
+ipcMain.handle('select-directory', async (event, defaultPath) => {
+    const parent = BrowserWindow.fromWebContents(event.sender)
+        || BrowserWindow.getFocusedWindow()
+        || BrowserWindow.getAllWindows()[0];
+    const start = typeof defaultPath === 'string' ? defaultPath.trim() : '';
+    const dialogOptions = {
+        properties: ['openDirectory'],
+        ...(start ? { defaultPath: start } : {}),
+    };
+    const { canceled, filePaths } = parent
+        ? await dialog.showOpenDialog(parent, dialogOptions)
+        : await dialog.showOpenDialog(dialogOptions);
     return canceled ? null : resolveUncPath(filePaths[0]);
 });
 
@@ -683,10 +831,23 @@ ipcMain.handle('reveal-in-folder', async (event, targetPath) => {
 });
 
 // 4. 파일 저장 (비동기 — NAS 동기 I/O로 창 멈춤 방지)
-ipcMain.handle('save-file', async (event, { path: filePath, content }) => {
+ipcMain.handle('save-file', async (event, { path: filePath, content, expectedMtime }) => {
     try {
         assertTrustedIpc(event);
         filePath = assertSafeFilePath(filePath);
+        if (expectedMtime !== undefined && expectedMtime !== null && expectedMtime !== '') {
+            let current = 0;
+            try {
+                const st = await fs.promises.stat(filePath);
+                current = st.mtimeMs;
+            } catch (err) {
+                const code = err && typeof err === 'object' && 'code' in err ? err.code : null;
+                if (code !== 'ENOENT') throw err;
+            }
+            if (Number(expectedMtime) !== current) {
+                return { success: false, conflict: true };
+            }
+        }
         const dir = path.dirname(filePath);
         await atomicWriteFile(filePath, content, 'utf8');
         return { success: true };
@@ -783,6 +944,54 @@ ipcMain.handle('check-directory-status', async (event, dirPath) => {
 });
 
 // 7.0. 앱 사용자 데이터 폴더 (네트워크 장애 시 보관 섀도 복사)
+const KOREAN_HOLIDAY_ICS_URL =
+    'https://calendar.google.com/calendar/ical/ko.south_korea%23holiday%40group.v.calendar.google.com/public/basic.ics';
+
+function fetchKoreanHolidayIcs() {
+    const readUrl = (url, redirectsLeft) => new Promise((resolve) => {
+        const req = https.get(url, { headers: { 'User-Agent': 'EzPrintWork' } }, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirectsLeft > 0) {
+                res.resume();
+                const next = new URL(res.headers.location, url).toString();
+                resolve(readUrl(next, redirectsLeft - 1));
+                return;
+            }
+            if (res.statusCode !== 200) {
+                res.resume();
+                resolve({ ok: false, error: `http-${res.statusCode}` });
+                return;
+            }
+            let data = '';
+            let settled = false;
+            const finish = (result) => {
+                if (settled) return;
+                settled = true;
+                resolve(result);
+            };
+            res.setEncoding('utf8');
+            res.on('data', (chunk) => {
+                data += chunk;
+                if (data.length > 2_000_000) {
+                    req.destroy();
+                    finish({ ok: false, error: 'too-large' });
+                }
+            });
+            res.on('end', () => finish({ ok: true, ics: data }));
+        });
+        req.setTimeout(8000, () => {
+            req.destroy();
+            resolve({ ok: false, error: 'timeout' });
+        });
+        req.on('error', (error) => resolve({ ok: false, error: error.message || 'network' }));
+    });
+    return readUrl(KOREAN_HOLIDAY_ICS_URL, 3);
+}
+
+ipcMain.handle('fetch-korean-holidays', async (event) => {
+    assertTrustedIpc(event);
+    return fetchKoreanHolidayIcs();
+});
+
 ipcMain.handle('get-user-data-path', async () => {
     try {
         return app.getPath('userData');
@@ -1022,6 +1231,13 @@ ipcMain.handle('window-pin-back', async (_event, enabled) => {
     return { ok: true, enabled: pinToBack };
 });
 
+ipcMain.handle('window-monitoring-fullscreen', (event, enabled) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (!win || win.isDestroyed()) return { ok: false, enabled: false };
+    applyMonitoringFullscreen(win, !!enabled);
+    return { ok: true, enabled: monitoringFullscreen };
+});
+
 /**
  * 코페이 결제창 — 메인 BrowserWindow와 분리 (세션/로그인 킥·returnUrl 네비게이션 간섭 방지)
  * payload: { action: string, fields: Array<[string, string]> }
@@ -1227,8 +1443,8 @@ ipcMain.handle('open-korpay-payment', async (_event, payload = {}) => {
 });
 
 /**
- * 사내 메신저 OS 토스트.
- * 토스트가 닫히면(클릭 없이) 작업표시줄 깜빡임 시작.
+ * 사내 메신저 OS 토스트 + 작업표시줄 깜빡임.
+ * 다른 창이 앞에 있으면 메시지가 오는 즉시 아이콘을 깜빡인다.
  * 클릭 시 창 복원 + 렌더러에 chat-notification-clicked 전달.
  */
 ipcMain.handle('chat-notify', async (_event, payload = {}) => {
@@ -1236,9 +1452,9 @@ ipcMain.handle('chat-notify', async (_event, payload = {}) => {
     const body = String(payload.body || '').slice(0, 240);
 
     chatNotifyClicked = false;
+    startChatTaskbarFlash();
 
     if (!Notification.isSupported()) {
-        startChatTaskbarFlash();
         return { ok: false, reason: 'unsupported' };
     }
 

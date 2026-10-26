@@ -1,10 +1,57 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { db, formatBusinessNumber, formatPhoneNumber, getErrorMessage, isValidPhoneNumber } from '../services/dataService';
-import { Building2, UserPlus, ArrowRight, Loader2, LogOut, CheckCircle2, Phone } from 'lucide-react';
+import { db, formatBusinessNumber, formatPhoneNumber, isValidPhoneNumber } from '../services/dataService';
+import { Building2, ArrowRight, Loader2, LogOut, CheckCircle2, Phone } from 'lucide-react';
 import { toast } from 'sonner';
 import { AD_TIER_MAX } from '../utils/planLimits';
+import { SetupBriefing } from '../components/auth/SetupBriefing';
+import { clearPostCreateBriefingPending, isPostCreateBriefingPending, markPostCreateBriefingPending } from '../utils/postCreateBriefing';
+
+function describeCompanyCreateError(error: unknown): { title: string; detail: string } {
+  const err = error as {
+    code?: string;
+    message?: string;
+    details?: unknown;
+    customData?: { message?: string; details?: unknown };
+  };
+  const code = String(err?.code || '').replace(/^functions\//, '');
+  const serverMessage = String(err?.customData?.message || err?.message || '').trim();
+  const details = err?.details ?? err?.customData?.details;
+  const detailText = details == null || details === ''
+    ? ''
+    : typeof details === 'string'
+      ? details
+      : JSON.stringify(details);
+  const kind: Record<string, string> = {
+    internal: '서버 내부 오류입니다. 회사 생성 처리가 서버에서 중간에 멈췄습니다. 회사명·사업자번호·연락처 형식 문제가 아닙니다.',
+    unauthenticated: '로그인이 풀렸습니다. Google로 다시 로그인한 뒤 회사를 만들어 주세요.',
+    'failed-precondition': '이메일 인증이 끝나지 않았거나, 서버가 생성을 거절했습니다.',
+    'already-exists': '이 Google 계정은 이미 다른 회사에 소속되어 있습니다.',
+    'invalid-argument': '서버가 입력값을 거절했습니다. 회사명, 사업자등록번호, 연락처를 확인해 주세요.',
+    unavailable: '회사 생성 서버에 연결하지 못했습니다.',
+    'not-found': '회사 생성 기능을 서버에서 찾지 못했습니다.',
+    'permission-denied': '회사 생성 권한이 없습니다.',
+    'deadline-exceeded': '회사 생성 서버 응답 시간이 초과되었습니다.',
+  };
+  const title = kind[code]
+    || (serverMessage && serverMessage !== 'internal' ? serverMessage : '회사를 만들지 못했습니다.');
+  const lines = [
+    code ? `오류 코드: ${code}` : '',
+    serverMessage && serverMessage !== code && serverMessage !== 'internal' ? `서버 메시지: ${serverMessage}` : '',
+    detailText && detailText !== serverMessage ? `상세: ${detailText}` : '',
+  ].filter(Boolean);
+  return { title, detail: lines.join('\n') };
+}
+
+function createInternalJoinCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 8; i += 1) {
+    code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  }
+  return code;
+}
 
 export const OnboardingPage: React.FC = () => {
   const { firebaseUser, logout, refreshUser } = useAuth();
@@ -12,31 +59,39 @@ export const OnboardingPage: React.FC = () => {
   const [companyName, setCompanyName] = useState('');
   const [businessNumber, setBusinessNumber] = useState('');
   const [ownerPhone, setOwnerPhone] = useState('');
-  const [joinCode, setJoinCode] = useState('');
   const [initialStaffCount, setInitialStaffCount] = useState(AD_TIER_MAX);
   const AD_MAX = AD_TIER_MAX;
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [hasRequested, setHasRequested] = useState(false);
-  const [step, setStep] = useState<'choice' | 'create' | 'join'>('choice');
+  const [step, setStep] = useState<'choice' | 'create' | 'join' | 'briefing'>(() => {
+    if (typeof window !== 'undefined' && window.location.hash.includes('briefing-preview')) {
+      return 'briefing';
+    }
+    if (typeof window !== 'undefined' && window.location.hash.includes('onboarding-preview')) {
+      return 'create';
+    }
+    if (isPostCreateBriefingPending()) return 'briefing';
+    return 'choice';
+  });
   const navigate = useNavigate();
 
   const handleCreateCompany = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('handleCreateCompany called', { companyName, hasUser: !!firebaseUser });
-    if (!companyName.trim() || !firebaseUser) {
-      console.log('Validation failed', { companyName: companyName.trim(), hasUser: !!firebaseUser });
+    if (!companyName.trim()) {
+      toast.error('회사명은 필수입니다.');
+      return;
+    }
+
+    const businessDigits = businessNumber.replace(/\D/g, '');
+    if (businessDigits.length !== 10) {
+      toast.error('사업자등록번호는 필수입니다. 10자리를 입력해 주세요. (예: 123-45-67890)');
       return;
     }
 
     if (!ownerPhone.trim()) {
       toast.error('관리자 연락처는 필수입니다. 문제 발생 시 연락드릴 번호를 입력해 주세요.');
-      return;
-    }
-
-    if (!joinCode.trim() || joinCode.trim().length < 6) {
-      toast.error('회사 입장 코드는 최소 6글자 이상이어야 합니다.');
       return;
     }
 
@@ -46,13 +101,23 @@ export const OnboardingPage: React.FC = () => {
       return;
     }
 
+    if (!firebaseUser) {
+      if (window.location.hash.includes('onboarding-preview') || window.location.hash.includes('briefing-preview')) {
+        setStep('briefing');
+        return;
+      }
+      toast.error('Google 로그인 후 회사를 만들 수 있습니다.');
+      return;
+    }
+
     setIsCreating(true);
+    const joinCode = createInternalJoinCode();
     try {
       await db.createTenant(
         companyName.trim(),
         firebaseUser.uid,
         businessNumber.trim(),
-        joinCode.trim(),
+        joinCode,
         initialStaffCount,
         formattedPhone
       );
@@ -67,7 +132,7 @@ export const OnboardingPage: React.FC = () => {
             action: "signup_owner",
             companyName: companyName.trim(),
             businessNumber: businessNumber.trim(),
-            joinCode: joinCode.trim(),
+            joinCode,
             ownerUid: firebaseUser.uid,
             ownerEmail: firebaseUser.email || '',
             ownerName: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || '대표',
@@ -79,19 +144,34 @@ export const OnboardingPage: React.FC = () => {
       }
 
       toast.success('회사가 성공적으로 생성되었습니다!');
-      await refreshUser();
-      navigate('/', { replace: true });
+      const preview = window.location.hash.includes('onboarding-preview') || window.location.hash.includes('briefing-preview');
+      const onPcApp = typeof window !== 'undefined' && !!window.electron;
+      if (onPcApp || preview) {
+        markPostCreateBriefingPending();
+        if (!preview) await refreshUser();
+        setStep('briefing');
+      } else {
+        await refreshUser();
+        navigate('/', { replace: true });
+      }
     } catch (error) {
       console.error(error);
-      const msg = getErrorMessage(error);
-      if (msg.includes('permission') || msg.includes('PERMISSION')) {
-        toast.error('회사 생성 권한이 없습니다. Google 이메일 인증 후 다시 시도해 주세요.');
-      } else {
-        toast.error(`회사 생성 중 오류: ${msg}`);
-      }
+      const described = describeCompanyCreateError(error);
+      toast.error(described.title, described.detail ? { description: described.detail } : undefined);
     } finally {
       setIsCreating(false);
     }
+  };
+
+  const handleBriefingDone = async () => {
+    const preview = window.location.hash.includes('onboarding-preview') || window.location.hash.includes('briefing-preview');
+    clearPostCreateBriefingPending();
+    if (preview) {
+      toast.success('미리보기입니다. 실제로는 이 확인 뒤에 작업 화면으로 들어갑니다.');
+      return;
+    }
+    await refreshUser();
+    navigate('/', { replace: true });
   };
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -137,7 +217,7 @@ export const OnboardingPage: React.FC = () => {
       </div>
 
       <div className="max-w-4xl w-full flex flex-col items-center gap-12">
-        {/* Header */}
+        {step !== 'briefing' && (
         <div className="text-center space-y-4 animate-in fade-in slide-in-from-top-4 duration-700">
           <div className="inline-flex items-center justify-center p-3 bg-blue-600/20 rounded-2xl mb-2">
             <Building2 className="text-blue-500" size={32} />
@@ -146,10 +226,14 @@ export const OnboardingPage: React.FC = () => {
             시작하기 전에, 소속을 확인해 주세요
           </h1>
           <p className="text-slate-400 text-lg md:text-xl max-w-2xl mx-auto">
-            EzPrintWork는 회사 단위로 데이터를 관리합니다. <br className="hidden md:block" />
-            새로운 회사를 생성하거나, 기존 회사로부터 초대를 받아야 합니다.
+            회사를 지금 만들거나, 종료했다가 다음에 만들 수 있습니다.
           </p>
         </div>
+        )}
+
+        {step === 'briefing' && (
+          <SetupBriefing onDone={() => { void handleBriefingDone(); }} />
+        )}
 
         {step === 'choice' && (
           <div className="grid md:grid-cols-2 gap-8 w-full max-w-4xl animate-in fade-in zoom-in-95 duration-500 delay-200">
@@ -161,29 +245,35 @@ export const OnboardingPage: React.FC = () => {
               <div className="mb-8 inline-flex p-5 bg-blue-500/10 rounded-2xl text-blue-500 group-hover:bg-blue-500 group-hover:text-white transition-all duration-300">
                 <Building2 size={32} />
               </div>
-              <h3 className="text-3xl font-bold mb-4">회사 새로 만들기</h3>
+              <h3 className="text-3xl font-bold mb-4">회사 생성하기</h3>
               <p className="text-slate-400 text-lg leading-relaxed mb-10">
-                회사의 관리자가 되어 워크스페이스를 직접 개설하고 직원을 초대할 수 있습니다.
+                회사명, 사업자등록번호, 관리자 연락처를 입력하고 워크스페이스를 만듭니다.
               </p>
               <div className="flex items-center gap-2 text-blue-400 text-lg font-bold group-hover:gap-3 transition-all">
                 생성하기 <ArrowRight size={22} />
               </div>
             </button>
 
-            {/* Join Company Card */}
-            <button 
-              onClick={() => setStep('join')}
-              className="group relative bg-slate-900/50 border border-slate-800 hover:border-emerald-500/50 p-10 rounded-[2.5rem] text-left transition-all hover:bg-slate-900 hover:shadow-[0_0_60px_-15px_rgba(16,185,129,0.3)] active:scale-[0.98]"
+            <button
+              type="button"
+              onClick={() => {
+                if (typeof window !== 'undefined' && window.electron?.close) {
+                  window.electron.close();
+                  return;
+                }
+                void logout();
+              }}
+              className="group relative bg-slate-900/50 border border-slate-800 hover:border-slate-500 p-10 rounded-[2.5rem] text-left transition-all hover:bg-slate-900 active:scale-[0.98]"
             >
-              <div className="mb-8 inline-flex p-5 bg-emerald-500/10 rounded-2xl text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-all duration-300">
-                <UserPlus size={32} />
+              <div className="mb-8 inline-flex p-5 bg-slate-800 rounded-2xl text-slate-300 group-hover:bg-slate-700 group-hover:text-white transition-all duration-300">
+                <LogOut size={32} />
               </div>
-              <h3 className="text-3xl font-bold mb-4">초대 대기하기</h3>
+              <h3 className="text-3xl font-bold mb-4">종료하기</h3>
               <p className="text-slate-400 text-lg leading-relaxed mb-10">
-                이미 다른 관리자가 생성한 회사에 소속되어 있다면, 초대를 기다려 주세요.
+                지금은 만들지 않습니다. 다음에 다시 실행하면 이어서 만들 수 있습니다.
               </p>
-              <div className="flex items-center gap-2 text-emerald-400 text-lg font-bold group-hover:gap-3 transition-all">
-                상태 확인하기 <ArrowRight size={22} />
+              <div className="flex items-center gap-2 text-slate-300 text-lg font-bold group-hover:gap-3 transition-all">
+                종료 <ArrowRight size={22} />
               </div>
             </button>
           </div>
@@ -194,7 +284,7 @@ export const OnboardingPage: React.FC = () => {
             <form onSubmit={handleCreateCompany} className="space-y-6 bg-slate-900 p-8 rounded-3xl border border-slate-800">
               <div className="space-y-2 text-center pb-2 border-b border-slate-800">
                 <h3 className="text-xl font-black">회사(워크스페이스) 개설</h3>
-                <p className="text-xs text-slate-500 font-medium">관리자 정보와 사내 연동 코드를 설정합니다.</p>
+                <p className="text-xs text-slate-500 font-medium">회사명, 사업자등록번호, 관리자 연락처는 필수입니다. 직원 아이디는 가입 후 관리자가 만들어 전달합니다.</p>
               </div>
 
               <div className="space-y-2">
@@ -211,13 +301,16 @@ export const OnboardingPage: React.FC = () => {
               </div>
 
               <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-400 ml-1">사업자등록번호</label>
+                <label className="text-xs font-bold text-slate-400 ml-1">사업자등록번호 *</label>
                 <input 
                   type="text"
                   value={businessNumber}
                   onChange={(e) => setBusinessNumber(formatBusinessNumber(e.target.value))}
-                  placeholder="예: 123-45-67890 (선택 사항)"
+                  placeholder="예: 123-45-67890"
                   className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
+                  required
+                  inputMode="numeric"
+                  autoComplete="off"
                 />
               </div>
 
@@ -262,20 +355,6 @@ export const OnboardingPage: React.FC = () => {
                 <span className="text-[10px] text-slate-500 block pl-1 font-medium">
                   신규 가입은 「광고형」으로 시작합니다 (최대 {AD_MAX}인, 광고 표시). 지인 선물·유료 PRO는 가입 후 설정에서 변경할 수 있습니다.
                 </span>
-              </div>
-
-              <div className="space-y-2">
-                <label className="text-xs font-bold text-slate-400 ml-1">회사 입장 코드 (직원 가입용 고유 키) *</label>
-                <input 
-                  type="text"
-                  value={joinCode}
-                  onChange={(e) => setJoinCode(e.target.value)}
-                  placeholder="직원 연동을 위한 6자 이상의 코드 입력"
-                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3.5 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all font-medium text-sm"
-                  required
-                  minLength={6}
-                />
-                <span className="text-[10px] text-slate-500 block pl-1 font-medium">직원들이 본인의 사내 아이디를 생성하여 해당 회사로 소속될 때 사용하는 필수 암호 코드입니다.</span>
               </div>
 
               <div className="flex flex-col gap-3 pt-2">

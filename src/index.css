@@ -523,6 +523,18 @@ html.trello .job-urgency-surface-dashboard.job-urgency-tier-very-urgent {
   animation: assignment-notice-blink 2.4s ease-in-out infinite;
 }
 
+@keyframes external-order-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.28; }
+}
+
+.kanban-badge.external-order-blink {
+  animation: external-order-blink 1s ease-in-out infinite;
+  background-color: #f59e0b !important;
+  color: #1c1917 !important;
+  border-color: #b45309 !important;
+}
+
 /* D-Day 뱃지 */
 .job-dday-badge {
   display: inline-flex;

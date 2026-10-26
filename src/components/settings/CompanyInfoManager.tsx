@@ -2,9 +2,8 @@ import React, { useState, useEffect, useRef } from 'react';
 import { db, formatPhoneNumber, formatBusinessNumber, getErrorMessage } from '../../services/dataService';
 import { hasQuoteHeaderConfigured } from '../../utils/quoteHeaderImage';
 import { CompanyInfo, QuoteTemplateSettings } from '../../types';
-import { Building, Save, Check, Copy, History, Search, Image, Upload, ClipboardPaste } from 'lucide-react';
+import { Building, Save, History, Search, Image, Upload, ClipboardPaste } from 'lucide-react';
 import { useDialog } from '../../contexts/DialogContext';
-import { useAuth } from '../../contexts/AuthContext';
 import { MailInboxSettings } from './MailInboxSettings';
 
 export const CompanyInfoManager: React.FC = () => {
@@ -15,8 +14,6 @@ export const CompanyInfoManager: React.FC = () => {
   const [headerPreviewSrc, setHeaderPreviewSrc] = useState<string | null>(null);
   const headerInputRef = useRef<HTMLInputElement>(null);
   const { showAlert } = useDialog();
-  const { currentUser } = useAuth();
-  const [copied, setCopied] = useState(false);
   const [receptionAssistEnabled, setReceptionAssistEnabled] = useState(true);
 
   useEffect(() => {
@@ -34,14 +31,6 @@ export const CompanyInfoManager: React.FC = () => {
     } catch {
       setReceptionAssistEnabled(prev);
       await showAlert('접수 보조 설정을 저장하지 못했습니다. NAS 연결을 확인한 뒤 다시 시도해 주세요.');
-    }
-  };
-
-  const handleCopyCode = () => {
-    if (currentUser?.tenantId) {
-        navigator.clipboard.writeText(currentUser.tenantId);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
     }
   };
 
@@ -159,29 +148,6 @@ export const CompanyInfoManager: React.FC = () => {
       </h3>
 
       <div className="space-y-6">
-          <div className="bg-emerald-50 dark:bg-emerald-900/30 border border-emerald-100 dark:border-emerald-800 p-6 rounded-xl mb-6">
-              <div className="flex justify-between items-start mb-2">
-                <h4 className="font-bold text-emerald-900 dark:text-emerald-100 flex items-center gap-2">
-                    <Check size={18} /> 회사 입장 코드가 생성되었습니다
-                </h4>
-              </div>
-              <p className="text-sm text-emerald-700 dark:text-emerald-300 mb-4">
-                  직원들이 회원가입 후 '회사 참여하기' 단계에서 아래 코드를 입력하면 이 회사(테넌트)로 소속됩니다.
-              </p>
-              <div className="flex items-center gap-2">
-                  <div className="bg-white dark:bg-slate-900 px-4 py-3 rounded-lg border-2 border-emerald-200 dark:border-emerald-800 font-mono text-lg font-bold flex-1 select-all text-emerald-600 dark:text-emerald-400">
-                      {currentUser?.tenantId}
-                  </div>
-                  <button 
-                    onClick={handleCopyCode}
-                    className={`p-3 rounded-lg flex items-center gap-2 font-bold transition-all ${copied ? 'bg-emerald-600 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-600'}`}
-                  >
-                      {copied ? <Check size={20} /> : <Copy size={20} />}
-                      {copied ? '복사됨' : '코드 복사'}
-                  </button>
-              </div>
-          </div>
-
           <div className="bg-blue-50 dark:bg-blue-900/30 border border-blue-100 dark:border-blue-800 p-4 rounded-lg text-sm text-blue-800 dark:text-blue-300 mb-6">
               이곳에 입력된 정보는 프로그램 상단의 로고 텍스트, 견적서, 거래명세서 등의 공급자 정보로 사용됩니다.
           </div>

@@ -6,10 +6,11 @@ import { JobDetailModal } from '../common/JobDetailModal';
 import { ClientContactModal } from '../common/ClientContactModal';
 import { KanbanColumn } from './KanbanColumn';
 import { KanbanCard } from './KanbanCard';
+import { JobCardMergeModal } from './JobCardMergeModal';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import { useDialog } from '../../contexts/DialogContext';
-import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Calendar as CalendarIcon, AlertCircle, Clock, Plus, Filter, CheckCircle2, Search, User, Users, Tv, ChevronLeft, ChevronRight, GitMerge } from 'lucide-react';
 import { toast } from 'sonner';
 import { resolveClientSmsNumber } from '../../utils/clientSms';
 import {
@@ -25,6 +26,7 @@ import {
   MeasuringStrategy,
 } from '@dnd-kit/core';
 import { isTouchPrimaryDevice, isMobileWebClient } from '../../utils/touchDevice';
+import { applyMonitoringFullscreen } from '../../utils/monitoringFullscreen';
 import { kanbanCollisionDetection, resolveKanbanDropTarget, computeKanbanInsertIndex, getDragPointerY } from './kanbanCollisionDetection';
 import {
   isJobAssignedToUser,
@@ -32,7 +34,8 @@ import {
   getStaffIdForUser,
 } from '../../utils/staffMatch';
 import { filterJobsForOperationalBoard } from '../../utils/jobDisplayFilters';
-import { buildKanbanColumnSlots, getKeysInKanbanSlots, resolveBottomStyle } from '../../utils/kanbanLayout';
+import { isSettledPaymentStatus } from '../../utils/prepaidBalance';
+import { buildKanbanColumnSlots, getKeysInKanbanSlots, resolveBottomStyle, normalizeJobStatusKey } from '../../utils/kanbanLayout';
 import {
   applyKanbanSplitPercents,
   getKanbanSplitStorageKey,
@@ -73,6 +76,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
   const [smsContactJob, setSmsContactJob] = useState<Job | null>(null);
   const [jobModalViewMode, setJobModalViewMode] = useState<'summary' | 'edit'>('summary');
   const [isCreatingJob, setIsCreatingJob] = useState(false);
+  const [isJobMergeOpen, setIsJobMergeOpen] = useState(false);
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const { currentUser, showsAds } = useAuth();
   const { theme } = useTheme();
@@ -105,8 +109,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, {
       activationConstraint: isMobileWebClient()
-        ? { delay: 160, tolerance: 14 }
-        : { delay: touchPrimary ? 320 : 250, tolerance: 8 },
+        ? { delay: 80, tolerance: 14 }
+        : { delay: touchPrimary ? 120 : 80, tolerance: 8 },
     }),
     useSensor(KeyboardSensor)
   );
@@ -132,10 +136,20 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       loadKanbanSplitPercents(splitPrefStorageKey)
     );
     
-    setAllStatusDefinitions(statuses.filter((s) => s.isVisible !== false));
+    const visibleDefs = statuses.filter((s) => s.isVisible !== false);
+    const validStatusKeys = new Set(visibleDefs.map((s) => s.key));
+    let effectiveHiddenKeys = hiddenStatusKeys.filter((k) => validStatusKeys.has(k));
+    if (effectiveHiddenKeys.length >= visibleDefs.length && visibleDefs.length > 0) {
+      effectiveHiddenKeys = [];
+    }
+    if (effectiveHiddenKeys.length !== hiddenStatusKeys.length) {
+      setHiddenStatusKeys(effectiveHiddenKeys);
+    }
+
+    setAllStatusDefinitions(visibleDefs);
     setKanbanLayout(layout);
     
-    const slots = buildKanbanColumnSlots(statuses, layout, hiddenStatusKeys);
+    const slots = buildKanbanColumnSlots(statuses, layout, effectiveHiddenKeys);
     const slotKeys = getKeysInKanbanSlots(slots);
     setVisibleStatusDefinitions(statuses.filter((s) => slotKeys.includes(s.key)));
     const filteredJobs = filterJobsForOperationalBoard(allJobs, {
@@ -361,8 +375,8 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     if (pointerY === null) return;
 
     const columnJobIds = (newStatusKey === 'QUOTE'
-      ? allJobs.filter((j) => j.status === 'QUOTE')
-      : filteredJobs.filter((j) => j.status === newStatusKey)
+      ? allJobs.filter((j) => normalizeJobStatusKey(j.status, allStatusDefinitions) === 'QUOTE')
+      : getJobsForStatus(newStatusKey)
     )
       .sort((a, b) => a.order - b.order)
       .map((j) => j.id);
@@ -465,7 +479,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       
       // 3. 미결제만 보기 필터
       if (filterUnpaidOnly) {
-        if (job.paymentStatus === '결제완료') return false;
+        if (isSettledPaymentStatus(job.paymentStatus)) return false;
       }
       
       // 4. 긴급만 보기 필터
@@ -487,7 +501,29 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
     currentUser ? isJobAssignedToUser(job, currentUser, staff) : false;
 
   const getJobsForStatus = (statusKey: string) => {
-    return filteredJobs.filter((j: Job) => j.status === statusKey).sort((a: Job, b: Job) => a.order - b.order);
+    const visibleKeysSet = new Set(visibleStatusDefinitions.map((s) => s.key));
+    const allDefinedKeysSet = new Set(db.getStatusDefinitions().map((s) => s.key));
+    const fallbackStatusKey = visibleKeysSet.has('RECEIVED')
+      ? 'RECEIVED'
+      : visibleStatusDefinitions[0]?.key;
+
+    return filteredJobs
+      .filter((j: Job) => {
+        const normalized = normalizeJobStatusKey(j.status, allStatusDefinitions);
+        if (normalized === statusKey) return true;
+        // 알 수 없는(삭제된/오타) 상태값이어서 어느 단계에도 속하지 않는 고아 카드는 기본(접수) 컬럼에 표시하여 증발 방지
+        if (
+          statusKey === fallbackStatusKey &&
+          normalized !== 'CANCELED' &&
+          normalized !== 'QUOTE' &&
+          normalized !== 'COMPLETED' &&
+          !allDefinedKeysSet.has(normalized)
+        ) {
+          return true;
+        }
+        return false;
+      })
+      .sort((a: Job, b: Job) => a.order - b.order);
   };
 
   const getAdStatusKey = () => {
@@ -802,21 +838,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
               setIsTvMode(nextVal);
               localStorage.setItem('ezprint_tv_mode', String(nextVal));
               window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
-              
-              // 브라우저 기본 주소창, 탭바, 북마크바를 완전히 감추는 웹 표준 전체화면(Fullscreen) API 연동
-              if (nextVal) {
-                if (document.documentElement.requestFullscreen) {
-                  document.documentElement.requestFullscreen().catch((err) => {
-                    console.log("전체화면 진입 실패:", err);
-                  });
-                }
-              } else {
-                if (document.fullscreenElement && document.exitFullscreen) {
-                  document.exitFullscreen().catch((err) => {
-                    console.log("전체화면 해제 실패:", err);
-                  });
-                }
-              }
+              applyMonitoringFullscreen(nextVal);
             }}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all border select-none hover:scale-105 active:scale-95 shadow-md
               ${isTvMode 
@@ -826,6 +848,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           >
             <Tv size={14} className={isTvMode ? "text-white animate-pulse" : "text-purple-300"} />
             <span>모니터링 모드</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setIsJobMergeOpen(true)}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border select-none hover:scale-105 active:scale-95 bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:border-blue-400"
+            title="같은 업체의 작업 카드를 하나로 합칩니다"
+          >
+            <GitMerge size={13} />
+            <span>카드 합치기</span>
           </button>
 
           {/* Add Job button */}
@@ -862,7 +894,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       <DndContext
         sensors={sensors}
         collisionDetection={kanbanCollisionDetection}
-        measuring={{ droppable: { strategy: MeasuringStrategy.WhileDragging } }}
+        measuring={{ droppable: { strategy: MeasuringStrategy.BeforeDragging } }}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
       >
@@ -1006,6 +1038,15 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       </DragOverlay>
       </DndContext>
 
+      {isJobMergeOpen && (
+        <JobCardMergeModal
+          jobs={displayJobs}
+          staff={staff}
+          statuses={allStatusDefinitions}
+          onClose={() => setIsJobMergeOpen(false)}
+        />
+      )}
+
       {selectedJob && (
         <JobDetailModal 
           key={selectedJob.id}
@@ -1062,13 +1103,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
             setIsTvMode(false);
             localStorage.setItem('ezprint_tv_mode', 'false');
             window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
-            
-            // 모니터링 모드 종료 시 전체화면 상태도 안전하게 빠져나옴
-            if (document.fullscreenElement && document.exitFullscreen) {
-              document.exitFullscreen().catch((err) => {
-                console.log("전체화면 해제 실패:", err);
-              });
-            }
+            applyMonitoringFullscreen(false);
           }}
           className="fixed top-3 right-[20%] md:right-[25%] z-[9999] flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-bold backdrop-blur-md"
           title="일반 화면으로 복원 (모니터링 모드 종료)"

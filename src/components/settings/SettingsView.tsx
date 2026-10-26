@@ -15,6 +15,9 @@ import { ProcessingManager } from './ProcessingManager';
 import { PlanManager } from './PlanManager';
 import { Users, ScrollText, Calculator, Database, Shield, Lock, Package, Building, ListChecks, MessageSquare, User, LogOut, Scissors, Crown, Archive, Info, Beaker } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
+import { useDialog } from '../../contexts/DialogContext';
+import { markTenantWithdrawn } from '../../services/tenantWithdrawal';
+import { clearLastKnownArchiveRootPath, clearLastKnownTenantPlanForUid } from '../../utils/lastKnownTenantPlan';
 import { isRootSettingsTab, isStaffOperationsSettingsTab } from '../../utils/adminAccess';
 import { FeatureLabPanel } from '../features/FeatureLabPanel';
 import { isFeatureLabUnlocked } from '../../features/featureFlags';
@@ -28,7 +31,9 @@ export const SettingsView: React.FC = () => {
     canManageStaff,
     isTenantOwner,
     isSiteAdmin,
+    logout,
   } = useAuth();
+  const { showConfirm, showAlert } = useDialog();
   const isAdmin = canAccessAdminSettings;
   
   const [activeSubTab, setActiveSubTab] = useState(isAdmin ? (canManageStaff ? 'staff' : 'company') : 'profile');
@@ -128,6 +133,49 @@ export const SettingsView: React.FC = () => {
                  })}
              </nav>
              
+             {isTenantOwner && (
+                 <div className="p-3 mt-auto border-t border-slate-100 dark:border-slate-700">
+                     <button
+                         type="button"
+                         onClick={() => void (async () => {
+                             const companyName = db.getCompanyInfo()?.name || '이 회사';
+                             const ok = await showConfirm(
+                                 `[${companyName}] 탈퇴\n\n` +
+                                 '이 회사 사용을 종료합니다.\n' +
+                                 '직원도 이 회사에 다시 들어갈 수 없습니다.\n' +
+                                 '저장 폴더에 있는 파일은 지우지 않습니다.\n' +
+                                 '탈퇴하면 이 계정은 로그아웃됩니다.',
+                                 { confirmLabel: '탈퇴', tone: 'danger' }
+                             );
+                             if (!ok) return;
+                             const tenantId = currentUser?.tenantId;
+                             const uid = currentUser?.uid;
+                             if (!tenantId || !uid) {
+                                 await showAlert('회사 정보를 확인하지 못했습니다.');
+                                 return;
+                             }
+                             try {
+                                 await markTenantWithdrawn({
+                                     tenantId,
+                                     uid,
+                                     email: currentUser?.email,
+                                 });
+                                 clearLastKnownTenantPlanForUid(uid);
+                                 clearLastKnownArchiveRootPath(tenantId);
+                                 sessionStorage.setItem('ezpw_auth_notice', '탈퇴했습니다. 저장 폴더의 파일은 그대로 있습니다.');
+                                 await logout();
+                             } catch (e) {
+                                 const msg = e instanceof Error ? e.message : String(e);
+                                 await showAlert(`탈퇴하지 못했습니다.\n${msg}`);
+                             }
+                         })()}
+                         className="w-full py-2.5 rounded-lg border border-rose-300 text-rose-700 dark:text-rose-300 dark:border-rose-800 text-sm font-bold hover:bg-rose-50 dark:hover:bg-rose-950/40"
+                     >
+                         탈퇴
+                     </button>
+                 </div>
+             )}
+
              {!isAdmin && (
                  <div className="p-4 mt-auto border-t border-slate-100 dark:border-slate-700 hidden lg:block">
                      <div className="bg-slate-50 dark:bg-slate-900 p-3 rounded-lg border border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">

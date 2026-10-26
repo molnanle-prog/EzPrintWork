@@ -56,7 +56,7 @@ function closeAllWindowsForInstall() {
     }
 }
 
-function requestRendererFlush(timeoutMs = 8000) {
+function requestRendererFlush(timeoutMs = 40000) {
     if (!mainWindow || mainWindow.isDestroyed()) return Promise.resolve(true);
     const requestId = `update-${Date.now()}-${++flushRequestSequence}`;
     return new Promise((resolve) => {

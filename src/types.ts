@@ -29,7 +29,7 @@ export enum Priority {
   VERY_URGENT = '매우긴급'
 }
 
-export type PaymentStatus = '결제대기' | '일부결제' | '후불결제' | '결제완료' | '취소';
+export type PaymentStatus = '결제대기' | '일부결제' | '후불결제' | '카드결제' | '결제완료' | '취소';
 
 export interface InnerPageSpec {
   id: string;
@@ -85,6 +85,16 @@ export interface JobItem {
   type: string;       // 명함, 전단지...
   specs: JobSpecs;    // Specific specs for this item
   completed?: boolean; // 개별 품목 완료 상태
+  /** 외부 업체에 주문하는 품목 */
+  externalOrder?: boolean;
+  /** 확인으로 넘긴 알림. week=7일 전, soon=3일 전, due=납품일. 다음 날짜 알림은 다시 뜬다. */
+  externalOrderAckStage?: 'week' | 'soon' | 'due';
+  /** 주문전·주문완료. 도착완료 전까지 다음 알림일에 다시 뜬다. */
+  externalOrderProgress?: 'before' | 'ordered';
+  /** 도착완료 시각. 알림과 카드 깜빡임이 멈춘다. */
+  externalOrderArrivedAt?: string;
+  /** 주문 업체. 회사 공통 목록의 id */
+  externalOrderVendorId?: string;
   /** 종류별 견적 계산기 — 품목별 입력 금액(공급가액) */
   lineQuote?: number;
 }
@@ -97,10 +107,22 @@ export interface JobHistoryLog {
   details: string; // e.g., "접수 -> 디자인", "김철수 -> 이영희"
 }
 
+export interface ExternalOrderVendor {
+  id: string;
+  name: string;
+  phone: string;
+}
+
 export interface AssignmentNotice {
   assignedAt: string;
   staffIds: string[];
   viewedBy?: Record<string, string>;
+}
+
+export interface JobOrderPrintLog {
+  printedAt: string;
+  staffId?: string;
+  staffName: string;
 }
 
 export interface Job {
@@ -123,6 +145,10 @@ export interface Job {
   assignmentNotice?: AssignmentNotice | null;
   /** 완료 안내 문자 발송 성공 시각 — 칸반 카드 거래처명 옆 표시 */
   completeSmsSentAt?: string;
+  /** 작업지시서 인쇄 횟수 */
+  jobOrderPrintCount?: number;
+  /** 작업지시서 출력 이력 (최근 순 또는 시간순) */
+  jobOrderPrintLogs?: JobOrderPrintLog[];
   history?: JobHistoryLog[]; 
   createdAt: string;
   dueDate: string;
@@ -198,6 +224,27 @@ export interface StaffLeave {
   startDate: string; // ISO Date String
   endDate: string;   // ISO Date String
   reason?: string;
+}
+
+/** 달력 칸에만 붙는 표시. 작업 목록과는 별도 */
+export type CalendarMarkIcon = 'cake' | 'meal' | 'balloon' | 'star' | 'heart' | 'flag';
+export type CalendarMarkRepeat = 'once' | 'yearly' | 'monthly' | 'weekly';
+export type CalendarMarkCalendar = 'solar' | 'lunar';
+
+export interface CalendarMark {
+  id: string;
+  text: string;
+  icon: CalendarMarkIcon;
+  repeat: CalendarMarkRepeat;
+  /** 음력은 한 번·매년에만 쓴다 */
+  calendar: CalendarMarkCalendar;
+  /** 양력 기준일 YYYY-MM-DD. 음력이면 고른 날의 양력이고, 반복은 lunarMonth/Day 로 계산 */
+  date: string;
+  lunarMonth?: number;
+  lunarDay?: number;
+  lunarLeap?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface QuoteLine {
@@ -282,9 +329,13 @@ export interface PrepaidLedgerEntry {
   note?: string;
 }
 
+export type ClientKind = 'delivery' | 'order';
+
 export interface Client {
   id: string;
   name: string;
+  /** 없으면 납품업체. order 는 외부 주문업체 */
+  clientKind?: ClientKind;
   businessRegistrationNumber?: string; 
   contactPerson: string; 
   phone: string; 
@@ -481,7 +532,11 @@ export interface ElectronUpdaterStatus {
 }
 
 export interface IElectronAPI {
-  saveFile: (path: string, content: string) => Promise<{ success: boolean; error?: string }>;
+  saveFile: (
+    path: string,
+    content: string,
+    expectedMtime?: number
+  ) => Promise<{ success: boolean; error?: string; conflict?: boolean }>;
   saveFileBase64?: (path: string, data: string) => Promise<{ success: boolean; error?: string }>;
   readFile: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string; mtime?: number }>;
   readFileBase64?: (path: string) => Promise<{ success: boolean; data?: string | null; error?: string; mtime?: number }>;
@@ -489,7 +544,7 @@ export interface IElectronAPI {
   checkPath: (path: string) => Promise<boolean>;
   checkFileExists: (path: string) => Promise<boolean>; 
   exists: (path: string) => Promise<boolean>;
-  selectDirectory: () => Promise<string | null>; 
+  selectDirectory: (defaultPath?: string) => Promise<string | null>; 
   selectFileOrFolder: (defaultPath?: string) => Promise<string | null>;
   selectFiles?: (options?: {
     filters?: { name: string; extensions: string[] }[];
@@ -527,6 +582,7 @@ export interface IElectronAPI {
   getLicenseInfo: () => Promise<any>;
 
   getAppVersion: () => Promise<string>;
+  fetchKoreanHolidays?: () => Promise<{ ok: boolean; ics?: string; error?: string }>;
   /** GitHub Release 기반 데스크톱 설치본 자동 업데이트 */
   updaterCheck?: () => Promise<{
     ok: boolean;
@@ -623,6 +679,8 @@ export interface IElectronAPI {
   close: () => void;
   lower: () => void;
   pinToBack?: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean; error?: string }>;
+  /** 모니터링 모드 — 창이 있는 모니터를 프로그램 전체화면으로 */
+  setMonitoringFullscreen?: (enabled: boolean) => Promise<{ ok: boolean; enabled?: boolean }>;
   /** Electron 창 닫기 직전 세션 종료 훅 */
   onAppSessionEnding?: (callback: () => void) => () => void;
   notifyAppSessionEnded?: () => void;

@@ -169,11 +169,11 @@ async function mountPrintRoot(): Promise<boolean> {
  * 화면의 .page-container를 body 직속으로 복제 후 인쇄.
  * h-screen/overflow-hidden 때문에 2페이지가 잘리는 문제를 피한다.
  */
-export async function printDocumentSimplex(): Promise<void> {
+export async function printDocumentSimplex(): Promise<boolean> {
   const mounted = await mountPrintRoot();
   if (!mounted) {
     window.print();
-    return;
+    return true;
   }
 
   const finish = () => {
@@ -185,13 +185,16 @@ export async function printDocumentSimplex(): Promise<void> {
   try {
     const electronPrint = window.electron?.printDocument;
     if (typeof electronPrint === 'function') {
-      await electronPrint();
+      const res = await electronPrint();
+      return res?.success !== false;
     } else {
       window.print();
+      return true;
     }
   } catch (err) {
     console.warn('[print] Electron print error, fallback to window.print:', err);
     window.print();
+    return true;
   } finally {
     setTimeout(finish, 1500);
   }

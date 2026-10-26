@@ -13,6 +13,7 @@ import { ArchiveSetupWizard } from '../components/auth/ArchiveSetupWizard';
 import { db } from '../services/dataService';
 import { useAuth } from '../contexts/AuthContext';
 import { isArchiveSetupDone, markArchiveSetupDone } from '../utils/archiveStorage';
+import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 import { WorkHistoryBoard } from '../components/history/WorkHistoryBoard';
 import { FeatureWorkspace } from '../components/features/FeatureLabPanel';
 import { isFeatureEnabled } from '../features/featureFlags';
@@ -20,7 +21,7 @@ import { isFeatureEnabled } from '../features/featureFlags';
 type ViewType = 'dashboard' | 'kanban' | 'calendar' | 'history' | 'customers' | 'quotes' | 'payments' | 'staff' | 'inventory' | 'settings' | 'reports' | 'diagnostics' | 'conflicts' | 'reorder';
 
 export const MainPage: React.FC = () => {
-    const { canAccessRootSettings } = useAuth();
+    const { canAccessRootSettings, currentUser } = useAuth();
     const isElectron = typeof window !== 'undefined' && !!window.electron;
     const [showArchiveWizard, setShowArchiveWizard] = useState(false);
     const [activeTab, setActiveTab] = useState<ViewType>('kanban');
@@ -33,19 +34,27 @@ export const MainPage: React.FC = () => {
         if (!isElectron || !canAccessRootSettings) return;
 
         const syncWizard = () => {
-            if (db.getTenantArchiveRootPath()) {
+            const tenantId = currentUser?.tenantId || db.getTenantId();
+            if (db.getTenantArchiveRootPath() || (tenantId && readLastKnownArchiveRootPath(tenantId))) {
                 markArchiveSetupDone();
                 setShowArchiveWizard(false);
                 return;
             }
-            if (!isArchiveSetupDone()) {
-                setShowArchiveWizard(true);
+            if (isArchiveSetupDone()) {
+                setShowArchiveWizard(false);
+                return;
             }
+            // 설정이 올라오기 전(로그인 직후)에는 띄우지 않음. 신규 회사만 동기화 후 1회.
+            if (db.getSyncStatus() !== 'synced') {
+                setShowArchiveWizard(false);
+                return;
+            }
+            setShowArchiveWizard(true);
         };
 
         syncWizard();
         return db.subscribe(syncWizard);
-    }, [isElectron, canAccessRootSettings]);
+    }, [isElectron, canAccessRootSettings, currentUser?.tenantId]);
 
     const handleNavigateToQuote = (quoteId?: string) => {
         setActiveTab('quotes');

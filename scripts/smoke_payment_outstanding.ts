@@ -63,8 +63,9 @@ assert('대기·후불·일부만 미수 상태', [
   isReceivablePaymentStatus('후불결제'),
   isReceivablePaymentStatus('일부결제'),
   isReceivablePaymentStatus('결제완료'),
+  isReceivablePaymentStatus('카드결제'),
   isReceivablePaymentStatus('취소'),
-], [true, true, true, false, false]);
+], [true, true, true, false, false, false]);
 
 assert(
   '후불에 남은 별도수납이 있어도 본건 미수 = 작업금액',
@@ -75,6 +76,12 @@ assert(
 assert(
   '결제완료 미수는 0',
   getJobOutstandingAmount(job({ paymentStatus: '결제완료', price: 138600, paidAmount: 0 })),
+  0
+);
+
+assert(
+  '카드결제 미수는 0',
+  getJobOutstandingAmount(job({ paymentStatus: '카드결제', price: 138600, paidAmount: 0 })),
   0
 );
 
@@ -118,6 +125,14 @@ const completedNew = resolvePrepaidOnJobUpdate(
 );
 assert('신규 결제완료(선불 안 씀): 별도수납 = 전액', completedNew.job.paidAmount, 80000);
 assert('신규 결제완료: 미수 0', getJobOutstandingAmount(completedNew.job), 0);
+
+const cardPaid = resolvePrepaidOnJobUpdate(
+  job({ paymentStatus: '결제대기', price: 0, paidAmount: 0 }),
+  job({ paymentStatus: '카드결제', price: 80000, usePrepaidForPayment: false }),
+  [client]
+);
+assert('신규 카드결제(선불 안 씀): 별도수납 = 전액', cardPaid.job.paidAmount, 80000);
+assert('신규 카드결제: 미수 0', getJobOutstandingAmount(cardPaid.job), 0);
 
 if (failed > 0) {
   console.error(`\n${failed} assertion(s) failed`);

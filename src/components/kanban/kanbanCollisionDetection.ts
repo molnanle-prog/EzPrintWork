@@ -5,6 +5,7 @@ import {
   rectIntersection,
 } from '@dnd-kit/core';
 import { Job } from '../../types';
+import { normalizeJobStatusKey } from '../../utils/kanbanLayout';
 
 export const COLUMN_DROPPABLE_PREFIX = 'column:';
 
@@ -90,8 +91,15 @@ export const resolveKanbanDropTarget = (
 
   const overJob = allJobs.find((j) => j.id === overId);
   if (!overJob) return null;
-  if (!allowedKeys.has(overJob.status)) return null;
-  return { newStatusKey: overJob.status, targetJobId: overId };
+  const normalizedOverStatus = normalizeJobStatusKey(overJob.status);
+  if (allowedKeys.has(normalizedOverStatus)) {
+    return { newStatusKey: normalizedOverStatus, targetJobId: overId };
+  }
+  const fallbackKey = visibleStatusKeys.includes('RECEIVED') ? 'RECEIVED' : visibleStatusKeys[0];
+  if (fallbackKey) {
+    return { newStatusKey: fallbackKey, targetJobId: overId };
+  }
+  return null;
 };
 
 /** 드롭 시 포인터 Y 기준으로 컬럼 내 삽입 위치(0-based) 계산 */

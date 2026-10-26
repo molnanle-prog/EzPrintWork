@@ -237,3 +237,61 @@ export function isCompletedStatusKey(statusKey: string): boolean {
 export function isLegacyCompletedDelivery(job: { status: string; completedAt?: string }): boolean {
   return job.status === 'DELIVERY' && !!job.completedAt;
 }
+
+const KOREAN_STATUS_LABEL_TO_KEY: Record<string, string> = {
+  견적: 'QUOTE',
+  접수: 'RECEIVED',
+  디자인: 'DESIGN',
+  시안: 'DESIGN',
+  인쇄: 'PRINTING',
+  출력: 'PRINTING',
+  후가공: 'POST_PROCESSING',
+  납품: 'DELIVERY',
+  출고: 'DELIVERY',
+  완료: 'COMPLETED',
+  납품완료: 'COMPLETED',
+  취소: 'CANCELED',
+  작업취소: 'CANCELED',
+};
+
+/**
+ * 작업 status 문자열 정규화:
+ * - 공백 제거 및 대소문자 보정
+ * - 한글 라벨('접수' 등)이 status에 직접 저장된 경우 영문 키('RECEIVED' 등)로 변환
+ * - 현재 정의된 단계의 label과 일치하면 해당 단계 key로 변환
+ */
+export function normalizeJobStatusKey(
+  rawStatus: string | undefined | null,
+  definitions?: JobStatusDefinition[]
+): string {
+  const trimmed = String(rawStatus ?? '').trim();
+  if (!trimmed) return 'RECEIVED';
+
+  if (KOREAN_STATUS_LABEL_TO_KEY[trimmed]) {
+    return KOREAN_STATUS_LABEL_TO_KEY[trimmed];
+  }
+
+  const upper = trimmed.toUpperCase();
+  if (
+    upper === 'QUOTE' ||
+    upper === 'RECEIVED' ||
+    upper === 'DESIGN' ||
+    upper === 'PRINTING' ||
+    upper === 'POST_PROCESSING' ||
+    upper === 'DELIVERY' ||
+    upper === 'COMPLETED' ||
+    upper === 'CANCELED'
+  ) {
+    return upper;
+  }
+
+  if (definitions && definitions.length > 0) {
+    const byKey = definitions.find((d) => d.key === trimmed || d.key.toUpperCase() === upper);
+    if (byKey) return byKey.key;
+    const byLabel = definitions.find((d) => d.label.trim() === trimmed);
+    if (byLabel) return byLabel.key;
+  }
+
+  return trimmed;
+}
+

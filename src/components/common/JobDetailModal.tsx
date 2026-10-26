@@ -8,7 +8,15 @@ import { JobNotebookModal } from './JobNotebookModal';
 import { notebookHasContent } from '../../utils/jobNotebook';
 import { X, Calendar, User, FileText, DollarSign, Printer, Tag, Layers, Scissors, Palette, FileBox, File, Phone, MessageCircle, FolderOpen, Copy, Check, CheckCircle2, History, Calculator, CreditCard, Trash2, Building2, Search, Settings, Plus, Package, ArrowRight, UserCheck, FileEdit, PlusCircle, Users, BookOpen, FileX, RotateCcw, Loader2, ChevronDown, NotebookPen, Palmtree } from 'lucide-react';
 import { ClientContactModal } from './ClientContactModal';
-import { openJobOrderPreviewWindow } from '../../utils/jobOrderPreviewStorage';
+import {
+  formatJobOrderPrintDateTime,
+  getJobOrderPreviewCacheKey,
+  getJobOrderPrintCount,
+  getJobOrderPrintLogs,
+  mergeLatestJobOrderPrintMeta,
+  openJobOrderPreviewWindow,
+  readCachedJobForPreview,
+} from '../../utils/jobOrderPreviewStorage';
 import { JobQuoteCalculatorPanel } from './JobQuoteCalculatorPanel';
 import { OrderTextAssistPanel } from './OrderTextAssistPanel';
 import { calcQuoteTotals } from '../../utils/quoteCalculator';
@@ -23,6 +31,8 @@ import { ackAssignmentNoticeIfNeeded, applyAssignmentNoticePatch } from '../../u
 import { buildStaffLeaveNotices, filterAssignableStaffIds, getStaffLeaveAssignment } from '../../utils/leaveOverlap';
 import { toast } from 'sonner';
 import { normalizeSizeLabel, sizesMatch } from '../../utils/sizeLabel';
+import { externalOrderAlertStage } from '../../utils/externalOrderAlert';
+import { orderVendorLabel } from '../../utils/clientKind';
 
 
 // --- Helper Components for History Timeline ---
@@ -44,6 +54,8 @@ function getIconForAction(action: string): React.ReactNode {
         case '작업 취소': return <FileX size={14} className="text-rose-500" />;
         case '작업 복구': return <RotateCcw size={14} className="text-emerald-500" />;
         case '하위 작업 상태 변경': return <CheckCircle2 size={14} className="text-emerald-500" />;
+        case '작업지시서 출력':
+        case '작업지시서 인쇄': return <Printer size={14} className="text-indigo-500" />;
         default: return <FileEdit size={14} className="text-orange-500" />;
     }
 }
@@ -254,6 +266,8 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   const [pastJobsDismissed, setPastJobsDismissed] = useState(false);
   const [statusDefinitions, setStatusDefinitions] = useState<JobStatusDefinition[]>([]);
   const [leaves, setLeaves] = useState<StaffLeave[]>([]);
+  const [orderVendors, setOrderVendors] = useState<Client[]>(() => db.getOrderVendorClients());
+  const [vendorDraft, setVendorDraft] = useState<{ name: string; phone: string } | null>(null);
   const [showQuoteCalculator, setShowQuoteCalculator] = useState(false);
   const [calcLineQuotes, setCalcLineQuotes] = useState<Record<string, number>>({});
   const [calcVatIncluded, setCalcVatIncluded] = useState(false);
@@ -262,6 +276,54 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
   const currentSpecs = currentSubJob.specs;
   const isBooklet = isBookletProductType(currentSubJob.type);
   const assignmentAckedRef = useRef<string | null>(null);
+  const jobOrderPrintLogs = useMemo(() => getJobOrderPrintLogs(editedJob, staff), [editedJob, staff]);
+  const jobOrderPrintCount = useMemo(() => getJobOrderPrintCount(editedJob, staff), [editedJob, staff]);
+  const latestJobOrderPrint = jobOrderPrintLogs[0] ?? null;
+
+  // 작업지시서 미리보기 팝업에서 인쇄 시, 열려 있는 모달의 출력 횟수·이력 즉시 동기화
+  useEffect(() => {
+    if (isNew || !editedJob.id) return;
+    const syncPrintMeta = () => {
+      const cached = readCachedJobForPreview(editedJob.id);
+      if (cached) {
+        db.syncJobOrderPrintFromPreviewCache(cached);
+      }
+      setEditedJob((prev) => {
+        const merged = mergeLatestJobOrderPrintMeta(prev);
+        const fromDb = db.getAllJobs().find((j) => j.id === prev.id);
+        const bestHistory =
+          fromDb && (fromDb.history?.length ?? 0) > (prev.history?.length ?? 0)
+            ? fromDb.history
+            : cached && (cached.history?.length ?? 0) > (prev.history?.length ?? 0)
+            ? cached.history
+            : prev.history;
+        if (
+          merged.jobOrderPrintCount === prev.jobOrderPrintCount &&
+          (merged.jobOrderPrintLogs?.length ?? 0) === (prev.jobOrderPrintLogs?.length ?? 0) &&
+          bestHistory === prev.history
+        ) {
+          return prev;
+        }
+        return {
+          ...merged,
+          history: bestHistory,
+        };
+      });
+    };
+    syncPrintMeta();
+    const unsubscribe = db.subscribe(syncPrintMeta);
+    const cacheKey = getJobOrderPreviewCacheKey(editedJob.id);
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === cacheKey) {
+        syncPrintMeta();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, [isNew, editedJob.id]);
 
   useEffect(() => {
     if (isNew || !job?.id || !currentUser) return;
@@ -284,11 +346,14 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
     setProcessingOptions(db.getProcessingDefinitions());
     setReceptionAssistEnabled(db.isReceptionAssistEnabled());
     setLeaves(db.getLeaves());
+    setOrderVendors(db.getOrderVendorClients());
+    void db.importLegacyOrderVendors();
     const unsubscribe = db.subscribe(() => {
         setProductDefs(db.getProductDefinitions());
         setProcessingOptions(db.getProcessingDefinitions());
         setReceptionAssistEnabled(db.isReceptionAssistEnabled());
         setLeaves(db.getLeaves());
+        setOrderVendors(db.getOrderVendorClients());
     });
     return () => unsubscribe();
   }, []);
@@ -764,6 +829,21 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
         finalJob.completedAt = undefined;
     }
 
+    // 취소 상태에서 일반 공정으로 변경하거나, 일반 진행 공정으로 상태 변경 시 취소/수동 숨김이 남아 칸반에서 증발하지 않도록 정리
+    if (
+        !isNew &&
+        finalJob.status !== 'CANCELED' &&
+        !finalJob.managementCardPinnedAt &&
+        (finalJob.boardHiddenReason === 'canceled' ||
+            (job.status !== finalJob.status &&
+                finalJob.status !== 'COMPLETED' &&
+                finalJob.boardHiddenAt))
+    ) {
+        (finalJob as any).boardHiddenAt = null;
+        (finalJob as any).boardHiddenBy = null;
+        (finalJob as any).boardHiddenReason = null;
+    }
+
     let openCompleteSmsAfterSave = false;
     if (isStatusChangedToDelivery && finalJob.clientPhone) {
         const smsConfig = db.getSmsConfig();
@@ -787,6 +867,11 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
     }
 
     try {
+      const mergedForSave = mergeLatestJobOrderPrintMeta(finalJob);
+      Object.assign(finalJob, {
+        jobOrderPrintCount: mergedForSave.jobOrderPrintCount,
+        jobOrderPrintLogs: mergedForSave.jobOrderPrintLogs,
+      });
       await onUpdate(finalJob);
       setEditedJob(finalJob);
       if (openCompleteSmsAfterSave) {
@@ -1186,7 +1271,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                             <div className="flex items-center gap-3 mb-2">
                                 <h2 className="text-2xl font-bold text-slate-800">{editedJob.title}</h2>
                                 <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200">{statusDefinitions.find(s => s.key === editedJob.status)?.label || editedJob.status}</span>
-                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : editedJob.paymentStatus === '후불결제' ? 'bg-amber-50 text-amber-800 border-amber-200' :'bg-red-50 text-red-700 border-red-200'}`}>{editedJob.paymentStatus}</span>
+                                <span className={`px-2.5 py-1 rounded-full text-xs font-bold border ${editedJob.paymentStatus === '카드결제' ? 'bg-violet-50 text-violet-700 border-violet-200' : editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : editedJob.paymentStatus === '후불결제' ? 'bg-amber-50 text-amber-800 border-amber-200' :'bg-red-50 text-red-700 border-red-200'}`}>{editedJob.paymentStatus}</span>
                             </div>
                             <div className="flex gap-6 items-center text-sm text-slate-600">
                                 <div className="flex items-center gap-1.5"><Building2 size={16} className="text-slate-400" /> <span className="font-bold">{editedJob.clientName}</span></div>
@@ -1427,7 +1512,27 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                           {openingQuote ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
                           <span className="hidden sm:inline">견적서 보기</span>
                         </button>
-                        <button onClick={() => openJobOrderPreviewWindow(editedJob)} className="px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                        <button
+                          onClick={() => openJobOrderPreviewWindow(editedJob)}
+                          className="px-4 py-2.5 bg-slate-100 text-slate-700 hover:bg-slate-200 rounded-lg font-bold transition-colors flex items-center gap-2 border border-slate-300"
+                          title={
+                            latestJobOrderPrint
+                              ? `최근 출력: ${latestJobOrderPrint.staffName} (${formatJobOrderPrintDateTime(latestJobOrderPrint.printedAt)}) · 총 ${jobOrderPrintCount}회 출력`
+                              : '작업지시서 인쇄 미리보기 (미출력 · 0회)'
+                          }
+                        >
+                          <Printer size={18} />
+                          <span className="hidden sm:inline">작업지시서 인쇄</span>
+                          <span
+                            className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-xs font-extrabold leading-none ${
+                              jobOrderPrintCount > 0
+                                ? 'bg-amber-500 text-white shadow-xs'
+                                : 'bg-slate-300 text-slate-700'
+                            }`}
+                          >
+                            {jobOrderPrintCount}
+                          </span>
+                        </button>
                         <button 
                             onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
                             disabled={!editedJob.clientPhone}
@@ -1439,16 +1544,31 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                         </button>
                     </div>
                     {!editedJob.managementCardPinnedAt && (
-                      <button
-                        onClick={async () => {
-                          await db.hideJobFromBoard(editedJob.id, currentUser?.id);
-                          onClose();
-                        }}
-                        className="px-4 py-2.5 bg-rose-600 text-white hover:bg-rose-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
-                        title="작업 내역은 남기고 보드(칸반/달력/상황판)에서만 숨깁니다"
-                      >
-                        보드에서 내리기
-                      </button>
+                      editedJob.boardHiddenAt ? (
+                        <button
+                          onClick={async () => {
+                            await db.unhideJobFromBoard(editedJob.id);
+                            toast.success('카드를 보드에 다시 표시했습니다.');
+                            onClose();
+                          }}
+                          className="px-4 py-2.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                          title="숨겨진 이 작업을 칸반/달력/상황판에 다시 표시합니다"
+                        >
+                          <RotateCcw size={16} />
+                          보드 다시 표시
+                        </button>
+                      ) : (
+                        <button
+                          onClick={async () => {
+                            await db.hideJobFromBoard(editedJob.id, currentUser?.id);
+                            onClose();
+                          }}
+                          className="px-4 py-2.5 bg-rose-600 text-white hover:bg-rose-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                          title="작업 내역은 남기고 보드(칸반/달력/상황판)에서만 숨깁니다"
+                        >
+                          보드에서 내리기
+                        </button>
+                      )
                     )}
                     <button onClick={onClose} className="px-5 py-2.5 text-slate-600 hover:bg-slate-100 rounded-lg font-medium transition-colors">닫기</button>
                     <button onClick={() => setViewMode('edit')} className="px-8 py-2.5 bg-blue-600 text-white rounded-lg font-bold hover:bg-blue-700 shadow-md transition-all flex items-center gap-2"><FileEdit size={18}/> 상세 정보 및 수정</button>
@@ -1787,7 +1907,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                               {editedJob.priceIncludesVat ? '부가세 포함' : '부가세 미포함'}
                             </span>
                           </div>
-                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : editedJob.paymentStatus === '후불결제' ? 'bg-amber-50 text-amber-800 border-amber-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="후불결제">후불결제</option><option value="결제완료">결제완료</option></select></div>
+                          <div className="flex items-center gap-1"><label className="text-[10px] font-bold text-slate-500 whitespace-nowrap flex items-center gap-0.5"><CreditCard size={10} /> 결제:</label><select value={editedJob.paymentStatus} onChange={(e) => setEditedJob({...editedJob, paymentStatus: e.target.value as PaymentStatus})} className={`flex-1 p-0.5 rounded text-[10px] font-bold border outline-none ${editedJob.paymentStatus === '카드결제' ? 'bg-violet-50 text-violet-700 border-violet-200' : editedJob.paymentStatus === '결제완료' ? 'bg-blue-50 text-blue-700 border-blue-200' : editedJob.paymentStatus === '일부결제' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : editedJob.paymentStatus === '후불결제' ? 'bg-amber-50 text-amber-800 border-amber-200' :'bg-red-50 text-red-700 border-red-200'}`}><option value="결제대기">결제대기</option><option value="일부결제">일부결제</option><option value="후불결제">후불결제</option><option value="카드결제">카드결제</option><option value="결제완료">결제완료</option></select></div>
                           {(() => {
                             const clients = db.getClients();
                             const boardJobs = db.getManagementCardJobs();
@@ -1833,12 +1953,13 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                   (editedJob.paymentStatus === '결제대기' ||
                                     editedJob.paymentStatus === '일부결제' ||
                                     editedJob.paymentStatus === '후불결제' ||
+                                    editedJob.paymentStatus === '카드결제' ||
                                     editedJob.paymentStatus === '결제완료') && (
                                     <p className="text-[9px] text-amber-600 dark:text-amber-400">
                                       선불 {Math.min(balanceBefore, breakdown.price).toLocaleString()}원 차감 예정
                                       {breakdown.prepaidShortfall > 0 &&
                                         ` · 부족 ${breakdown.prepaidShortfall.toLocaleString()}원`}
-                                      {editedJob.paymentStatus === '결제완료' &&
+                                      {(editedJob.paymentStatus === '결제완료' || editedJob.paymentStatus === '카드결제') &&
                                         breakdown.prepaidShortfall <= 0 &&
                                         ` · 차감 후 잔액 ${Math.max(0, balanceBefore - breakdown.price).toLocaleString()}원`}
                                     </p>
@@ -2004,6 +2125,35 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                                 {currentSubJob.completed ? '품목 완료됨' : '품목 진행중'}
                                 <span className="text-[10px] font-medium opacity-70">(클릭 토글)</span>
                             </button>
+                            <label
+                                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-bold border cursor-pointer select-none ${
+                                    currentSubJob.externalOrder
+                                        ? 'bg-amber-50 text-amber-800 border-amber-300'
+                                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                                }`}
+                                title="납기 7일 전, 3일 전, 납품일에 알림이 뜹니다. 주문전·주문완료는 그 날만 넘기고, 도착완료는 알림을 끝냅니다."
+                            >
+                                <input
+                                    type="checkbox"
+                                    checked={!!currentSubJob.externalOrder}
+                                    onChange={(e) => {
+                                        const on = e.target.checked;
+                                        updateCurrentSubJob(
+                                            on
+                                                ? { externalOrder: true }
+                                                : {
+                                                    externalOrder: false,
+                                                    externalOrderAckStage: undefined,
+                                                    externalOrderProgress: undefined,
+                                                    externalOrderArrivedAt: undefined,
+                                                    externalOrderVendorId: undefined,
+                                                }
+                                        );
+                                    }}
+                                    className="rounded border-amber-400 text-amber-600 w-3.5 h-3.5"
+                                />
+                                외부업체주문
+                            </label>
                             <button
                                 type="button"
                                 onClick={() => setIsNotebookOpen(true)}
@@ -2022,6 +2172,150 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                             </button>
                         </div>
                     </div>
+
+                    {currentSubJob.externalOrder && (
+                      <div className="mb-2.5 rounded-lg border border-amber-200 bg-amber-50 px-2 py-1.5">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="shrink-0 text-[11px] font-semibold text-amber-800">등록 확인</span>
+                          <select
+                            value={selectedStaffIds.length === 1 ? selectedStaffIds[0] : selectedStaffIds.length > 1 ? '__multi' : ''}
+                            onChange={(event) => {
+                              const nextId = event.target.value;
+                              if (nextId === '__multi') return;
+                              setEditedJob({
+                                ...editedJob,
+                                assignedStaffIds: nextId ? [nextId] : [],
+                                assignedStaffId: nextId || undefined,
+                              });
+                            }}
+                            className="h-7 w-[7.2rem] shrink-0 rounded-md border border-amber-300 bg-white px-1 text-[11px] font-semibold text-slate-700"
+                            title="담당자를 고르면 알림은 그 사람에게만, 담당자 미선택은 모두에게"
+                          >
+                            <option value="">담당자 미선택</option>
+                            {selectedStaffIds.length > 1 && (
+                              <option value="__multi">
+                                {availableStaff.filter((person) => selectedStaffIds.includes(person.id)).map((person) => person.name).join(', ')}
+                              </option>
+                            )}
+                            {availableStaff.map((person) => (
+                              <option key={person.id} value={person.id}>{person.name}</option>
+                            ))}
+                          </select>
+                          <div className="relative min-w-0 flex-1">
+                            <select
+                              value={currentSubJob.externalOrderVendorId || ''}
+                              onChange={(event) => {
+                                const next = event.target.value;
+                                if (next === '_ADD_') {
+                                  setVendorDraft({ name: '', phone: '' });
+                                  return;
+                                }
+                                setVendorDraft(null);
+                                updateCurrentSubJob({ externalOrderVendorId: next || undefined });
+                              }}
+                              className="h-7 w-full rounded-md border border-amber-300 bg-white px-1 text-[11px] font-semibold text-slate-700"
+                              title="주문업체. 여기서 추가하면 거래처 관리의 주문업체에도 등록됩니다."
+                            >
+                              <option value="">주문업체 선택</option>
+                              {(() => {
+                                const selectedId = currentSubJob.externalOrderVendorId || '';
+                                const choices = selectedId && !orderVendors.some((vendor) => vendor.id === selectedId)
+                                  ? [db.getClients().find((client) => client.id === selectedId), ...orderVendors].filter((client): client is Client => !!client)
+                                  : orderVendors;
+                                return choices.map((vendor) => (
+                                  <option key={vendor.id} value={vendor.id}>
+                                    {orderVendorLabel(vendor)}
+                                  </option>
+                                ));
+                              })()}
+                              <option value="_ADD_">+ 직접 추가</option>
+                            </select>
+                            {vendorDraft && (
+                              <div className="absolute z-30 left-0 top-8 w-56 rounded-lg border border-amber-300 bg-white p-2 shadow-lg">
+                                <input
+                                  value={vendorDraft.name}
+                                  onChange={(event) => setVendorDraft({ ...vendorDraft, name: event.target.value })}
+                                  placeholder="업체명"
+                                  className="mb-1 h-7 w-full rounded border border-slate-300 px-2 text-[11px]"
+                                />
+                                <input
+                                  value={vendorDraft.phone}
+                                  onChange={(event) => setVendorDraft({ ...vendorDraft, phone: event.target.value })}
+                                  placeholder="연락처"
+                                  className="mb-1 h-7 w-full rounded border border-slate-300 px-2 text-[11px]"
+                                />
+                                <div className="flex gap-1">
+                                  <button
+                                    type="button"
+                                    className="h-7 flex-1 rounded bg-amber-500 text-[11px] font-semibold text-slate-950"
+                                    onClick={() => {
+                                      void (async () => {
+                                        const saved = await db.addOrderVendorClient(vendorDraft);
+                                        if (!saved) return;
+                                        setOrderVendors(db.getOrderVendorClients());
+                                        updateCurrentSubJob({ externalOrderVendorId: saved.id });
+                                        setVendorDraft(null);
+                                      })();
+                                    }}
+                                  >
+                                    추가
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="h-7 flex-1 rounded bg-slate-200 text-[11px] font-semibold text-slate-700"
+                                    onClick={() => setVendorDraft(null)}
+                                  >
+                                    취소
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (currentSubJob.externalOrderProgress === 'ordered') {
+                                updateCurrentSubJob({
+                                  externalOrderProgress: undefined,
+                                  externalOrderAckStage: undefined,
+                                });
+                                return;
+                              }
+                              const stage = externalOrderAlertStage(editedJob, currentSubJob);
+                              updateCurrentSubJob({
+                                externalOrderProgress: 'ordered',
+                                ...(stage ? { externalOrderAckStage: stage } : {}),
+                              });
+                            }}
+                            className={`h-7 shrink-0 rounded-md px-2 text-[11px] font-semibold ${
+                              currentSubJob.externalOrderProgress === 'ordered'
+                                ? 'bg-blue-600 text-white'
+                                : 'bg-white text-blue-700 border border-blue-200'
+                            }`}
+                          >
+                            주문완료
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (currentSubJob.externalOrderArrivedAt) {
+                                updateCurrentSubJob({ externalOrderArrivedAt: undefined });
+                                return;
+                              }
+                              updateCurrentSubJob({ externalOrderArrivedAt: new Date().toISOString() });
+                            }}
+                            className={`h-7 shrink-0 rounded-md px-2 text-[11px] font-semibold ${
+                              currentSubJob.externalOrderArrivedAt
+                                ? 'bg-amber-500 text-slate-950'
+                                : 'bg-white text-amber-800 border border-amber-300'
+                            }`}
+                            title="한 번 더 누르면 도착완료가 해제되고 알림이 다시 뜹니다"
+                          >
+                            도착완료
+                          </button>
+                        </div>
+                      </div>
+                    )}
                     
                     {/* Product Type & Size (Always Visible) */}
                     <div className="mb-2.5">
@@ -2419,16 +2713,31 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
             {!isNew && (
               <>
                 {!editedJob.managementCardPinnedAt && (
-                  <button
-                    onClick={async () => {
-                      await db.hideJobFromBoard(editedJob.id, currentUser?.id);
-                      onClose();
-                    }}
-                    className="px-4 py-1.5 bg-rose-600 text-white hover:bg-rose-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
-                    title="작업 내역은 남기고 보드(칸반/달력/상황판)에서만 숨깁니다"
-                  >
-                    보드에서 내리기
-                  </button>
+                  editedJob.boardHiddenAt ? (
+                    <button
+                      onClick={async () => {
+                        await db.unhideJobFromBoard(editedJob.id);
+                        toast.success('카드를 보드에 다시 표시했습니다.');
+                        onClose();
+                      }}
+                      className="px-4 py-1.5 bg-emerald-600 text-white hover:bg-emerald-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                      title="숨겨진 이 작업을 칸반/달력/상황판에 다시 표시합니다"
+                    >
+                      <RotateCcw size={16} />
+                      보드 다시 표시
+                    </button>
+                  ) : (
+                    <button
+                      onClick={async () => {
+                        await db.hideJobFromBoard(editedJob.id, currentUser?.id);
+                        onClose();
+                      }}
+                      className="px-4 py-1.5 bg-rose-600 text-white hover:bg-rose-700 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                      title="작업 내역은 남기고 보드(칸반/달력/상황판)에서만 숨깁니다"
+                    >
+                      보드에서 내리기
+                    </button>
+                  )
                 )}
                 <button
                   onClick={handleOpenQuotePreview}
@@ -2439,7 +2748,27 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
                   {openingQuote ? <Loader2 size={18} className="animate-spin" /> : <FileText size={18} />}
                   <span className="hidden sm:inline">견적서 보기</span>
                 </button>
-                <button onClick={() => openJobOrderPreviewWindow(editedJob)} className="px-4 py-1.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm" title="작업지시서 인쇄 미리보기"><Printer size={18} /><span className="hidden sm:inline">작업지시서 인쇄</span></button>
+                <button
+                  onClick={() => openJobOrderPreviewWindow(editedJob)}
+                  className="px-4 py-1.5 bg-slate-700 text-white hover:bg-slate-800 rounded-lg font-bold transition-colors flex items-center gap-2 shadow-sm"
+                  title={
+                    latestJobOrderPrint
+                      ? `최근 출력: ${latestJobOrderPrint.staffName} (${formatJobOrderPrintDateTime(latestJobOrderPrint.printedAt)}) · 총 ${jobOrderPrintCount}회 출력`
+                      : '작업지시서 인쇄 미리보기 (미출력 · 0회)'
+                  }
+                >
+                  <Printer size={18} />
+                  <span className="hidden sm:inline">작업지시서 인쇄</span>
+                  <span
+                    className={`inline-flex items-center justify-center min-w-[20px] h-5 px-1.5 rounded-full text-xs font-extrabold leading-none ${
+                      jobOrderPrintCount > 0
+                        ? 'bg-amber-400 text-slate-900'
+                        : 'bg-slate-500 text-slate-100'
+                    }`}
+                  >
+                    {jobOrderPrintCount}
+                  </span>
+                </button>
                 <button 
                     onClick={() => editedJob.clientPhone ? setShowContactModal(true) : undefined} 
                     disabled={!editedJob.clientPhone}

@@ -13,7 +13,7 @@ interface QuoteDetailModalProps {
 }
 
 const PREMIUM_PAPERS = ['반누보', '랑데뷰', '아르떼', '휘라레', '띤또레또'];
-const STANDARD_PAPERS = ['스노우지(일반)', '아트지', '모조지'];
+const STANDARD_PAPERS = ['스노우지', '아트지', '모조지(미색)', '모조지(백색)'];
 
 const PREMIUM_WEIGHTS = ['190g', '210g', '240g', '250g', '310g'];
 const STANDARD_WEIGHTS = ['80g', '100g', '120g', '150g', '180g', '250g', '300g'];
@@ -28,7 +28,7 @@ const CLIENT_TIERS = [
 export const QuoteDetailModal: React.FC<QuoteDetailModalProps> = ({ quote, onClose, onUpdate }) => {
   const [editedQuote, setEditedQuote] = useState<Quote>({ ...quote });
   const [specs, setSpecs] = useState({
-      paperType: '스노우지(일반)',
+      paperType: '스노우지',
       paperWeight: '250g',
       size: 'A4 (210x297)',
       quantity: '500매',

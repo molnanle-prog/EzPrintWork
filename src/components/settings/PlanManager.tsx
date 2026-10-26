@@ -391,7 +391,7 @@ export const PlanManager: React.FC = () => {
               <div className="mb-4 p-3 rounded-lg border border-blue-200 bg-blue-50 dark:bg-blue-900/20 flex gap-2">
                 <CreditCard size={18} className="text-blue-600 shrink-0 mt-0.5" />
                 <div className="text-xs text-blue-800 dark:text-blue-200 leading-relaxed">
-                  <b>PRO 전환 시 결제가 필요합니다.</b> 아래 버튼을 누르면 코페이 카드 결제 화면으로 이동합니다.
+                  <b>PRO 전환 시 결제가 필요합니다.</b> 아래 버튼을 누르면 계좌 자동이체(CMS) 신청 화면으로 이동합니다.
                 </div>
               </div>
             )}

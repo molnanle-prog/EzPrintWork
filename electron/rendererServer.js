@@ -20,6 +20,66 @@ const MIME = {
     '.wasm': 'application/wasm',
 };
 
+/** 설치본 화면 주소. 실행마다 포트가 바뀌면 localStorage·로그인 세션이 사라진다. */
+const PREFERRED_RENDERER_PORT = 47321;
+const RENDERER_PORT_SPAN = 20;
+const PORT_FILE = 'renderer-origin-port.json';
+
+function readSavedPort(userDataDir) {
+    if (!userDataDir) return 0;
+    try {
+        const raw = fs.readFileSync(path.join(userDataDir, PORT_FILE), 'utf8');
+        const port = Number(JSON.parse(raw).port);
+        if (Number.isInteger(port) && port > 1024 && port < 65536) return port;
+    } catch {
+        /* 처음 실행 */
+    }
+    return 0;
+}
+
+function writeSavedPort(userDataDir, port) {
+    if (!userDataDir) return;
+    try {
+        fs.mkdirSync(userDataDir, { recursive: true });
+        fs.writeFileSync(path.join(userDataDir, PORT_FILE), JSON.stringify({ port }));
+    } catch (err) {
+        console.warn('[RendererServer] port save failed:', err);
+    }
+}
+
+function portCandidates(userDataDir) {
+    const ports = [];
+    const push = (port) => {
+        if (port && !ports.includes(port)) ports.push(port);
+    };
+    push(readSavedPort(userDataDir));
+    for (let i = 0; i < RENDERER_PORT_SPAN; i += 1) {
+        push(PREFERRED_RENDERER_PORT + i);
+    }
+    return ports;
+}
+
+function listenOnce(server, port) {
+    return new Promise((resolve, reject) => {
+        const onError = (err) => {
+            cleanup();
+            reject(err);
+        };
+        const onListening = () => {
+            cleanup();
+            const addr = server.address();
+            resolve(addr && addr.port ? addr.port : port);
+        };
+        const cleanup = () => {
+            server.removeListener('error', onError);
+            server.removeListener('listening', onListening);
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, '127.0.0.1');
+    });
+}
+
 class RendererServer {
     constructor() {
         this.server = null;
@@ -27,25 +87,27 @@ class RendererServer {
         this.root = '';
     }
 
-    ensure(distDir) {
+    async ensure(distDir, userDataDir) {
         if (this.server && this.port) {
-            return Promise.resolve(`http://localhost:${this.port}/`);
+            return `http://localhost:${this.port}/`;
         }
         this.root = path.resolve(distDir);
-        return new Promise((resolve, reject) => {
-            this.server = http.createServer((req, res) => this.handle(req, res));
-            this.server.once('error', reject);
-            // 밖 네트워크에는 안 열고, 설치한 그 PC 안에서만 화면을 연다
-            this.server.listen(0, '127.0.0.1', () => {
-                const addr = this.server.address();
-                this.port = addr && addr.port ? addr.port : 0;
-                if (!this.port) {
-                    reject(new Error('renderer server port unavailable'));
-                    return;
-                }
-                resolve(`http://localhost:${this.port}/`);
-            });
-        });
+        this.server = http.createServer((req, res) => this.handle(req, res));
+        let lastError = null;
+        for (const port of portCandidates(userDataDir)) {
+            try {
+                // 밖 네트워크에는 안 열고, 설치한 그 PC 안에서만 화면을 연다
+                this.port = await listenOnce(this.server, port);
+                writeSavedPort(userDataDir, this.port);
+                return `http://localhost:${this.port}/`;
+            } catch (err) {
+                lastError = err;
+                if (err && err.code !== 'EADDRINUSE') break;
+            }
+        }
+        this.server = null;
+        this.port = 0;
+        throw lastError || new Error('renderer server port unavailable');
     }
 
     handle(req, res) {

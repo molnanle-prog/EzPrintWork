@@ -196,6 +196,12 @@ export function markArchiveSetupDone() {
     }
 }
 
+export function clearArchiveSetupDone() {
+    if (typeof window !== 'undefined') {
+        localStorage.removeItem(ARCHIVE_SETUP_DONE_KEY);
+    }
+}
+
 export function isArchiveSetupDone(): boolean {
     if (typeof window === 'undefined') return true;
     return localStorage.getItem(ARCHIVE_SETUP_DONE_KEY) === 'true';

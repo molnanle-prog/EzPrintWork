@@ -279,7 +279,7 @@ export function cloneJobForReorder(job: Job, now = new Date().toISOString()): Jo
   return {
     ...job,
     id: '',
-    status: '접수',
+    status: 'RECEIVED',
     paymentStatus: '결제대기',
     prepaidAppliedAmount: 0,
     paidAmount: 0,
@@ -288,6 +288,14 @@ export function cloneJobForReorder(job: Job, now = new Date().toISOString()): Jo
     boardHiddenAt: null,
     boardHiddenBy: null,
     boardHiddenReason: null,
+    jobOrderPrintCount: 0,
+    jobOrderPrintLogs: [],
+    subJobs: (job.subJobs || []).map((item) => ({
+      ...item,
+      externalOrderAckStage: undefined,
+      externalOrderProgress: undefined,
+      externalOrderArrivedAt: undefined,
+    })),
     history: [
       {
         timestamp: now,

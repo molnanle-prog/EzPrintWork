@@ -40,6 +40,34 @@ const login = fs.readFileSync('src/pages/LoginPage.tsx', 'utf8');
 check('LoginPage claims on NAS', login.includes('claimStaffSessionOnNas'));
 check('LoginPage conflict check uses NAS', login.includes('presenceSessionService.readEntry'));
 
+const persistence = fs.readFileSync('src/utils/authPersistence.ts', 'utf8');
+check(
+  'desktop always uses local auth persistence',
+  persistence.includes('isDesktopElectron()') && persistence.includes('browserLocalPersistence')
+);
+
+const session = fs.readFileSync('src/utils/staffSession.ts', 'utf8');
+check('ghost sessions are not treated as remote kicks', session.includes('isSameMachineOrLegacyGhost'));
+
+const gasPing = fs.readFileSync('src/services/gasPresencePing.ts', 'utf8');
+check('presence offline ping exists', gasPing.includes("action: 'presenceOffline'"));
+check(
+  'GAS presence is once per session, not a 5-minute loop',
+  gasPing.includes('세션당 1회') && !gasPing.includes('setInterval')
+);
+
+const lifecycle = fs.readFileSync('src/utils/appSessionLifecycle.ts', 'utf8');
+check(
+  'session end releases NAS before tenant report',
+  lifecycle.indexOf('releaseStaffSessionOnNas') < lifecycle.indexOf('reportTenantSessionEnd')
+);
+
+const presenceSvc = fs.readFileSync('src/services/presenceSessionService.ts', 'utf8');
+check(
+  'logout/close clears NAS session claim',
+  /else if \(!opts\.online\)[\s\S]{0,240}activeSessionId = ''/.test(presenceSvc)
+);
+
 const gateway = fs.readFileSync('electron/localGateway.js', 'utf8');
 check('gateway GET /api/v1/presence', gateway.includes("pathname === '/api/v1/presence'") && gateway.includes("req.method === 'GET'"));
 check('gateway POST /api/v1/presence', gateway.includes("pathname === '/api/v1/presence'") && gateway.includes("req.method === 'POST'"));

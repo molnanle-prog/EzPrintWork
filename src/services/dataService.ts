@@ -1,10 +1,12 @@
 import { 
     Job, Staff, Quote, AdminInstruction, JobTypeDefinition, CompanyInfo, 
-    JobStatusDefinition, KanbanLayoutConfig, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage,
-    JoinRequest, ProductProcessingSets, QuoteTemplateSettings, SmsPrepaidState
+    JobStatusDefinition, KanbanLayoutConfig, Tenant, Client, PaperStock, StaffLeave, PricingConfig, ChatMessage, CalendarMark,
+    JoinRequest, ProductProcessingSets, QuoteTemplateSettings, SmsPrepaidState, ExternalOrderVendor, JobOrderPrintLog, JobHistoryLog
 } from '../types';
-import { normalizeKanbanLayoutConfig, normalizeStatusDefinition } from '../utils/kanbanLayout';
+import { resolveHistoryActorName } from '../utils/staffMatch';
+import { normalizeKanbanLayoutConfig, normalizeStatusDefinition, normalizeJobStatusKey } from '../utils/kanbanLayout';
 import { dedupeSizeLabels, normalizeSizeLabel, sizesMatch } from '../utils/sizeLabel';
+import { normalizePaperTypeList } from '../utils/paperTypeNames';
 import { toast } from 'sonner';
 import { 
     collection, doc, setDoc, deleteDoc, onSnapshot, writeBatch, runTransaction,
@@ -21,11 +23,13 @@ import {
     mergeChatMessages,
     mergeChatReads,
     chatReadsEqual,
+    chatMessagesEqual,
     isChatReadIdNewer,
     HOT_CHAT_LIMIT,
     type ChatReadMap,
 } from './chatMirrorService';
 import { presenceSessionService } from './presenceSessionService';
+import { calendarMarkService } from './calendarMarkService';
 import { localDbBridge } from './localDbBridge';
 import {
     auxCollectionMirrorService,
@@ -70,6 +74,7 @@ import {
 import type { SituationMirrorPayload } from './situationMirrorService';
 import {
     applyArchiveRootFromSettings,
+    clearArchiveSetupDone,
     clearCompanyArchiveRootOverride,
     getArchiveRootPath,
     getEffectiveArchiveRootPath,
@@ -77,18 +82,20 @@ import {
     isDriveLetterPath,
     isNasOrNetworkPath,
     isUncPath,
+    pendingArchiveKey,
     resolveArchivePathToUnc,
     setArchiveRootPath,
     setCompanyArchiveRootOverride,
     TENANT_ARCHIVE_ROOT_SETTINGS_KEY,
 } from '../utils/archiveStorage';
 import {
+    clearLastKnownArchiveRootPath,
     readLastKnownArchiveRootPath,
     readLastKnownTenantPlan,
     saveLastKnownArchiveRootPath,
 } from '../utils/lastKnownTenantPlan';
 import { buildQuoteFromJob, findQuoteForJob, isSameQuotePayload } from '../utils/quoteJobSync';
-import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances, normalizePrepaidBalance, appendPrepaidLedger, removeAndRecalculatePrepaidLedger, canDeletePrepaidLedgerEntry } from '../utils/prepaidBalance';
+import { resolvePrepaidOnJobUpdate, sumClientPrepaidBalances, normalizePrepaidBalance, appendPrepaidLedger, removeAndRecalculatePrepaidLedger, canDeletePrepaidLedgerEntry, isSettledPaymentStatus, SETTLED_PAYMENT_STATUSES } from '../utils/prepaidBalance';
 import { isManagementCardExpired, shouldShowInManagementCards } from '../utils/managementCard';
 import { isStandaloneDocumentPreviewRoute } from '../utils/documentPreviewRoutes';
 import { formatJobNumber } from '../utils/jobNumber';
@@ -230,10 +237,7 @@ export const calculateEstimate = (specs: any, config: PricingConfig): EstimateRe
     };
 };
 
-export const getHolidayName = (date: Date): string | null => {
-    // Basic holiday implementation
-    return null; 
-};
+export { getHolidayName } from '../utils/koreanHolidays';
 
 const INITIAL_PROCESSING_DEFINITIONS = [
     '유광코팅', '무광코팅', '오시', '미싱', '타공', '귀도리', '접지', '무선제본', '중철제본', '스프링제본', 
@@ -262,14 +266,18 @@ const KANBAN_RECENT_PAID_COMPLETED_DAYS = 4;
 /** Firestore 운영 데이터는 최근 1년(365일)만 유지 */
 const HOT_WINDOW_DAYS = 365;
 const LIVE_MIRROR_PUSH_DEBOUNCE_MS = 250;
-const APP_MIRROR_POLL_MS = 1000;
+/** 전체 작업 파일 재조정. 카드 이동은 board-live가 먼저 반영하고, 이 주기는 빠짐 확인용이다. */
+const APP_MIRROR_POLL_MS = 20_000;
+const APP_MIRROR_POLL_HIDDEN_MS = 60_000;
+/** 칸 이동 신호. 창이 뒤에 있어도 읽는다. 파일은 바뀐 작업만 담는다. */
+const BOARD_LIVE_POLL_MS = 300;
 const WEB_MIRROR_POLL_MS = 2000;
 /** 채팅 NAS 쓰기 디바운스 — 거의 즉시 flush */
 const CHAT_PERSIST_DEBOUNCE_MS = 40;
-/** 채팅 전용 폴링 (업무 NAS와 분리 — 메신저 체감 속도) */
-const CHAT_POLL_MS_IDLE = 700;
-const CHAT_POLL_MS_ACTIVE = 280;
-const CHAT_POLL_MS_WEB = 600;
+/** 새 글 신호. 창이 뒤에 있어도 읽는다. 파일은 최근 글만 담는다. */
+const CHAT_LIVE_POLL_MS = 300;
+/** 채팅 전체 파일 재조정. 새 글은 chat-live가 먼저 반영한다. */
+const CHAT_RECONCILE_MS = 3_000;
 
 /** 표지/내지 통합 평량(예: 표지150g/내지80g) — 표지·내지 분리 UI 이후 제외 */
 const COMBINED_PAPER_WEIGHT_PATTERN = /\/|표지.*내지|내지.*표지/i;
@@ -306,14 +314,14 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     {
         name: '전단지/리플렛',
         sizes: ['A4(210x297)', 'A5(148x210)', 'A3(297x420)', 'B5(182x257)', 'B4(257x364)', '3단접지 규격', '규격외'],
-        paperTypes: ['아트지', '스노우지', '모조지', '랑데뷰', '반누보', '수입지'],
+        paperTypes: ['아트지', '스노우지', '모조지(미색)', '모조지(백색)', '랑데뷰', '반누보', '수입지'],
         paperWeights: ['80g', '100g', '120g', '150g', '180g', '220g', '250g'],
         processings: ['유광코팅', '무광코팅', '오시', '미싱', '접지', '금박', '은박']
     },
     {
         name: '카탈로그',
         sizes: ['A4(세로)', 'A4(가로)', 'A5(세로)', 'B5(세로)', '190x260mm', '규격외'],
-        paperTypes: ['아트지', '스노우지', '랑데뷰', '반누보', '몽블랑', '모조지'],
+        paperTypes: ['아트지', '스노우지', '랑데뷰', '반누보', '몽블랑', '모조지(미색)', '모조지(백색)'],
         paperWeights: [...BOOKLET_SINGLE_PAPER_WEIGHTS],
         processings: ['접지', '중철제본', '스프링제본', '오시'],
         processingsCover: ['유광코팅', '무광코팅', '금박', '은박', '에폭시'],
@@ -322,7 +330,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     {
         name: '책자',
         sizes: ['A4(210x297)', 'B5(182x257)', 'A5(148x210)', '190x260mm(사륙배판)', '규격외'],
-        paperTypes: ['모조지(백색)', '모조지(미색)', '아트지', '스노우지', '표지용 레자크지', '표지용 특수지'],
+        paperTypes: ['모조지(백색)', '모조지(미색)', '아트지', '스노우지', '레자크지(표지)', '표지용 특수지'],
         paperWeights: [...BOOKLET_SINGLE_PAPER_WEIGHTS],
         processings: ['무선제본', '중철제본', '스프링제본', '접지', '오시'],
         processingsCover: ['유광코팅', '무광코팅', '금박', '은박', '에폭시', '형압'],
@@ -331,7 +339,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     {
         name: '복사',
         sizes: ['A4(210x297)', 'A3(297x420)', 'B4(257x364)', 'B5(182x257)', 'A5(148x210)', '규격외'],
-        paperTypes: ['복사용지(백색)', '모조지', '아트지', '스노우지', '색지', '재생지', '표지용 아트지'],
+        paperTypes: ['복사용지(백색)', '모조지(미색)', '모조지(백색)', '아트지', '스노우지', '색지', '재생지', '표지용 아트지'],
         paperWeights: [...BOOKLET_SINGLE_PAPER_WEIGHTS],
         processings: ['중철제본', '스프링제본', '무선제본', '스테이플', '펀칭'],
         processingsCover: ['유광코팅', '무광코팅'],
@@ -340,7 +348,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     {
         name: '봉투',
         sizes: ['소봉투(220x105)', '대봉투(A4용/330x245)', '중봉투(260x190)', '자켓봉투', '규격외'],
-        paperTypes: ['모조지(백색)', '크라프트지(갈색)', '체크레자', '줄레자', '밍크지', '특수레자'],
+        paperTypes: ['모조지(백색)', '크라프트지(갈색)', '레자크지(체크)', '레자크지(줄)', '밍크지', '레자크지(특수)'],
         paperWeights: ['100g', '120g', '150g', '180g'],
         processings: ['양면테이프', '넘버링']
     },
@@ -367,7 +375,7 @@ const INITIAL_PRODUCT_DEFINITIONS: JobTypeDefinition[] = [
     {
         name: '쇼핑백/종이가방',
         sizes: ['소형(220x120x250)', '중형(320x110x330)', '대형(440x120x400)', '규격외'],
-        paperTypes: ['스노우지', '아트지', '모조지', '크라프트지', '수입지'],
+        paperTypes: ['스노우지', '아트지', '모조지(미색)', '모조지(백색)', '크라프트지', '수입지'],
         paperWeights: ['120g', '150g', '180g', '200g', '250g'],
         processings: ['유광코팅', '무광코팅', '금박', '은박', '형압']
     }
@@ -599,6 +607,7 @@ export class DataService {
         'instructions': [],
         'messages': [],
         'leaves': [],
+        'calendarMarks': [],
         'papers': [],
         'settings': [{
             productDefinitions: { definitions: INITIAL_PRODUCT_DEFINITIONS },
@@ -676,9 +685,16 @@ export class DataService {
     private webMirrorNextPollAt = 0;
     private lastNasArchiveAt: string | null = null;
     private nasPollTimer: ReturnType<typeof setInterval> | null = null;
+    private boardLiveTimer: ReturnType<typeof setInterval> | null = null;
+    private boardLiveInFlight = false;
+    private lastBoardLiveSeq = 0;
+    private lastHiddenFullPollAt = 0;
+    /** 전체 작업 파일을 읽기 전에 다른 PC로 보낼 카드 */
+    private pendingBoardLive = new Map<string, Job>();
     private archivedJobs: Job[] = [];
     private archiveLoaded = false;
     private archiveInitializing = false;
+    private calendarMarksInFlight = false;
     /** NAS/Storage 미러에서 받은 회사명 — settings.companyInfo 미동기화 시 견적서 공급자 폴백 */
     private mirrorCompanyName: string | null = null;
     /** 삭제된 job ID — 미러·다른 PC·웹에 전파해 중복 복원 방지 */
@@ -692,6 +708,16 @@ export class DataService {
         leaves: new Map(),
         instructions: new Map(),
     };
+    /** 다른 회사 폴더에 묶여 있으면 그 폴더에는 쓰지 않는다 */
+    private foreignArchiveBlocked = false;
+    /** 데이터가 있는 폴더를 연결한 직후, 그 파일을 통째로 다시 쓰지 않는다 */
+    private suppressMirrorOverwrite = false;
+    /** 지금 메모리의 작업·거래처를 읽어 온 폴더 */
+    private boundArchivePathKey: string | null = null;
+    /** 이 폴더에 연결한 뒤 이 PC에서 직접 저장한 작업·거래처 */
+    private sessionJobIds = new Set<string>();
+    private sessionClientIds = new Set<string>();
+    private foreignArchiveNotified = false;
     /** 회사 NAS 헬스 — 실패 시 전원 동일하게 쓰기 차단 */
     private companyNasHealthy: boolean | null = null;
     private companyNasHealthError: string | null = null;
@@ -705,7 +731,6 @@ export class DataService {
     /** 짧은 NAS 끊김 유예 — 이 시간 지나야 전원 작업 잠금 */
     private static readonly NAS_GRACE_MS = 45_000;
     private static readonly NAS_MONITOR_MS = 12_000;
-    private static readonly LOCAL_NAS_PROBE_MS = 3_000;
     private nasUnhealthySince: number | null = null;
     private nasHealthMonitorTimer: ReturnType<typeof setInterval> | null = null;
     /** local = PC→NAS 직접, gateway = 허브 PC LAN(같은 NAS 파일) */
@@ -719,7 +744,9 @@ export class DataService {
     /** 채팅 전용 폴링 (상황판 폴링과 분리) */
     private chatPollTimer: ReturnType<typeof setTimeout> | null = null;
     private chatPollInFlight = false;
-    private chatPollBoost = false;
+    private chatLiveTimer: ReturnType<typeof setInterval> | null = null;
+    private chatLiveInFlight = false;
+    private lastChatLiveSeq = 0;
     /** 시작 시 히스토리 1회 로드 완료 여부 */
     private chatHistoryReady = false;
     private chatHydratePromise: Promise<void> | null = null;
@@ -868,8 +895,197 @@ export class DataService {
         };
     }
 
+    /** 다른 회사 폴더 연결을 풀 때 설정 화면에서 호출. NAS 파일은 건드리지 않는다. */
+    async releaseForeignArchiveBinding(): Promise<boolean> {
+        return this.detachForeignArchiveIfNeeded();
+    }
+
+    /**
+     * 이미 다른 회사 폴더로 저장된 경우, 그 작업은 읽지 않고 이 회사 경로만 해제한다.
+     * NAS 파일은 지우거나 덮어쓰지 않는다.
+     */
+    private async detachForeignArchiveIfNeeded(): Promise<boolean> {
+        if (!this.tenantId || !this.getIsElectron()) return false;
+        const root = getEffectiveArchiveRootPath();
+        if (!root) return false;
+        const foreign = await jobArchiveService.findForeignFolderOwner(root, this.tenantId);
+        if (!foreign) return false;
+
+        this.foreignArchiveBlocked = true;
+        this.operationalJobs = [];
+        this.kanbanCompletedJobs = [];
+        this.supplementaryJobs = [];
+        this.rebuildMergedJobs();
+        this.data['clients'] = [];
+
+        setArchiveRootPath(null);
+        clearCompanyArchiveRootOverride();
+        clearLastKnownArchiveRootPath(this.tenantId);
+        clearArchiveSetupDone();
+        try {
+            localStorage.removeItem(pendingArchiveKey(this.tenantId));
+        } catch {
+            /* ignore */
+        }
+        jobArchiveService.clearFolderOwnerCache();
+
+        const settings = { ...this.getSettingsObj() };
+        delete settings[TENANT_ARCHIVE_ROOT_SETTINGS_KEY];
+        this.data['settings'] = [settings];
+        this.lastAppliedArchiveRootPath = null;
+        this.pendingArchiveReconnect = false;
+        this.pendingArchiveReconnectPath = null;
+
+        if (this.isLocalPrimaryMode()) {
+            await localDbBridge.saveJobs(this.tenantId, []).catch((err) =>
+                console.warn('[DataService] clear copied jobs failed:', err)
+            );
+            await localDbBridge.saveClients(this.tenantId, []).catch((err) =>
+                console.warn('[DataService] clear copied clients failed:', err)
+            );
+            await localDbBridge.saveSettings(this.tenantId, settings).catch((err) =>
+                console.warn('[DataService] clear foreign archive path locally failed:', err)
+            );
+        }
+
+        try {
+            await setDoc(
+                doc(firestore, 'tenants', this.tenantId, 'settings', 'main'),
+                { [TENANT_ARCHIVE_ROOT_SETTINGS_KEY]: deleteField() },
+                { merge: true }
+            );
+        } catch (e) {
+            console.warn('[DataService] clear foreign archive path failed:', e);
+        }
+
+        this.notify();
+        if (!this.foreignArchiveNotified) {
+            this.foreignArchiveNotified = true;
+            toast.error(
+                '저장 폴더가 다른 회사 것입니다. 그 작업은 불러오지 않았습니다. 비어 있는 폴더를 다시 지정해 주세요.',
+                { duration: 12000 }
+            );
+        }
+        return true;
+    }
+
+    /**
+     * 지금 회사 폴더 안 작업·거래처만 화면에 올린다.
+     * 폴더에 없으면 화면에서도 뺀다. 이 PC에만 남아 있던 작업은 폴더에 다시 쓰지 않는다.
+     * 폴더를 읽지 못하면 화면을 비우지 않는다.
+     */
+    async adoptOperationalDataFromCurrentFolder(): Promise<boolean> {
+        if (!this.tenantId || !this.getIsElectron()) return false;
+        const root = getEffectiveArchiveRootPath();
+        if (!root) return false;
+
+        const inspection = await jobArchiveService.inspectArchiveFolder(root, this.tenantId);
+        if (inspection.foreign) {
+            await this.detachForeignArchiveIfNeeded();
+            return true;
+        }
+        if (!inspection.readable) {
+            this.suppressMirrorOverwrite = true;
+            console.warn('[DataService] archive folder unreadable — kept local data, blocked overwrite');
+            return false;
+        }
+
+        this.archivedJobs = [];
+        this.applyImportedJobs(inspection.jobs);
+        this.data['clients'] = inspection.clients;
+        jobArchiveService.clearPendingJobs(this.tenantId);
+        this.boundArchivePathKey = this.archivePathKey(root);
+        this.sessionJobIds.clear();
+        this.sessionClientIds.clear();
+        this.suppressMirrorOverwrite = inspection.hasContent;
+
+        if (this.isLocalPrimaryMode()) {
+            await localDbBridge.saveJobs(this.tenantId, this.getAllJobs()).catch((err) =>
+                console.warn('[DataService] save folder jobs locally failed:', err)
+            );
+            await localDbBridge.saveClients(this.tenantId, inspection.clients).catch((err) =>
+                console.warn('[DataService] save folder clients locally failed:', err)
+            );
+        }
+        this.localOperationalReady = true;
+        this.notify();
+        return true;
+    }
+
+    private archivePathKey(path: string | null | undefined): string {
+        return String(path || '').replace(/[\\/]+$/, '').toLowerCase();
+    }
+
+    private noteSessionEdit(col: string, id: string) {
+        const key = String(id || '').trim();
+        if (!key) return;
+        if (col === 'jobs') this.sessionJobIds.add(key);
+        if (col === 'clients') this.sessionClientIds.add(key);
+    }
+
+    /**
+     * 종료 저장 직전. 폴더가 비어 있는데 다른 폴더에서 읽어 둔 작업이 남아 있으면 그 읽기는 버린다.
+     * 이 폴더에서 직접 저장한 작업은 남기고, 정상 종료 저장은 그대로 한다.
+     */
+    private async discardStaleSnapshotWhenFolderEmpty(): Promise<void> {
+        if (!this.tenantId || !this.getIsElectron()) return;
+        const root = getEffectiveArchiveRootPath();
+        if (!root) return;
+        const inspection = await jobArchiveService.inspectArchiveFolder(root, this.tenantId);
+        if (inspection.foreign || !inspection.readable || inspection.hasContent) return;
+
+        const keptJobs = this.getAllJobs().filter((job) => job?.id && this.sessionJobIds.has(job.id));
+        const currentClients = (this.data['clients'] || []) as Client[];
+        const keptClients = currentClients.filter((client) => client?.id && this.sessionClientIds.has(client.id));
+        const stale =
+            keptJobs.length !== this.getAllJobs().length ||
+            keptClients.length !== currentClients.length;
+        if (!stale) {
+            this.boundArchivePathKey = this.archivePathKey(root);
+            return;
+        }
+
+        this.archivedJobs = [];
+        this.applyImportedJobs(keptJobs);
+        this.data['clients'] = keptClients;
+        jobArchiveService.clearPendingJobs(this.tenantId);
+        this.boundArchivePathKey = this.archivePathKey(root);
+        await this.restoreOwnCompanyInfoFromCloud();
+        if (this.isLocalPrimaryMode()) {
+            await localDbBridge.saveJobs(this.tenantId, this.getAllJobs()).catch((err) =>
+                console.warn('[DataService] clear stale jobs failed:', err)
+            );
+            await localDbBridge.saveClients(this.tenantId, keptClients).catch((err) =>
+                console.warn('[DataService] clear stale clients failed:', err)
+            );
+        }
+        this.notify();
+    }
+
+    /** 다른 폴더에서 올라온 회사 정보 대신, 이 계정에 저장된 회사 정보를 되돌린다. */
+    private async restoreOwnCompanyInfoFromCloud(): Promise<void> {
+        if (!this.tenantId) return;
+        try {
+            const snap = await getDoc(doc(firestore, 'tenants', this.tenantId, 'settings', 'companyInfo'));
+            if (!snap.exists()) return;
+            const data = snap.data() as Record<string, unknown>;
+            const nested = data.companyInfo;
+            const info =
+                nested && typeof nested === 'object'
+                    ? (nested as CompanyInfo)
+                    : (data as unknown as CompanyInfo);
+            const settings = this.getSettingsObj();
+            settings.companyInfo = { ...info };
+            this.data['settings'] = [settings];
+            if (info.name?.trim()) this.mirrorCompanyName = info.name.trim();
+        } catch (e) {
+            console.warn('[DataService] restore own company info skipped:', e);
+        }
+    }
+
     /** 회사 NAS 경로가 지정된 Electron에서만 — 미확인/실패·재연결 대기 시 운영 쓰기 금지 */
     private shouldBlockOperationalNasWrite(): boolean {
+        if (this.foreignArchiveBlocked) return true;
         if (!this.getIsElectron()) return false;
         const companyPath = getTenantArchiveRootFromSettings(this.getSettingsObj());
         if (!companyPath?.trim() && !getEffectiveArchiveRootPath()) return false;
@@ -946,7 +1162,10 @@ export class DataService {
             void this.setHubRemoteTunnelEnabled(false);
         }
         if (wasLocked && !this.pendingArchiveReconnect) {
-            void this.pollNasOperationalSync();
+            void (async () => {
+                if (channel === 'local') await this.adoptOperationalDataFromCurrentFolder();
+                await this.pollNasOperationalSync();
+            })();
             this.chatHistoryReady = false;
             this.chatHydratePromise = null;
             this.chatReads = {};
@@ -957,7 +1176,10 @@ export class DataService {
                     : '회사 NAS 연결이 복구되었습니다.'
             );
         } else if (wasOutside && channel === 'local') {
-            void this.pollNasOperationalSync();
+            void (async () => {
+                await this.adoptOperationalDataFromCurrentFolder();
+                await this.pollNasOperationalSync();
+            })();
         }
     }
 
@@ -1037,15 +1259,18 @@ export class DataService {
         const skipLocalNasProbe = this.outsideViewerMode && !looksLikePublishedHub;
 
         // 1) 매장 허브 PC → NAS 직접. 밖 노트북은 UNC를 건드리지 않음(지연·오탐 방지)
+        let localFail = '';
         if (!skipLocalNasProbe) {
             try {
-                const localOk = await this.probeLocalCompanyNas();
-                if (localOk) {
+                const localProbe = await this.probeLocalCompanyNas();
+                if (localProbe.ok) {
                     this.markCompanyNasOk('local', path);
                     return true;
                 }
+                localFail = localProbe.error || '회사 폴더를 열지 못했습니다.';
             } catch (e) {
                 console.warn('[DataService] local NAS probe failed:', e);
+                localFail = '회사 폴더 확인 중 오류가 났습니다.';
             }
         }
 
@@ -1073,6 +1298,11 @@ export class DataService {
                     console.warn(
                         '[DataService] LAN gateway reachable but archiveRoot ≠ company path — ignored'
                     );
+                    if (!localFail) {
+                        localFail = '매장 PC에는 연결됐지만, 그 PC가 연 폴더가 회사 폴더와 다릅니다.';
+                    }
+                } else if (!localFail) {
+                    localFail = '매장 안 다른 PC에도 연결되지 않았습니다. 그 PC가 꺼져 있거나 네트워크가 불안정할 수 있습니다.';
                 }
             } catch (e) {
                 console.warn('[DataService] LAN gateway probe failed:', e);
@@ -1100,29 +1330,38 @@ export class DataService {
             return false;
         }
 
-        return this.markCompanyNasFail(
-            gw.length > 0
-                ? 'NAS 직접 연결과 회사경로 게이트웨이 모두 실패했습니다.'
-                : 'NAS 폴더 접근 실패 (게이트웨이 URL 없음)',
-            path
-        );
+        const fallback = gw.length > 0
+            ? '회사 폴더와 매장 PC 연결이 모두 확인되지 않았습니다.'
+            : '회사 폴더를 열지 못했고, 연결할 매장 PC 주소도 없습니다.';
+        return this.markCompanyNasFail(localFail || fallback, path);
     }
 
-    private async probeLocalCompanyNas(): Promise<boolean> {
-        if (!this.tenantId) return false;
+    private async probeLocalCompanyNas(): Promise<{ ok: boolean; error?: string }> {
+        if (!this.tenantId) return { ok: false, error: '회사 정보가 없어 폴더를 열지 못했습니다.' };
+        const root = getEffectiveArchiveRootPath()?.trim().replace(/[\\/]$/, '') || '';
+        if (!root || !window.electron?.checkDirectoryStatus) {
+            return { ok: false, error: '회사 폴더 경로가 없습니다.' };
+        }
+        const FOLDER_OPEN_MS = 20_000;
         try {
-            const probe = await Promise.race([
-                jobArchiveService.ensureArchiveFolderReady(this.tenantId),
-                new Promise<{ ok: false }>((resolve) => {
-                    window.setTimeout(
-                        () => resolve({ ok: false }),
-                        DataService.LOCAL_NAS_PROBE_MS
-                    );
+            const status = await Promise.race([
+                window.electron.checkDirectoryStatus(root),
+                new Promise<null>((resolve) => {
+                    window.setTimeout(() => resolve(null), FOLDER_OPEN_MS);
                 }),
             ]);
-            return !!probe?.ok;
-        } catch {
-            return false;
+            if (status === null) {
+                if (this.companyNasHealthy === true) return { ok: true };
+                return {
+                    ok: false,
+                    error: '회사 폴더 확인이 20초를 넘겼습니다. 탐색기에서 열리는 폴더라면 한 번 더 연결해 주세요.',
+                };
+            }
+            if (status.success) return { ok: true };
+            return { ok: false, error: status.error || '회사 폴더를 열지 못했습니다.' };
+        } catch (e) {
+            const message = e instanceof Error ? e.message : '';
+            return { ok: false, error: message || '회사 폴더 확인 중 오류가 났습니다.' };
         }
     }
 
@@ -1571,6 +1810,7 @@ export class DataService {
         this.archivedJobs = [];
         this.archiveLoaded = false;
         this.archiveInitializing = false;
+        this.data['calendarMarks'] = [];
         this.stopSyncPulse();
         this.startSyncing();
     }
@@ -1630,6 +1870,7 @@ export class DataService {
         this.nasUnhealthySince = null;
         this.companyNasChannel = null;
         clearCompanyArchiveRootOverride();
+        this.data['calendarMarks'] = [];
         this.rebuildMergedJobs();
         this.notify();
     }
@@ -1996,7 +2237,7 @@ export class DataService {
             return;
         }
 
-        if (job.paymentStatus === '결제완료') {
+        if (isSettledPaymentStatus(job.paymentStatus)) {
             const completedAt = job.completedAt ? new Date(job.completedAt) : new Date(job.createdAt);
             const cutoff = new Date();
             cutoff.setDate(cutoff.getDate() - KANBAN_RECENT_PAID_COMPLETED_DAYS);
@@ -2026,13 +2267,14 @@ export class DataService {
         void this.restoreActiveLazyPulls();
         if (this.paymentJobsWanted) void this.ensurePaymentJobsSync();
         void this.maybeBootstrapQuotes();
-        void this.pushLiveMirrors();
+        if (!this.suppressMirrorOverwrite) void this.pushLiveMirrors();
         this.notify();
     }
 
     /** NAS + Storage 즉시 미러 — Firestore 읽기 없음 */
     private scheduleLiveMirrorPush() {
         if (!this.tenantId) return;
+        this.suppressMirrorOverwrite = false;
         if (this.liveMirrorPushTimer) clearTimeout(this.liveMirrorPushTimer);
         this.liveMirrorPushTimer = setTimeout(() => {
             this.liveMirrorPushTimer = null;
@@ -2040,47 +2282,139 @@ export class DataService {
         }, LIVE_MIRROR_PUSH_DEBOUNCE_MS);
     }
 
+    /**
+     * 상품·후가공 저장은 작업 아카이브를 다시 읽거나 쓰지 않는다.
+     * 상황판 파일의 설정만 바꾸고, 파일이 없으면 null을 돌려 전체 미러로 넘긴다.
+     */
+    private async tryPublishProductProcessingSettings(tenantId: string): Promise<boolean | null> {
+        let base: Awaited<ReturnType<typeof situationMirrorService.read>> = null;
+        try {
+            base = await situationMirrorService.read(tenantId, true);
+        } catch (e) {
+            console.warn('[DataService] product settings read skipped:', e);
+            return null;
+        }
+        if (!base) return null;
+
+        const localSettingsSnapshot = { ...this.getSettingsObj() };
+        let settings = { ...localSettingsSnapshot };
+        if (base.settings && typeof base.settings === 'object') {
+            settings = this.mergeNasMasterSettingsForPush(
+                settings,
+                base.settings as Record<string, unknown>
+            );
+        }
+        const localMeta = this.getSettingsMetaMap(localSettingsSnapshot);
+        const outMeta = this.getSettingsMetaMap(settings);
+        const nowIso = new Date().toISOString();
+        for (const key of DataService.PRODUCT_PROCESSING_SETTINGS) {
+            if (localSettingsSnapshot[key] !== undefined && localSettingsSnapshot[key] !== null) {
+                settings[key] = localSettingsSnapshot[key];
+                outMeta[key] = localMeta[key] || { updatedAt: nowIso };
+            }
+        }
+        settings.settingsMeta = outMeta;
+
+        const payload = {
+            ...base,
+            updatedAt: nowIso,
+            settings,
+        };
+        try {
+            let situationOk = await situationMirrorService.publish(tenantId, payload);
+            if (!situationOk) {
+                const gw = await this.getTrustedStoreGatewayUrl();
+                if (gw) {
+                    situationOk = await situationMirrorService.publishViaGateway(tenantId, payload, gw);
+                    if (situationOk) this.companyNasChannel = 'gateway';
+                }
+            } else {
+                this.companyNasChannel = 'local';
+            }
+            if (situationOk) this.lastNasMirrorAt = nowIso;
+            return situationOk;
+        } catch (e) {
+            console.warn('[DataService] product settings publish failed:', e);
+            return false;
+        }
+    }
+
     /** NAS + Storage 즉시 미러 — true면 회사 공유 저장 성공
      *  publishProductProcessing: 관리자가 상품/후가공을 저장할 때만 true
      */
     async pushLiveMirrors(options?: { publishProductProcessing?: boolean }): Promise<boolean> {
         if (!this.tenantId || this.isWebMirrorMode()) return false;
+        if (this.suppressMirrorOverwrite && !options?.publishProductProcessing) return false;
+        await this.discardStaleSnapshotWhenFolderEmpty();
+        const archiveRoot = getEffectiveArchiveRootPath();
+        if (archiveRoot && (await jobArchiveService.findForeignFolderOwner(archiveRoot, this.tenantId))) {
+            console.warn('[DataService] live mirror push blocked — folder belongs to another company');
+            return false;
+        }
         if (this.shouldBlockOperationalNasWrite()) {
             console.warn('[DataService] live mirror push blocked — company NAS not ready/reconnect pending');
             return false;
         }
         const tenantId = this.tenantId;
+        if (options?.publishProductProcessing) {
+            const settingsOnly = await this.tryPublishProductProcessingSettings(tenantId);
+            if (settingsOnly !== null) return settingsOnly;
+        }
+        await this.flushPendingBoardLive(tenantId);
         const publishProductProcessing = !!options?.publishProductProcessing;
+        // 공유 파일을 읽지 못하면 이 PC 목록으로 덮지 않는다.
+        let nasRead: Awaited<ReturnType<typeof jobArchiveService.readNasArchiveForPush>>;
+        try {
+            nasRead = await jobArchiveService.readNasArchiveForPush(tenantId);
+        } catch (e) {
+            console.warn('[DataService] live mirror push aborted — shared job file unreadable:', e);
+            return false;
+        }
+        if (nasRead.status === 'unreadable') {
+            console.warn('[DataService] live mirror push aborted — shared job file unreadable');
+            return false;
+        }
         // NAS에 통째 덮어쓰기 금지 — 다른 PC의 더 최신(관리카드 내리기 등)이 유실됨
         let jobs = this.getAllJobs();
-        try {
-            const nasSnap = await jobArchiveService.readNasArchiveSnapshot(tenantId);
-            if (nasSnap?.jobs?.length) {
-                const merged = this.mergeJobsByUpdatedAt(nasSnap.jobs, jobs);
-                const changed =
-                    merged.length !== jobs.length ||
-                    merged.some((j) => {
-                        const local = jobs.find((x) => x.id === j.id);
-                        if (!local) return true;
-                        return (
-                            this.jobTimestampMs(j) !== this.jobTimestampMs(local) ||
-                            !!j.managementCardPinnedAt !== !!local.managementCardPinnedAt ||
-                            !!j.boardHiddenAt !== !!local.boardHiddenAt
-                        );
-                    });
-                jobs = merged;
-                if (changed) {
-                    this.applyImportedJobs(jobs);
-                    if (this.isLocalPrimaryMode()) {
-                        await this.persistAllToLocalDb().catch((err) =>
-                            console.warn('[DataService] local db after NAS merge failed:', err)
-                        );
-                    }
-                    this.notify();
+        const nasJobs = nasRead.jobs;
+        if (nasJobs.length) {
+            const merged = this.mergeJobsByUpdatedAt(nasJobs, jobs);
+            const changed =
+                merged.length !== jobs.length ||
+                merged.some((j) => {
+                    const local = jobs.find((x) => x.id === j.id);
+                    if (!local) return true;
+                    return (
+                        this.jobTimestampMs(j) !== this.jobTimestampMs(local) ||
+                        !!j.managementCardPinnedAt !== !!local.managementCardPinnedAt ||
+                        !!j.boardHiddenAt !== !!local.boardHiddenAt
+                    );
+                });
+            jobs = merged;
+            if (changed) {
+                this.applyImportedJobs(jobs);
+                if (this.isLocalPrimaryMode()) {
+                    await this.persistAllToLocalDb().catch((err) =>
+                        console.warn('[DataService] local db after NAS merge failed:', err)
+                    );
                 }
+                this.notify();
             }
-        } catch (e) {
-            console.warn('[DataService] NAS merge-before-push skipped:', e);
+        }
+        const nasById = new Map(nasJobs.map((job) => [job.id, job]));
+        let liveDelta = jobs.filter((job) => {
+            if (!job?.id) return false;
+            const prev = nasById.get(job.id);
+            return !prev || isIncomingJobNewer(job, prev);
+        });
+        if (liveDelta.length > 25) {
+            liveDelta = [...liveDelta]
+                .sort(
+                    (a, b) =>
+                        Date.parse(b.updatedAt || b.createdAt || '') -
+                        Date.parse(a.updatedAt || a.createdAt || '')
+                )
+                .slice(0, 25);
         }
         const staff = (this.data['staff'] || []) as Staff[];
         let clients = (this.data['clients'] || []) as Client[];
@@ -2152,11 +2486,13 @@ export class DataService {
             console.warn('[DataService] settings/clients merge-before-push skipped:', e);
         }
         let archiveOk = false;
+        let wroteArchiveDirect = false;
         let situationOk = false;
         let mirrorUpdatedAt: string | null = null;
 
         try {
             archiveOk = await jobArchiveService.syncLiveJobsMirror(tenantId, jobs);
+            wroteArchiveDirect = archiveOk;
             if (!archiveOk) {
                 const gw = await this.getTrustedStoreGatewayUrl();
                 if (gw) {
@@ -2170,6 +2506,12 @@ export class DataService {
             }
         } catch (e) {
             console.warn('[DataService] live jobs mirror failed:', e);
+        }
+
+        if (wroteArchiveDirect && liveDelta.length > 0) {
+            void jobArchiveService.publishBoardLive(tenantId, liveDelta).catch((e) =>
+                console.warn('[DataService] board-live publish failed:', e)
+            );
         }
 
         try {
@@ -2337,6 +2679,11 @@ export class DataService {
             clearInterval(this.nasPollTimer);
             this.nasPollTimer = null;
         }
+        if (this.boardLiveTimer) {
+            clearInterval(this.boardLiveTimer);
+            this.boardLiveTimer = null;
+        }
+        this.boardLiveInFlight = false;
         this.stopChatMirrorPolling();
     }
 
@@ -2345,20 +2692,20 @@ export class DataService {
             clearTimeout(this.chatPollTimer);
             this.chatPollTimer = null;
         }
+        if (this.chatLiveTimer) {
+            clearInterval(this.chatLiveTimer);
+            this.chatLiveTimer = null;
+        }
         this.chatPollInFlight = false;
+        this.chatLiveInFlight = false;
     }
 
-    /** 메신저 열림 — 채팅 폴링 가속 */
+    /** 메신저 열림 — 전체 대화를 한 번 맞춘다. 새 글은 chat-live가 이어서 넣는다. */
     setChatRealtimeBoost(enabled: boolean) {
-        this.chatPollBoost = !!enabled;
         if (enabled && this.tenantId) {
             void this.pollChatMirrorOnly();
+            void this.pollChatLive();
         }
-    }
-
-    private chatPollIntervalMs(): number {
-        if (!this.getIsElectron()) return CHAT_POLL_MS_WEB;
-        return this.chatPollBoost ? CHAT_POLL_MS_ACTIVE : CHAT_POLL_MS_IDLE;
     }
 
     private startChatMirrorPolling() {
@@ -2366,10 +2713,14 @@ export class DataService {
         const tick = () => {
             void this.pollChatMirrorOnly().finally(() => {
                 if (!this.tenantId) return;
-                this.chatPollTimer = window.setTimeout(tick, this.chatPollIntervalMs());
+                this.chatPollTimer = window.setTimeout(tick, CHAT_RECONCILE_MS);
             });
         };
         tick();
+        this.chatLiveTimer = window.setInterval(() => {
+            void this.pollChatLive();
+        }, CHAT_LIVE_POLL_MS);
+        void this.pollChatLive();
     }
 
     private async pollChatMirrorOnly(): Promise<void> {
@@ -2398,6 +2749,7 @@ export class DataService {
 
     private async loadLocalPrimaryData(): Promise<boolean> {
         if (!this.tenantId || !this.isLocalPrimaryMode()) return false;
+        if (await this.detachForeignArchiveIfNeeded()) return false;
         const bundle = await localDbBridge.loadTenant(this.tenantId);
         const hasAux =
             (bundle.quotes?.length || 0) > 0 ||
@@ -2534,9 +2886,21 @@ export class DataService {
         }
         const pollMs = this.shouldUseWebMirrorClient() ? WEB_MIRROR_POLL_MS : APP_MIRROR_POLL_MS;
         this.nasPollTimer = window.setInterval(() => {
+            const hidden = document.visibilityState !== 'visible';
+            if (!this.shouldUseWebMirrorClient() && hidden) {
+                const now = Date.now();
+                if (now - this.lastHiddenFullPollAt < APP_MIRROR_POLL_HIDDEN_MS) return;
+                this.lastHiddenFullPollAt = now;
+                void this.pollNasOperationalSync(true);
+                return;
+            }
             void this.pollNasOperationalSync();
         }, pollMs);
         void this.pollNasOperationalSync();
+        this.boardLiveTimer = window.setInterval(() => {
+            void this.pollBoardLive();
+        }, BOARD_LIVE_POLL_MS);
+        void this.pollBoardLive();
         // 채팅은 업무 미러와 분리해 빠르게 폴링
         this.startChatMirrorPolling();
     }
@@ -2562,6 +2926,7 @@ export class DataService {
         'smsPrepaid',
         'quoteTemplate',
         'receptionAssist',
+        'externalOrderVendors',
     ] as const;
 
     /** 상품·후가공만 — 작업 push로 절대 덮지 않음, 관리자 저장 시에만 게시 */
@@ -2898,6 +3263,8 @@ export class DataService {
             lastHistory?.action || '',
             lastHistory?.staffId || '',
             lastHistory?.details || '',
+            String(job.jobOrderPrintCount ?? ''),
+            JSON.stringify(job.jobOrderPrintLogs ?? null),
         ].join('\u001f');
     }
 
@@ -3212,8 +3579,74 @@ export class DataService {
         this.applyImportedJobs(next);
     }
 
-    private async pollNasOperationalSync() {
-        if (!this.tenantId || document.visibilityState !== 'visible') return;
+    /** 방금 바뀐 카드만. 전체 작업 파일을 열기 전에 다른 PC가 읽게 한다. */
+    private queueBoardLive(job: Job | null | undefined) {
+        if (!job?.id) return;
+        this.pendingBoardLive.set(job.id, job);
+    }
+
+    private async flushPendingBoardLive(tenantId: string): Promise<void> {
+        if (this.pendingBoardLive.size === 0) return;
+        const batch = Array.from(this.pendingBoardLive.values()).slice(-25);
+        this.pendingBoardLive.clear();
+        try {
+            await jobArchiveService.publishBoardLive(tenantId, batch);
+        } catch (e) {
+            for (const job of batch) {
+                if (job?.id) this.pendingBoardLive.set(job.id, job);
+            }
+            console.warn('[DataService] board-live early publish failed:', e);
+        }
+    }
+
+    /** 바뀐 작업만. 창이 앞에 있지 않아도 읽어서 칸 위치를 맞춘다. */
+    private async pollBoardLive() {
+        if (!this.tenantId || this.boardLiveInFlight) return;
+        this.boardLiveInFlight = true;
+        try {
+            let file: { seq: number; changes: Job[] } | null = null;
+            if (this.getIsElectron() && !this.shouldUseWebMirrorClient()) {
+                file = await jobArchiveService.readBoardLive(this.tenantId);
+            }
+            if (!file) {
+                const gw = this.getStoreGatewayUrls()[0];
+                if (gw) {
+                    const { fetchBoardLive } = await import('./gatewayBridge');
+                    const remote = await fetchBoardLive(gw, this.tenantId);
+                    file = remote
+                        ? { seq: remote.seq, changes: remote.changes as Job[] }
+                        : null;
+                }
+            }
+            if (!file || file.seq === this.lastBoardLiveSeq) return;
+            const gap =
+                this.lastBoardLiveSeq > 0 &&
+                file.seq > this.lastBoardLiveSeq + file.changes.length + 1;
+            this.lastBoardLiveSeq = file.seq;
+            if (file.changes.length > 0) {
+                const beforeJobs = this.getAllJobs();
+                const nextJobs = this.mergeJobsByUpdatedAt(beforeJobs, file.changes);
+                if (this.jobsMeaningfullyChanged(beforeJobs, nextJobs)) {
+                    this.applyImportedJobs(nextJobs);
+                    if (this.isLocalPrimaryMode()) {
+                        await this.persistAllToLocalDb().catch((e) =>
+                            console.warn('[DataService] local db sync after board-live failed:', e)
+                        );
+                    }
+                    this.notify();
+                }
+            }
+            if (gap) void this.pollNasOperationalSync(true);
+        } catch (e) {
+            console.warn('[DataService] board-live poll skipped:', e);
+        } finally {
+            this.boardLiveInFlight = false;
+        }
+    }
+
+    private async pollNasOperationalSync(force = false) {
+        if (!this.tenantId) return;
+        if (!force && document.visibilityState !== 'visible') return;
         if (this.nasPollInFlight) return;
         if (this.shouldUseWebMirrorClient() && Date.now() < this.webMirrorNextPollAt) return;
 
@@ -3561,7 +3994,7 @@ export class DataService {
             recentPaidCompletedQuery: query(
                 jobsCol,
                 where('status', '==', 'COMPLETED'),
-                where('paymentStatus', '==', '결제완료'),
+                where('paymentStatus', 'in', [...SETTLED_PAYMENT_STATUSES]),
                 where('completedAt', '>=', recentPaidCutoffIso),
                 where('createdAt', '>=', hotCutoffIso)
             ),
@@ -3901,7 +4334,7 @@ export class DataService {
                 )
             );
             const paid = this.getAllJobs().filter((job) => {
-                if (job.status !== 'COMPLETED' || job.paymentStatus !== '결제완료') return false;
+                if (job.status !== 'COMPLETED' || !isSettledPaymentStatus(job.paymentStatus)) return false;
                 const created = new Date(job.createdAt);
                 return created.getTime() >= hotCutoff.getTime();
             });
@@ -3911,7 +4344,7 @@ export class DataService {
                 )
             );
             this.mergeSupplementaryJobs(paid, (job) =>
-                job.status === 'COMPLETED' && job.paymentStatus === '결제완료'
+                job.status === 'COMPLETED' && isSettledPaymentStatus(job.paymentStatus)
             );
             this.paymentJobsLoaded = true;
             this.notify();
@@ -3926,7 +4359,7 @@ export class DataService {
         const completedPaidHotQuery = query(
             jobsCol,
             where('status', '==', 'COMPLETED'),
-            where('paymentStatus', '==', '결제완료'),
+            where('paymentStatus', 'in', [...SETTLED_PAYMENT_STATUSES]),
             where('createdAt', '>=', hotCutoffIso)
         );
         try {
@@ -3946,7 +4379,7 @@ export class DataService {
                 )
             );
             this.mergeSupplementaryJobs(paid, (job) =>
-                job.status === 'COMPLETED' && job.paymentStatus === '결제완료'
+                job.status === 'COMPLETED' && isSettledPaymentStatus(job.paymentStatus)
             );
             this.paymentJobsLoaded = true;
             this.notify();
@@ -4001,10 +4434,13 @@ export class DataService {
     private handleJobsMigrationInMemory(currentJobs: any[]): any[] {
         // 동일 품목명이 마스터에 있으면 그대로 두고, 없을 때만 옛 이름 → 기본명으로 표시 보정
         const productNames = new Set(this.getProductDefinitions().map((d) => d.name));
+        const statusDefs = this.getStatusDefinitions();
         return currentJobs.map((job: any) => {
+            if (!job || typeof job !== 'object') return job;
             if (job.type === '무선제본책자' && !productNames.has(job.type)) job.type = '책자';
             if (LEGACY_CATALOG_TYPE_NAMES.includes(job.type) && !productNames.has(job.type)) job.type = '카탈로그';
             if (LEGACY_JOB_SIGNAGE_TYPE_NAMES.includes(job.type) && !productNames.has(job.type)) job.type = '실사';
+            job.status = normalizeJobStatusKey(job.status, statusDefs);
             // specs/subJobs 레거시는 화면 표시용 메모리 정규화만 (Firestore 미쓰기)
             return job;
         });
@@ -4225,6 +4661,68 @@ export class DataService {
         await this.chatPersistInFlight;
     }
 
+    private applyIncomingChat(
+        messages?: ChatMessage[],
+        reads?: ChatReadMap
+    ): boolean {
+        let changed = false;
+        if (messages && messages.length > 0) {
+            const prev = (this.data['messages'] || []) as ChatMessage[];
+            const merged = mergeChatMessages(prev, messages);
+            if (!chatMessagesEqual(prev, merged)) {
+                this.data['messages'] = merged;
+                changed = true;
+            }
+        }
+        if (reads) {
+            const nextReads = mergeChatReads(this.chatReads, reads);
+            if (!chatReadsEqual(this.chatReads, nextReads)) {
+                this.chatReads = nextReads;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+
+    /** 새 글 한 통. 창이 앞에 있지 않아도 읽어 바로 넣는다. */
+    private async pollChatLive() {
+        if (!this.tenantId || this.chatLiveInFlight) return;
+        this.chatLiveInFlight = true;
+        try {
+            let file: { seq: number; messages: ChatMessage[]; reads: ChatReadMap } | null = null;
+            if (this.getIsElectron() && !this.shouldUseWebMirrorClient()) {
+                file = await chatMirrorService.readChatLive(this.tenantId);
+            }
+            if (!file) {
+                const gw = this.getStoreGatewayUrls()[0];
+                if (gw) {
+                    const { fetchChatLive } = await import('./gatewayBridge');
+                    const remote = await fetchChatLive(gw, this.tenantId);
+                    file = remote
+                        ? {
+                              seq: remote.seq,
+                              messages: remote.messages as ChatMessage[],
+                              reads: remote.reads,
+                          }
+                        : null;
+                }
+            }
+            if (!file || file.seq === this.lastChatLiveSeq) return;
+            const gap =
+                this.lastChatLiveSeq > 0 &&
+                file.seq > this.lastChatLiveSeq + file.messages.length + 1;
+            this.lastChatLiveSeq = file.seq;
+            if (this.applyIncomingChat(file.messages, file.reads)) {
+                this.notify();
+            }
+            if (gap) void this.pollChatMirrorOnly();
+        } catch (e) {
+            console.warn('[DataService] chat-live poll skipped:', e);
+        } finally {
+            this.chatLiveInFlight = false;
+        }
+    }
+
     private async pollChatMirror(): Promise<boolean> {
         if (!this.tenantId) return false;
         try {
@@ -4239,30 +4737,7 @@ export class DataService {
             }
             if (!payload?.messages && !payload?.reads) return false;
 
-            let changed = false;
-            if (payload.messages) {
-                const merged = mergeChatMessages(
-                    (this.data['messages'] || []) as ChatMessage[],
-                    payload.messages
-                );
-                const prevLen = ((this.data['messages'] || []) as ChatMessage[]).length;
-                const messagesChanged =
-                    merged.length !== prevLen ||
-                    merged[merged.length - 1]?.id !==
-                        ((this.data['messages'] || []) as ChatMessage[])[prevLen - 1]?.id;
-                if (messagesChanged) {
-                    this.data['messages'] = merged;
-                    changed = true;
-                }
-            }
-            if (payload.reads) {
-                const nextReads = mergeChatReads(this.chatReads, payload.reads);
-                if (!chatReadsEqual(this.chatReads, nextReads)) {
-                    this.chatReads = nextReads;
-                    changed = true;
-                }
-            }
-            return changed;
+            return this.applyIncomingChat(payload.messages, payload.reads);
         } catch (e) {
             console.warn('[DataService] chat poll failed:', e);
         }
@@ -4634,6 +5109,9 @@ export class DataService {
 
         try {
             await this.pullCloudConfigDocs(localPrimary && this.localOperationalReady);
+            if (await this.detachForeignArchiveIfNeeded()) {
+                this.localOperationalReady = false;
+            }
 
             if (this.getIsElectron()) {
                 const ok = await this.checkCompanyNasHealth(true);
@@ -4684,6 +5162,15 @@ export class DataService {
                         throw migErr;
                     }
                 }
+            }
+
+            if (
+                localPrimary &&
+                this.getIsElectron() &&
+                !this.outsideViewerMode &&
+                this.companyNasHealthy === true
+            ) {
+                await this.adoptOperationalDataFromCurrentFolder();
             }
 
             if (localPrimary && !this.outsideViewerMode) {
@@ -4801,6 +5288,10 @@ export class DataService {
             throw new Error('로그인된 대표 계정이 필요합니다.');
         }
         if (!name.trim()) throw new Error('회사명을 입력해주세요.');
+        const formattedBusinessNumber = formatBusinessNumber(String(businessNumber || ''));
+        if (formattedBusinessNumber.replace(/\D/g, '').length !== 10) {
+            throw new Error('사업자등록번호는 10자리여야 합니다. (예: 123-45-67890)');
+        }
         if (!joinCode?.trim() || joinCode.trim().length < 6) {
             throw new Error('회사 입장 코드는 6자 이상이어야 합니다.');
         }
@@ -4813,14 +5304,12 @@ export class DataService {
         void initialStaffCount;
         const tenantId = await createTenantSecure({
             name: name.trim(),
-            businessNumber: businessNumber?.trim() || '',
+            businessNumber: formattedBusinessNumber,
             joinCode: joinCode.trim(),
             ownerPhone: ownerPhoneFormatted,
         });
         const defaultSettings = this.getDefaultSettings(name.trim());
-        if (businessNumber?.trim()) {
-            defaultSettings.companyInfo.businessNumber = businessNumber.trim();
-        }
+        defaultSettings.companyInfo.businessNumber = formattedBusinessNumber;
         defaultSettings.companyInfo.phone = ownerPhoneFormatted;
         await setDoc(
             doc(firestore, 'tenants', tenantId, 'settings', 'main'),
@@ -4936,20 +5425,37 @@ export class DataService {
         }
     }
 
-    /** 종료·업데이트 직전 디바운스/대기 중인 NAS 저장을 즉시 완료 */
-    async flushPendingOperationalWrites(): Promise<boolean> {
+    /**
+     * 종료·업데이트 직전 디바운스/대기 중인 NAS 저장을 즉시 완료.
+     * forUpdate: 설치 직전. 덮어쓸 대기가 없거나 NAS 반영만 실패한 경우에도 true.
+     * 로컬 DB에 남은 데이터로 설치를 진행하고, 창을 닫은 뒤 설치 프로그램이 실행되게 한다.
+     */
+    async flushPendingOperationalWrites(options?: { forUpdate?: boolean }): Promise<boolean> {
         if (!this.tenantId) return true;
         const tenantId = this.tenantId;
+        const forUpdate = options?.forUpdate === true;
         try {
+            await this.discardStaleSnapshotWhenFolderEmpty();
             await this.flushPersistMessagesToNas();
             await jobArchiveService.flushPendingQueue(tenantId);
             if (!this.isWebMirrorMode()) {
+                // 회사 폴더에 데이터가 있어 이 PC가 덮어쓰지 않는 상태. 대기 저장이 없다.
+                if (this.suppressMirrorOverwrite) return true;
                 const mirrored = await this.flushLiveMirrorPushNow();
-                if (!mirrored && this.isLocalPrimaryMode()) return false;
+                if (!mirrored && this.isLocalPrimaryMode()) {
+                    if (forUpdate) {
+                        console.warn(
+                            '[DataService] NAS mirror flush failed before update; local data kept, install continues'
+                        );
+                        return true;
+                    }
+                    return false;
+                }
             }
             return true;
         } catch (error) {
             console.error('[DataService] pending write flush failed:', error);
+            if (forUpdate) return true;
             return false;
         }
     }
@@ -5027,8 +5533,11 @@ export class DataService {
                 : {}),
         };
 
+        this.noteSessionEdit(col, id);
         if (col === 'jobs') {
+            newEntity.status = normalizeJobStatusKey(newEntity.status, this.getStatusDefinitions());
             this.placeJobInLocalCache(newEntity as Job);
+            this.queueBoardLive(newEntity as Job);
             this.rebuildMergedJobs();
         } else {
             this.data[col] = [...(this.data[col] || []).filter((e) => e.id !== id), newEntity];
@@ -5104,12 +5613,14 @@ export class DataService {
         if (col === 'jobs') {
             const existing = this.getAllJobs().find((j) => j.id === id);
             if (!existing) return null;
-            const updated = stripClearedJobVisibilityFields({
+            const mergedRaw = {
                 ...existing,
                 ...entity,
                 updatedAt: new Date().toISOString(),
                 rev: nextJobRev(existing),
-            } as Job);
+            } as Job;
+            mergedRaw.status = normalizeJobStatusKey(mergedRaw.status, this.getStatusDefinitions());
+            const updated = stripClearedJobVisibilityFields(mergedRaw);
             // null 클리어는 NAS JSON에 남겨 다른 PC 머지 롤백 방지
             for (const key of JOB_VISIBILITY_CLEAR_FIELDS) {
                 if (entity[key] === null) {
@@ -5117,6 +5628,7 @@ export class DataService {
                 }
             }
             this.placeJobInLocalCache(updated);
+            this.queueBoardLive(updated);
             this.rebuildMergedJobs();
             return updated;
         }
@@ -5219,6 +5731,7 @@ export class DataService {
 
     private async updateEntity(col: string, id: string, entity: any) {
         this.assertOperationalWriteAllowed(col);
+        this.noteSessionEdit(col, id);
         if (col === 'jobs' && this.isArchivedOnlyJob(id)) {
             const existing = this.archivedJobs.find((j) => j.id === id);
             if (!existing || !this.tenantId) return;
@@ -5584,6 +6097,8 @@ export class DataService {
         }
         this.placeJobInLocalCache(jobPayload);
         this.rebuildMergedJobs();
+        this.noteSessionEdit('jobs', jobPayload.id);
+        for (const client of clientPayloads) this.noteSessionEdit('clients', client.id);
         this.notify();
         this.recordLocalAudit(previousJob ? 'update' : 'create', 'jobs', jobPayload.id, jobPayload);
         for (const client of clientPayloads) {
@@ -5903,6 +6418,8 @@ export class DataService {
             boardHiddenBy: staffId || 'system',
             boardHiddenReason: 'manual',
         });
+        if (this.isWebMirrorMode()) return;
+        void this.flushLiveMirrorPushNow();
     }
     async unhideJobFromBoard(jobId: string) {
         const target = this.getAllJobs().find((job) => job.id === jobId);
@@ -5913,6 +6430,99 @@ export class DataService {
             ...(restoreFromManagementCard
                 ? jobVisibilityClearPatch(['managementCardPinnedAt'])
                 : {}),
+        });
+        if (this.isWebMirrorMode()) return;
+        void this.flushLiveMirrorPushNow();
+    }
+
+    /** 작업지시서 출력 이력 및 횟수 기록 */
+    async recordJobOrderPrint(
+        jobId: string,
+        actor?: { staffId?: string; staffName?: string },
+        fallbackJob?: Job
+    ): Promise<Job | null> {
+        const target = this.getAllJobs().find((job) => job.id === jobId) || fallbackJob;
+        if (!target) return null;
+
+        const nowIso = new Date().toISOString();
+        const staffList = this.getStaff();
+        const staffId = actor?.staffId || 'system';
+        const resolvedName =
+            actor?.staffName?.trim() ||
+            resolveHistoryActorName(staffList, staffId, '직원');
+
+        const prevLogs = Array.isArray(target.jobOrderPrintLogs) ? target.jobOrderPrintLogs : [];
+        const prevCount = Math.max(
+            typeof target.jobOrderPrintCount === 'number' && Number.isFinite(target.jobOrderPrintCount)
+                ? target.jobOrderPrintCount
+                : 0,
+            prevLogs.length
+        );
+        const nextCount = prevCount + 1;
+        const newLog: JobOrderPrintLog = {
+            printedAt: nowIso,
+            staffId,
+            staffName: resolvedName,
+        };
+        const nextLogs = [newLog, ...prevLogs].slice(0, 30);
+        const nextHistory: JobHistoryLog[] = [
+            ...(target.history || []),
+            {
+                timestamp: nowIso,
+                staffId,
+                action: '작업지시서 출력',
+                details: `${resolvedName}님이 작업지시서를 출력했습니다. (누적 ${nextCount}회)`,
+            },
+        ];
+
+        if (this.getAllJobs().some((j) => j.id === jobId)) {
+            await this.updateEntity('jobs', jobId, {
+                jobOrderPrintCount: nextCount,
+                jobOrderPrintLogs: nextLogs,
+                history: nextHistory,
+            });
+            if (!this.isWebMirrorMode()) {
+                void this.flushLiveMirrorPushNow();
+            }
+        }
+
+        const updated =
+            this.getAllJobs().find((j) => j.id === jobId) || {
+                ...target,
+                jobOrderPrintCount: nextCount,
+                jobOrderPrintLogs: nextLogs,
+                history: nextHistory,
+            };
+        return updated;
+    }
+
+    /** 미리보기 팝업 창에서 출력 이력이 갱신된 경우 메인 창 메모리 DB에 즉시 동기화 */
+    syncJobOrderPrintFromPreviewCache(cachedJob: Job): void {
+        if (!cachedJob?.id) return;
+        const existing = this.getAllJobs().find((j) => j.id === cachedJob.id);
+        if (!existing) return;
+        const incomingCount =
+            typeof cachedJob.jobOrderPrintCount === 'number' ? cachedJob.jobOrderPrintCount : 0;
+        const existingCount =
+            typeof existing.jobOrderPrintCount === 'number' ? existing.jobOrderPrintCount : 0;
+        if (
+            incomingCount <= existingCount &&
+            (cachedJob.jobOrderPrintLogs?.length ?? 0) <= (existing.jobOrderPrintLogs?.length ?? 0)
+        ) {
+            return;
+        }
+        const patch: Partial<Job> = {
+            jobOrderPrintCount: Math.max(incomingCount, existingCount),
+            jobOrderPrintLogs: cachedJob.jobOrderPrintLogs || existing.jobOrderPrintLogs,
+            history:
+                (cachedJob.history?.length ?? 0) >= (existing.history?.length ?? 0)
+                    ? cachedJob.history
+                    : existing.history,
+        };
+        void this.updateEntity('jobs', cachedJob.id, patch).then(() => {
+            if (!this.isWebMirrorMode()) {
+                void this.flushLiveMirrorPushNow();
+            }
         });
     }
 
@@ -6302,11 +6912,20 @@ export class DataService {
         const now = new Date().toISOString();
         const jobUpdates: Job[] = [];
         for (const job of this.getAllJobs()) {
-            if ((job.clientName || '').trim() !== secondaryName.trim()) continue;
+            const nameMatch = (job.clientName || '').trim() === secondaryName.trim();
+            const vendorMatch = (job.subJobs || []).some((item) => item.externalOrderVendorId === secondaryId);
+            if (!nameMatch && !vendorMatch) continue;
             const existing = job;
             jobUpdates.push({
                 ...existing,
-                clientName: primaryName,
+                clientName: nameMatch ? primaryName : existing.clientName,
+                subJobs: vendorMatch
+                    ? (existing.subJobs || []).map((item) =>
+                          item.externalOrderVendorId === secondaryId
+                              ? { ...item, externalOrderVendorId: mergedClient.id }
+                              : item
+                      )
+                    : existing.subJobs,
                 updatedAt: now,
                 rev: nextJobRev(existing),
             });
@@ -6373,6 +6992,68 @@ export class DataService {
         if (!ok) {
             throw new Error(
                 '거래처 합치기가 회사 NAS에 반영되지 않았습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
+            );
+        }
+    }
+
+    /** 같은 업체 작업 카드를 하나로 합치고, 나머지를 삭제한다. 선불 잔액은 다시 계산하지 않는다. */
+    async applyJobCardMerge(merged: Job, removeIds: string[]): Promise<void> {
+        this.assertOperationalWriteAllowed('jobs');
+        if (this.isWebMirrorMode()) {
+            throw new Error('카드 합치기는 매장 PC 앱에서만 가능합니다.');
+        }
+        if (!merged?.id || removeIds.some((id) => !id || id === merged.id)) {
+            throw new Error('합칠 카드 정보가 올바르지 않습니다.');
+        }
+        const existing = this.getAllJobs().find((job) => job.id === merged.id);
+        if (!existing) throw new Error('남길 카드를 찾을 수 없습니다.');
+        const now = new Date().toISOString();
+        const saved: Job = {
+            ...existing,
+            ...merged,
+            id: existing.id,
+            updatedAt: now,
+            rev: nextJobRev(existing),
+        };
+        for (const id of removeIds) {
+            this.recordJobTombstone(id);
+            await this.purgeJobFromArchiveLayers(id);
+            this.removeJobFromLocalCache(id);
+        }
+        this.placeJobInLocalCache(saved);
+        this.rebuildMergedJobs();
+
+        const quotes = (this.data['quotes'] || []) as Quote[];
+        let quotesChanged = false;
+        const removeSet = new Set(removeIds);
+        this.data['quotes'] = quotes.map((quote) => {
+            if (!quote.jobId || !removeSet.has(quote.jobId)) return quote;
+            quotesChanged = true;
+            return { ...quote, jobId: saved.id, updatedAt: now };
+        });
+        this.notify();
+
+        if (this.tenantId && this.isLocalPrimaryMode()) {
+            await this.persistToLocalCollection('jobs', saved);
+            for (const id of removeIds) {
+                const okDel = await localDbBridge.deleteJob(this.tenantId, id);
+                if (!okDel) throw new Error('local-db-job-delete-failed');
+            }
+            if (quotesChanged) {
+                await localDbBridge
+                    .saveAuxCollection(this.tenantId, 'quotes', this.data['quotes'] || [])
+                    .catch(() => false);
+                const okQuotes = await this.persistAuxCollectionToNas('quotes');
+                if (!okQuotes) {
+                    throw new Error('회사 NAS에 견적 연결 반영에 실패했습니다. NAS 연결을 확인해 주세요.');
+                }
+            }
+        }
+
+        const ok = await this.flushLiveMirrorPushNow();
+        if (!ok) {
+            throw new Error(
+                '카드 합치기가 회사 NAS에 반영되지 않았습니다. NAS 경로·연결을 확인한 뒤 다시 시도해 주세요.'
             );
         }
     }
@@ -6661,6 +7342,8 @@ export class DataService {
         }
 
         const path = resolved.path;
+        this.foreignArchiveBlocked = false;
+        jobArchiveService.clearFolderOwnerCache();
         setArchiveRootPath(path);
         setCompanyArchiveRootOverride(path);
         this.lastAppliedArchiveRootPath = path;
@@ -6877,7 +7560,7 @@ export class DataService {
         void tenantId;
         void options;
         throw new Error(
-            '요금제·결제 상태 변경은 카드 결제(코페이) 승인 후 서버에서만 처리됩니다.'
+            '요금제·결제 상태 변경은 결제 승인 후 서버에서만 처리됩니다.'
         );
     }
 
@@ -7137,6 +7820,57 @@ export class DataService {
     async saveReceptionAssistEnabled(enabled: boolean) {
         await this.updateSetting('receptionAssist', { enabled });
     }
+    getExternalOrderVendors(): ExternalOrderVendor[] {
+        const raw = this.getSettingsObj()['externalOrderVendors'] as { vendors?: ExternalOrderVendor[] } | undefined;
+        return Array.isArray(raw?.vendors) ? raw.vendors : [];
+    }
+    getOrderVendorClients(): Client[] {
+        return this.getClients().filter((client) => client.clientKind === 'order');
+    }
+    /** 예전에 설정에만 넣었던 주문업체를 거래처 카드로 옮긴다. 같은 id를 유지해 작업 연결이 끊기지 않는다. */
+    async importLegacyOrderVendors(): Promise<void> {
+        const legacy = this.getExternalOrderVendors();
+        if (!legacy.length) return;
+        const clients = this.getClients();
+        for (const vendor of legacy) {
+            if (clients.some((client) => client.id === vendor.id)) continue;
+            const sameName = clients.some(
+                (client) => client.clientKind === 'order' && client.name.trim() === vendor.name.trim()
+            );
+            if (sameName) continue;
+            const phone = formatPhoneNumber(vendor.phone || '');
+            await this.addClient({
+                id: vendor.id,
+                name: vendor.name,
+                phone,
+                contactPerson: '',
+                contacts: [{ name: '', phone, department: '담당자' }],
+                clientKind: 'order',
+                sendSmsOnComplete: false,
+            });
+            clients.push({ id: vendor.id, name: vendor.name, clientKind: 'order' } as Client);
+        }
+    }
+    async addOrderVendorClient(input: { name: string; phone: string }): Promise<Client | null> {
+        const name = input.name.trim();
+        const phone = formatPhoneNumber(input.phone.trim());
+        if (!name) return null;
+        const existing = this.getOrderVendorClients().find(
+            (client) => client.name.trim() === name && (client.phone || '').replace(/\D/g, '') === phone.replace(/\D/g, '')
+        );
+        if (existing) return existing;
+        const client: Client = {
+            id: this.generateId(),
+            name,
+            phone,
+            contactPerson: '',
+            contacts: [{ name: '', phone, department: '담당자' }],
+            clientKind: 'order',
+            sendSmsOnComplete: false,
+        };
+        await this.addClient(client);
+        return this.getClients().find((row) => row.id === client.id) || client;
+    }
     async saveRoles(roles: string[]) { await this.updateSetting('roles', { roles }); }
     async addRole(role: string) {
         if (isReservedStaffAuthRole(role)) return;
@@ -7174,6 +7908,7 @@ export class DataService {
     async addPaper(paper: Partial<PaperStock>) { await this.addEntity('papers', paper); }
     async deletePaper(id: string) { await this.deleteEntity('papers', id); }
     async addLeave(leave: StaffLeave) { await this.addEntity('leaves', leave); }
+    async updateLeave(leave: StaffLeave) { await this.updateEntity('leaves', leave.id, leave); }
     async deleteLeave(id: string) { await this.deleteEntity('leaves', id); }
 
     async importData(json: string): Promise<boolean> {
@@ -7288,6 +8023,54 @@ export class DataService {
     getInstructions(): AdminInstruction[] { return (this.data['instructions'] || []) as AdminInstruction[]; }
     getMessages(): ChatMessage[] { return (this.data['messages'] || []) as ChatMessage[]; }
     getLeaves(): StaffLeave[] { return (this.data['leaves'] || []) as StaffLeave[]; }
+    getCalendarMarks(): CalendarMark[] { return (this.data['calendarMarks'] || []) as CalendarMark[]; }
+
+    async ensureCalendarMarks(): Promise<void> {
+        if (!this.tenantId || this.calendarMarksInFlight) return;
+        this.calendarMarksInFlight = true;
+        try {
+            const file = await calendarMarkService.read(this.tenantId);
+            if (!file) return;
+            const prev = this.getCalendarMarks();
+            const same =
+                prev.length === file.marks.length &&
+                prev.every((mark, index) => mark.id === file.marks[index]?.id && mark.updatedAt === file.marks[index]?.updatedAt && mark.text === file.marks[index]?.text);
+            if (same) return;
+            this.data['calendarMarks'] = file.marks;
+            this.notify();
+        } catch (e) {
+            console.warn('[DataService] calendar marks read skipped:', e);
+        } finally {
+            this.calendarMarksInFlight = false;
+        }
+    }
+
+    async saveCalendarMark(mark: CalendarMark): Promise<void> {
+        if (!this.tenantId) throw new Error('회사 연결 후 달력 표시를 저장할 수 있습니다.');
+        const now = new Date().toISOString();
+        const next: CalendarMark = {
+            ...mark,
+            text: mark.text.trim(),
+            createdAt: mark.createdAt || now,
+            updatedAt: now,
+        };
+        if (!next.text) throw new Error('표시 글을 입력해 주세요.');
+        const list = this.getCalendarMarks().filter((row) => row.id !== next.id);
+        list.push(next);
+        this.data['calendarMarks'] = list;
+        this.notify();
+        const ok = await calendarMarkService.publish(this.tenantId, list);
+        if (!ok) throw new Error('달력 표시를 회사 폴더에 저장하지 못했습니다.');
+    }
+
+    async deleteCalendarMark(id: string): Promise<void> {
+        if (!this.tenantId || !id) return;
+        const list = this.getCalendarMarks().filter((row) => row.id !== id);
+        this.data['calendarMarks'] = list;
+        this.notify();
+        const ok = await calendarMarkService.publish(this.tenantId, list, [id]);
+        if (!ok) throw new Error('달력 표시를 지우지 못했습니다.');
+    }
     getPapers(): PaperStock[] { return (this.data['papers'] || []) as PaperStock[]; }
 
     getStatusDefinitionRemovedKeys(): string[] {
@@ -7310,10 +8093,12 @@ export class DataService {
     getProductDefinitions(): JobTypeDefinition[] {
         const raw = this.getSettingsObj()['productDefinitions']?.definitions || INITIAL_PRODUCT_DEFINITIONS;
         return mergeAllProductDefinitionsWithInitial(raw).definitions.map((def) => {
-            if (!isBookletProductType(def.name)) return def;
-            const paperWeights = sanitizeBookletPaperWeights(def.paperWeights);
-            if (stringArraysEqual(paperWeights, def.paperWeights)) return def;
-            return { ...def, paperWeights };
+            const paperTypes = normalizePaperTypeList(def.paperTypes);
+            let next = stringArraysEqual(paperTypes, def.paperTypes) ? def : { ...def, paperTypes };
+            if (!isBookletProductType(next.name)) return next;
+            const paperWeights = sanitizeBookletPaperWeights(next.paperWeights);
+            if (stringArraysEqual(paperWeights, next.paperWeights)) return next;
+            return { ...next, paperWeights };
         });
     }
     /** 품목별로 상품 관리에서 선택한 후가공만 반환 (일반 품목용) */

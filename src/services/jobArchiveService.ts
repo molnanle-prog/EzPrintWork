@@ -1,4 +1,4 @@
-import { Job } from '../types';
+import { Client, Job } from '../types';
 import { ref, uploadBytes, getBytes } from 'firebase/storage';
 import { storage } from './firebase';
 import { isIncomingJobNewer } from '../utils/jobRevision';
@@ -24,6 +24,26 @@ import { readLastKnownArchiveRootPath } from '../utils/lastKnownTenantPlan';
 
 const ARCHIVE_VERSION = 1;
 const WRITE_RETRY_DELAYS_MS = [0, 1200, 3000];
+const FOLDER_OWNER_FILES = ['situation-mirror.json', ARCHIVE_FILE_NAME];
+/** 칸 이동만 실어 나르는 작은 파일. 전체 작업 목록은 주기적으로 읽지 않는다. */
+const BOARD_LIVE_FILE_NAME = 'board-live.json';
+const BOARD_LIVE_LIMIT = 25;
+
+export const ARCHIVE_FOLDER_IN_USE_MESSAGE =
+    '이 폴더는 다른 회사에서 이미 사용 중입니다. 비어 있는 다른 폴더를 선택해 주세요. 같은 폴더를 쓰면 그 회사 작업이 이 회사에 보입니다.';
+
+export interface ArchiveFolderInspection {
+    readable: boolean;
+    foreign: boolean;
+    /** 작업·거래처·채팅이 실제로 있으면 true. 빈 파일은 false */
+    hasContent: boolean;
+    jobCount: number;
+    clientCount: number;
+    chatCount: number;
+    jobs: Job[];
+    clients: Client[];
+    error?: string;
+}
 
 interface JobArchiveFile {
     version: number;
@@ -81,6 +101,175 @@ export class JobArchiveService {
             return `${docs}${this.getSep()}${DEFAULT_ARCHIVE_FOLDER_NAME}${this.getSep()}`;
         }
         return null;
+    }
+
+    private ownerCache: { root: string; tenantId: string; foreign: boolean; at: number } | null = null;
+
+    /** 폴더 안 운영 파일의 tenantId. 없거나 비어 있으면 null. */
+    private async readOwnerTenantIdAt(filePath: string): Promise<string | null> {
+        if (!this.isElectron()) return null;
+        try {
+            const exists = await window.electron.exists?.(filePath);
+            if (!exists) return null;
+            const result = await window.electron.readFile(filePath);
+            if (!result?.success || !result.data) return null;
+            const parsed = JSON.parse(result.data) as { tenantId?: unknown; jobs?: unknown };
+            const id = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+            if (id) return id;
+            if (Array.isArray(parsed.jobs) && parsed.jobs.length > 0) return '__occupied__';
+            return null;
+        } catch {
+            return '__occupied__';
+        }
+    }
+
+    /**
+     * 이 폴더를 다른 회사가 이미 쓰면 그 표시를 반환한다.
+     * 파일이 없거나 이 회사 것이면 null.
+     */
+    async findForeignFolderOwner(root: string, tenantId: string): Promise<string | null> {
+        const base = String(root || '').trim();
+        const id = String(tenantId || '').trim();
+        if (!base || !id || !this.isElectron()) return null;
+        const cacheKey = base.replace(/[\\/]+$/, '').toLowerCase();
+        const now = Date.now();
+        if (
+            this.ownerCache &&
+            this.ownerCache.root === cacheKey &&
+            this.ownerCache.tenantId === id &&
+            now - this.ownerCache.at < 15000
+        ) {
+            return this.ownerCache.foreign ? '__cached__' : null;
+        }
+        let owner: string | null = null;
+        for (const name of FOLDER_OWNER_FILES) {
+            const found = await this.readOwnerTenantIdAt(this.joinPath(base, name));
+            if (found) {
+                owner = found;
+                break;
+            }
+        }
+        const foreign = owner && owner !== id ? owner : null;
+        this.ownerCache = { root: cacheKey, tenantId: id, foreign: !!foreign, at: now };
+        return foreign;
+    }
+
+    async assertArchiveFolderForTenant(
+        root: string,
+        tenantId: string
+    ): Promise<{ ok: boolean; error?: string }> {
+        const foreign = await this.findForeignFolderOwner(root, tenantId);
+        if (!foreign) return { ok: true };
+        return { ok: false, error: ARCHIVE_FOLDER_IN_USE_MESSAGE };
+    }
+
+    clearFolderOwnerCache() {
+        this.ownerCache = null;
+    }
+
+    /**
+     * 저장 전에 그 폴더만 검사한다. 파일은 쓰지 않는다.
+     * 없거나 내용이 없는 JSON은 빈 폴더로 본다.
+     */
+    async inspectArchiveFolder(root: string, tenantId: string): Promise<ArchiveFolderInspection> {
+        const empty: ArchiveFolderInspection = {
+            readable: false,
+            foreign: false,
+            hasContent: false,
+            jobCount: 0,
+            clientCount: 0,
+            chatCount: 0,
+            jobs: [],
+            clients: [],
+        };
+        const base = String(root || '').trim();
+        const id = String(tenantId || '').trim();
+        if (!base || !id || !this.isElectron()) {
+            return { ...empty, error: '폴더를 확인할 수 없습니다.' };
+        }
+
+        this.clearFolderOwnerCache();
+        const foreign = await this.findForeignFolderOwner(base, id);
+        if (foreign) {
+            return {
+                ...empty,
+                readable: true,
+                foreign: true,
+                hasContent: true,
+                error: ARCHIVE_FOLDER_IN_USE_MESSAGE,
+            };
+        }
+
+        const jobsFile = await this.readJsonFile(this.joinPath(base, ARCHIVE_FILE_NAME));
+        const situationFile = await this.readJsonFile(this.joinPath(base, 'situation-mirror.json'));
+        const chatFile = await this.readJsonFile(this.joinPath(base, 'chat-messages.json'));
+        if (jobsFile.broken || situationFile.broken || chatFile.broken) {
+            return {
+                ...empty,
+                hasContent: true,
+                error: '이 폴더의 파일을 읽지 못했습니다. 기존 파일은 그대로 두었습니다.',
+            };
+        }
+
+        let jobs: Job[] = [];
+        let sawJobsFile = false;
+        if (jobsFile.exists && jobsFile.json) {
+            sawJobsFile = true;
+            jobs = Array.isArray(jobsFile.json.jobs) ? (jobsFile.json.jobs as Job[]) : [];
+        }
+
+        let clients: Client[] = [];
+        if (situationFile.exists && situationFile.json) {
+            clients = Array.isArray(situationFile.json.clients)
+                ? (situationFile.json.clients as Client[])
+                : [];
+            const situationJobs = Array.isArray(situationFile.json.jobs)
+                ? (situationFile.json.jobs as Job[])
+                : [];
+            if (!sawJobsFile || (jobs.length === 0 && situationJobs.length > 0)) {
+                jobs = situationJobs;
+            }
+        }
+
+        let chatCount = 0;
+        if (chatFile.exists && chatFile.json && Array.isArray(chatFile.json.messages)) {
+            chatCount = chatFile.json.messages.length;
+        }
+
+        const jobCount = jobs.length;
+        const clientCount = clients.length;
+        return {
+            readable: true,
+            foreign: false,
+            hasContent: jobCount > 0 || clientCount > 0 || chatCount > 0,
+            jobCount,
+            clientCount,
+            chatCount,
+            jobs,
+            clients,
+        };
+    }
+
+    private async readJsonFile(
+        filePath: string
+    ): Promise<{ exists: boolean; json?: Record<string, unknown>; broken: boolean }> {
+        if (!this.isElectron()) return { exists: false, broken: false };
+        const exists = await window.electron.exists?.(filePath);
+        if (!exists) return { exists: false, broken: false };
+        const result = await window.electron.readFile(filePath);
+        if (!result?.success || result.data == null || result.data === '') {
+            return { exists: true, broken: true };
+        }
+        try {
+            const json = JSON.parse(result.data) as Record<string, unknown>;
+            return { exists: true, json, broken: false };
+        } catch {
+            return { exists: true, broken: true };
+        }
+    }
+
+    clearPendingJobs(tenantId: string) {
+        this.setPendingJobs(tenantId, []);
     }
 
     async getArchiveFilePath(tenantId: string): Promise<string | null> {
@@ -204,6 +393,11 @@ export class JobArchiveService {
             return { ok: false, error: 'Electron 환경이 아닙니다.' };
         }
 
+        const owned = await this.assertArchiveFolderForTenant(root, tenantId);
+        if (!owned.ok) {
+            return { ok: false, path: root, error: owned.error || ARCHIVE_FOLDER_IN_USE_MESSAGE };
+        }
+
         const readmePath = this.joinPath(root, ARCHIVE_README_NAME);
         const archivePath = this.joinPath(root, ARCHIVE_FILE_NAME);
         const readme = [
@@ -248,6 +442,9 @@ export class JobArchiveService {
         const primaryRaw = await this.readFileWithRetry(archivePath);
         if (primaryRaw) {
             try {
+                const parsed = JSON.parse(primaryRaw) as Partial<JobArchiveFile>;
+                const owner = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+                if (owner && owner !== tenantId) return [];
                 return this.parseArchiveJson(primaryRaw);
             } catch (error) {
                 console.warn('[JobArchiveService] local archive parse failed:', error);
@@ -286,12 +483,116 @@ export class JobArchiveService {
     /** Electron — NAS가 단일 원본. Storage는 웹 폴백용 */
     async readArchivedJobs(tenantId: string): Promise<Job[]> {
         if (this.isElectron()) {
+            const archivePath = await this.getArchiveFilePath(tenantId);
+            if (archivePath && (await window.electron.exists?.(archivePath))) {
+                return this.readLocalArchivedJobs(tenantId);
+            }
             const local = await this.readLocalArchivedJobs(tenantId);
             if (local.length > 0) return local;
         }
         const remote = await this.readStorageMirrorJobs(tenantId);
         if (remote.length > 0) return remote;
         return this.readLocalArchivedJobs(tenantId);
+    }
+
+    /**
+     * 저장 직전에만 사용. 파일이 있는데 읽기·해석이 실패하면 unreadable.
+     * 그 경우 호출측은 로컬 목록으로 공유 파일을 덮으면 안 된다.
+     */
+    async readNasArchiveForPush(tenantId: string): Promise<
+        | { status: 'missing'; jobs: Job[]; updatedAt: null }
+        | { status: 'ok'; jobs: Job[]; updatedAt: string | null }
+        | { status: 'unreadable' }
+    > {
+        if (!tenantId || !this.isElectron()) return { status: 'unreadable' };
+        const archivePath = await this.getArchiveFilePath(tenantId);
+        if (!archivePath) return { status: 'unreadable' };
+
+        const exists = await window.electron.exists?.(archivePath);
+        if (exists === false) return { status: 'missing', jobs: [], updatedAt: null };
+
+        const raw = await this.readFileWithRetry(archivePath);
+        if (!raw) {
+            return exists === true
+                ? { status: 'unreadable' }
+                : { status: 'missing', jobs: [], updatedAt: null };
+        }
+        try {
+            const parsed = JSON.parse(raw) as Partial<JobArchiveFile>;
+            const owner = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+            if (owner && owner !== tenantId) return { status: 'unreadable' };
+            return {
+                status: 'ok',
+                jobs: Array.isArray(parsed.jobs) ? (parsed.jobs as Job[]) : [],
+                updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
+            };
+        } catch {
+            return { status: 'unreadable' };
+        }
+    }
+
+    async readBoardLive(tenantId: string): Promise<{ seq: number; changes: Job[] } | null> {
+        if (!tenantId || !this.isElectron()) return null;
+        const filePath = await this.getBoardLiveFilePath(tenantId);
+        if (!filePath) return null;
+        const result = await window.electron.readFile(filePath);
+        const raw = result?.success && result.data ? result.data : null;
+        if (!raw) return null;
+        try {
+            const parsed = JSON.parse(raw) as { seq?: unknown; changes?: unknown; tenantId?: unknown };
+            const owner = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+            if (owner && owner !== tenantId) return null;
+            const seq = typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) ? parsed.seq : 0;
+            const changes = Array.isArray(parsed.changes) ? (parsed.changes as Job[]) : [];
+            return { seq, changes };
+        } catch {
+            return null;
+        }
+    }
+
+    /** 바뀐 작업만 링 버퍼에 남긴다. 다른 PC는 이 파일만 자주 읽는다. */
+    async publishBoardLive(tenantId: string, jobs: Job[]): Promise<void> {
+        const incoming = jobs.filter((job) => !!job?.id).slice(0, BOARD_LIVE_LIMIT);
+        if (!tenantId || incoming.length === 0 || !this.isElectron()) return;
+        const filePath = await this.getBoardLiveFilePath(tenantId);
+        if (!filePath) return;
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const current = await this.readBoardLive(tenantId);
+            const map = new Map<string, Job>();
+            for (const job of current?.changes || []) {
+                if (job?.id) map.set(job.id, job);
+            }
+            for (const job of incoming) {
+                const prev = map.get(job.id!);
+                if (!prev || isIncomingJobNewer(job, prev)) map.set(job.id!, job);
+            }
+            const changes = Array.from(map.values())
+                .sort((a, b) => Date.parse(a.updatedAt || a.createdAt || '') - Date.parse(b.updatedAt || b.createdAt || ''))
+                .slice(-BOARD_LIVE_LIMIT);
+            const seq = (current?.seq || 0) + 1;
+            const payload = JSON.stringify({
+                version: 1,
+                tenantId,
+                seq,
+                updatedAt: new Date().toISOString(),
+                changes,
+            });
+            const ok = await this.writeFileWithRetry(filePath, payload);
+            if (!ok) continue;
+            const verify = await this.readBoardLive(tenantId);
+            const held = incoming.every((job) => {
+                const row = verify?.changes.find((item) => item.id === job.id);
+                return !!row && !isIncomingJobNewer(job, row);
+            });
+            if (held) return;
+        }
+    }
+
+    private async getBoardLiveFilePath(tenantId: string): Promise<string | null> {
+        const root = await this.resolveArchiveRoot(tenantId);
+        if (!root) return null;
+        return this.joinPath(root, BOARD_LIVE_FILE_NAME);
     }
 
     /** PC 간 동기화 — NAS jobs-archive.json (Storage 미사용) */
@@ -302,6 +603,8 @@ export class JobArchiveService {
             if (!raw) return null;
             try {
                 const parsed = JSON.parse(raw) as Partial<JobArchiveFile>;
+                const owner = typeof parsed.tenantId === 'string' ? parsed.tenantId.trim() : '';
+                if (owner && owner !== tenantId) return null;
                 return {
                     jobs: Array.isArray(parsed.jobs) ? (parsed.jobs as Job[]) : [],
                     updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null,
@@ -347,6 +650,14 @@ export class JobArchiveService {
         if (this.isElectron()) {
             const archivePath = await this.getArchiveFilePath(tenantId);
             if (!archivePath) return { success: false };
+            const root = await this.resolveArchiveRoot(tenantId);
+            if (root) {
+                const foreign = await this.findForeignFolderOwner(root, tenantId);
+                if (foreign) {
+                    console.warn('[JobArchiveService] refused to overwrite another company folder');
+                    return { success: false };
+                }
+            }
             const content = JSON.stringify(this.buildPayload(tenantId, jobs), null, 2);
 
             let wrote = await this.writeFileWithRetry(archivePath, content);

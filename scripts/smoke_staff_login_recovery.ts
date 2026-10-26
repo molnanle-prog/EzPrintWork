@@ -73,6 +73,8 @@ saveStaffLoginPreferences({
 });
 assert('아이디·비밀번호 저장됨', isStaffKeepLoggedIn());
 assert('아이디 저장됨', loadStaffLoginPreferences().loginId === 'sr203');
+assert('비밀번호 저장됨', loadStaffLoginPreferences().loginPassword === 'secret');
+assert('회사 저장 체크 유지', loadStaffLoginPreferences().rememberCompany === true);
 
 disableStaffAutoLoginPrefs();
 assert('아이디·비밀번호 저장 해제됨', !isStaffKeepLoggedIn());

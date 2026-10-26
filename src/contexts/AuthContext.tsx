@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
 import { auth, db, startPresenceSession, stopPresenceSession, setPresenceGatewayUrls } from '../services/firebase';
+import { isWithdrawnTenantData } from '../services/tenantWithdrawal';
 import { startPresenceHeartbeat, stopPresenceHeartbeat } from '../services/gasPresencePing';
 import { onAuthStateChanged, User, signOut, getRedirectResult } from 'firebase/auth';
 import { doc, getDoc, setDoc, deleteDoc, collection, query, where, getDocs, limit } from 'firebase/firestore';
@@ -40,6 +41,8 @@ import {
   isRemoteSessionNewerThanLocal,
   isSessionClaimPending,
   isWithinSessionClaimGrace,
+  setSessionClaimPending,
+  touchSessionClaimGrace,
   releaseStaffSessionOnNas,
   claimStaffSessionOnNas,
 } from '../utils/staffSession';
@@ -438,6 +441,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             tenantDoc = await getDoc(doc(db, 'tenants', updatedUser.tenantId));
             if (tenantDoc.exists()) {
               const tenantData = tenantDoc.data() as Record<string, unknown>;
+              if (isWithdrawnTenantData(tenantData)) {
+                throw new Error('TENANT_WITHDRAWN');
+              }
               applyTenantSnapshot(tenantData, updatedUser.tenantId);
               const plan = determineTenantPlan(tenantData);
               const planCode = String(tenantData?.plan || 'free');
@@ -469,6 +475,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
               restoreLastKnownTenantPlan(updatedUser.tenantId);
             }
           } catch (tenantErr) {
+            if (tenantErr instanceof Error && tenantErr.message === 'TENANT_WITHDRAWN') throw tenantErr;
             console.warn('[TenantPlan] tenant getDoc failed during profile load:', tenantErr);
             restoreLastKnownTenantPlan(updatedUser.tenantId);
           }
@@ -722,11 +729,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             try {
               const tenantDoc = await getDoc(doc(db, 'tenants', tenantId));
               if (tenantDoc.exists()) {
-                applyTenantSnapshot(tenantDoc.data(), tenantId);
+                const healedTenant = tenantDoc.data() as Record<string, unknown>;
+                if (isWithdrawnTenantData(healedTenant)) {
+                  throw new Error('TENANT_WITHDRAWN');
+                }
+                applyTenantSnapshot(healedTenant, tenantId);
               } else {
                 restoreLastKnownTenantPlan(tenantId);
               }
             } catch (tenantErr) {
+              if (tenantErr instanceof Error && tenantErr.message === 'TENANT_WITHDRAWN') throw tenantErr;
               console.warn('[TenantPlan] tenant getDoc failed (heal path):', tenantErr);
               restoreLastKnownTenantPlan(tenantId);
             }
@@ -807,7 +819,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
     } catch (error) {
-      if (error instanceof Error && error.message === 'DELETED_STAFF') {
+      if (error instanceof Error && (error.message === 'DELETED_STAFF' || error.message === 'TENANT_WITHDRAWN')) {
+        if (error.message === 'TENANT_WITHDRAWN') {
+          sessionStorage.setItem('ezpw_auth_notice', '탈퇴한 회사입니다. 다시 입장할 수 없습니다.');
+        }
         // 삭제/비활성 확정 — 캐시·스냅샷으로 절대 복원하지 않음
         console.warn('[Auth] Deleted staff account blocked from login');
         clearPersistedStaffSession();
@@ -1022,7 +1037,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const snap = await getDoc(tenantRef);
         if (cancelled) return;
         if (snap.exists()) {
-          applyTenantSnapshot(snap.data(), tenantId);
+          const planData = snap.data() as Record<string, unknown>;
+          if (isWithdrawnTenantData(planData)) {
+            sessionStorage.setItem('ezpw_auth_notice', '탈퇴한 회사입니다. 다시 입장할 수 없습니다.');
+            await signOut(auth);
+            setCurrentUser(null);
+            return;
+          }
+          applyTenantSnapshot(planData, tenantId);
         } else {
           // 문서가 잠깐 안 보이면 광고형으로 떨어뜨리지 않음
           restoreLastKnownTenantPlan(tenantId);
@@ -1065,16 +1087,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 단일 접속 claim은 Electron만. 로그인 확인(pending) 중에는 LoginPage가 force claim 할 때까지 대기.
     // 백그라운드는 force:false — 다른 Electron이 잡고 있으면 덮어쓰지 않음.
+    // 같은 PC/구형 유령은 claimSession이 덮어씀. claim이 끝날 때까지 킥 감시를 잠시 멈춘다.
     const isDesktopApp = typeof window !== 'undefined' && !!(window as any).electron;
+    let claimStartedHere = false;
     if (isDesktopApp && !isSessionClaimPending()) {
       let sessionId = getLocalStaffSessionId();
       if (!sessionId) {
         sessionId = createStaffSessionId();
-        setLocalStaffSessionId(sessionId, isStaffKeepLoggedIn());
+        setLocalStaffSessionId(sessionId, true);
+      } else if (!getLocalStaffSessionClaimedAt()) {
+        setLocalStaffSessionId(sessionId, true);
       }
 
-      // soft claim 실패로 로그아웃하지 않음 — 결제/인수 직후 레이스로 승자가 쫓겨남.
-      // 진짜 중복은 아래 세션 감시(checkRemoteSession)만 처리.
+      claimStartedHere = true;
+      setSessionClaimPending(true);
       void claimStaffSessionOnNas({
         uid: firebaseUser.uid,
         tenantId: currentUser.tenantId,
@@ -1085,6 +1111,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         email: currentUser.email || firebaseUser.email,
         gatewayBaseUrl: dataService.getStoreGatewayUrls(),
         force: false,
+      }).then((claimed) => {
+        if (claimed !== false) touchSessionClaimGrace();
+      }).catch((err) => {
+        console.warn('[StaffSession] background claim failed:', err);
+        touchSessionClaimGrace();
+      }).finally(() => {
+        if (claimStartedHere) setSessionClaimPending(false);
       });
     }
 
@@ -1106,6 +1139,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     // 의존성 변경 시 cleanup에서 offline 쓰지 않음 — 로그아웃에서만 release
     return () => {
+      if (claimStartedHere) setSessionClaimPending(false);
       stopPresenceSession();
       stopPresenceHeartbeat();
     };
@@ -1326,7 +1360,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         void (async () => {
           let ok = false;
           try {
-            ok = await dataService.flushPendingOperationalWrites();
+            ok = await dataService.flushPendingOperationalWrites({ forUpdate: true });
             const opts = buildEndOpts();
             if (ok && opts) {
               stopPresenceSession();

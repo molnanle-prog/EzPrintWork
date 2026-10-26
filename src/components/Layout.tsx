@@ -3,6 +3,7 @@ import { LayoutDashboard, Trello, Calendar, Users, FileText, Settings, Printer, 
 import { hardReloadApp } from '../utils/hardReload';
 import { UserProfile } from './auth/UserProfile';
 import { ChatWidget } from './common/ChatWidget';
+import { ExternalOrderAlertModal } from './common/ExternalOrderAlertModal';
 import { CompanyNasBanner } from './common/CompanyNasBanner';
 import { CloudDegradedBanner } from './common/CloudDegradedBanner';
 import { WebMirrorBanner } from './common/WebMirrorBanner';
@@ -27,6 +28,7 @@ import {
   listUnackedAssignmentJobs,
 } from '../utils/assignmentNotice';
 import { isFeatureEnabled } from '../features/featureFlags';
+import { applyMonitoringFullscreen } from '../utils/monitoringFullscreen';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -214,9 +216,18 @@ const ReconnectOverlay: React.FC = () => {
 
     if (status !== 'disconnected') return null;
 
+    // 로그인 직후·세션 준비 중에는 실제 장애가 아님. 기존 사용자는 이 화면을 보지 않음.
+    if (
+        !syncError ||
+        syncError === 'auth-not-ready' ||
+        syncError === 'profile-not-ready'
+    ) {
+        return null;
+    }
+
     if (
         db.hasLocalOperationalData() &&
-        (syncError === 'resource-exhausted' || syncError === 'unavailable' || syncError === 'pull-failed' || syncError === 'permission-denied' || syncError === 'auth-not-ready')
+        (syncError === 'resource-exhausted' || syncError === 'unavailable' || syncError === 'pull-failed' || syncError === 'permission-denied')
     ) {
         return null;
     }
@@ -305,6 +316,11 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
     window.addEventListener('ezprint-tv-mode-change', handleTvModeChange);
     return () => window.removeEventListener('ezprint-tv-mode-change', handleTvModeChange);
   }, []);
+
+  useEffect(() => {
+    if (!window.electron?.setMonitoringFullscreen) return;
+    applyMonitoringFullscreen(isTvMode);
+  }, [isTvMode]);
 
   useEffect(() => {
     const onMasterUpdated = (ev: Event) => {
@@ -935,6 +951,7 @@ export const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange
             </div>
             
             <ChatWidget />
+            <ExternalOrderAlertModal />
         </main>
       </div>
 

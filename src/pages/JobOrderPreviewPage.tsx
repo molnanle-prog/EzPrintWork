@@ -4,27 +4,34 @@ import { Loader2 } from 'lucide-react';
 import { Job } from '../types';
 import { db } from '../services/dataService';
 import { JobOrderPreviewPanel } from '../components/common/JobOrderPreviewPanel';
-import { readCachedJobForPreview } from '../utils/jobOrderPreviewStorage';
+import {
+  getJobOrderPreviewCacheKey,
+  mergeLatestJobOrderPrintMeta,
+  readCachedJobForPreview,
+} from '../utils/jobOrderPreviewStorage';
 
 export const JobOrderPreviewPage: React.FC = () => {
   const { jobId } = useParams<{ jobId: string }>();
-  const [job, setJob] = useState<Job | null>(() =>
-    jobId ? readCachedJobForPreview(jobId) : null
-  );
+  const [job, setJob] = useState<Job | null>(() => {
+    if (!jobId) return null;
+    const cached = readCachedJobForPreview(jobId);
+    return cached ? mergeLatestJobOrderPrintMeta(cached) : null;
+  });
   const [fetchDone, setFetchDone] = useState(!!job);
 
   const loadJob = useCallback(async () => {
     if (!jobId) return;
 
     const fromCache = readCachedJobForPreview(jobId);
-    if (fromCache) {
-      setJob(fromCache);
+    const fromMemory = db.getAllJobs().find((row) => row.id === jobId) ?? null;
+    const base = fromMemory || fromCache;
+    if (base) {
+      setJob(mergeLatestJobOrderPrintMeta(base));
       setFetchDone(true);
       return;
     }
 
-    const fromMemory = db.getAllJobs().find((row) => row.id === jobId) ?? null;
-    setJob(fromMemory);
+    setJob(null);
     setFetchDone(true);
   }, [jobId]);
 
@@ -34,7 +41,17 @@ export const JobOrderPreviewPage: React.FC = () => {
     const unsubscribe = db.subscribe(() => {
       void loadJob();
     });
-    return unsubscribe;
+    const cacheKey = getJobOrderPreviewCacheKey(jobId);
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === cacheKey) {
+        void loadJob();
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('storage', handleStorage);
+    };
   }, [jobId, loadJob]);
 
   const handleClose = () => {

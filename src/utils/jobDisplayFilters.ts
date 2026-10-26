@@ -1,10 +1,11 @@
 import { Job } from '../types';
-import { isLegacyCompletedDelivery } from './kanbanLayout';
+import { isLegacyCompletedDelivery, normalizeJobStatusKey } from './kanbanLayout';
 import { isJobBoardHidden } from './jobBoardVisibility';
 import { isJobPinnedToManagementCard } from './managementCard';
+import { isSettledPaymentStatus } from './prepaidBalance';
 
 function shouldShowArchivedCompletedJob(job: Job, selectedDate: string): boolean {
-  if (job.paymentStatus !== '결제완료') return true;
+  if (!isSettledPaymentStatus(job.paymentStatus)) return true;
 
   const completedAt = job.completedAt ? new Date(job.completedAt) : new Date(job.createdAt);
   const diffDays = (Date.now() - completedAt.getTime()) / (1000 * 60 * 60 * 24);
@@ -31,15 +32,16 @@ export function filterJobsForOperationalBoard(
   return jobs.filter((job) => {
     if (isJobBoardHidden(job)) return false;
     if (isJobPinnedToManagementCard(job)) return false;
-    if (job.status === 'CANCELED') return includeCanceled;
-    if (job.status === 'QUOTE') return includeStatus.has('QUOTE');
+    const status = normalizeJobStatusKey(job.status);
+    if (status === 'CANCELED') return includeCanceled;
+    if (status === 'QUOTE') return includeStatus.has('QUOTE');
 
-    if (job.status === 'COMPLETED') {
+    if (status === 'COMPLETED') {
       return shouldShowArchivedCompletedJob(job, selectedDate);
     }
 
     // 레거시: 예전 DELIVERY=완료 데이터
-    if (isLegacyCompletedDelivery(job)) {
+    if (isLegacyCompletedDelivery({ status, completedAt: job.completedAt })) {
       return shouldShowArchivedCompletedJob(job, selectedDate);
     }
 

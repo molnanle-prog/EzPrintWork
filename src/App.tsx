@@ -11,9 +11,14 @@ import { AutoUpdateProvider } from './components/common/AutoUpdateProvider';
 import { JobOrderPreviewPage } from './pages/JobOrderPreviewPage';
 import { isStandaloneDocumentPreviewRoute } from './utils/documentPreviewRoutes';
 import { isRemoteViewRoute } from './utils/remoteView';
+import { isPostCreateBriefingPending } from './utils/postCreateBriefing';
 import { db } from './services/dataService';
 import { RemoteSituationPage } from './pages/RemoteSituationPage';
 import { PaymentFailPage, PaymentSuccessPage } from './pages/PaymentResultPage';
+import { ExternalOrderAlertPreview } from './components/common/ExternalOrderAlertModal';
+import { JobRegistrationPreview } from './components/common/JobRegistrationPreview';
+import { ClientManagerPreview } from './components/settings/ClientManagerPreview';
+import { KanbanMergePreview } from './components/kanban/KanbanMergePreview';
 
 const LoadingScreen = () => (
     <div className="h-screen w-screen flex flex-col items-center justify-center bg-slate-950 gap-6">
@@ -31,6 +36,22 @@ function AppRoutes() {
     const { isAuthenticated, loading, currentUser } = useAuth();
     const previewOnly = isStandaloneDocumentPreviewRoute();
     const remoteOnly = isRemoteViewRoute();
+    const alertPreview =
+        import.meta.env.DEV &&
+        typeof window !== 'undefined' &&
+        window.location.hash.includes('external-order-alert-preview');
+    const registrationPreview =
+        import.meta.env.DEV &&
+        typeof window !== 'undefined' &&
+        window.location.hash.includes('job-registration-preview');
+    const clientPreview =
+        import.meta.env.DEV &&
+        typeof window !== 'undefined' &&
+        window.location.hash.includes('client-manager-preview');
+    const kanbanPreview =
+        import.meta.env.DEV &&
+        typeof window !== 'undefined' &&
+        window.location.hash.includes('kanban-preview');
 
     useEffect(() => {
         if (remoteOnly) return;
@@ -39,6 +60,42 @@ function AppRoutes() {
             void db.setTenantWhenReady(currentUser.tenantId, currentUser.uid);
         }
     }, [currentUser?.tenantId, currentUser?.uid, currentUser?.role, remoteOnly]);
+
+    if (alertPreview) {
+        return (
+            <Router>
+                <ExternalOrderAlertPreview />
+                <Toaster richColors position="top-center" offset={{ top: 52 }} mobileOffset={{ top: 52 }} />
+            </Router>
+        );
+    }
+
+    if (registrationPreview) {
+        return (
+            <Router>
+                <JobRegistrationPreview />
+                <Toaster richColors position="top-center" offset={{ top: 52 }} mobileOffset={{ top: 52 }} />
+            </Router>
+        );
+    }
+
+    if (clientPreview) {
+        return (
+            <Router>
+                <ClientManagerPreview />
+                <Toaster richColors position="top-center" offset={{ top: 52 }} mobileOffset={{ top: 52 }} />
+            </Router>
+        );
+    }
+
+    if (kanbanPreview) {
+        return (
+            <Router>
+                <KanbanMergePreview />
+                <Toaster richColors position="top-center" offset={{ top: 52 }} mobileOffset={{ top: 52 }} />
+            </Router>
+        );
+    }
 
     if (loading) {
         return <LoadingScreen />;
@@ -79,8 +136,14 @@ function AppRoutes() {
                         />
                         <Route
                             path="/onboarding"
-                            element={isAuthenticated && !currentUser?.tenantId ? <OnboardingPage /> : <Navigate to="/" />}
+                            element={isAuthenticated && (!currentUser?.tenantId || isPostCreateBriefingPending()) ? <OnboardingPage /> : <Navigate to="/" />}
                         />
+                        {import.meta.env.DEV ? (
+                            <>
+                                <Route path="/onboarding-preview" element={<OnboardingPage />} />
+                                <Route path="/briefing-preview" element={<OnboardingPage />} />
+                            </>
+                        ) : null}
                         <Route
                             path="/remote"
                             element={

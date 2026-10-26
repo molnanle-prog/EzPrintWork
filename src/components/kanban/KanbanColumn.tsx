@@ -125,22 +125,36 @@ function useTvColumnDensity(
   listRef: React.RefObject<HTMLDivElement | null>
 ) {
   const [density, setDensity] = useState<TvCardDensity>('full');
+  const densityRef = useRef(density);
+  densityRef.current = density;
   const measuredRef = useRef<Partial<Record<TvCardDensity, number>>>({});
 
   useLayoutEffect(() => {
     if (!enabled) {
-      setDensity('full');
       measuredRef.current = {};
+      if (densityRef.current !== 'full') setDensity('full');
       return;
     }
-    const el = listRef.current;
-    if (!el) return;
+
+    let cancelled = false;
+    const timers: number[] = [];
+
+    const apply = (next: TvCardDensity) => {
+      if (cancelled || densityRef.current === next) return;
+      setDensity(next);
+    };
 
     const update = () => {
+      const el = listRef.current;
+      if (!el || cancelled) return;
       const style = window.getComputedStyle(el);
       const pad = (parseFloat(style.paddingTop) || 0) + (parseFloat(style.paddingBottom) || 0);
       const available = el.clientHeight - pad;
+      // 첫 프레임에 높이가 0이면 'full'로 고정하지 않고 다음 측정까지 둔다.
+      if (available < 40) return;
+
       const cards = el.querySelectorAll<HTMLElement>('[data-job-id]');
+      const current = densityRef.current;
       if (cards.length > 0) {
         let packed = 0;
         cards.forEach((card) => {
@@ -148,19 +162,41 @@ function useTvColumnDensity(
         });
         packed += Math.max(0, cards.length - 1) * TV_CARD_GAP;
         const avg = (packed - Math.max(0, cards.length - 1) * TV_CARD_GAP) / cards.length;
-        measuredRef.current[density] = avg;
-        if (packed > available + 4) {
-          setDensity((current) => stepTvDensityDown(current));
+        const expected = TV_CARD_HEIGHT[current];
+        if (avg >= expected * 0.75) measuredRef.current[current] = avg;
+        const overflows =
+          packed > available + 4 || el.scrollHeight > el.clientHeight + 16;
+        if (overflows) {
+          apply(stepTvDensityDown(current));
           return;
         }
       }
-      setDensity(pickTvDensity(available, jobCount, measuredRef.current));
+      apply(pickTvDensity(available, jobCount, measuredRef.current));
+    };
+
+    const observe = (ro: ResizeObserver) => {
+      const el = listRef.current;
+      if (!el) return;
+      ro.observe(el);
+      el.querySelectorAll<HTMLElement>('[data-job-id]').forEach((card) => ro.observe(card));
     };
 
     update();
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    return () => ro.disconnect();
+    const ro = new ResizeObserver(() => update());
+    observe(ro);
+    const onLayoutShift = () => update();
+    document.addEventListener('fullscreenchange', onLayoutShift);
+    // 글자 크기·전체화면이 한 박자 늦게 잡혀도 첫 진입에서 다시 맞춘다.
+    timers.push(window.setTimeout(update, 50));
+    timers.push(window.setTimeout(update, 280));
+    timers.push(window.setTimeout(update, 600));
+
+    return () => {
+      cancelled = true;
+      timers.forEach((id) => window.clearTimeout(id));
+      ro.disconnect();
+      document.removeEventListener('fullscreenchange', onLayoutShift);
+    };
   }, [enabled, jobCount, listRef, density]);
 
   return density;

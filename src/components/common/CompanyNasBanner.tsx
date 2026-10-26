@@ -53,6 +53,7 @@ export const CompanyNasBanner: React.FC = () => {
                     NAS 연결이 잠시 불안정합니다. 재시도 중…
                     {health.channel === 'gateway' ? ' (게이트웨이)' : ''}
                     {' '}전원은 같은 자료를 유지합니다.
+                    {health.error ? ` 이유: ${health.error}` : ''}
                 </span>
             </div>
         );

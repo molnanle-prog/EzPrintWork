@@ -1,8 +1,12 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { db, getHolidayName } from '../../services/dataService';
-import { Job, Staff, StaffLeave, Priority, JobStatusDefinition, PaymentStatus } from '../../types';
-import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, Calendar as CalendarIcon, CheckCircle2, Tv, Users } from 'lucide-react';
+import { ensureKoreanHolidays } from '../../utils/koreanHolidays';
+import { Job, Staff, StaffLeave, Priority, JobStatusDefinition, PaymentStatus, CalendarMark } from '../../types';
+import { ChevronLeft, ChevronRight, Palmtree, Plus, Trash2, AlertCircle, Clock, Calendar as CalendarIcon, CheckCircle2, Tv, Users, Cake } from 'lucide-react';
+import { calendarMarkOccursOn } from '../../utils/calendarMarkSchedule';
+import { CalendarMarkArt } from './CalendarMarkArt';
+import { CalendarMarkModal } from './CalendarMarkModal';
 import { JobDetailModal } from '../common/JobDetailModal';
 import { LeaveModal } from './LeaveModal';
 import { useDialog } from '../../contexts/DialogContext';
@@ -16,6 +20,7 @@ import { canManageLeave } from '../../utils/leaveOverlap';
 import { isBoardStatusHidden } from '../../utils/boardStatusFilter';
 import { useBoardStatusFilter } from '../../utils/useBoardStatusFilter';
 import { toast } from 'sonner';
+import { applyMonitoringFullscreen } from '../../utils/monitoringFullscreen';
 
 interface CalendarViewProps {
   onNavigateToQuote: (quoteId?: string) => void;
@@ -33,6 +38,29 @@ function toLocalDateKey(value: Date | string): string {
 function parseLocalDateKey(dateKey: string): Date {
   const [y, m, d] = dateKey.split('-').map(Number);
   return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function formatLeaveDateParts(iso: string) {
+  const key = iso.slice(0, 10);
+  const date = parseLocalDateKey(key);
+  const week = ['일', '월', '화', '수', '목', '금', '토'][date.getDay()];
+  return {
+    monthDay: `${date.getMonth() + 1}월 ${date.getDate()}일`,
+    meta: `${date.getFullYear()} ${week}`,
+  };
+}
+
+function leaveTypeTextClass(type: string) {
+  if (type === '연차') return 'text-amber-700 dark:text-amber-300';
+  if (type === '반차') return 'text-sky-700 dark:text-sky-300';
+  if (type === '병가') return 'text-rose-600 dark:text-rose-300';
+  return 'text-emerald-700 dark:text-emerald-300';
+}
+
+function leaveSpanDays(startIso: string, endIso: string) {
+  const start = parseLocalDateKey(startIso.slice(0, 10)).getTime();
+  const end = parseLocalDateKey(endIso.slice(0, 10)).getTime();
+  return Math.max(1, Math.round((end - start) / 86400000) + 1);
 }
 
 const JOB_BAR_COLORS_LIGHT = [
@@ -123,6 +151,10 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const { theme } = useTheme();
   
   const [showLeaveModal, setShowLeaveModal] = useState(false);
+  const [leaveDraft, setLeaveDraft] = useState<StaffLeave | null>(null);
+  const [calendarMarks, setCalendarMarks] = useState<CalendarMark[]>([]);
+  const [editingMark, setEditingMark] = useState<CalendarMark | null>(null);
+  const [viewingLeave, setViewingLeave] = useState<StaffLeave | null>(null);
   const [isTvMode, setIsTvMode] = useState<boolean>(() => {
     return localStorage.getItem('ezprint_tv_mode') === 'true';
   });
@@ -133,6 +165,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
   const [assigneeFilterInitialized, setAssigneeFilterInitialized] = useState(() => loadInitialAssigneeStaffIds() !== null);
   const [showAssigneePopover, setShowAssigneePopover] = useState(false);
   const [filterLongProjectOnly, setFilterLongProjectOnly] = useState<boolean>(() => localStorage.getItem('ez_calendar_only_long_projects') === 'true');
+  const [hideHolidayJobs, setHideHolidayJobs] = useState<boolean>(() => localStorage.getItem('ez_calendar_hide_holiday_jobs') === 'true');
   const { hiddenStatusKeys: hiddenCalendarStatusKeys, boardStatusDefs: calendarStatusDefs, toggleBoardStatus: toggleCalendarStatus } = useBoardStatusFilter(
     currentUser?.tenantId,
     currentUser,
@@ -234,32 +267,62 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
     localStorage.setItem('ez_calendar_only_long_projects', String(filterLongProjectOnly));
   }, [filterLongProjectOnly]);
 
-  const loadData = async () => {
+  useEffect(() => {
+    localStorage.setItem('ez_calendar_hide_holiday_jobs', String(hideHolidayJobs));
+  }, [hideHolidayJobs]);
+
+  const paintCalendar = () => {
     const year = currentDate.getFullYear();
     const month = currentDate.getMonth();
-    await db.ensureColdArchiveLoaded();
-    await db.ensureCalendarJobsSync(year, month);
-    db.ensureLeavesSync();
-    // Load surrounding months to handle overlapping jobs correctly
     const currentMonthJobs = db.getJobsByMonth(year, month);
     const prevMonthJobs = db.getJobsByMonth(year, month - 1);
     const nextMonthJobs = db.getJobsByMonth(year, month + 1);
-    
-    // De-duplicate jobs
     const jobMap = new Map();
-    [...prevMonthJobs, ...currentMonthJobs, ...nextMonthJobs].forEach(j => jobMap.set(j.id, j));
-    
+    [...prevMonthJobs, ...currentMonthJobs, ...nextMonthJobs].forEach((j) => jobMap.set(j.id, j));
     setJobs(Array.from(jobMap.values()));
     setActiveJobsStats(db.getActiveJobs());
     setStaff(db.getStaff());
     setLeaves(db.getLeaves());
     setStatusDefinitions(db.getStatusDefinitions());
+    setCalendarMarks(db.getCalendarMarks());
   };
 
+  const [holidayTick, setHolidayTick] = useState(0);
+
   useEffect(() => {
-    loadData();
-    const unsubscribe = db.subscribe(loadData);
-    return () => unsubscribe();
+    let cancelled = false;
+    void ensureKoreanHolidays().then((updated) => {
+      if (!cancelled && updated) setHolidayTick((tick) => tick + 1);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentDate.getFullYear()]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const year = currentDate.getFullYear();
+    const month = currentDate.getMonth();
+    paintCalendar();
+    db.ensureLeavesSync();
+    void db.ensureCalendarJobsSync(year, month).then(() => {
+      if (!cancelled) paintCalendar();
+    });
+    void db.ensureCalendarMarks();
+    void db.ensureColdArchiveLoaded().then(() => {
+      if (!cancelled) paintCalendar();
+    });
+    const unsubscribe = db.subscribe(() => {
+      if (!cancelled) paintCalendar();
+    });
+    const timer = window.setInterval(() => {
+      void db.ensureCalendarMarks();
+    }, 3000);
+    return () => {
+      cancelled = true;
+      unsubscribe();
+      window.clearInterval(timer);
+    };
   }, [currentDate]);
 
   // --- Layout Calculation Logic (Tetris/Slot Algorithm) ---
@@ -397,7 +460,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
     }
     if (await showConfirm(`${name}의 휴가 일정을 삭제하시겠습니까?`)) {
         await db.deleteLeave(id);
-        loadData();
+        paintCalendar();
     }
   };
 
@@ -415,7 +478,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
         const isCurrentMonth = dateObj.getMonth() === currentDate.getMonth();
         const isToday = new Date().toDateString() === dateObj.toDateString();
         const dayOfWeek = dateObj.getDay();
-        const holidayName = getHolidayName(dateObj);
+        const holidayName = holidayTick >= 0 ? getHolidayName(dateObj) : null;
 
         // Styling
         let dateColorClass = isCurrentMonth 
@@ -440,12 +503,15 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
 
         // Current Day's Job Slots
         const daySlots = slots[dateKey] || [];
+        const hideJobsOnThisDay = hideHolidayJobs && !!holidayName;
+        const dayMarks = calendarMarks.filter((mark) => calendarMarkOccursOn(mark, dateKey));
+        let markCursor = 0;
 
         return (
             <div 
                 key={dateKey} 
                 className={`
-                    min-h-[100px] border-b border-r flex flex-col transition-all duration-200 relative group/cell
+                    min-h-full border-b border-r flex flex-col transition-all duration-200 relative group/cell
                     ${theme === 'trello' ? 'border-[#2c3e56]' : 'border-slate-100 dark:border-slate-700'}
                     ${isToday ? (theme === 'trello' ? 'bg-[#24364e]' : 'bg-blue-50 dark:bg-blue-900/20') : bgColorClass}
                     ${isAdCell ? 'p-0 overflow-hidden' : theme === 'trello' ? 'hover:bg-[#1d2d44]' : 'hover:bg-slate-50 dark:hover:bg-slate-700/50'}
@@ -458,17 +524,35 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                 ) : (
                     <>
                         {/* Header: Date & Add Button */}
-                        <div className="flex justify-between items-start px-1 pt-1 mb-1 relative z-10 flex-none">
-                            <div className="flex flex-wrap items-center gap-1.5 w-full">
-                                <span className={`text-sm font-bold w-6 h-6 flex items-center justify-center rounded-full transition-all ${isToday ? 'bg-blue-600 text-white shadow-md' : dateColorClass}`}>
+                        <div className={`sticky top-0 z-20 flex items-center h-7 px-1 gap-0.5 flex-none overflow-hidden ${isToday ? (theme === 'trello' ? 'bg-[#24364e]' : 'bg-blue-50 dark:bg-blue-950') : isCurrentMonth ? (theme === 'trello' ? 'bg-[#152238]' : 'bg-white dark:bg-slate-800') : (theme === 'trello' ? 'bg-[#182535]' : 'bg-slate-50 dark:bg-slate-900')}`}>
+                            <div className="flex items-center gap-1 min-w-0 flex-1">
+                                <span className={`text-sm font-bold w-6 h-6 shrink-0 flex items-center justify-center rounded-full transition-all ${isToday ? 'bg-blue-600 text-white shadow-md' : dateColorClass}`}>
                                     {dateObj.getDate()}
                                 </span>
                                 {holidayName && (
-                                    <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-600 dark:text-red-200 px-1.5 py-0.5 rounded font-bold whitespace-nowrap overflow-hidden text-ellipsis shadow-sm flex-1 md:flex-none">
+                                    <span className="text-[10px] bg-red-100 dark:bg-red-900/60 text-red-600 dark:text-red-200 px-1 py-0.5 rounded font-bold truncate min-w-0">
                                         {holidayName}
                                     </span>
                                 )}
                             </div>
+                            <button
+                                onClick={(e) => {
+                                    e.stopPropagation();
+                                    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                                    setEditingMark({
+                                        id,
+                                        text: '',
+                                        icon: 'cake',
+                                        repeat: 'yearly',
+                                        calendar: 'solar',
+                                        date: dateKey,
+                                    });
+                                }}
+                                className="opacity-0 group-hover/cell:opacity-100 p-0.5 bg-amber-100 text-amber-700 rounded hover:bg-amber-200 transition-opacity"
+                                title="이 날짜에 표시"
+                            >
+                                <Cake size={14} />
+                            </button>
                             <button 
                                 onClick={() => {
                                     const newJobDate = new Date(dateObj);
@@ -497,11 +581,22 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                 )}
 
                 {/* Content Area */}
-                <div className="flex-1 flex flex-col gap-0.5 w-full pb-1">
+                <div className="flex-1 flex flex-col gap-0.5 w-full pb-1 relative z-10">
                     {/* Vacations (Always on top) */}
                     {dayLeaves.map(leave => (
-                        <div key={leave.id} className="mx-1 mb-0.5 flex items-center bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-200 px-1.5 py-0.5 rounded border border-purple-200 dark:border-purple-800 text-[10px] font-bold truncate">
-                            <span className="truncate flex-1">🌴 {getStaffName(leave.staffId)}</span>
+                        <div
+                          key={leave.id}
+                          className="mx-1 mb-0.5 flex items-center text-purple-900 dark:text-purple-50 px-1.5 py-0.5 rounded border border-dashed border-purple-500 text-[10px] font-bold truncate"
+                          style={{ backgroundImage: 'repeating-linear-gradient(-45deg, rgba(168,85,247,0.16) 0 3px, rgba(168,85,247,0.5) 3px 6px)' }}
+                        >
+                            <button
+                              type="button"
+                              className="truncate flex-1 text-left"
+                              title={`휴가 ${leave.type} ${getStaffName(leave.staffId)}`}
+                              onClick={(e) => { e.stopPropagation(); setViewingLeave(leave); }}
+                            >
+                              휴가 <span className={leaveTypeTextClass(leave.type)}>{leave.type}</span> {getStaffName(leave.staffId)}
+                            </button>
                             {canDeleteThisLeave(leave) && (
                               <button
                                 type="button"
@@ -515,10 +610,49 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                         </div>
                     ))}
 
-                    {/* Job Slots */}
-                    {daySlots.map((job, idx) => {
+                    {/* Job Slots. 쉬는 날 가리기는 작업만 빼고 칸 표시는 남긴다. */}
+                    {hideJobsOnThisDay && dayMarks.map((mark) => (
+                        <button
+                            key={mark.id}
+                            type="button"
+                            onClick={() => setEditingMark(mark)}
+                            className="mx-1 h-5 flex items-center gap-1 text-[10px] font-bold text-slate-500 dark:text-slate-300"
+                            title={mark.text}
+                        >
+                            <CalendarMarkArt icon={mark.icon} size={12} />
+                            <span className="truncate">{mark.text}</span>
+                        </button>
+                    ))}
+                    {!hideJobsOnThisDay && daySlots.length === 0 && dayMarks.map((mark) => (
+                        <button
+                            key={mark.id}
+                            type="button"
+                            onClick={() => setEditingMark(mark)}
+                            className="mx-1 h-5 flex items-center gap-1 text-[10px] font-bold text-slate-500 dark:text-slate-300 z-0"
+                            title={mark.text}
+                        >
+                            <CalendarMarkArt icon={mark.icon} size={12} />
+                            <span className="truncate">{mark.text}</span>
+                        </button>
+                    ))}
+                    {!hideJobsOnThisDay && daySlots.map((job, idx) => {
                         if (!job) {
-                            // Empty slot placeholder to maintain alignment
+                            const mark = dayMarks[markCursor];
+                            if (mark) {
+                                markCursor += 1;
+                                return (
+                                    <button
+                                        key={mark.id}
+                                        type="button"
+                                        onClick={() => setEditingMark(mark)}
+                                        className="mx-1 h-5 flex items-center gap-1 text-[10px] font-bold text-slate-500 dark:text-slate-300 z-0"
+                                        title={mark.text}
+                                    >
+                                        <CalendarMarkArt icon={mark.icon} size={12} />
+                                        <span className="truncate">{mark.text}</span>
+                                    </button>
+                                );
+                            }
                             return <div key={`empty-${idx}`} className="h-5"></div>;
                         }
 
@@ -598,6 +732,19 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                             </div>
                         );
                     })}
+                    {!hideJobsOnThisDay && daySlots.some((job) => job) && dayMarks.slice(markCursor).map((mark, overflowIndex) => (
+                        <button
+                            key={mark.id}
+                            type="button"
+                            onClick={() => setEditingMark(mark)}
+                            className="absolute inset-x-1 z-0 mx-0 h-5 flex items-center gap-1 text-[10px] font-bold text-slate-400 pointer-events-auto"
+                            style={{ bottom: `${overflowIndex * 20}px` }}
+                            title={mark.text}
+                        >
+                            <CalendarMarkArt icon={mark.icon} size={12} />
+                            <span className="truncate">{mark.text}</span>
+                        </button>
+                    ))}
                 </div>
             </div>
         );
@@ -629,7 +776,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                    <div className="w-2 h-2 rounded-full bg-blue-500"></div> <span>토</span>
                  </div>
                  <div className="flex items-center gap-1">
-                   <div className="w-2.5 h-2.5 rounded bg-purple-100 dark:bg-purple-900 border border-purple-300 dark:border-purple-700"></div> <span>휴가</span>
+                   <div className="w-2.5 h-2.5 rounded border border-dashed border-purple-500" style={{ backgroundImage: 'repeating-linear-gradient(-45deg, rgba(168,85,247,0.16) 0 2px, rgba(168,85,247,0.5) 2px 3px)' }}></div> <span>휴가</span>
                  </div>
               </div>
             </div>
@@ -655,10 +802,35 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                       </label>
                     );
                   })}
+                  <label
+                    className="flex items-center gap-1 cursor-pointer select-none shrink-0"
+                    title="쉬는 날 칸의 작업 막대만 가립니다. 칸 표시와 휴일 이름은 남습니다."
+                  >
+                    <input
+                      type="checkbox"
+                      checked={hideHolidayJobs}
+                      onChange={() => setHideHolidayJobs((prev) => !prev)}
+                      className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 shrink-0"
+                    />
+                    <span className={hideHolidayJobs ? '' : 'opacity-50'}>쉬는날 작업 가리기</span>
+                  </label>
                 </div>
               </div>
             ) : (
-              <div className="flex-1 min-w-0" />
+              <div className="flex-1 min-w-0 flex justify-center">
+                <label
+                  className={`flex items-center gap-1 cursor-pointer select-none text-xs ${theme === 'trello' ? 'text-slate-400' : 'text-slate-500 dark:text-slate-400'}`}
+                  title="쉬는 날 칸의 작업 막대만 가립니다. 칸 표시와 휴일 이름은 남습니다."
+                >
+                  <input
+                    type="checkbox"
+                    checked={hideHolidayJobs}
+                    onChange={() => setHideHolidayJobs((prev) => !prev)}
+                    className="rounded border-slate-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5 shrink-0"
+                  />
+                  <span className={hideHolidayJobs ? '' : 'opacity-50'}>쉬는날 작업 가리기</span>
+                </label>
+              </div>
             )}
             
             <div className="flex gap-1 items-center shrink-0 h-8">
@@ -773,20 +945,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                   setIsTvMode(nextVal);
                   localStorage.setItem('ezprint_tv_mode', String(nextVal));
                   window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: nextVal } }));
-                  
-                  if (nextVal) {
-                    if (document.documentElement.requestFullscreen) {
-                      document.documentElement.requestFullscreen().catch((err) => {
-                        console.log("전체화면 진입 실패:", err);
-                      });
-                    }
-                  } else {
-                    if (document.fullscreenElement && document.exitFullscreen) {
-                      document.exitFullscreen().catch((err) => {
-                        console.log("전체화면 해제 실패:", err);
-                      });
-                    }
-                  }
+                  applyMonitoringFullscreen(nextVal);
                 }}
                 className={`hidden md:inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg text-xs font-bold transition-all border box-border select-none hover:scale-105 active:scale-95 shadow-md
                   ${isTvMode 
@@ -802,8 +961,26 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
                  <Plus size={14} /><span className="hidden sm:inline">작업 등록</span>
                </button>
 
-              <button onClick={() => setShowLeaveModal(true)} className="h-8 inline-flex items-center gap-1 px-2.5 bg-purple-600 text-white text-xs font-bold rounded-lg hover:bg-purple-700 shadow-sm box-border">
+              <button onClick={() => { setLeaveDraft(null); setShowLeaveModal(true); }} className="h-8 inline-flex items-center gap-1 px-2.5 bg-purple-600 text-white text-xs font-bold rounded-lg hover:bg-purple-700 shadow-sm box-border">
                   <Palmtree size={14} /><span className="hidden sm:inline">휴가 등록</span>
+              </button>
+              <button
+                onClick={() => {
+                  const today = new Date();
+                  const date = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+                  setEditingMark({
+                    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                    text: '',
+                    icon: 'cake',
+                    repeat: 'yearly',
+                    calendar: 'solar',
+                    date,
+                  });
+                }}
+                className="h-8 inline-flex items-center gap-1 px-2.5 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600 shadow-sm box-border"
+                title="생일, 회식처럼 달력 칸에만 표시"
+              >
+                  <Cake size={14} /><span className="hidden sm:inline">칸 표시</span>
               </button>
 
               <div className="flex gap-1 items-center h-8">
@@ -816,15 +993,31 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
         )}
         
         <div className="flex-1 overflow-hidden flex flex-col">
-          <div className={`grid grid-cols-7 border-b flex-none ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`}>
+          <div className={`flex-none overflow-x-hidden overflow-y-auto [scrollbar-gutter:stable] border-b ${theme === 'trello' ? 'border-[#2c3e56] bg-[#1d2d44]' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900'}`}>
+            <div className="grid grid-cols-7">
             {['일', '월', '화', '수', '목', '금', '토'].map((d, i) => (
               <div key={d} className={`p-2 md:p-3 text-center text-xs md:text-sm font-bold ${i === 0 ? 'text-red-500' : i === 6 ? 'text-blue-500' : theme === 'trello' ? 'text-slate-400' : 'text-slate-600 dark:text-slate-400'}`}>
                 {d}
               </div>
             ))}
+            </div>
           </div>
-          <div className="grid grid-cols-7 flex-1 auto-rows-fr overflow-y-auto dark:bg-slate-800">
-            {renderCells()}
+          <div className="flex-1 min-h-0 flex flex-col overflow-hidden dark:bg-slate-800">
+            {(() => {
+              const cells = renderCells();
+              const weeks: React.ReactNode[][] = [];
+              for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+              return weeks.map((week, weekIndex) => (
+                <div
+                  key={weekIndex}
+                  className="flex-1 min-h-0 overflow-x-hidden overflow-y-auto overscroll-y-contain [scrollbar-gutter:stable]"
+                >
+                  <div className="grid grid-cols-7 min-h-full">
+                    {week}
+                  </div>
+                </div>
+              ));
+            })()}
           </div>
         </div>
       </div>
@@ -854,10 +1047,105 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
         />
       )}
 
+      {editingMark && (
+        <CalendarMarkModal
+          mark={editingMark}
+          onClose={() => setEditingMark(null)}
+          onSave={async (mark) => {
+            await db.saveCalendarMark(mark);
+            setEditingMark(null);
+            paintCalendar();
+          }}
+          onDelete={calendarMarks.some((row) => row.id === editingMark.id) ? async (id) => {
+            await db.deleteCalendarMark(id);
+            setEditingMark(null);
+            paintCalendar();
+          } : undefined}
+        />
+      )}
+
+      {viewingLeave && (() => {
+        const startParts = formatLeaveDateParts(viewingLeave.startDate);
+        const endParts = formatLeaveDateParts(viewingLeave.endDate);
+        const sameDay = viewingLeave.startDate.slice(0, 10) === viewingLeave.endDate.slice(0, 10);
+        const spanDays = leaveSpanDays(viewingLeave.startDate, viewingLeave.endDate);
+        return (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/40 p-4" onClick={() => setViewingLeave(null)}>
+          <div
+            className="w-full max-w-md overflow-hidden rounded-2xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-3 px-5 py-4 bg-purple-50 dark:bg-purple-950/40 border-b border-purple-100 dark:border-purple-900">
+              <div className="min-w-0">
+                <p className="text-[11px] font-bold tracking-wide text-purple-500">휴가</p>
+                <p className="text-xl font-black text-slate-900 dark:text-white truncate">{getStaffName(viewingLeave.staffId)}</p>
+              </div>
+              <span className="shrink-0 rounded-full bg-purple-600 px-3 py-1 text-sm font-black text-white">{viewingLeave.type}</span>
+            </div>
+            <div className={`grid ${sameDay ? 'grid-cols-1' : 'grid-cols-2'} border-b border-slate-200 dark:border-slate-700`}>
+              <div className="px-5 py-4">
+                <p className="text-[11px] font-bold text-slate-400 mb-1">{sameDay ? '날짜' : '시작'}</p>
+                <p className="text-2xl font-black leading-none text-slate-900 dark:text-white">{startParts.monthDay}</p>
+                <p className="mt-1 text-sm font-bold text-slate-500">{startParts.meta}</p>
+              </div>
+              {!sameDay && (
+                <div className="px-5 py-4 border-l border-slate-200 dark:border-slate-700">
+                  <p className="text-[11px] font-bold text-slate-400 mb-1">종료</p>
+                  <p className="text-2xl font-black leading-none text-slate-900 dark:text-white">{endParts.monthDay}</p>
+                  <p className="mt-1 text-sm font-bold text-slate-500">{endParts.meta}</p>
+                </div>
+              )}
+            </div>
+            <div className="px-5 py-2 text-xs font-bold text-purple-600 dark:text-purple-300 bg-slate-50 dark:bg-slate-900/40 border-b border-slate-200 dark:border-slate-700">
+              {sameDay ? '당일' : `${spanDays}일`}
+            </div>
+            <div className="px-5 py-4">
+              <p className="text-[11px] font-bold text-slate-400 mb-1">사유</p>
+              <p className="text-sm font-medium text-slate-800 dark:text-slate-100 whitespace-pre-wrap break-words min-h-6">
+                {viewingLeave.reason?.trim() || '사유 없음'}
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-200 dark:border-slate-700">
+              {canDeleteThisLeave(viewingLeave) && (
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center h-9 w-[4.5rem] box-border text-sm font-bold rounded-lg border border-red-300 text-red-600 dark:border-red-700 dark:text-red-300"
+                  onClick={() => {
+                    const leave = viewingLeave;
+                    setViewingLeave(null);
+                    void handleDeleteLeave(leave.id, getStaffName(leave.staffId));
+                  }}
+                >
+                  삭제
+                </button>
+              )}
+              {canDeleteThisLeave(viewingLeave) && (
+                <button
+                  type="button"
+                  className="inline-flex items-center justify-center h-9 w-[4.5rem] box-border text-sm font-bold rounded-lg border border-purple-300 text-purple-700 dark:border-purple-600 dark:text-purple-200"
+                  onClick={() => {
+                    setLeaveDraft(viewingLeave);
+                    setViewingLeave(null);
+                    setShowLeaveModal(true);
+                  }}
+                >
+                  수정
+                </button>
+              )}
+              <button type="button" onClick={() => setViewingLeave(null)} className="inline-flex items-center justify-center h-9 w-[4.5rem] box-border text-sm font-bold rounded-lg border border-slate-200 dark:border-slate-600">
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+        );
+      })()}
+
       {showLeaveModal && (
         <LeaveModal 
-            onClose={() => setShowLeaveModal(false)}
-            onSave={() => { setShowLeaveModal(false); loadData(); }}
+            leave={leaveDraft}
+            onClose={() => { setShowLeaveModal(false); setLeaveDraft(null); }}
+            onSave={() => { setShowLeaveModal(false); setLeaveDraft(null); paintCalendar(); }}
             staffList={staff}
         />
       )}
@@ -868,12 +1156,7 @@ export const CalendarView: React.FC<CalendarViewProps> = ({ onNavigateToQuote })
             setIsTvMode(false);
             localStorage.setItem('ezprint_tv_mode', 'false');
             window.dispatchEvent(new CustomEvent('ezprint-tv-mode-change', { detail: { isTvMode: false } }));
-            
-            if (document.fullscreenElement && document.exitFullscreen) {
-              document.exitFullscreen().catch((err) => {
-                console.log("전체화면 해제 실패:", err);
-              });
-            }
+            applyMonitoringFullscreen(false);
           }}
           className="fixed top-3 right-[10%] md:right-[15%] z-[9999] flex items-center gap-1.5 px-3 py-2 bg-slate-900/95 hover:bg-slate-800 text-white rounded-xl border border-slate-700/80 shadow-2xl hover:scale-105 active:scale-95 transition-all text-xs font-bold backdrop-blur-md"
           title="일반 화면으로 복원 (모니터링 모드 종료)"

@@ -18,6 +18,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { ClientNotebookModal } from '../common/ClientNotebookModal';
 import { ClientGroupSmsModal } from './ClientGroupSmsModal';
 import { notebookHasContent } from '../../utils/jobNotebook';
+import { isOrderClient } from '../../utils/clientKind';
 import { toast } from 'sonner';
 
 function prepaidLedgerTypeLabel(type: PrepaidLedgerEntry['type']): string {
@@ -54,11 +55,16 @@ function formatPrepaidLedgerTime(timestamp: string): string {
   });
 }
 
-export const ClientManager: React.FC = () => {
+export const ClientManager: React.FC<{
+  previewMode?: boolean;
+  previewClients?: Client[];
+  previewStats?: { jobs: Record<string, number>; receivable: Record<string, number> };
+}> = ({ previewMode = false, previewClients, previewStats }) => {
   const { canManageClientMaster, currentUser } = useAuth();
   const [clients, setClients] = useState<Client[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [listFilter, setListFilter] = useState<'all' | 'receivable' | 'prepaid'>('all');
+  const [kindFilter, setKindFilter] = useState<'all' | 'delivery' | 'order'>('all');
   const [sortKey, setSortKey] = useState<ClientSortKey>('order');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -95,6 +101,7 @@ export const ClientManager: React.FC = () => {
       sendSmsOnComplete: true,
       customSmsNumber: '',
       prepaidBalance: 0,
+      clientKind: 'delivery',
   });
 
   const [dataRev, setDataRev] = useState(0);
@@ -105,13 +112,18 @@ export const ClientManager: React.FC = () => {
   };
 
   useEffect(() => {
+    if (previewMode) {
+      setClients(previewClients || []);
+      return;
+    }
     loadClients();
+    void db.importLegacyOrderVendors();
     const unsubscribe = db.subscribe(loadClients);
     return () => unsubscribe();
-  }, []);
+  }, [previewMode, previewClients]);
 
   /** 거래처명별 작업 건수·미수 합계 (목록 카드용) */
-  const clientListStats = useMemo(() => {
+  const liveClientListStats = useMemo(() => {
     const jobCountByName = new Map<string, number>();
     const receivableByName = new Map<string, number>();
     for (const job of db.getAllJobs()) {
@@ -125,6 +137,12 @@ export const ClientManager: React.FC = () => {
     }
     return { jobCountByName, receivableByName };
   }, [dataRev]);
+  const clientListStats = previewMode && previewStats
+    ? {
+        jobCountByName: new Map(Object.entries(previewStats.jobs)),
+        receivableByName: new Map(Object.entries(previewStats.receivable)),
+      }
+    : liveClientListStats;
 
   const filteredClients = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -147,10 +165,14 @@ export const ClientManager: React.FC = () => {
           return false;
         });
 
+    const byKind = kindFilter === 'all'
+      ? filtered
+      : filtered.filter((client) => (kindFilter === 'order') === isOrderClient(client));
+
     const dir = sortDir === 'asc' ? 1 : -1;
     const scoped = listFilter === 'all'
-      ? filtered
-      : filtered.filter((client) => {
+      ? byKind
+      : byKind.filter((client) => {
           const name = client.name.trim();
           if (listFilter === 'prepaid') return normalizePrepaidBalance(client.prepaidBalance) > 0;
           return (clientListStats.receivableByName.get(name) || 0) > 0;
@@ -189,7 +211,7 @@ export const ClientManager: React.FC = () => {
     });
 
     return scoped;
-  }, [clients, searchQuery, listFilter, sortKey, sortDir, clientListStats]);
+  }, [clients, searchQuery, listFilter, kindFilter, sortKey, sortDir, clientListStats]);
 
   const mergeFilteredClients = useMemo(() => {
     const q = mergeSearchQuery.trim().toLowerCase();
@@ -246,6 +268,10 @@ export const ClientManager: React.FC = () => {
   };
 
   const handleMergeClients = async () => {
+    if (previewMode) {
+      toast.message('미리보기에서는 거래처를 합치지 않습니다.');
+      return;
+    }
     if (mergeSelectedClients.length !== 2 || !mergePrimaryId) {
       await showAlert('합칠 거래처 2개와 유지할 거래처명을 선택해 주세요.');
       return;
@@ -321,6 +347,7 @@ export const ClientManager: React.FC = () => {
           sendSmsOnComplete: true,
           customSmsNumber: '',
           prepaidBalance: 0,
+          clientKind: kindFilter === 'order' ? 'order' : 'delivery',
       });
       setIsModalOpen(true);
   };
@@ -351,6 +378,7 @@ export const ClientManager: React.FC = () => {
         customSmsNumber: formData.sendSmsOnComplete !== false
             ? resolveSmsNumberForMode(formData, smsReceiveMode)
             : '',
+        clientKind: formData.clientKind === 'order' ? 'order' : 'delivery',
     };
 
     if (editingId) {
@@ -362,6 +390,18 @@ export const ClientManager: React.FC = () => {
     }
 
     try {
+        if (previewMode) {
+            const saved = { ...clientToSave, id: editingId || `preview-${Date.now()}` } as Client;
+            setClients((prev) => (
+                editingId
+                    ? prev.map((client) => (client.id === editingId ? { ...client, ...saved } : client))
+                    : [saved, ...prev]
+            ));
+            toast.message('미리보기입니다. 거래처는 저장되지 않습니다.');
+            setIsModalOpen(false);
+            setShowPrepaidHistoryModal(false);
+            return;
+        }
         if (editingId) {
             await db.updateClient({ ...clientToSave, id: editingId } as Client);
         } else {
@@ -375,6 +415,10 @@ export const ClientManager: React.FC = () => {
   };
 
   const handleDelete = async (id: string, name: string) => {
+    if (previewMode) {
+        toast.message('미리보기에서는 삭제하지 않습니다.');
+        return;
+    }
     if(await showConfirm(`'${name}' 거래처를 삭제하시겠습니까?`)) {
         try {
             await db.deleteClient(id);
@@ -542,7 +586,13 @@ export const ClientManager: React.FC = () => {
           </h3>
           <div className="flex flex-wrap gap-2">
           <button
-            onClick={() => setIsGroupSmsOpen(true)}
+            onClick={() => {
+              if (previewMode) {
+                toast.message('미리보기에서는 문자를 보내지 않습니다.');
+                return;
+              }
+              setIsGroupSmsOpen(true);
+            }}
             disabled={clients.length === 0}
             title="거래처를 골라 휴대폰 담당자에게 단체 문자를 보냅니다"
             className="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 shadow-sm flex items-center gap-2 font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -567,6 +617,40 @@ export const ClientManager: React.FC = () => {
              <Plus size={18} /> 거래처 등록
           </button>
           </div>
+      </div>
+
+      <div className="mb-3 flex flex-wrap items-center gap-2 shrink-0">
+          {([
+              { id: 'all', label: '함께 보기' },
+              { id: 'delivery', label: '납품업체' },
+              { id: 'order', label: '주문업체' },
+          ] as const).map((tab) => {
+              const count = tab.id === 'all'
+                  ? clients.length
+                  : clients.filter((client) => (tab.id === 'order') === isOrderClient(client)).length;
+              const active = kindFilter === tab.id;
+              const activeClass = tab.id === 'order'
+                  ? 'bg-amber-500 border-amber-500 text-slate-950'
+                  : tab.id === 'delivery'
+                      ? 'bg-sky-600 border-sky-600 text-white'
+                      : 'bg-slate-800 border-slate-800 text-white dark:bg-slate-200 dark:border-slate-200 dark:text-slate-900';
+              return (
+                  <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => setKindFilter(tab.id)}
+                      className={`h-9 px-3 inline-flex items-center gap-1.5 rounded-lg text-sm font-bold border transition-colors ${
+                          active
+                              ? `${activeClass} shadow-sm`
+                              : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-600 text-slate-600 dark:text-slate-300 hover:border-slate-400'
+                      }`}
+                  >
+                      {tab.label}
+                      <span className={`text-xs tabular-nums ${active ? 'opacity-80' : 'text-slate-400'}`}>{count}</span>
+                  </button>
+              );
+          })}
+          <span className="text-xs text-slate-500 dark:text-slate-400">납품업체는 파란 카드, 주문업체는 노란 카드입니다.</span>
       </div>
 
       <div className="mb-5 grid grid-cols-1 xl:grid-cols-[1fr_auto_1fr] xl:items-center gap-3 shrink-0">
@@ -638,7 +722,7 @@ export const ClientManager: React.FC = () => {
                   {sortDir === 'asc' ? '오름차순' : '내림차순'}
               </button>
               <div className="text-sm text-slate-500 dark:text-slate-400 font-medium px-1">
-                  {searchQuery.trim() || listFilter !== 'all'
+                  {searchQuery.trim() || listFilter !== 'all' || kindFilter !== 'all'
                       ? `검색 결과 ${filteredClients.length.toLocaleString()}건 / 전체 ${clients.length.toLocaleString()}건`
                       : `전체 ${clients.length.toLocaleString()}건`}
               </div>
@@ -656,13 +740,21 @@ export const ClientManager: React.FC = () => {
           <div className="text-center py-16 text-slate-400 dark:text-slate-500 border border-dashed border-slate-200 dark:border-slate-600 rounded-xl">
               <Search size={40} className="mx-auto mb-3 opacity-40" />
               <p className="font-bold">
-                {searchQuery.trim() ? `「${searchQuery}」 검색 결과가 없습니다.` : '해당 구분의 거래처가 없습니다.'}
+                {searchQuery.trim()
+                  ? `「${searchQuery}」 검색 결과가 없습니다.`
+                  : kindFilter === 'order'
+                    ? '등록된 주문업체가 없습니다.'
+                    : kindFilter === 'delivery'
+                      ? '등록된 납품업체가 없습니다.'
+                      : '해당 구분의 거래처가 없습니다.'}
               </p>
               <p className="text-sm mt-1">다른 검색어를 입력하거나 검색어를 지워 전체 목록을 확인해 주세요.</p>
           </div>
       ) : (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
-          {filteredClients.map(client => (
+          {filteredClients.map(client => {
+              const orderClient = isOrderClient(client);
+              return (
               <div
                   key={client.id}
                   role="button"
@@ -674,7 +766,11 @@ export const ClientManager: React.FC = () => {
                           handleEdit(client);
                       }
                   }}
-                  className="border border-slate-200 dark:border-slate-700 rounded-xl px-3.5 py-2.5 hover:shadow-md hover:border-blue-300 dark:hover:border-blue-500 transition-all relative group bg-white dark:bg-slate-700 cursor-pointer text-left"
+                  className={`rounded-xl px-3.5 py-2.5 hover:shadow-md transition-all relative group cursor-pointer text-left border ${
+                      orderClient
+                          ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-300 dark:border-amber-700 hover:border-amber-500'
+                          : 'bg-sky-50 dark:bg-sky-950/25 border-sky-200 dark:border-sky-800 hover:border-sky-400'
+                  }`}
                   title="클릭하면 거래처 정보를 수정합니다"
               >
                   <div
@@ -709,6 +805,13 @@ export const ClientManager: React.FC = () => {
                           <h4 className="font-bold text-slate-800 dark:text-slate-100 text-lg truncate">
                              {client.name}
                           </h4>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold border shrink-0 ${
+                              orderClient
+                                  ? 'bg-amber-200 text-amber-950 border-amber-300'
+                                  : 'bg-sky-200 text-sky-900 border-sky-300'
+                          }`}>
+                              {orderClient ? '주문업체' : '납품업체'}
+                          </span>
                           <span
                             className="text-xs px-1.5 py-0.5 rounded-md font-bold bg-slate-100 dark:bg-slate-600 text-slate-600 dark:text-slate-200 border border-slate-200 dark:border-slate-500 shrink-0 tabular-nums"
                             title="이 거래처 작업 건수"
@@ -796,7 +899,8 @@ export const ClientManager: React.FC = () => {
                       )}
                   </div>
               </div>
-          ))}
+              );
+          })}
       </div>
       )}
       </div>
@@ -807,8 +911,10 @@ export const ClientManager: React.FC = () => {
             <div className="bg-white dark:bg-slate-800 rounded-xl shadow-2xl w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] transition-colors">
                 <div className="p-5 border-b border-slate-200 dark:border-slate-700 flex justify-between items-center bg-slate-50 dark:bg-slate-900 sticky top-0 z-10">
                     <h2 className="text-xl font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                        <Building2 className="text-blue-600 dark:text-blue-400" />
-                        {editingId ? '거래처 정보 수정' : '신규 거래처 등록'}
+                        <Building2 className={formData.clientKind === 'order' ? 'text-amber-600' : 'text-sky-600'} />
+                        {editingId
+                            ? (formData.clientKind === 'order' ? '주문업체 정보 수정' : '납품업체 정보 수정')
+                            : (formData.clientKind === 'order' ? '주문업체 등록' : '납품업체 등록')}
                     </h2>
                     <button onClick={() => { setIsModalOpen(false); setShowPrepaidHistoryModal(false); }} className="p-2 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-full transition-colors">
                         <X size={24} className="text-slate-500 dark:text-slate-400" />
@@ -816,6 +922,33 @@ export const ClientManager: React.FC = () => {
                 </div>
 
                 <form onSubmit={handleSave} className="flex-1 overflow-y-auto custom-scrollbar p-6">
+                    <div className="mb-4 flex flex-wrap items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, clientKind: 'delivery' })}
+                            className={`h-9 px-3 rounded-lg text-sm font-bold border ${
+                                formData.clientKind !== 'order'
+                                    ? 'bg-sky-600 border-sky-600 text-white'
+                                    : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300'
+                            }`}
+                        >
+                            납품업체
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, clientKind: 'order' })}
+                            className={`h-9 px-3 rounded-lg text-sm font-bold border ${
+                                formData.clientKind === 'order'
+                                    ? 'bg-amber-500 border-amber-500 text-slate-950'
+                                    : 'bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-300'
+                            }`}
+                        >
+                            주문업체
+                        </button>
+                        <span className="text-xs text-slate-500 dark:text-slate-400">
+                            연락처와 주소 등 상세 정보는 여기서 관리합니다. 주문업체는 작업 등록의 주문업체 목록에 나옵니다.
+                        </span>
+                    </div>
                     {/* OCR Action Bar */}
                     <div className="mb-6 bg-blue-50 dark:bg-blue-900/20 p-4 rounded-xl border border-blue-100 dark:border-blue-800 flex items-center justify-between">
                         <div>
@@ -923,6 +1056,10 @@ export const ClientManager: React.FC = () => {
                                                     type="button"
                                                     disabled={isAddingPrepaid || !prepaidDepositInput}
                                                     onClick={async () => {
+                                                        if (previewMode) {
+                                                            toast.message('미리보기에서는 선불을 저장하지 않습니다.');
+                                                            return;
+                                                        }
                                                         const amount = Number(prepaidDepositInput);
                                                         if (!amount || amount <= 0) {
                                                             await showAlert('추가할 금액을 입력해 주세요.');
@@ -1417,6 +1554,10 @@ export const ClientManager: React.FC = () => {
               `삭제 후 잔액이 자동으로 다시 계산됩니다.`
           );
           if (!confirmed) return;
+          if (previewMode) {
+            toast.message('미리보기에서는 선불 이력을 삭제하지 않습니다.');
+            return;
+          }
 
           setDeletingPrepaidEntryId(row.id);
           try {
@@ -1554,6 +1695,10 @@ export const ClientManager: React.FC = () => {
           onClose={() => setIsNotebookOpen(false)}
           onSave={async (notebook: JobNotebook) => {
             setFormData((prev) => ({ ...prev, notebook }));
+            if (previewMode) {
+              toast.message('미리보기에서는 메모를 저장하지 않습니다.');
+              return;
+            }
             try {
               const existing = clients.find((c) => c.id === editingId);
               if (existing) {

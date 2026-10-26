@@ -1,19 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '../services/firebase';
-import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
-import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Monitor, Lock, User, Building2, KeyRound, UserPlus, Search, ArrowDownToLine, Minus, Square, X, Phone } from 'lucide-react';
+import { GoogleAuthProvider, signInWithPopup, signInWithRedirect, signOut } from 'firebase/auth';
+import { Printer, LogIn, Chrome, ShieldCheck, Loader2, Lock, User, Building2, Search, Minus, Square, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTheme } from '../contexts/ThemeContext';
 import { GAS_WEBHOOK_URL } from '../constants';
-import { db, formatPhoneNumber, isValidPhoneNumber } from '../services/dataService';
+import { db } from '../services/dataService';
 import { useInstalledAppVersion } from '../hooks/useInstalledAppVersion';
-import { triggerDesktopSetupDownload } from '../utils/desktopDownload';
-import { createDesktopShortcut } from '../utils/desktopShortcut';
 import { getWindowsStartupEnabled, setWindowsStartupEnabled } from '../utils/windowsStartup';
+import { HomeScreenAddButton } from '../components/auth/HomeScreenAddButton';
 import { resolveAppRoleFromStaff } from '../utils/adminAccess';
-import { normalizeStaffLoginEmail, MIN_STAFF_PASSWORD_LENGTH } from '../utils/staffAuthProvision';
-import { resolveStaffLogin, signupStaffSecure } from '../services/membershipService';
+import { normalizeStaffLoginEmail } from '../utils/staffAuthProvision';
+import { resolveStaffLogin } from '../services/membershipService';
 import { signInStaffWithFirebaseAuth } from '../utils/staffFirebaseSignIn';
 import { useAuth, determineTenantPlan } from '../contexts/AuthContext';
 import { setPendingStaffProfile, clearPendingStaffProfile } from '../utils/staffLoginSession';
@@ -64,7 +63,6 @@ export const LoginPage: React.FC = () => {
     const { showConfirm } = useDialog();
     const [isLoggingIn, setIsLoggingIn] = useState(false);
     const [companyName, setCompanyName] = useState('');
-    const [joinCode, setJoinCode] = useState('');
     const [loginId, setLoginId] = useState('');
     const [password, setPassword] = useState('');
     const [isStaffLoggingIn, setIsStaffLoggingIn] = useState(false);
@@ -101,6 +99,13 @@ export const LoginPage: React.FC = () => {
     };
 
     useEffect(() => {
+        const notice = sessionStorage.getItem('ezpw_auth_notice');
+        if (!notice) return;
+        sessionStorage.removeItem('ezpw_auth_notice');
+        toast.message(notice, { duration: 8000 });
+    }, []);
+
+    useEffect(() => {
         if (authLoading || currentUser) return;
         // 로그아웃 직후 Firebase 세션·동기화 잔여 — 회사 검색·재로그인 방해 제거
         if (auth.currentUser) {
@@ -124,7 +129,9 @@ export const LoginPage: React.FC = () => {
         if (prefs.keepLoggedIn && prefs.loginId) {
             setLoginId(prefs.loginId);
         }
-        // 비밀번호는 localStorage에 저장하지 않음 (보안)
+        if (prefs.keepLoggedIn && prefs.loginPassword) {
+            setPassword(prefs.loginPassword);
+        }
         setRememberCompany(prefs.rememberCompany);
         setSaveCredentials(prefs.keepLoggedIn);
     }, []);
@@ -141,18 +148,6 @@ export const LoginPage: React.FC = () => {
         };
     }, [theme]);
 
-    // B2B Staff Self-Signup States
-    const [isStaffSignup, setIsStaffSignup] = useState(false);
-    const [staffName, setStaffName] = useState('');
-    const [staffPhone, setStaffPhone] = useState('');
-    const [staffRole, setStaffRole] = useState('디자이너');
-    const [isStaffSigningUp, setIsStaffSigningUp] = useState(false);
-
-    // B2B Company Search States
-    const [searchResults, setSearchResults] = useState<{ id: string; name: string }[]>([]);
-    const [isSearchingCompany, setIsSearchingCompany] = useState(false);
-    const [hasSearched, setHasSearched] = useState(false);
-
     const handleToggleOpenAtLogin = async (checked: boolean) => {
         setOpenAtLogin(checked);
         const result = await setWindowsStartupEnabled(checked);
@@ -161,26 +156,6 @@ export const LoginPage: React.FC = () => {
         } else {
             setOpenAtLogin(!checked);
             toast.error(result.message || '시작 프로그램 설정에 실패했습니다.');
-        }
-    };
-
-    const handleDownloadShortcut = async () => {
-        const isElectronApp = typeof window !== 'undefined' && !!window.electron?.createDesktopShortcut;
-        const confirmMessage = isElectronApp
-            ? '바탕화면에 EzPrintWork 바로가기를 만들까요?\n\n설치된 PC 앱과 같은 아이콘으로 바로 생성됩니다.'
-            : '바탕화면 바로가기 설치 파일을 다운로드할까요?\n\n다운로드 후 파일을 더블클릭하면 바탕화면에 아이콘이 생성됩니다.';
-
-        if (!window.confirm(confirmMessage)) return;
-
-        try {
-            const result = await createDesktopShortcut();
-            if (result.ok) {
-                toast.success(result.message);
-            } else {
-                toast.error(result.message);
-            }
-        } catch {
-            toast.error('바탕화면 아이콘 생성 중 오류가 발생했습니다.');
         }
     };
 
@@ -272,7 +247,7 @@ export const LoginPage: React.FC = () => {
                         }
                     }
                     const newSessionId = createStaffSessionId();
-                    setLocalStaffSessionId(newSessionId, false);
+                    setLocalStaffSessionId(newSessionId, isDesktop);
                     const claimed = await claimStaffSessionOnNas({
                         uid: user.uid,
                         tenantId,
@@ -286,7 +261,7 @@ export const LoginPage: React.FC = () => {
                     });
                     // claimedAt을 claim 시각 이후로 맞춤 (하트비트 lastActive와 비교 오판 방지)
                     if (claimed !== false) {
-                        setLocalStaffSessionId(newSessionId, false);
+                        setLocalStaffSessionId(newSessionId, isDesktop);
                         touchSessionClaimGrace();
                     }
                 }
@@ -417,7 +392,7 @@ export const LoginPage: React.FC = () => {
         }
         persistLoginPrefs({ rememberCompany: nextRemember, keepLoggedIn: checked });
         if (checked) {
-            toast.info('아이디·비밀번호가 저장됩니다. 다음에도 직원 로그인 버튼을 눌러 주세요.');
+            toast.info('아이디·비밀번호가 이 PC에 저장됩니다. 로그아웃 후에도 입력칸에 채워 둡니다.');
         } else {
             toast.success('저장된 아이디·비밀번호가 삭제되었습니다.');
         }
@@ -506,8 +481,10 @@ export const LoginPage: React.FC = () => {
                 }
             }
 
+            const isDesktopStaff = typeof window !== 'undefined' && !!(window as { electron?: unknown }).electron;
+            const persistStaffSession = isDesktopStaff || saveCredentials;
             const newSessionId = createStaffSessionId();
-            setLocalStaffSessionId(newSessionId, saveCredentials);
+            setLocalStaffSessionId(newSessionId, persistStaffSession);
 
             // Firebase Auth 로그인 (Firestore rules isMember 통과에 필수)
             // ※ tenants get은 프로필 upsert 이후(멤버)에만 가능 — 비로그인 get 차단 규칙과 맞춤
@@ -615,7 +592,7 @@ export const LoginPage: React.FC = () => {
                     force: true, // 확인 후 이 PC가 승자 — 기존 접속 덮어씀
                 });
                 if (claimed !== false) {
-                    setLocalStaffSessionId(newSessionId, saveCredentials);
+                    setLocalStaffSessionId(newSessionId, persistStaffSession);
                     touchSessionClaimGrace();
                 }
 
@@ -768,105 +745,6 @@ export const LoginPage: React.FC = () => {
         }
     }, [authLoading, currentUser?.tenantId, navigate]);
 
-    const handleStaffSignup = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!companyName.trim() || !joinCode.trim() || !loginId.trim() || !password.trim() || !staffName.trim() || !staffPhone.trim()) {
-            toast.error('모든 정보를 입력해주세요.');
-            return;
-        }
-
-        const formattedPhone = formatPhoneNumber(staffPhone.trim());
-        if (!isValidPhoneNumber(formattedPhone)) {
-            toast.error('연락처를 올바르게 입력해주세요. (예: 010-1234-5678)');
-            return;
-        }
-
-        if (joinCode.trim().length < 6) {
-            toast.error('회사 입장 코드는 6자 이상이어야 합니다.');
-            return;
-        }
-
-        if (password.trim().length < MIN_STAFF_PASSWORD_LENGTH) {
-            toast.error(`비밀번호는 ${MIN_STAFF_PASSWORD_LENGTH}자 이상 입력해 주세요.`);
-            return;
-        }
-
-
-
-        setIsStaffSigningUp(true);
-
-        try {
-            const normalizedLoginId = loginId.trim().toLowerCase();
-            await signupStaffSecure({
-                companyName: companyName.trim(),
-                joinCode: joinCode.trim(),
-                loginId: normalizedLoginId,
-                password: password.trim(),
-                staffName: staffName.trim(),
-                staffPhone: formattedPhone,
-                staffRole,
-            });
-
-            // 구글 시트로 데이터 전송 (Upsert 로직을 통해 시트와 동기화)
-            try {
-                await fetch(GAS_WEBHOOK_URL, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-                    body: JSON.stringify({
-                        action: "signup_staff",
-                        companyName: companyName.trim(),
-                        loginId: normalizedLoginId,
-                        staffName: staffName.trim(),
-                        staffRole: staffRole,
-                        contact: formattedPhone
-                    })
-                });
-            } catch (err) {
-                console.error("Google Sheets Sync Error:", err);
-                // 구글 시트 전송이 일시적으로 실패해도, 파이어베이스에는 이미 안전하게 저장됨
-            }
-
-            toast.success(`[${companyName}] 직원 가입이 성공적으로 완료되었습니다! 로그인 해보세요.`);
-            setIsStaffSignup(false);
-            // Reset fields
-            setStaffName('');
-            setStaffPhone('');
-            setLoginId('');
-            setPassword('');
-        } catch (error: any) {
-            console.error("Staff signup error:", error);
-            toast.error('직원 가입 중 오류가 발생했습니다: ' + error.message);
-        } finally {
-            setIsStaffSigningUp(false);
-        }
-    };
-
-    const handleSearchCompany = async () => {
-        if (!companyName.trim()) {
-            toast.error('검색할 회사명을 입력해주세요.');
-            return;
-        }
-
-        setIsSearchingCompany(true);
-        setHasSearched(true);
-        try {
-            const results = await db.searchTenants(companyName.trim());
-            setSearchResults(results.map(t => ({ id: t.id, name: t.name })));
-        } catch (error: any) {
-            console.error("Search company error:", error);
-            toast.error(formatSearchError(error));
-        } finally {
-            setIsSearchingCompany(false);
-        }
-    };
-
-    const handleSelectCompany = (name: string) => {
-        setCompanyName(name);
-        setSearchResults([]);
-        setHasSearched(false);
-        toast.success(`[${name}] 소속 회사가 선택되었습니다.`);
-    };
-
     return (
         <div className="h-full min-h-0 w-full bg-slate-950 flex flex-col font-sans">
             {/* 데스크톱 앱 프레임리스 타이틀바 (Electron 전용 — 모바일/웹에서는 숨김) */}
@@ -955,112 +833,78 @@ export const LoginPage: React.FC = () => {
  
                 <div className="bg-slate-900/50 backdrop-blur-xl border border-slate-800 p-5 sm:p-8 rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl space-y-4 sm:space-y-6">
                     <div className="space-y-1.5 text-center">
-                        <h2 className="text-xl font-bold text-white">
-                            {isStaffSignup ? '사내 직원 가입 신청' : '클라우드 시작하기'}
-                        </h2>
-                        <p className="text-sm text-slate-500">
-                            {isStaffSignup ? '소속 회사의 입장 코드를 입력하고 가입하세요.' : '별도의 설치 없이 브라우저에서 바로 관리하세요.'}
-                        </p>
+                        <h2 className="text-xl font-bold text-white">클라우드 시작하기</h2>
                     </div>
- 
-                    {!isStaffSignup && (
-                        <>
-                            <div className="space-y-3">
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <div className="flex flex-col gap-2">
-                                        <button 
-                                            onClick={handleGoogleLogin}
-                                            disabled={isLoggingIn}
-                                            className="w-full h-full min-h-[56px] group relative flex items-center justify-center gap-3 bg-white hover:bg-slate-50 text-slate-950 py-2.5 rounded-2xl transition-all active:scale-[0.98] shadow-xl hover:shadow-white/5 disabled:opacity-50"
-                                        >
-                                            {isLoggingIn ? (
-                                                <Loader2 className="animate-spin text-blue-600" size={24} />
-                                            ) : (
-                                                <Chrome className="text-blue-600 group-hover:scale-110 transition-transform" size={24} />
-                                            )}
-                                            <div className="flex flex-col items-start leading-tight text-left">
-                                                <span className="text-[14px] font-extrabold text-slate-900">구글로 시작하기</span>
-                                                <span className="text-[10px] font-bold text-slate-500 tracking-tight">가입 및 로그인 (관리자)</span>
-                                            </div>
-                                        </button>
 
-                                        {isLoggingIn && (
-                                            <button
-                                                type="button"
-                                                onClick={() => setIsLoggingIn(false)}
-                                                className="text-[10px] text-rose-400 hover:text-rose-300 font-bold py-1.5 transition-colors animate-pulse text-center bg-rose-950/20 rounded-xl border border-rose-900/30"
-                                            >
-                                                로딩 멈춤 초기화
-                                            </button>
-                                        )}
+                    <div className="space-y-3">
+                                <button
+                                    onClick={handleGoogleLogin}
+                                    disabled={isLoggingIn}
+                                    className="w-full min-h-[56px] group relative flex items-center justify-center gap-3 bg-white hover:bg-slate-50 text-slate-950 py-2.5 rounded-2xl transition-all active:scale-[0.98] shadow-xl hover:shadow-white/5 disabled:opacity-50"
+                                >
+                                    {isLoggingIn ? (
+                                        <Loader2 className="animate-spin text-blue-600" size={24} />
+                                    ) : (
+                                        <Chrome className="text-blue-600 group-hover:scale-110 transition-transform" size={24} />
+                                    )}
+                                    <div className="flex flex-col items-start leading-tight text-left">
+                                        <span className="text-[14px] font-extrabold text-slate-900">구글로 시작하기</span>
+                                        <span className="text-[10px] font-bold text-slate-500 tracking-tight">가입 및 로그인 (관리자)</span>
                                     </div>
+                                </button>
 
-                                    <button 
-                                        onClick={handleDownloadShortcut}
-                                        className="w-full h-full min-h-[56px] flex items-center justify-center gap-2 bg-slate-800/40 hover:bg-slate-800/80 border border-slate-700 text-slate-300 font-bold py-3 rounded-2xl transition-all active:scale-[0.98] text-[13px]"
+                                {isLoggingIn && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsLoggingIn(false)}
+                                        className="w-full text-[10px] text-rose-400 hover:text-rose-300 font-bold py-1.5 transition-colors animate-pulse text-center bg-rose-950/20 rounded-xl border border-rose-900/30"
                                     >
-                                        <Monitor size={15} className="text-blue-400" />
-                                        바탕화면 아이콘 만들기
+                                        로딩 멈춤 초기화
                                     </button>
-                                </div>
+                                )}
 
-                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    {isElectron ? (
-                                        <label className="w-full min-h-[56px] flex items-center justify-center gap-2 px-3 rounded-2xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800/80 cursor-pointer select-none transition-colors">
-                                            <input
-                                                type="checkbox"
-                                                checked={openAtLogin}
-                                                onChange={(e) => void handleToggleOpenAtLogin(e.target.checked)}
-                                                className="w-3.5 h-3.5 shrink-0 rounded bg-slate-950 border-slate-700 text-blue-600 focus:ring-blue-600 cursor-pointer"
-                                            />
-                                            <span className="text-[12px] font-bold text-slate-300 whitespace-nowrap">
-                                                Windows 시작 시 자동실행
-                                            </span>
-                                        </label>
-                                    ) : null}
+                                {isElectron ? (
+                                    <label className="w-full min-h-[48px] flex items-center justify-center gap-2 px-3 rounded-2xl border border-slate-700 bg-slate-800/40 hover:bg-slate-800/80 cursor-pointer select-none transition-colors">
+                                        <input
+                                            type="checkbox"
+                                            checked={openAtLogin}
+                                            onChange={(e) => void handleToggleOpenAtLogin(e.target.checked)}
+                                            className="w-3.5 h-3.5 shrink-0 rounded bg-slate-950 border-slate-700 text-blue-600 accent-blue-500 focus:ring-blue-600 cursor-pointer"
+                                        />
+                                        <span className="text-[12px] font-bold text-slate-300 whitespace-nowrap">
+                                            Windows 시작 시 자동실행
+                                        </span>
+                                    </label>
+                                ) : null}
 
-                                    <button 
-                                        onClick={() => triggerDesktopSetupDownload()}
-                                        className={`w-full min-h-[56px] flex items-center justify-center gap-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 border border-blue-500/30 text-white font-extrabold py-3.5 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 text-sm group ${isElectron ? '' : 'sm:col-span-2'}`}
-                                    >
-                                        <ArrowDownToLine size={18} className="text-blue-200 group-hover:scale-110 group-hover:translate-y-0.5 transition-transform shrink-0" />
-                                        <div className="flex flex-col items-start leading-tight text-left">
-                                            <span className="text-[13px] font-black">PC 전용 앱 (.exe)</span>
-                                            <span className="text-[9px] text-blue-200/85 font-medium tracking-tight">클릭 후 설치 프로그램 실행</span>
-                                        </div>
-                                    </button>
-                                </div>
+                                <HomeScreenAddButton />
                             </div>
 
                             {/* Divider */}
                             <div className="relative flex items-center justify-center py-2">
                                 <div className="border-t border-slate-800/80 w-full"></div>
                                 <span className="absolute bg-slate-900 px-3 text-[10px] font-black text-slate-500 tracking-widest uppercase">
-                                    또는 직원 로그인 및 가입
+                                    또는 직원 로그인
                                 </span>
                             </div>
-                        </>
-                    )}
 
-                    {!isStaffSignup ? (
-                        /* Staff Login Form */
                         <form onSubmit={handleStaffLogin} className="space-y-4">
                             {/* 회사 선택 및 검색 영역 */}
                             <div className="space-y-2 relative">
-                                <div className="flex justify-between items-center pl-1">
-                                    <label className="text-xs font-bold text-slate-400 block">소속 회사 선택 *</label>
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between pl-1">
+                                    <label className="text-xs font-bold text-slate-400 block shrink-0">소속 회사 선택 *</label>
                                     
                                     {/* "선택회사 저장" 및 "아이디·비밀번호 저장" 체크박스 */}
-                                    <div className="flex items-center gap-3">
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                                         <div className="flex items-center gap-1.5">
                                             <input 
                                                 type="checkbox"
                                                 id="rememberCompanyCheckbox"
                                                 checked={rememberCompany}
                                                 onChange={(e) => handleToggleRememberCompany(e.target.checked)}
-                                                className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                                className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-950 text-blue-500 accent-blue-500 focus:ring-blue-600 cursor-pointer"
                                             />
-                                            <label htmlFor="rememberCompanyCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
+                                            <label htmlFor="rememberCompanyCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none whitespace-nowrap">
                                                 선택회사 저장
                                             </label>
                                         </div>
@@ -1071,9 +915,9 @@ export const LoginPage: React.FC = () => {
                                                 id="saveCredentialsCheckbox"
                                                 checked={saveCredentials}
                                                 onChange={(e) => handleToggleSaveCredentials(e.target.checked)}
-                                                className="w-3.5 h-3.5 rounded bg-slate-950 border-slate-800 text-blue-600 focus:ring-blue-600 cursor-pointer"
+                                                className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-950 text-blue-500 accent-blue-500 focus:ring-blue-600 cursor-pointer"
                                             />
-                                            <label htmlFor="saveCredentialsCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none">
+                                            <label htmlFor="saveCredentialsCheckbox" className="text-[11px] text-slate-400 font-bold cursor-pointer select-none whitespace-nowrap">
                                                 아이디·비밀번호 저장
                                             </label>
                                         </div>
@@ -1197,211 +1041,6 @@ export const LoginPage: React.FC = () => {
                                 직원 로그인
                             </button>
                         </form>
-                    ) : (
-                        /* Staff Self-Signup Form */
-                        <form onSubmit={handleStaffSignup} className="space-y-4">
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div className="space-y-1.5 relative col-span-1 sm:col-span-2">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">소속 회사명 *</label>
-                                    <div className="flex gap-2">
-                                        <div className="relative flex-1">
-                                            <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                                                <Building2 size={16} />
-                                            </span>
-                                            <input 
-                                                type="text" 
-                                                value={companyName}
-                                                onChange={(e) => {
-                                                    setCompanyName(e.target.value);
-                                                    if (hasSearched) setHasSearched(false);
-                                                }}
-                                                placeholder="가입하려는 소속 회사 이름 입력"
-                                                className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
-                                                required
-                                            />
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={handleSearchCompany}
-                                            disabled={isSearchingCompany}
-                                            className="px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold rounded-2xl border border-slate-700 text-sm transition-all flex items-center gap-1.5 active:scale-95 disabled:opacity-50"
-                                        >
-                                            {isSearchingCompany ? (
-                                                <Loader2 size={16} className="animate-spin" />
-                                            ) : (
-                                                <Search size={16} />
-                                            )}
-                                            검색
-                                        </button>
-                                    </div>
-
-                                    {/* Search Results Dropdown/Box */}
-                                    {hasSearched && (
-                                        <div className="absolute left-0 right-0 top-full mt-2 bg-slate-900 border border-slate-800 rounded-2xl p-3 z-50 shadow-2xl space-y-2 max-h-48 overflow-y-auto">
-                                            <div className="text-[10px] font-black text-slate-500 uppercase tracking-widest pl-1 mb-1">검색 결과</div>
-                                            {searchResults.length === 0 ? (
-                                                <div className="text-xs text-slate-500 py-2 text-center">검색 결과가 없습니다. 회사명을 다시 확인해주세요.</div>
-                                            ) : (
-                                                <div className="grid grid-cols-1 gap-1">
-                                                    {searchResults.map((res) => (
-                                                        <button
-                                                            key={res.id}
-                                                            type="button"
-                                                            onClick={() => handleSelectCompany(res.name)}
-                                                            className="w-full text-left px-3 py-2.5 bg-slate-950/40 hover:bg-blue-600/20 hover:border-blue-600/50 border border-slate-800 rounded-xl text-slate-200 text-xs font-semibold transition-all flex items-center justify-between group"
-                                                        >
-                                                            <span>{res.name}</span>
-                                                            <span className="text-[10px] text-blue-400 group-hover:text-blue-300 font-bold flex items-center gap-0.5">
-                                                                선택
-                                                            </span>
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">회사 입장 코드 (6자 이상) *</label>
-                                    <div className="relative">
-                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                                            <KeyRound size={16} />
-                                        </span>
-                                        <input 
-                                            type="text" 
-                                            value={joinCode}
-                                            onChange={(e) => setJoinCode(e.target.value)}
-                                            placeholder="입장 코드 입력"
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
-                                            required
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">직원 이름 *</label>
-                                    <div className="relative">
-                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                                            <User size={16} />
-                                        </span>
-                                        <input 
-                                            type="text" 
-                                            value={staffName}
-                                            onChange={(e) => setStaffName(e.target.value)}
-                                            placeholder="본인 이름 (예: 홍길동)"
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
-                                            required
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">연락처 *</label>
-                                    <div className="relative">
-                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                                            <Phone size={16} />
-                                        </span>
-                                        <input 
-                                            type="tel" 
-                                            value={staffPhone}
-                                            onChange={(e) => setStaffPhone(formatPhoneNumber(e.target.value))}
-                                            placeholder="010-1234-5678"
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
-                                            required
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">사내 아이디 (4자 이상) *</label>
-                                    <div className="relative">
-                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                                            <User size={16} />
-                                        </span>
-                                        <input 
-                                            type="text" 
-                                            value={loginId}
-                                            onChange={(e) => setLoginId(e.target.value)}
-                                            placeholder="원하는 로그인 아이디"
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
-                                            required
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">비밀번호 *</label>
-                                    <div className="relative">
-                                        <span className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-slate-500">
-                                            <Lock size={16} />
-                                        </span>
-                                        <input 
-                                            type="password" 
-                                            value={password}
-                                            onChange={(e) => setPassword(e.target.value)}
-                                            placeholder={`비밀번호 (${MIN_STAFF_PASSWORD_LENGTH}자 이상)`}
-                                            className="w-full pl-10 pr-4 py-3 bg-slate-950/40 border border-slate-800 rounded-2xl text-slate-200 placeholder-slate-600 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-medium text-sm"
-                                            required
-                                        />
-                                    </div>
-                                </div>
-
-                                <div className="space-y-1.5 col-span-1 sm:col-span-2">
-                                    <label className="text-xs font-bold text-slate-400 block pl-1">직책 / 역할 *</label>
-                                    <select 
-                                        value={staffRole}
-                                        onChange={(e) => setStaffRole(e.target.value)}
-                                        className="w-full px-4 py-3 bg-slate-950/60 border border-slate-800 rounded-2xl text-slate-200 focus:outline-none focus:border-blue-600 focus:ring-1 focus:ring-blue-600 transition-all font-bold text-sm cursor-pointer appearance-none animate-none"
-                                    >
-                                        <option value="디자이너" className="bg-slate-950 text-slate-200">디자이너</option>
-                                        <option value="인쇄기장" className="bg-slate-950 text-slate-200">인쇄기장</option>
-                                        <option value="후가공" className="bg-slate-950 text-slate-200">후가공</option>
-                                        <option value="배송" className="bg-slate-950 text-slate-200">배송</option>
-                                        <option value="관리부서" className="bg-slate-950 text-slate-200">관리부서</option>
-                                        <option value="실장" className="bg-slate-950 text-slate-200">실장</option>
-                                        <option value="부장" className="bg-slate-950 text-slate-200">부장</option>
-                                        <option value="과장" className="bg-slate-950 text-slate-200">과장</option>
-                                        <option value="대리" className="bg-slate-950 text-slate-200">대리</option>
-                                        <option value="사원" className="bg-slate-950 text-slate-200">사원</option>
-                                    </select>
-                                    <p className="text-[11px] text-slate-500 font-semibold pl-1 mt-1 leading-relaxed">
-                                        ※ 본인의 정확한 직책이 없는 경우 임의 선택해 주세요. 가입 완료 후 언제든지 수정 가능합니다.
-                                    </p>
-                                </div>
-                            </div>
-
-                            <button 
-                                type="submit" 
-                                disabled={isStaffSigningUp}
-                                className="w-full flex items-center justify-center gap-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-4 rounded-2xl transition-all active:scale-[0.98] shadow-lg shadow-emerald-600/15"
-                            >
-                                {isStaffSigningUp ? (
-                                    <Loader2 className="animate-spin" size={20} />
-                                ) : (
-                                    <UserPlus size={20} />
-                                )}
-                                사내 직원 가입 신청
-                            </button>
-                        </form>
-                    )}
-
-                    <div className="text-center pt-2">
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setIsStaffSignup(!isStaffSignup);
-                                setLoginId('');
-                                setPassword('');
-                                setCompanyName('');
-                                setJoinCode('');
-                                setStaffPhone('');
-                            }}
-                            className="text-xs text-blue-400 hover:text-blue-300 font-bold transition-colors underline bg-transparent border-none cursor-pointer"
-                        >
-                            {isStaffSignup ? '이미 계정이 있나요? 직원 로그인하기' : '소속 회사에 신규 직원으로 직접 가입하기'}
-                        </button>
-                    </div>
 
                     <div className="pt-4 flex flex-col gap-4 text-center">
                         <div className="flex items-center justify-center gap-2 text-slate-600 text-xs font-bold uppercase tracking-widest">
@@ -1414,11 +1053,6 @@ export const LoginPage: React.FC = () => {
                 <footer className="text-center relative">
                     <p className="text-slate-600 text-sm font-medium">
                         © 2026 EzPrintWork Cloud. All rights reserved.
-                        <span 
-                            onClick={() => triggerDesktopSetupDownload()} 
-                            className="inline-block ml-1 text-slate-600 hover:text-slate-400 cursor-pointer select-none text-sm transition-colors font-medium"
-                            title="EzPrintWork 데스크톱 앱 다운로드"
-                        >ⓓ</span>
                     </p>
                 </footer>
             </div>

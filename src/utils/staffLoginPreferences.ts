@@ -1,5 +1,5 @@
-/** 직원 로그인 화면 — 회사·아이디 저장 / 로그인 유지(Auth persistence)
- * 비밀번호는 localStorage에 저장하지 않음 (보안).
+/** 직원 로그인 화면 — 회사·아이디·비밀번호 저장 (이 PC localStorage만)
+ * 클라우드에는 올리지 않는다. 체크를 끄면 지운다.
  */
 
 export const STAFF_LOGIN_PREFS = {
@@ -8,7 +8,7 @@ export const STAFF_LOGIN_PREFS = {
   savedCompanyName: 'savedCompanyName',
   savedTenantId: 'savedTenantId',
   savedLoginId: 'savedLoginId',
-  /** @deprecated 평문 저장 중단 — 읽기 시 즉시 삭제 */
+  /** 아이디·비밀번호 저장을 켠 경우에만 이 PC에 둔다 */
   savedLoginPassword: 'savedLoginPassword',
 } as const;
 
@@ -18,26 +18,26 @@ export type StaffLoginPreferences = {
   companyName: string;
   tenantId: string;
   loginId: string;
-  /** 항상 빈 문자열 — 하위 호환용 필드 */
   loginPassword: string;
 };
 
-function purgeStoredStaffPassword(): void {
-  try {
-    localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginPassword);
-  } catch {
-    /* ignore */
-  }
-}
-
 export function loadStaffLoginPreferences(): StaffLoginPreferences {
-  purgeStoredStaffPassword();
-
   const rememberCompany = localStorage.getItem(STAFF_LOGIN_PREFS.rememberCompany) === 'true';
   const keepLoggedIn = localStorage.getItem(STAFF_LOGIN_PREFS.keepLoggedIn) === 'true';
   const companyName = localStorage.getItem(STAFF_LOGIN_PREFS.savedCompanyName) || '';
   const tenantId = localStorage.getItem(STAFF_LOGIN_PREFS.savedTenantId) || '';
   const loginId = localStorage.getItem(STAFF_LOGIN_PREFS.savedLoginId) || '';
+  const loginPassword = keepLoggedIn
+    ? localStorage.getItem(STAFF_LOGIN_PREFS.savedLoginPassword) || ''
+    : '';
+
+  if (!keepLoggedIn) {
+    try {
+      localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginPassword);
+    } catch {
+      /* ignore */
+    }
+  }
 
   return {
     rememberCompany,
@@ -45,7 +45,7 @@ export function loadStaffLoginPreferences(): StaffLoginPreferences {
     companyName,
     tenantId,
     loginId,
-    loginPassword: '',
+    loginPassword,
   };
 }
 
@@ -67,17 +67,18 @@ export function saveStaffLoginPreferences(prefs: StaffLoginPreferences): void {
     if (prefs.loginId) {
       localStorage.setItem(STAFF_LOGIN_PREFS.savedLoginId, prefs.loginId.trim().toLowerCase());
     }
+    if (prefs.loginPassword) {
+      localStorage.setItem(STAFF_LOGIN_PREFS.savedLoginPassword, prefs.loginPassword);
+    }
   } else {
     localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginId);
+    localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginPassword);
   }
-
-  // 비밀번호는 절대 저장하지 않음 + 기존 평문 키 제거
-  purgeStoredStaffPassword();
 }
 
 export function clearSavedStaffCredentials(): void {
   localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginId);
-  purgeStoredStaffPassword();
+  localStorage.removeItem(STAFF_LOGIN_PREFS.savedLoginPassword);
 }
 
 /** 아이디 저장 해제 (localStorage 키 keepLoggedIn — 하위 호환) */

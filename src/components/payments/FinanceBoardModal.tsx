@@ -334,7 +334,7 @@ export const FinanceBoardModal: React.FC<{ onClose: () => void }> = ({ onClose }
               <ArrowBigUp size={32} className="mx-auto mb-3 text-slate-300 fill-slate-200" strokeWidth={2} />
               <p className="font-bold">관리카드에 올린 작업이 없습니다.</p>
               <p className="text-sm mt-1">칸반 카드의 ↑ 버튼으로 관리카드로 올리세요.</p>
-              <p className="text-xs mt-2 text-slate-400">취소·결제완료된 작업은 관리카드에서 자동 제외됩니다.</p>
+              <p className="text-xs mt-2 text-slate-400">취소·결제완료·카드결제된 작업은 관리카드에서 자동 제외됩니다.</p>
             </div>
           ) : viewMode === 'cards' ? (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-start">

@@ -20,8 +20,8 @@ export const auth = getAuth(app);
 export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 export const storage = getStorage(app);
 
-/** NAS 하트비트 — 채팅/단일세션용. Firestore presence 미러는 비용상 사용하지 않음 */
-const PRESENCE_HEARTBEAT_MS = 120_000;
+/** NAS 하트비트 — 사내 NAS/게이트웨이 전용이므로 Firestore 비용 0원. 30초 주기로 실시간성 강화 */
+const PRESENCE_HEARTBEAT_MS = 30_000;
 
 export type PresenceUser = {
   uid: string;
@@ -35,6 +35,7 @@ export type PresenceUser = {
 let presenceActiveUser: PresenceUser | null = null;
 let presenceLastPayload: PresenceUser | null = null;
 let presenceHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let presenceWarmupTimers: Array<ReturnType<typeof setTimeout>> = [];
 let presenceGatewayUrls: string[] = [];
 
 export function setPresenceGatewayUrls(urls: string[] | string | null | undefined): void {
@@ -66,6 +67,29 @@ async function writePresence(user: PresenceUser, online: boolean): Promise<void>
     onlyIfSessionId = null;
   }
 
+  // 초기 구동 시점에 staffDocId나 gatewayUrls가 아직 로드 전이었을 수 있으므로 동적으로 보강
+  let resolvedStaffDocId = user.staffDocId;
+  let resolvedGatewayUrls = presenceGatewayUrls;
+  try {
+    const { db: dataService } = await import('./dataService');
+    if (!resolvedGatewayUrls.length) {
+      const latestGw = dataService.getStoreGatewayUrls();
+      if (latestGw?.length) resolvedGatewayUrls = latestGw;
+    }
+    if (!resolvedStaffDocId) {
+      const staffList = dataService.getStaff();
+      const matched = staffList.find(
+        (s) =>
+          (s.uid && s.uid === user.uid) ||
+          (user.loginId && String((s as any).loginId || '').toLowerCase() === user.loginId.toLowerCase()) ||
+          (user.email && String(s.email || '').toLowerCase() === user.email.toLowerCase())
+      );
+      if (matched?.id) resolvedStaffDocId = matched.id;
+    }
+  } catch {
+    /* ignore */
+  }
+
   // Electron에서 세션 claim 전에 online 쓰면 다른 PC 인수 결과를 덮을 수 있음 → NAS 생략
   const isDesktop = typeof window !== 'undefined' && !!(window as { electron?: unknown }).electron;
   if (!(isDesktop && online && !onlyIfSessionId)) {
@@ -74,13 +98,13 @@ async function writePresence(user: PresenceUser, online: boolean): Promise<void>
       uid: user.uid,
       online,
       loginId: user.loginId,
-      staffDocId: user.staffDocId,
+      staffDocId: resolvedStaffDocId,
       name: user.name,
       email: user.email,
       // heartbeat는 lastActive만 — session claim은 로그인 시에만
       sessionId: null,
       onlyIfSessionId,
-      gatewayBaseUrl: presenceGatewayUrls.length > 0 ? presenceGatewayUrls : null,
+      gatewayBaseUrl: resolvedGatewayUrls.length > 0 ? resolvedGatewayUrls : null,
     });
     if (!ok) {
       console.warn('[Presence] NAS/gateway write skipped (path or gateway unavailable)');
@@ -122,6 +146,15 @@ export function startPresenceSession(user: PresenceUser): void {
   stopPresenceSession();
   presenceActiveUser = user;
   void setPresenceOnline(user);
+  // 초기 로그인 시 NAS 경로/직원 목록이 1~3초 뒤 로드되는 현상 대응: 3초, 8초 후 즉시 보강 기록
+  presenceWarmupTimers = [
+    setTimeout(() => {
+      if (presenceActiveUser) void writePresence(presenceActiveUser, true);
+    }, 3_000),
+    setTimeout(() => {
+      if (presenceActiveUser) void writePresence(presenceActiveUser, true);
+    }, 8_000),
+  ];
   presenceHeartbeatTimer = setInterval(() => {
     // 크래시/비정상 종료 대비 — NAS lastActive만 갱신
     if (presenceActiveUser) void writePresence(presenceActiveUser, true);
@@ -131,6 +164,10 @@ export function startPresenceSession(user: PresenceUser): void {
 }
 
 export function stopPresenceSession(): void {
+  for (const t of presenceWarmupTimers) {
+    clearTimeout(t);
+  }
+  presenceWarmupTimers = [];
   if (presenceHeartbeatTimer) {
     clearInterval(presenceHeartbeatTimer);
     presenceHeartbeatTimer = null;

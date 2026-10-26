@@ -272,6 +272,12 @@ export class PresenceSessionService {
     if (isElectron()) {
       const root = await resolveNasRoot(tenantId);
       if (root) {
+        const { jobArchiveService } = await import('./jobArchiveService');
+        const foreign = await jobArchiveService.findForeignFolderOwner(root, tenantId);
+        if (foreign) {
+          console.warn('[Presence] refused to overwrite another company folder');
+          return false;
+        }
         const ok = await writeLocalWithRetry(joinPath(root, PRESENCE_SESSIONS_FILE), content);
         if (ok) return true;
       }
@@ -337,7 +343,10 @@ export class PresenceSessionService {
         /* ignore */
       }
     } else if (!opts.online) {
-      // offline 시 세션 ID는 유지(킥 판정용)하되 lastActive만 갱신
+      // 로그아웃·창 종료 — 다음 PC가 '다른 곳 접속 중'으로 보지 않도록 클레임을 바로 비움.
+      // 다른 기기가 이미 인수한 경우(onlyIfSessionId 불일치)는 위에서 쓰지 않음.
+      next.activeSessionId = '';
+      next.activeSessionAt = '';
     }
 
     current.sessions[uid] = next;
@@ -370,14 +379,14 @@ export class PresenceSessionService {
         prev.clientType === 'electron' &&
         resolveStaffOnline(prev)
       ) {
-        let sameMachine = false;
+        let sameMachineOrGhost = !prev.machineId;
         try {
-          const { getOrCreateMachineId } = await import('../utils/staffSession');
-          sameMachine = !!prev.machineId && prev.machineId === getOrCreateMachineId();
+          const { isSameMachineOrLegacyGhost } = await import('../utils/staffSession');
+          sameMachineOrGhost = isSameMachineOrLegacyGhost(prev);
         } catch {
-          sameMachine = false;
+          sameMachineOrGhost = !prev.machineId;
         }
-        if (!sameMachine) return false;
+        if (!sameMachineOrGhost) return false;
       }
     }
 
