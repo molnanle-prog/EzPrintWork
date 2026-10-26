@@ -117,11 +117,12 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToQuote }) => {
   }, []);
 
   const loadData = () => {
-    setJobs(filterJobsForOperationalBoard(db.getAllJobs()));
+    const defs = db.getStatusDefinitions();
+    setJobs(filterJobsForOperationalBoard(db.getAllJobs(), { statusDefinitions: defs }));
     db.ensureInstructionsSync();
     setInstructions(db.getInstructions());
     setStaff(db.getStaff());
-    setStatusDefinitions(db.getStatusDefinitions());
+    setStatusDefinitions(defs);
   };
 
   useEffect(() => {

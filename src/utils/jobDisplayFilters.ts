@@ -1,4 +1,4 @@
-import { Job } from '../types';
+import { Job, JobStatusDefinition } from '../types';
 import { isLegacyCompletedDelivery, normalizeJobStatusKey } from './kanbanLayout';
 import { isJobBoardHidden } from './jobBoardVisibility';
 import { isJobPinnedToManagementCard } from './managementCard';
@@ -23,16 +23,18 @@ export function filterJobsForOperationalBoard(
     includeCanceled?: boolean;
     /** split column 하단 트레이 등 보드에 표시할 예외 status (예: QUOTE) */
     includeStatusKeys?: string[];
+    statusDefinitions?: JobStatusDefinition[];
   }
 ): Job[] {
   const selectedDate = options?.selectedDate ?? new Date().toISOString().split('T')[0];
   const includeCanceled = options?.includeCanceled ?? false;
   const includeStatus = new Set(options?.includeStatusKeys ?? []);
+  const statusDefinitions = options?.statusDefinitions;
 
   return jobs.filter((job) => {
     if (isJobBoardHidden(job)) return false;
     if (isJobPinnedToManagementCard(job)) return false;
-    const status = normalizeJobStatusKey(job.status);
+    const status = normalizeJobStatusKey(job.status, statusDefinitions);
     if (status === 'CANCELED') return includeCanceled;
     if (status === 'QUOTE') return includeStatus.has('QUOTE');
 

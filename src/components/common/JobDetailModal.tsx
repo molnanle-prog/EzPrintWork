@@ -33,6 +33,7 @@ import { toast } from 'sonner';
 import { normalizeSizeLabel, sizesMatch } from '../../utils/sizeLabel';
 import { externalOrderAlertStage } from '../../utils/externalOrderAlert';
 import { orderVendorLabel } from '../../utils/clientKind';
+import { normalizeJobStatusKey } from '../../utils/kanbanLayout';
 
 
 // --- Helper Components for History Timeline ---
@@ -218,6 +219,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
 
   const initialJob: Job = {
     ...job,
+    status: normalizeJobStatusKey(job.status, db.getStatusDefinitions()),
     contactPerson: job.contactPerson || '',
     paymentStatus: job.paymentStatus || '결제대기',
     subJobs: initialSubJobs,
@@ -349,6 +351,7 @@ function JobDetailModal({ job, staff, onClose, onUpdate, onNavigateToQuote, onRe
     setOrderVendors(db.getOrderVendorClients());
     void db.importLegacyOrderVendors();
     const unsubscribe = db.subscribe(() => {
+        setStatusDefinitions(db.getStatusDefinitions());
         setProductDefs(db.getProductDefinitions());
         setProcessingOptions(db.getProcessingDefinitions());
         setReceptionAssistEnabled(db.isReceptionAssistEnabled());

@@ -1548,6 +1548,17 @@ export class DataService {
 
     private applyMirrorPayload(situation: SituationMirrorPayload): boolean {
         let applied = false;
+        if (situation.settings && typeof situation.settings === 'object') {
+            this.mergeSettingsFromMirror(
+                situation.settings as Record<string, unknown>,
+                situation.companyName,
+                situation.updatedAt
+            );
+            applied = true;
+        } else if (situation.companyName) {
+            this.mirrorCompanyName = situation.companyName;
+            applied = true;
+        }
         if (situation.deletedJobs?.length) {
             this.applyJobTombstonesFromMirror(situation.deletedJobs);
             applied = true;
@@ -1572,17 +1583,6 @@ export class DataService {
             applied = true;
         } else if (situation.deletedClients?.length) {
             this.purgeTombstonedClientsFromCache();
-            applied = true;
-        }
-        if (situation.settings && typeof situation.settings === 'object') {
-            this.mergeSettingsFromMirror(
-                situation.settings as Record<string, unknown>,
-                situation.companyName,
-                situation.updatedAt
-            );
-            applied = true;
-        } else if (situation.companyName) {
-            this.mirrorCompanyName = situation.companyName;
             applied = true;
         }
         if (situation.updatedAt) {
@@ -2760,6 +2760,11 @@ export class DataService {
             bundle.jobCount > 0 || bundle.clients.length > 0 || !!bundle.settings || hasAux;
         if (!hasData) return false;
 
+        if (bundle.settings) {
+            this.data['settings'] = [bundle.settings];
+            this.applySettingsDefaultsMerge(bundle.settings);
+        }
+        if (bundle.clients.length > 0) this.data['clients'] = bundle.clients;
         if (bundle.jobs.length > 0) {
             const filtered = filterJobsByTombstones(
                 bundle.jobs,
@@ -2767,11 +2772,6 @@ export class DataService {
                 (job) => this.jobTimestampMs(job)
             );
             this.applyImportedJobs(filtered);
-        }
-        if (bundle.clients.length > 0) this.data['clients'] = bundle.clients;
-        if (bundle.settings) {
-            this.data['settings'] = [bundle.settings];
-            this.applySettingsDefaultsMerge(bundle.settings);
         }
         if (bundle.quotes?.length) this.data['quotes'] = bundle.quotes;
         if (bundle.papers?.length) this.data['papers'] = bundle.papers;
@@ -4423,6 +4423,10 @@ export class DataService {
                 this.persistSettingsDefaultsMerge(settingsObj).catch((err) =>
                     console.error('[DataService] Settings defaults merge failed:', err)
                 );
+            }
+            const currentJobs = this.getAllJobs();
+            if (currentJobs.length > 0) {
+                this.applyImportedJobs(currentJobs);
             }
             return;
         }

@@ -156,6 +156,7 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
       selectedDate,
       includeCanceled: filterCanceled,
       includeStatusKeys: slotKeys.includes('QUOTE') ? ['QUOTE'] : [],
+      statusDefinitions: statuses,
     });
 
     setDisplayJobs(filteredJobs);
@@ -516,7 +517,6 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({ onNavigateToQuote }) =
           statusKey === fallbackStatusKey &&
           normalized !== 'CANCELED' &&
           normalized !== 'QUOTE' &&
-          normalized !== 'COMPLETED' &&
           !allDefinedKeysSet.has(normalized)
         ) {
           return true;
